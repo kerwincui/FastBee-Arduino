@@ -4,6 +4,8 @@
  */
 #include "systems/SystemRebooter.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/ConfigStorage.h"
+#include "core/FeatureFlags.h"
 #include <ESP.h>
 
 // ========== 静态成员初始化 ==========
@@ -56,6 +58,13 @@ void SystemRebooter::update() {
         Serial.printf("[REBOOTER] Executing reboot: %s\n", _reason);
         Serial.println("[REBOOTER] ============================================");
         Serial.flush();
+
+#if FASTBEE_ENABLE_STORAGE_CACHE
+        // 重启前强制落盘延迟写入的脏配置，避免 debounce 窗口内的修改丢失
+        if (ConfigStorage::isInitialized()) {
+            ConfigStorage::getInstance().flushDirtyEntries(true);
+        }
+#endif
 
         // 保存重启前状态快照到 RTC 内存
         RestartDiagnostics::savePreRestartState(

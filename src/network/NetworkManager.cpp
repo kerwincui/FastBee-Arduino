@@ -11,6 +11,8 @@
 #include "systems/SystemRebooter.h"
 #include "utils/NetworkUtils.h"
 #include "core/FeatureFlags.h"
+#include <esp_heap_caps.h>  // heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
+#include "systems/HealthMonitor.h"  // WIFI_CONNECT_MIN_DRAM
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
@@ -96,6 +98,7 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       , _apProbeInProgress(false)
       , _apFallbackAuto(false)
       , _apProbeFailCount(0)
+      , _staDisconnectedSince(0)
 {
     
     wifiConfig = WiFiConfig();
@@ -166,6 +169,20 @@ bool FBNetworkManager::initialize() {
         saveNetworkConfig();
     }
 
+    // 智能模式修正（反向 / STA 优先）：mode 是 NETWORK_AP 但已配置有效 staSSID。
+    // 设备原本能连 STA，一旦 network.json 因 Web「网络设置」保存、异常或历史回退
+    // 被持久化成 AP，开机会直接进 AP 且「永不尝试 STA」——因为 AP→STA 探测恢复
+    // 只在运行时 STA 失败自动回退（_apFallbackAuto=true）时才触发，持久化 AP 并不
+    // 触发探测，于是设备永久卡在 192.168.4.1，表现为「WiFi 配置正确却只能 AP 访问、
+    // 老是连不上」。既然存在有效 WiFi 凭据，则开机优先尝试 STA；STA 失败仍会走既有
+    // 回退逻辑退回 AP 供用户重新配网，不会丢失可达性。
+    if (wifiConfig.networkType == NetworkType::NET_WIFI &&
+        !wifiConfig.staSSID.isEmpty() && wifiConfig.mode == NetworkMode::NETWORK_AP) {
+        LOG_WARNING("NetworkManager: staSSID present but mode=AP; preferring STA (auto-correct AP->STA)");
+        wifiConfig.mode = NetworkMode::NETWORK_STA;
+        saveNetworkConfig();
+    }
+
     // 初始化子模块
     if (!wifiManager->initialize()) {
         LOG_ERROR("NetworkManager: Failed to initialize WiFi manager");
@@ -182,10 +199,8 @@ bool FBNetworkManager::initialize() {
         return false;
     }
 
-    // 设置WiFi事件回调
-    WiFi.onEvent([this](arduino_event_id_t event, arduino_event_info_t info) {
-        wifiManager->handleWiFiEvent(event);
-    });
+    // WiFi 事件回调已在 WiFiManager::initialize() 中注册，此处不再重复注册
+    // 重复注册会导致每个事件在 arduino_events 栈上执行两次，引发栈溢出崩溃
 
     // 同步配置到 WiFiManager（确保 AP 密码等参数从 network.json 传递到底层驱动）
     // 必须在所有网络路径（以太网+AP、4G+AP、WiFi STA/AP）之前执行
@@ -429,6 +444,12 @@ void FBNetworkManager::update() {
     static bool wasConnected = false;
     static unsigned long lastMdnsUpdate = 0;
 
+    // 先处理 WiFi 事件的延迟重量级工作（PeriphExec/MQTT/回调），
+    // 事件回调本身在 arduino_events 栈上仅置位标志，避免栈溢出
+    if (wifiManager) {
+        wifiManager->processPendingEvents();
+    }
+
     // 处理延迟重启（配置保存后延迟1500ms执行，确保HTTP响应已返回）
     if (pendingRestart) {
         if (pendingRestartTime == 0) {
@@ -619,8 +640,9 @@ void FBNetworkManager::update() {
                     LOG_WARNING("NetworkManager: Ethernet auto-reconnect exhausted, will not retry");
                     // 确保 AP 热点始终可用，作为用户回退配置的入口
                     ensureLastResortAP();
+                    // 接口已从以太网切换到 AP，必须 restartMDNS 重新绑定（startMDNS 会因 mdnsStarted 提前返回）
                     if (wifiConfig.enableMDNS) {
-                        dnsManager->startMDNS(wifiConfig.customDomain);
+                        dnsManager->restartMDNS(wifiConfig.customDomain);
                     }
                 }
             }
@@ -657,7 +679,7 @@ void FBNetworkManager::update() {
                     }
                 }
                 if (wifiConfig.enableMDNS) {
-                    dnsManager->startMDNS(wifiConfig.customDomain);
+                    dnsManager->restartMDNS(wifiConfig.customDomain);
                 }
             } else if (wifiConfig.networkType == NetworkType::NET_4G) {
                 if (cellReconnectAttempts < CELL_MAX_RECONNECT_ATTEMPTS) {
@@ -668,8 +690,9 @@ void FBNetworkManager::update() {
                 } else {
                     LOG_WARNING("NetworkManager: 4G auto-reconnect exhausted, keeping AP fallback available");
                     ensureLastResortAP();
+                    // 接口已从 4G 切换到 AP，必须 restartMDNS 重新绑定（startMDNS 会因 mdnsStarted 提前返回）
                     if (wifiConfig.enableMDNS) {
-                        dnsManager->startMDNS(wifiConfig.customDomain);
+                        dnsManager->restartMDNS(wifiConfig.customDomain);
                     }
                 }
             }
@@ -698,6 +721,7 @@ void FBNetworkManager::update() {
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
         statusInfo.lastConnectionTime = millis();
+        _staDisconnectedSince = 0;  // 重连成功，清零长时间失联看门狗计时
         
         // 重新启动mDNS以更新IP绑定
         if (wifiConfig.enableMDNS) {
@@ -752,13 +776,43 @@ void FBNetworkManager::update() {
         }
     }
 
-    // 自动重连逻辑（仅 STA 模式）
-    if (autoReconnectEnabled && 
-        !connecting &&
+    // STA 断开跟踪 + 自动重连 + 长时间失联看门狗（仅 STA 模式、未连接、非正在连接时）
+    if (!connecting &&
         !isConnected &&
-        wifiConfig.mode == NetworkMode::NETWORK_STA &&
-        currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
-        attemptReconnect();
+        wifiConfig.mode == NetworkMode::NETWORK_STA) {
+        // 记录 STA 持续断开的起点（用于长时间失联后重启回落 AP）。
+        // 与自动重连是否启用无关：即使重连已达上限停用，也要继续计时以触发看门狗。
+        if (_staDisconnectedSince == 0) {
+            _staDisconnectedSince = currentTime;
+        }
+
+        // 自动重连逻辑 —— 指数退避策略：base * 2^(attempts-1), 封顶 RECONNECT_MAX_INTERVAL_MS (60s)
+        if (autoReconnectEnabled) {
+            uint8_t expShift = min((uint8_t)(statusInfo.reconnectAttempts), (uint8_t)4);
+            unsigned long backoffInterval = min(
+                (unsigned long)(wifiConfig.reconnectInterval * (1UL << expShift)),
+                WiFiConfig::RECONNECT_MAX_INTERVAL_MS
+            );
+            if (currentTime - lastReconnectAttempt >= backoffInterval) {
+                attemptReconnect();
+            }
+        }
+
+        // 运行时看门狗：STA 已持续断开超过阈值（1 分钟）仍未重连成功。
+        // 由于运行中掉线不会触发开机 AP 回退，设备会永远卡在无 IP 状态
+        // （mDNS 失效、局域网不可达且无法自恢复）。此处调度一次干净重启，
+        // 重启后开机流程 STA 再失败即回退 AP，恢复 192.168.4.1 可达。
+        // 不受 autoReconnectEnabled 门控：即使自动重连已达上限停用，也照常触发，
+        // 避免设备永久卡死在无 IP 的 STA 状态。
+        if (_staDisconnectedSince != 0 &&
+            (currentTime - _staDisconnectedSince) >= STA_LOST_REBOOT_MS &&
+            !SystemRebooter::isScheduled()) {
+            LOG_WARNING("NetworkManager: STA disconnected too long, scheduling reboot for AP fallback");
+            SystemRebooter::scheduleReboot(
+                "STA lost too long, reboot for AP fallback",
+                1000UL,
+                RestartReason::AP_FALLBACK);
+        }
     }
 
     // AP 模式下定期探测 WiFi 是否恢复，成功则自动切回 STA 模式
@@ -827,10 +881,12 @@ void FBNetworkManager::update() {
         if (zombieFailCount >= 3) {
             LOG_WARNING("NetworkManager: WiFi zombie detected! Forcing reconnect...");
             zombieFailCount = 0;
-            wasConnected = false;          // 让下次 update() 走"重新连接"分支
-            WiFi.disconnect(false);        // 断开 STA
-            delay(200);
-            wifiManager->connectToWiFi();  // 重新连接 WiFi
+            wasConnected = false;               // 标记断开，供状态跳变检测
+            statusInfo.reconnectAttempts = 0;   // 以最短退避间隔重连
+            lastReconnectAttempt = 0;           // 允许下一次 update() 立即发起重连
+            WiFi.disconnect(false);             // 断开僵尸 STA 连接
+            // 不在此阻塞等待/重连：交给 update() 的非阻塞指数退避重连分支（L755-769）
+            // 处理，避免在 loopTask 上阻塞 200ms+
         }
     }
     
@@ -1287,6 +1343,18 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         return false;
     }
 
+    // ── DRAM 内存保护：WiFi.begin() 需要约 12-16KB DRAM ──────────────────
+    {
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (dramFree < WIFI_CONNECT_MIN_DRAM) {
+            Serial.printf("[NET] connectToWiFiBlocking: DRAM too low (dram=%lu < %lu), skipping\n",
+                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
+            LOG_WARNINGF("[NET] DRAM too low for WiFi.begin (dram=%lu need=%lu)",
+                         (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
+            return false;
+        }
+    }
+
     // 同步配置到 WiFiManager
     wifiManager->setNetworkConfig(wifiConfig);
 
@@ -1307,8 +1375,18 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         delay(500);  // AP→STA 模式切换后等待 WiFi 子系统重新就绪
     }
 
-    // 发起连接（最多重试 2 次，应对首次扫描超时）
-    const int MAX_WIFI_RETRIES = 2;
+    // ── STA 连接可靠性增强 ──────────────────────────────────────────────
+    // 家用路由器/CMCC 常出现「同名 SSID 多 AP」（信号放大器、双频合一）。默认
+    // WIFI_FAST_SCAN 会关联第一个扫到的同名 AP（可能信号最弱），关联后易被认证
+    // 拒绝（disconnect reason=6 NOT_AUTHED，反复掉线直至超时）。改为全信道扫描
+    // 并按信号强度择优 AP；同时关闭调制解调器省电，避免认证/4 次握手阶段丢包。
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    WiFi.setSleep(false);
+
+    // 发起连接（最多重试 4 次）：应对首次扫描超时，并给弱/边缘信号（reason=6
+    // NOT_AUTHED、扫描偶发 0 网络）更多完成关联+认证的机会，尽量优先 STA 再回退 AP。
+    const int MAX_WIFI_RETRIES = 4;
     bool wifiConnected = false;
     char buf[80];
 
@@ -1329,10 +1407,10 @@ bool FBNetworkManager::connectToWiFiBlocking() {
             LOGGER.debugf("NetworkManager: staPassword=[%s] len=%d", wifiConfig.staPassword.c_str(), wifiConfig.staPassword.length());
         }
 
-        // 阻塞等待，每 500ms 打印一个点，超时后退出
-        uint32_t deadline = millis() + wifiConfig.connectTimeout;
+        // 阻塞等待，每 500ms 打印一个点，超时后退出（减法写法兼容 millis 回绕）
+        uint32_t waitStart = millis();
         uint32_t dotTime  = 0;
-        while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+        while (WiFi.status() != WL_CONNECTED && millis() - waitStart < wifiConfig.connectTimeout) {
             if (millis() - dotTime >= 500) {
                 dotTime = millis();
                 Serial.print('.');
@@ -1381,7 +1459,27 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     Serial.println(buf);
     ets_printf("%s\n", buf);
     LOG_WARNING(buf);
-    LOGGER.debugf("NetworkManager: WiFi status code = %d", (int)WiFi.status());
+
+    // ── 连接失败详细诊断 ──────────────────────────────────────────────
+    wl_status_t lastStatus = WiFi.status();
+    Serial.printf("[NET] WiFi failure diagnosis:\n");
+    Serial.printf("  Status: %s (%d)\n", WiFiManager::wifiStatusToString(lastStatus), (int)lastStatus);
+    Serial.printf("  DRAM free: %lu bytes\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    LOGGER.warningf("NetworkManager: WiFi status=%s(%d) dram=%lu",
+                   WiFiManager::wifiStatusToString(lastStatus), (int)lastStatus,
+                   (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    // 频段诊断：检查目标网络是否仅广播 5GHz
+    BandDiagnosis bandResult = wifiManager->diagnoseBandMismatch(wifiConfig.staSSID);
+    if (bandResult == BandDiagnosis::ONLY_5GHZ) {
+        Serial.printf("  >>> CAUSE: Network '%s' only supports 5GHz but ESP32 only supports 2.4GHz <<<\n",
+                      wifiConfig.staSSID.c_str());
+        LOG_ERROR("NetworkManager: BAND MISMATCH - network only on 5GHz, device supports 2.4GHz only");
+    } else if (bandResult == BandDiagnosis::NOT_FOUND) {
+        Serial.printf("  >>> CAUSE: Network '%s' not visible (out of range or SSID hidden) <<<\n",
+                      wifiConfig.staSSID.c_str());
+    }
+
     WiFi.disconnect(false);
     delay(100);
     return false;
@@ -1549,6 +1647,18 @@ void FBNetworkManager::attemptReconnect() {
 void FBNetworkManager::handleApModeWifiProbe() {
     // AP 模式 WiFi 探测：短暂切换到 STA 模式检查已配置的 WiFi 是否恢复
     // 成功 → 自动切回 STA 模式；失败 → 恢复 AP 模式，等待下次探测
+
+    // ── DRAM 内存门控：探测需要 WiFi.begin() 驱动初始化，检查 DRAM 是否充足 ──
+    {
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (dramFree < WIFI_CONNECT_MIN_DRAM) {
+            Serial.printf("[WiFi-AP] Probe skipped: DRAM too low (dram=%lu < %lu)\n",
+                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
+            // 不累加 _apProbeFailCount：内存不足不等于网络不可达，不影响退避策略
+            return;
+        }
+    }
+
     LOGGER.infof("[WiFi-AP] Probing WiFi [%s] (brief STA switch)...",
                  wifiConfig.staSSID.c_str());
     Serial.printf("[WiFi-AP] Probing WiFi [%s]...\n", wifiConfig.staSSID.c_str());
@@ -1590,9 +1700,12 @@ void FBNetworkManager::handleApModeWifiProbe() {
         _apFallbackAuto = false;
         _apProbeFailCount = 0;
 
-        // 启动 mDNS（STA 模式下绑定到 STA IP）
+        // 重启 mDNS（STA 模式下重新绑定到 STA IP）
+        // 必须用 restartMDNS 而非 startMDNS：mDNS 之前已在 AP 模式启动（绑定 192.168.4.1），
+        // mdnsStarted 仍为 true，直接调用 startMDNS 会命中提前返回而不做任何事，
+        // 导致 mDNS 响应器残留在已失效的 AP 接口上，fastbee.local 在 STA 下永远无法解析。
         if (wifiConfig.enableMDNS) {
-            dnsManager->startMDNS(wifiConfig.customDomain);
+            dnsManager->restartMDNS(wifiConfig.customDomain);
         }
 
         // 通知 MQTT 客户端网络已恢复，立即重连（与以太网/4G 重连逻辑保持一致）
@@ -1665,12 +1778,33 @@ NetworkStatusInfo FBNetworkManager::getStatusInfo() const {
 }
 
 String FBNetworkManager::scanNetworks() {
+    // 使用异步扫描 + 定时 yield，避免阻塞 Web 服务器
+    int numNetworks = WiFi.scanNetworks(true);  // async=true
+    if (numNetworks == WIFI_SCAN_RUNNING || numNetworks == WIFI_SCAN_FAILED) {
+        // 已有扫描在进行或失败，尝试同步等待
+        unsigned long startMs = millis();
+        while (millis() - startMs < 8000) {
+            delay(10);
+            numNetworks = WiFi.scanComplete();
+            if (numNetworks >= 0) break;
+        }
+    } else {
+        // 异步扫描已启动，等待完成（每 10ms yield，让出 CPU 给 Web 服务器）
+        unsigned long startMs = millis();
+        while (millis() - startMs < 8000) {
+            delay(10);
+            numNetworks = WiFi.scanComplete();
+            if (numNetworks >= 0) break;
+        }
+    }
+
+    if (numNetworks < 0) numNetworks = 0;
+
     // 使用静态JSON文档减少内存碎片
     static char buffer[2048];
     StaticJsonDocument<2048> doc;
     JsonArray networks = doc.to<JsonArray>();
     
-    int numNetworks = WiFi.scanNetworks();
     for (int i = 0; i < numNetworks; i++) {
         JsonObject network = networks.createNestedObject();
         network["ssid"] = WiFi.SSID(i);
@@ -1695,6 +1829,7 @@ String FBNetworkManager::scanNetworks() {
         network["encryption"] = enc;
         network["bssid"] = WiFi.BSSIDstr(i);
     }
+    WiFi.scanDelete();  // 释放扫描结果内存
     
     // 序列化到静态缓冲区
     size_t len = serializeJson(doc, buffer, sizeof(buffer));

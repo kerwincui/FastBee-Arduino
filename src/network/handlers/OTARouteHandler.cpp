@@ -7,6 +7,7 @@
 #include "./network/OTAManager.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include <ArduinoJson.h>
 #include <Update.h>
 
@@ -93,15 +94,19 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
 
     LOGGER.infof("OTA: Starting URL upgrade from %s", url.c_str());
 
+    // 下载+写 flash 在独立后台任务执行，handler 立即返回；
+    // 在 async_tcp 上同步执行会导致升级期间全站 Web 不可用甚至自饿死
+    if (!ctx->otaManager->startOTAAsync(url)) {
+        ctx->sendError(request, 500, "Failed to start OTA download task");
+        return;
+    }
+
     JsonDocument doc;
     doc["success"] = true;
-    doc["message"] = "Starting firmware download and upgrade";
+    doc["message"] = "Firmware download started, poll /api/ota/status for progress";
     doc["url"] = url;
 
     HandlerUtils::sendJsonStream(request, doc);
-
-    delay(100);
-    ctx->otaManager->startOTA(url);
 }
 
 void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const String& filename,
@@ -149,11 +154,13 @@ void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const Stri
 
                 HandlerUtils::sendJsonStream(request, doc);
 
-                delay(3000);
+                // 延迟重启交给主循环 SystemRebooter，避免在 async_tcp 上同步睡眠 3 秒
+                // 阻塞响应发送（客户端收不到成功响应会误判失败）
                 RestartDiagnostics::savePreRestartState(
                     RestartReason::OTA_UPDATE,
                     "OTA firmware uploaded via Web");
-                ESP.restart();
+                SystemRebooter::scheduleReboot("OTA firmware uploaded via Web", 3000,
+                                               RestartReason::OTA_UPDATE);
             } else {
                 LOGGER.error("OTA: Firmware verification failed");
             }

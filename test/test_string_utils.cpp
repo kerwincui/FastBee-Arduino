@@ -255,6 +255,71 @@ static void test_build_json_response() {
                              StringUtils::buildJsonResponse(200, "ok", "\"result\"").c_str());
 }
 
+// ========== tryParseBoolLike ==========
+// 直接单元测试真实的 StringUtils::tryParseBoolLike（PeriphExecManager 现委托到此）。
+// 此前仅有 test_periph_exec.cpp 的 mock 镜像，且镜像不覆盖新增的小数点分支，
+// 会与真实实现悄悄分叉，故在此对真实函数补齐直接覆盖。
+static void test_bool_like_truthy_words() {
+    bool v = false;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("1", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("true", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("on", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("high", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("open", v)); TEST_ASSERT_TRUE(v);
+}
+
+static void test_bool_like_falsy_words() {
+    bool v = true;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("0", v)); TEST_ASSERT_FALSE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("false", v)); TEST_ASSERT_FALSE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("off", v)); TEST_ASSERT_FALSE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("low", v)); TEST_ASSERT_FALSE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("close", v)); TEST_ASSERT_FALSE(v);
+}
+
+static void test_bool_like_signed_one() {
+    bool v = false;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("+1", v)); TEST_ASSERT_TRUE(v);
+    v = true;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("-1", v)); TEST_ASSERT_FALSE(v);
+}
+
+static void test_bool_like_numeric() {
+    bool v = false;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("42", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("-5", v)); TEST_ASSERT_TRUE(v);
+    v = true;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("00", v)); TEST_ASSERT_FALSE(v);
+}
+
+// 新增小数点分支：整数部分非零→true，整数部分为零→false（toInt 截断）
+static void test_bool_like_decimal() {
+    bool v = false;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("1.5", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("1.", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("+2.5", v)); TEST_ASSERT_TRUE(v);
+    v = true;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("0.0", v)); TEST_ASSERT_FALSE(v);
+}
+
+static void test_bool_like_trim_and_case() {
+    bool v = false;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("  1  ", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("TRUE", v)); TEST_ASSERT_TRUE(v);
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike("On", v)); TEST_ASSERT_TRUE(v);
+    v = true;
+    TEST_ASSERT_TRUE(StringUtils::tryParseBoolLike(" off ", v)); TEST_ASSERT_FALSE(v);
+}
+
+static void test_bool_like_invalid() {
+    bool v = true;
+    TEST_ASSERT_FALSE(StringUtils::tryParseBoolLike("", v));
+    TEST_ASSERT_FALSE(StringUtils::tryParseBoolLike("abc", v));
+    TEST_ASSERT_FALSE(StringUtils::tryParseBoolLike("12abc", v));
+    // 前导小数点无整数位（'.' 仅在 i>0 才允许）→ 解析失败
+    TEST_ASSERT_FALSE(StringUtils::tryParseBoolLike(".5", v));
+}
+
 // ========== 测试主入口 ==========
 
 void test_string_utils_group() {
@@ -291,4 +356,11 @@ void test_string_utils_group() {
     RUN_TEST(test_compare_ignore_case);
     RUN_TEST(test_remove_whitespace);
     RUN_TEST(test_build_json_response);
+    RUN_TEST(test_bool_like_truthy_words);
+    RUN_TEST(test_bool_like_falsy_words);
+    RUN_TEST(test_bool_like_signed_one);
+    RUN_TEST(test_bool_like_numeric);
+    RUN_TEST(test_bool_like_decimal);
+    RUN_TEST(test_bool_like_trim_and_case);
+    RUN_TEST(test_bool_like_invalid);
 }

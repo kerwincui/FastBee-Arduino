@@ -57,6 +57,9 @@ extern void test_gpio_validation_group();
 extern void test_driver_registry_group();
 extern void test_ethernet_adapter_group();
 extern void test_provision_api_group();
+extern void test_wifi_network_group();
+extern void test_longrun_stability_group();
+extern void test_stability_fixes_group();
 
 // 测试夹具
 void setUp() {
@@ -232,6 +235,15 @@ void setup() {
 
     Serial.println("\n[TEST] Running Provision API Tests...");
     test_provision_api_group();
+
+    Serial.println("\n[TEST] Running WiFi Network Improvement Tests...");
+    test_wifi_network_group();
+
+    Serial.println("\n[TEST] Running Long-Run Stability Tests...");
+    test_longrun_stability_group();
+
+    Serial.println("\n[TEST] Running Stability Fixes Guard Tests...");
+    test_stability_fixes_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

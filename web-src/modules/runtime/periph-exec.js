@@ -533,29 +533,62 @@
         },
 
         _refreshActionPeriphSelects() {
-            var pollOnly = this._isPollTriggerActive();
+            var isPollMode = this._isPollTriggerActive();
             var container = document.getElementById('periph-exec-actions');
             if (!container) return;
-            container.querySelectorAll('.pe-target-periph').forEach(sel => {
-                this._populatePeriphSelect(sel, sel.value, pollOnly);
+            container.querySelectorAll('.periph-exec-config-item').forEach(block => {
+                var sel = block.querySelector('.pe-target-periph');
+                if (!sel) return;
+                var actionType = parseInt(block.querySelector('.pe-action-type')?.value || '0');
+                // 仅 Modbus 轮询动作(18)限制为 Modbus 采集任务；传感器读取(19)、OLED显示(27)等本地动作显示全部外设
+                var effectivePollOnly = isPollMode && actionType === 18;
+                this._populatePeriphSelect(sel, sel.value, effectivePollOnly);
             });
         },
 
         _rebuildActionBlocksForTriggerChange() {
             var container = document.getElementById('periph-exec-actions');
             if (!container) return;
-            // 收集当前动作数据
+            // 收集当前动作数据（保留所有动作类型的特有配置）
             var existingActions = [];
             container.querySelectorAll('.periph-exec-config-item').forEach(item => {
                 var actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
                 var actionValue = '';
-                if (actionType === 15) actionValue = item.querySelector('.pe-action-value-script')?.value || '';
-                else if (actionType === 27) actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
-                else actionValue = item.querySelector('.pe-action-value')?.value || '';
+                var useReceivedValue = item.querySelector('.pe-use-received-value')?.checked || false;
+                if (actionType === 15) {
+                    actionValue = item.querySelector('.pe-action-value-script')?.value || '';
+                } else if (actionType === 27) {
+                    actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
+                } else if (actionType === 19) {
+                    // 传感器读取：从面板各字段收集完整传感器配置
+                    var sensorData = {
+                        periphId: item.querySelector('.pe-target-periph')?.value || '',
+                        sensorCategory: item.querySelector('.pe-sensor-category')?.value || 'analog',
+                        scaleFactor: parseFloat(item.querySelector('.pe-sensor-scale')?.value) || 1,
+                        offset: parseFloat(item.querySelector('.pe-sensor-offset')?.value) || 0,
+                        decimalPlaces: parseInt(item.querySelector('.pe-sensor-decimals')?.value) || 2,
+                        sensorLabel: item.querySelector('.pe-sensor-label')?.value?.trim() || '',
+                        unit: item.querySelector('.pe-sensor-unit')?.value?.trim() || '',
+                        dataField: item.querySelector('.pe-sensor-datafield')?.value || 'value'
+                    };
+                    var devIdx = item.querySelector('.pe-sensor-devindex');
+                    if (devIdx) sensorData.deviceIndex = parseInt(devIdx.value) || 0;
+                    var extraJson = item.querySelector('.pe-sensor-extra-json')?.value?.trim();
+                    if (extraJson) {
+                        try { var extraObj = JSON.parse(extraJson); if (extraObj && typeof extraObj === 'object') Object.assign(sensorData, extraObj); } catch(e) {}
+                    }
+                    actionValue = JSON.stringify(sensorData);
+                } else if (actionType === 21) {
+                    // 触发设备事件：从事件下拉框取值
+                    actionValue = item.querySelector('.pe-trigger-event-select')?.value || '';
+                } else {
+                    actionValue = item.querySelector('.pe-action-value')?.value || '';
+                }
                 existingActions.push({
                     actionType: actionType,
                     targetPeriphId: item.querySelector('.pe-target-periph')?.value || '',
                     actionValue: actionValue,
+                    useReceivedValue: useReceivedValue,
                     execMode: parseInt(item.querySelector('.pe-exec-mode')?.value || '0'),
                     syncDelayMs: parseInt(item.querySelector('.pe-sync-delay')?.value || '0')
                 });

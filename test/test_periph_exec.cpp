@@ -20,10 +20,17 @@
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 // 前向声明 WorkerPool 常量，避免引入完整的头文件链（防止与 MockPeripheral.h 中的 PeriphExecRule 定义冲突）
+// WORKER_STACK 镜像自 PeriphExecWorkerPool.h 的 clamp 逻辑：max(SIMPLE_TASK_STACK, 6144)
+// C3/C6 的 SIMPLE_TASK_STACK=4096 必须被抬升（实机 HWM 仅剩 ~948B，濒临栈溢出重启）
 namespace PeriphExecWorkerPool {
-    static constexpr size_t   WORKER_COUNT   = 2;
-    static constexpr size_t   QUEUE_CAPACITY = 16;
-    static constexpr uint32_t WORKER_STACK   = 6144;
+    static constexpr size_t   WORKER_COUNT     = 2;
+    static constexpr size_t   QUEUE_CAPACITY   = 16;
+    static constexpr uint32_t WORKER_STACK_MIN = 6144;
+    constexpr uint32_t clampWorkerStack(uint32_t simpleTaskStack) {
+        return (simpleTaskStack < WORKER_STACK_MIN) ? WORKER_STACK_MIN : simpleTaskStack;
+    }
+    // native 测试无 SIMPLE_TASK_STACK 宏，取各环境最小值 4096 验证 clamp 后结果
+    static constexpr uint32_t WORKER_STACK     = clampWorkerStack(4096);
 }
 
 void test_periph_exec_group();
@@ -1112,10 +1119,90 @@ void test_worker_pool_constants_sanity() {
 }
 
 void test_worker_stack_size_adequate() {
-    // 实测 HWM ~4036B，栈应至少 5120B 留余量
-    TEST_ASSERT_TRUE(PeriphExecWorkerPool::WORKER_STACK >= 5120);
+    // C3/C6 实机 4096 栈 HWM 仅剩 ~948B，clamp 后必须 >= 6144 留余量
+    TEST_ASSERT_TRUE(PeriphExecWorkerPool::WORKER_STACK >= 6144);
     // 但不应过大浪费 RAM
     TEST_ASSERT_TRUE(PeriphExecWorkerPool::WORKER_STACK <= 8192);
+}
+
+void test_worker_stack_clamp_behavior() {
+    // C3/C6: SIMPLE_TASK_STACK=4096 → 抬升到 6144
+    TEST_ASSERT_EQUAL_UINT32(6144, PeriphExecWorkerPool::clampWorkerStack(4096));
+    // esp32/S3: SIMPLE_TASK_STACK=6144 → 保持不变
+    TEST_ASSERT_EQUAL_UINT32(6144, PeriphExecWorkerPool::clampWorkerStack(6144));
+    // 更大的自定义配置不被缩水
+    TEST_ASSERT_EQUAL_UINT32(8192, PeriphExecWorkerPool::clampWorkerStack(8192));
+}
+
+// ---------- 数据命令未匹配项回显抑制（镜像 processDataCommandMatch）----------
+// 修复背景：平台属性下发时会附带 temperature/humidity 等只读项，
+// 旧逻辑对"无规则匹配且无对应外设"的项原样回显到 property/post，
+// 平台把回显值当成设备新上报的传感器数据（假数据污染）。
+// 修复后：无规则且无外设的项必须跳过，不产生 report 项。
+
+struct UnmatchedEchoItem {
+    String id;
+    String value;
+    String remark;
+};
+
+// 镜像 PeriphExecManager::processDataCommandMatch 未匹配项处理块的决策逻辑：
+// knownPeriphs 中不存在的 id → 跳过回显；存在的 id → 直接控制并回显
+static size_t mirrorProcessUnmatchedItems(const String* ids, const String* values, size_t count,
+                                          const std::map<String, bool>& knownPeriphs,
+                                          UnmatchedEchoItem* out) {
+    size_t reported = 0;
+    for (size_t i = 0; i < count; i++) {
+        auto it = knownPeriphs.find(ids[i]);
+        if (it == knownPeriphs.end()) {
+            // 既无规则匹配、也不存在对应外设：跳过，不回显
+            continue;
+        }
+        bool directOk = it->second;  // 直接外设控制结果
+        out[reported].id = ids[i];
+        out[reported].value = values[i];
+        out[reported].remark = directOk ? "direct_peripheral" : "no matching rule";
+        reported++;
+    }
+    return reported;
+}
+
+void test_data_cmd_unmatched_unknown_item_skipped() {
+    // 平台附带的 temperature/humidity 只读项：无规则无外设，必须全部跳过
+    const String ids[] = { "temperature", "humidity" };
+    const String values[] = { "25.6", "60.2" };
+    std::map<String, bool> knownPeriphs;  // 无任何外设
+    UnmatchedEchoItem out[2];
+    size_t reported = mirrorProcessUnmatchedItems(ids, values, 2, knownPeriphs, out);
+    TEST_ASSERT_EQUAL(0, (int)reported);
+}
+
+void test_data_cmd_unmatched_known_periph_reported() {
+    // 存在对应外设的项：走直接控制并回显 direct_peripheral
+    const String ids[] = { "led" };
+    const String values[] = { "0" };
+    std::map<String, bool> knownPeriphs;
+    knownPeriphs["led"] = true;
+    UnmatchedEchoItem out[1];
+    size_t reported = mirrorProcessUnmatchedItems(ids, values, 1, knownPeriphs, out);
+    TEST_ASSERT_EQUAL(1, (int)reported);
+    TEST_ASSERT_EQUAL_STRING("led", out[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("0", out[0].value.c_str());
+    TEST_ASSERT_EQUAL_STRING("direct_peripheral", out[0].remark.c_str());
+}
+
+void test_data_cmd_unmatched_mixed_items_only_periph_echoed() {
+    // 混合下发：led（有外设）+ temperature/humidity（无外设）→ 仅 led 回显
+    const String ids[] = { "led", "temperature", "humidity" };
+    const String values[] = { "1", "25.6", "60.2" };
+    std::map<String, bool> knownPeriphs;
+    knownPeriphs["led"] = false;  // 直接控制失败场景
+    UnmatchedEchoItem out[3];
+    size_t reported = mirrorProcessUnmatchedItems(ids, values, 3, knownPeriphs, out);
+    TEST_ASSERT_EQUAL(1, (int)reported);
+    TEST_ASSERT_EQUAL_STRING("led", out[0].id.c_str());
+    // 直接控制失败仍回显 no matching rule（保持原语义），但绝不回显传感器假数据
+    TEST_ASSERT_EQUAL_STRING("no matching rule", out[0].remark.c_str());
 }
 
 // ============================================================
@@ -1833,6 +1920,51 @@ void test_action_dispatch_inverted_low() {
     MockActionResult r = mockExecuteAction(14, "relay_1", "", true, false);
     TEST_ASSERT_TRUE(r.success);
     TEST_ASSERT_EQUAL_UINT8(1, r.physicalPinState); // physical HIGH
+}
+
+// ====== 启动上报：物理电平 -> 逻辑上报值 的反转归一（通用，不硬编码点亮极性）======
+// 镜像 PeriphExecExecutor::physicalStateToLogicalValue：
+//   logicalOn = physicalHigh XOR isInverted(actionType)
+//   isInverted = (actionType==ACTION_HIGH_INVERTED(13) || actionType==ACTION_LOW_INVERTED(14))
+static const char* mockBootReportLogicalValue(bool physicalHigh, uint8_t actionType) {
+    bool inverted = (actionType == 13 || actionType == 14);
+    bool logicalOn = physicalHigh ^ inverted;
+    return logicalOn ? "1" : "0";
+}
+
+void test_boot_report_value_noninverted_high() {
+    // 非反转外设(ACTION_HIGH=0)：物理HIGH -> 逻辑"1"
+    TEST_ASSERT_EQUAL_STRING("1", mockBootReportLogicalValue(true, 0));
+}
+
+void test_boot_report_value_noninverted_low() {
+    // 非反转外设(ACTION_LOW=1)：物理LOW -> 逻辑"0"
+    TEST_ASSERT_EQUAL_STRING("0", mockBootReportLogicalValue(false, 1));
+}
+
+void test_boot_report_value_inverted_physical_low_is_on() {
+    // 低电平点亮 LED(ACTION_HIGH_INVERTED=13)：物理LOW=亮 -> 逻辑"1"
+    TEST_ASSERT_EQUAL_STRING("1", mockBootReportLogicalValue(false, 13));
+}
+
+void test_boot_report_value_inverted_physical_high_is_off() {
+    // 低电平点亮 LED(ACTION_LOW_INVERTED=14)：物理HIGH=灭 -> 逻辑"0"
+    // 正是「初始配置高电平、重启灯灭」场景，修复后平台应显示关而非开
+    TEST_ASSERT_EQUAL_STRING("0", mockBootReportLogicalValue(true, 14));
+}
+
+void test_boot_report_value_high_inverted_physical_high_is_off() {
+    // 反转外设读到物理HIGH -> 逻辑"0"（对称校验，确保翻译只依赖配置不依赖具体值）
+    TEST_ASSERT_EQUAL_STRING("0", mockBootReportLogicalValue(true, 13));
+}
+
+void test_boot_report_value_pwm_dac_are_noninverted() {
+    // PWM(ACTION_SET_PWM=4) / DAC(ACTION_SET_DAC=5) 属非反转输出，不受反转归一影响：
+    // 物理HIGH -> "1"、物理LOW -> "0"（确保新增的翻译逻辑未改变 PWM/DAC 行为）
+    TEST_ASSERT_EQUAL_STRING("1", mockBootReportLogicalValue(true, 4));
+    TEST_ASSERT_EQUAL_STRING("0", mockBootReportLogicalValue(false, 4));
+    TEST_ASSERT_EQUAL_STRING("1", mockBootReportLogicalValue(true, 5));
+    TEST_ASSERT_EQUAL_STRING("0", mockBootReportLogicalValue(false, 5));
 }
 
 void test_action_dispatch_system_restart() {
@@ -2723,6 +2855,487 @@ void test_action_dispatch_trigger_event_empty() {
 }
 
 // ============================================================
+//  TEST GROUP 18J: 物理输出控制动作可上报判定与 reportCount 收集
+//  镜像 isReportableOutputAction（PeriphExecExecutor.cpp:130）
+//  与 executeAllActions 中 reportableResults 收集/reportCount 回填逻辑。
+//  回归背景：GPIO/PWM/DAC 控制动作曾走 else 分支不标记 isReportableAction，
+//           即使 reportAfterExec=true 也从不上报（关闭LED勾选上报平台收不到）。
+// ============================================================
+
+// 镜像固件 isReportableOutputAction：仅 GPIO 电平/PWM/DAC 物理输出控制类可上报
+static bool mockIsReportableOutputAction(uint8_t actionType) {
+    switch (actionType) {
+        case 0:  // ACTION_HIGH
+        case 1:  // ACTION_LOW
+        case 13: // ACTION_HIGH_INVERTED
+        case 14: // ACTION_LOW_INVERTED
+        case 4:  // ACTION_SET_PWM
+        case 5:  // ACTION_SET_DAC
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 镜像 executeAllActions 的 reportable 收集 + reportCount 回填：
+// 采集类(SENSOR_READ=19 / MODBUS_POLL=18) 与物理输出控制类进入上报列表；
+// 仅当 reportAfterExec && !suppressReport 且列表非空时 reportCount=可上报数量，否则 0。
+static int mockComputeReportCount(bool reportAfterExec, bool suppressReport,
+                                     const uint8_t* actionTypes, size_t n) {
+    size_t reportable = 0;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t at = actionTypes[i];
+        bool isReportable = false;
+        if (at == 19 || at == 18) {
+            isReportable = true;  // SENSOR_READ / MODBUS_POLL
+        } else if (mockIsReportableOutputAction(at)) {
+            isReportable = true;  // GPIO 电平 / PWM / DAC
+        }
+        if (isReportable) reportable++;
+    }
+    if (reportAfterExec && !suppressReport && reportable > 0) return static_cast<int>(reportable);
+    return 0;
+}
+
+// --- 18J-1: isReportableOutputAction 判定 ---
+void test_reportable_output_high() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(0)); }
+void test_reportable_output_low() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(1)); }
+void test_reportable_output_pwm() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(4)); }
+void test_reportable_output_dac() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(5)); }
+void test_reportable_output_high_inverted() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(13)); }
+void test_reportable_output_low_inverted() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(14)); }
+void test_reportable_output_blink_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(2)); }
+void test_reportable_output_breathe_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(3)); }
+void test_reportable_output_call_peripheral_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(10)); }
+void test_reportable_output_script_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(15)); }
+void test_reportable_output_modbus_poll_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(18)); }
+void test_reportable_output_sensor_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(19)); }
+void test_reportable_output_event_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(21)); }
+void test_reportable_output_display_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(27)); }
+void test_reportable_output_system_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(8)); }
+
+// --- 18J-2: reportCount 收集逻辑（核心回归：GPIO 控制勾选上报后 reportCount>0） ---
+void test_reportcount_gpio_report_enabled() {
+    // 修复核心：GPIO 控制(actionType=0) + reportAfterExec=true → reportCount=1
+    uint8_t actions[] = {0};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_gpio_report_disabled() {
+    // 未勾选上报 → reportCount=0
+    uint8_t actions[] = {0};
+    TEST_ASSERT_EQUAL(0, mockComputeReportCount(false, false, actions, 1));
+}
+void test_reportcount_gpio_suppressed() {
+    // suppressReport=true（平台指令路径避免双重上报）→ reportCount=0
+    uint8_t actions[] = {1};
+    TEST_ASSERT_EQUAL(0, mockComputeReportCount(true, true, actions, 1));
+}
+void test_reportcount_pwm_report() {
+    uint8_t actions[] = {4};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_dac_report() {
+    uint8_t actions[] = {5};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_sensor_report() {
+    // 采集类（SENSOR_READ）仍可上报
+    uint8_t actions[] = {19};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_modbus_poll_report() {
+    uint8_t actions[] = {18};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_mixed_gpio_sensor() {
+    // GPIO 控制 + 传感器读取，两者均应上报 → reportCount=2
+    uint8_t actions[] = {0, 19};
+    TEST_ASSERT_EQUAL(2, mockComputeReportCount(true, false, actions, 1 + 1));
+}
+void test_reportcount_gpio_plus_display_only_gpio() {
+    // GPIO 控制 + OLED显示(27)：仅 GPIO 上报 → reportCount=1
+    uint8_t actions[] = {0, 27};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 2));
+}
+void test_reportcount_system_only_zero() {
+    // 纯系统动作(NTP_SYNC=8)不可上报 → reportCount=0
+    uint8_t actions[] = {8};
+    TEST_ASSERT_EQUAL(0, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_display_only_zero() {
+    // 纯显示动作(OLED=27)不可上报 → reportCount=0
+    uint8_t actions[] = {27};
+    TEST_ASSERT_EQUAL(0, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_event_only_zero() {
+    // 事件触发(21)不走 reportableResults 路径 → reportCount=0
+    uint8_t actions[] = {21};
+    TEST_ASSERT_EQUAL(0, mockComputeReportCount(true, false, actions, 1));
+}
+
+// ============================================================
+//  TEST GROUP 18K: 传感器 dataField 上报 ID 选择（问题1：平台未显示温湿度）
+//  镜像 reportActionResults（PeriphExecExecutor.cpp:1642-1650）的 reportId 选择：
+//  默认用 targetPeriphId；dataField 非空时改用 dataField（物模型标识符）。
+//  回归背景：DHT11 温/湿若都用 periphId(dht11) 上报，平台无法区分字段且
+//           不匹配物模型标识符，导致温湿度数据不显示。
+// ============================================================
+
+static String mockSelectReportId(const String& targetPeriphId, const String& dataField) {
+    String reportId = targetPeriphId;
+    if (!dataField.isEmpty()) {
+        reportId = dataField;  // 传感器读取：用 dataField(temperature/humidity) 作为上报 ID
+    }
+    return reportId;
+}
+
+void test_report_id_sensor_temperature_uses_datafield() {
+    // DHT11 温度：dataField=temperature → 上报ID为 temperature（非 dht11）
+    TEST_ASSERT_EQUAL_STRING("temperature", mockSelectReportId("dht11", "temperature").c_str());
+}
+void test_report_id_sensor_humidity_uses_datafield() {
+    TEST_ASSERT_EQUAL_STRING("humidity", mockSelectReportId("dht11", "humidity").c_str());
+}
+void test_report_id_temp_humidity_distinct() {
+    // 核心回归：同一外设的温/湿上报ID必须不同（避免字段冲突）
+    String t = mockSelectReportId("dht11", "temperature");
+    String h = mockSelectReportId("dht11", "humidity");
+    TEST_ASSERT_FALSE(t == h);
+}
+void test_report_id_gpio_no_datafield_falls_back_to_periph() {
+    // GPIO 控制（无 dataField）：上报ID回退为 targetPeriphId(led)
+    TEST_ASSERT_EQUAL_STRING("led", mockSelectReportId("led", "").c_str());
+}
+void test_report_id_empty_datafield_uses_periph() {
+    TEST_ASSERT_EQUAL_STRING("relay_1", mockSelectReportId("relay_1", "").c_str());
+}
+void test_report_id_datafield_priority_over_periph() {
+    // dataField 优先于 targetPeriphId
+    TEST_ASSERT_EQUAL_STRING("temperature", mockSelectReportId("sensor_x", "temperature").c_str());
+}
+
+// ============================================================
+//  TEST GROUP 18L: GPIO 控制动作目标有效性（问题2：LED 始终亮，控制未生效）
+//  镜像 isGPIOPeripheral（PeripheralConfig.h:179，type∈[11,25]）
+//  与 writePin 守卫（PeripheralManager.cpp:976-978：非 GPIO 外设返回 false 静默失败）。
+//  回归背景：关闭LED 规则动作目标误配为非 GPIO 外设(oled/LCD type=36)，
+//           writePin 静默返回 false，LED 永不关闭。
+// ============================================================
+
+// 镜像 isGPIOPeripheral：GPIO 接口类型范围 [11,25]
+static bool mockIsGPIOPeripheral(int typeValue) {
+    return typeValue >= 11 && typeValue <= 25;
+}
+
+// 镜像 writePin 对 GPIO 控制动作的目标有效性：
+// GPIO 控制类动作（HIGH/LOW/BLINK/BREATHE/SET_PWM/HIGH_INV/LOW_INV）写入非 GPIO 外设
+// （如 OLED/LCD type=36、Modbus type=51）时 writePin 返回 false（控制不生效）。
+static bool mockGpioControlWriteSucceeds(uint8_t actionType, int targetType) {
+    bool isGpioControl = (actionType == 0 || actionType == 1 || actionType == 2 ||
+                          actionType == 3 || actionType == 4 ||
+                          actionType == 13 || actionType == 14);
+    if (!isGpioControl) return true;  // 非 GPIO 控制动作不受此目标类型约束
+    return mockIsGPIOPeripheral(targetType);
+}
+
+// --- 18L-1: isGPIOPeripheral 类型范围判定 ---
+void test_gpio_peripheral_digital_output() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(12)); }
+void test_gpio_peripheral_digital_input() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(11)); }
+void test_gpio_peripheral_pwm_output() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(17)); }
+void test_gpio_peripheral_touch() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(21)); }
+void test_gpio_peripheral_lower_bound() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(11)); }
+void test_gpio_peripheral_upper_bound() { TEST_ASSERT_TRUE(mockIsGPIOPeripheral(25)); }
+void test_gpio_peripheral_below_range() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(10)); }
+void test_gpio_peripheral_above_range() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(26)); }
+void test_gpio_peripheral_uart_not() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(1)); }
+void test_gpio_peripheral_lcd_not() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(36)); }
+void test_gpio_peripheral_modbus_not() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(51)); }
+void test_gpio_peripheral_lcd1602_not() { TEST_ASSERT_FALSE(mockIsGPIOPeripheral(52)); }
+
+// --- 18L-2: GPIO 控制动作目标有效性（核心回归：误配非GPIO目标导致控制失败） ---
+void test_gpio_control_high_on_gpio_output_succeeds() {
+    // ACTION_HIGH(0) 作用于 GPIO_DIGITAL_OUTPUT(12) → 写入成功
+    TEST_ASSERT_TRUE(mockGpioControlWriteSucceeds(0, 12));
+}
+void test_gpio_control_high_on_lcd_fails() {
+    // 核心回归：ACTION_HIGH(0) 误配到 LCD/OLED(36) → writePin 静默失败（LED 永不灭）
+    TEST_ASSERT_FALSE(mockGpioControlWriteSucceeds(0, 36));
+}
+void test_gpio_control_low_on_lcd_fails() {
+    TEST_ASSERT_FALSE(mockGpioControlWriteSucceeds(1, 36));
+}
+void test_gpio_control_high_on_modbus_fails() {
+    TEST_ASSERT_FALSE(mockGpioControlWriteSucceeds(0, 51));
+}
+void test_gpio_control_low_on_gpio_output_succeeds() {
+    TEST_ASSERT_TRUE(mockGpioControlWriteSucceeds(1, 12));
+}
+void test_gpio_control_pwm_on_gpio_pwm_succeeds() {
+    TEST_ASSERT_TRUE(mockGpioControlWriteSucceeds(4, 17));
+}
+void test_gpio_control_blink_on_lcd_fails() {
+    TEST_ASSERT_FALSE(mockGpioControlWriteSucceeds(2, 36));
+}
+void test_non_gpio_control_action_not_constrained() {
+    // 非 GPIO 控制动作（如 OLED显示=27）不受目标 GPIO 类型约束
+    TEST_ASSERT_TRUE(mockGpioControlWriteSucceeds(27, 36));
+}
+
+// ============================================================
+//  Group 19: 传感器模板变量解析（镜像 resolveSensorTemplate 逻辑）
+//  验证文档中描述的 ${periphId.field} 模板格式
+// ============================================================
+
+// 镜像 resolveSensorTemplate 的解析逻辑（纯字符串操作，不依赖单例）
+static String mirror_resolveTemplate(const String& input,
+                                     const std::map<String, String>& cache) {
+    if (input.indexOf("${") < 0) return input;
+    String out;
+    out.reserve(input.length() + 8);
+    int i = 0;
+    const int n = input.length();
+    while (i < n) {
+        if (i + 1 < n && input[i] == '$' && input[i + 1] == '{') {
+            int end = input.indexOf('}', i + 2);
+            if (end < 0) {
+                // 未闭合，保留原文
+                out += input.substring(i);
+                break;
+            }
+            String key = input.substring(i + 2, end);
+            // 将 "periphId.field" 转为缓存 key "periphId_field"
+            key.replace(".", "_");
+            auto it = cache.find(key);
+            if (it != cache.end()) {
+                out += it->second;
+            } else {
+                // 找不到时保留原占位符
+                out += input.substring(i, end + 1);
+            }
+            i = end + 1;
+        } else {
+            out += input[i];
+            i++;
+        }
+    }
+    return out;
+}
+
+static void test_sensor_template_no_placeholder_passthrough() {
+    // 无 ${} 占位符的文本应原样返回
+    std::map<String, String> cache;
+    String input = "Hello World\nLine2";
+    String result = mirror_resolveTemplate(input, cache);
+    TEST_ASSERT_EQUAL_STRING("Hello World\nLine2", result.c_str());
+}
+
+static void test_sensor_template_single_var_parsed() {
+    // 单个 ${periphId.field} 应被替换为缓存值
+    std::map<String, String> cache;
+    cache["dht1_temperature"] = "25.3";
+    String input = "Temp: ${dht1.temperature}C";
+    String result = mirror_resolveTemplate(input, cache);
+    TEST_ASSERT_EQUAL_STRING("Temp: 25.3C", result.c_str());
+}
+
+static void test_sensor_template_multiple_vars() {
+    // 多个变量应全部替换
+    std::map<String, String> cache;
+    cache["dht1_temperature"] = "25.3";
+    cache["dht1_humidity"] = "60";
+    String input = "#Env\nT:${dht1.temperature}C\nH:${dht1.humidity}%";
+    String result = mirror_resolveTemplate(input, cache);
+    TEST_ASSERT_EQUAL_STRING("#Env\nT:25.3C\nH:60%", result.c_str());
+}
+
+static void test_sensor_template_unclosed_brace_kept() {
+    // 未闭合的 ${ 应保留原文
+    std::map<String, String> cache;
+    cache["dht1_temperature"] = "25.3";
+    String input = "Temp: ${dht1.temperature";
+    String result = mirror_resolveTemplate(input, cache);
+    TEST_ASSERT_EQUAL_STRING("Temp: ${dht1.temperature", result.c_str());
+}
+
+static void test_sensor_template_oled_title_hash_prefix() {
+    // 首行 # 开头表示居中标题（文档描述的行为）
+    std::map<String, String> cache;
+    cache["sensor_value"] = "42";
+    String input = "#Title\nValue: ${sensor.value}";
+    String result = mirror_resolveTemplate(input, cache);
+    // # 前缀应保留（由 LCDManager 解析为居中）
+    TEST_ASSERT_TRUE(result.startsWith("#Title"));
+    TEST_ASSERT_EQUAL_STRING("#Title\nValue: 42", result.c_str());
+}
+
+static void test_sensor_template_value_placeholder() {
+    // $value 占位符应保留（由执行器单独处理）
+    std::map<String, String> cache;
+    String input = "Display: $value";
+    String result = mirror_resolveTemplate(input, cache);
+    // $value 不是 ${} 格式，应原样保留
+    TEST_ASSERT_EQUAL_STRING("Display: $value", result.c_str());
+}
+
+// ============================================================
+//  TEST GROUP 18M: 启动后一次性物模型状态上报状态机
+//  镜像 PeriphExecManager::processBootReport 的调度/门控/节流/幂等逻辑：
+//   - 门控：未初始化或 MQTT 未连接时不上报（等待重入重试）
+//   - 快照：仅 enabled && reportAfterExec && 含可上报动作的规则入队
+//   - 节流：每 tick 只处理一条规则
+//   - 幂等：队列清空后置 done，后续 tick 不再上报
+// ============================================================
+
+// 镜像 ruleHasReportableStateAction：传感器读取/Modbus 轮询/物理输出控制
+static bool mockRuleHasReportableStateAction(const std::vector<uint8_t>& actionTypes) {
+    for (uint8_t at : actionTypes) {
+        if (at == 19 || at == 18) return true;          // SENSOR_READ / MODBUS_POLL
+        if (mockIsReportableOutputAction(at)) return true; // GPIO 电平/PWM/DAC
+    }
+    return false;
+}
+
+// 镜像规则的启动上报相关属性
+struct MockBootRule {
+    String id;
+    bool enabled;
+    bool reportAfterExec;
+    std::vector<uint8_t> actionTypes;
+};
+
+// 镜像 processBootReport 状态机（只保留与调度相关的字段）
+struct MockBootReportMachine {
+    bool pending = false;
+    bool done = false;
+    bool listBuilt = false;
+    std::vector<String> queue;
+    int reportedRuleCount = 0;   // 实际调用过 reportRuleCurrentState 的次数
+
+    void schedule() {
+        pending = true; done = false; listBuilt = false; queue.clear();
+    }
+
+    // 模拟一个调度周期 (tick)：返回本 tick 是否上报了一条规则
+    bool tick(bool initialized, bool mqttConnected, const std::vector<MockBootRule>& rules) {
+        if (!pending || done) return false;          // 幂等门控
+        if (!initialized) return false;              // 初始化门控
+        if (!mqttConnected) return false;            // MQTT 连接门控
+
+        if (!listBuilt) {
+            for (const auto& r : rules) {
+                if (!r.enabled || !r.reportAfterExec) continue;
+                if (!mockRuleHasReportableStateAction(r.actionTypes)) continue;
+                queue.push_back(r.id);
+            }
+            listBuilt = true;
+        }
+
+        if (queue.empty()) { done = true; pending = false; return false; }
+
+        queue.pop_back();                            // 节流：每 tick 一条
+        reportedRuleCount++;
+        return true;
+    }
+};
+
+// --- 18M-1: 只读采集范围判定 ---
+void test_boot_reportable_rule_sensor() {
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({19}));
+}
+void test_boot_reportable_rule_modbus_poll() {
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({18}));
+}
+void test_boot_reportable_rule_gpio_output() {
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({0}));
+}
+void test_boot_reportable_rule_pwm() {
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({4}));
+}
+void test_boot_reportable_rule_event_only_not() {
+    TEST_ASSERT_FALSE(mockRuleHasReportableStateAction({21}));
+}
+void test_boot_reportable_rule_script_display_not() {
+    TEST_ASSERT_FALSE(mockRuleHasReportableStateAction({15, 27}));
+}
+void test_boot_reportable_rule_mixed_has_reportable() {
+    // 脚本 + 传感器：含可上报动作
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({15, 19}));
+}
+
+// --- 18M-2: 门控 ---
+void test_boot_gate_not_initialized() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules = {{"r1", true, true, {19}}};
+    // 未初始化 → 不上报，不构建队列
+    TEST_ASSERT_FALSE(m.tick(false, true, rules));
+    TEST_ASSERT_FALSE(m.listBuilt);
+    TEST_ASSERT_EQUAL(0, m.reportedRuleCount);
+}
+void test_boot_gate_mqtt_disconnected() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules = {{"r1", true, true, {19}}};
+    // MQTT 未连接 → 等待，不构建队列
+    TEST_ASSERT_FALSE(m.tick(true, false, rules));
+    TEST_ASSERT_FALSE(m.listBuilt);
+    TEST_ASSERT_EQUAL(0, m.reportedRuleCount);
+    // 后续 MQTT 恢复 → 正常上报（重入重试）
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));
+    TEST_ASSERT_EQUAL(1, m.reportedRuleCount);
+}
+
+// --- 18M-3: 节流（每 tick 一条）+ 完成幂等 ---
+void test_boot_throttle_one_rule_per_tick() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules = {
+        {"r1", true, true, {19}},
+        {"r2", true, true, {0}},
+        {"r3", true, true, {18}},
+    };
+    // 3 条规则 → 3 个 tick 各上报 1 条
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));
+    TEST_ASSERT_EQUAL(3, m.reportedRuleCount);
+    // 第 4 tick：队列空 → 置 done，不再上报
+    TEST_ASSERT_FALSE(m.tick(true, true, rules));
+    TEST_ASSERT_TRUE(m.done);
+}
+
+// --- 18M-4: 幂等（完成后不重复上报） ---
+void test_boot_idempotent_after_done() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules = {{"r1", true, true, {19}}};
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));   // 上报 r1
+    TEST_ASSERT_FALSE(m.tick(true, true, rules));  // 队空→done
+    TEST_ASSERT_TRUE(m.done);
+    // 后续多次 tick 均不再上报
+    for (int i = 0; i < 5; ++i) TEST_ASSERT_FALSE(m.tick(true, true, rules));
+    TEST_ASSERT_EQUAL(1, m.reportedRuleCount);
+}
+
+// --- 18M-5: 快照过滤（禁用/未勾选上报/无可上报动作不入队） ---
+void test_boot_snapshot_filters_ineligible_rules() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules = {
+        {"disabled",   false, true,  {19}},  // 禁用 → 排除
+        {"noReport",   true,  false, {19}},  // 未勾选上报 → 排除
+        {"eventOnly",  true,  true,  {21}},  // 无可上报动作 → 排除
+        {"good",       true,  true,  {0}},   // 合格 → 入队
+    };
+    TEST_ASSERT_TRUE(m.tick(true, true, rules));   // 只有 good 上报
+    TEST_ASSERT_FALSE(m.tick(true, true, rules));  // 队空→done
+    TEST_ASSERT_EQUAL(1, m.reportedRuleCount);
+}
+
+void test_boot_snapshot_empty_when_no_rules() {
+    MockBootReportMachine m; m.schedule();
+    std::vector<MockBootRule> rules;  // 无规则
+    TEST_ASSERT_FALSE(m.tick(true, true, rules));  // 空队→立即 done
+    TEST_ASSERT_TRUE(m.done);
+    TEST_ASSERT_EQUAL(0, m.reportedRuleCount);
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -2836,6 +3449,11 @@ void test_periph_exec_group() {
     // Group 10: Worker Pool 队列防溢出
     RUN_TEST(test_worker_pool_constants_sanity);
     RUN_TEST(test_worker_stack_size_adequate);
+    RUN_TEST(test_worker_stack_clamp_behavior);
+    // 数据命令未匹配项回显抑制（假数据污染修复）
+    RUN_TEST(test_data_cmd_unmatched_unknown_item_skipped);
+    RUN_TEST(test_data_cmd_unmatched_known_periph_reported);
+    RUN_TEST(test_data_cmd_unmatched_mixed_items_only_periph_echoed);
 
     // Group 11: 执行模式语义与脚本兼容
     RUN_TEST(test_exec_mode_async_is_zero);
@@ -2916,6 +3534,12 @@ void test_periph_exec_group() {
     RUN_TEST(test_action_dispatch_pwm_value);
     RUN_TEST(test_action_dispatch_inverted_high);
     RUN_TEST(test_action_dispatch_inverted_low);
+    RUN_TEST(test_boot_report_value_noninverted_high);
+    RUN_TEST(test_boot_report_value_noninverted_low);
+    RUN_TEST(test_boot_report_value_inverted_physical_low_is_on);
+    RUN_TEST(test_boot_report_value_inverted_physical_high_is_off);
+    RUN_TEST(test_boot_report_value_high_inverted_physical_high_is_off);
+    RUN_TEST(test_boot_report_value_pwm_dac_are_noninverted);
     RUN_TEST(test_action_dispatch_system_restart);
     RUN_TEST(test_action_dispatch_system_factory_reset);
     RUN_TEST(test_action_dispatch_script);
@@ -3049,4 +3673,86 @@ void test_periph_exec_group() {
     RUN_TEST(test_action_dispatch_trigger_event_button);
     RUN_TEST(test_action_dispatch_trigger_event_system);
     RUN_TEST(test_action_dispatch_trigger_event_empty);
+
+    // Group 18J: 物理输出控制动作可上报判定与 reportCount 收集
+    RUN_TEST(test_reportable_output_high);
+    RUN_TEST(test_reportable_output_low);
+    RUN_TEST(test_reportable_output_pwm);
+    RUN_TEST(test_reportable_output_dac);
+    RUN_TEST(test_reportable_output_high_inverted);
+    RUN_TEST(test_reportable_output_low_inverted);
+    RUN_TEST(test_reportable_output_blink_not);
+    RUN_TEST(test_reportable_output_breathe_not);
+    RUN_TEST(test_reportable_output_call_peripheral_not);
+    RUN_TEST(test_reportable_output_script_not);
+    RUN_TEST(test_reportable_output_modbus_poll_not);
+    RUN_TEST(test_reportable_output_sensor_not);
+    RUN_TEST(test_reportable_output_event_not);
+    RUN_TEST(test_reportable_output_display_not);
+    RUN_TEST(test_reportable_output_system_not);
+    RUN_TEST(test_reportcount_gpio_report_enabled);
+    RUN_TEST(test_reportcount_gpio_report_disabled);
+    RUN_TEST(test_reportcount_gpio_suppressed);
+    RUN_TEST(test_reportcount_pwm_report);
+    RUN_TEST(test_reportcount_dac_report);
+    RUN_TEST(test_reportcount_sensor_report);
+    RUN_TEST(test_reportcount_modbus_poll_report);
+    RUN_TEST(test_reportcount_mixed_gpio_sensor);
+    RUN_TEST(test_reportcount_gpio_plus_display_only_gpio);
+    RUN_TEST(test_reportcount_system_only_zero);
+    RUN_TEST(test_reportcount_display_only_zero);
+    RUN_TEST(test_reportcount_event_only_zero);
+
+    // Group 18M: 启动后一次性物模型状态上报状态机（设备重启主动对齐平台）
+    RUN_TEST(test_boot_reportable_rule_sensor);
+    RUN_TEST(test_boot_reportable_rule_modbus_poll);
+    RUN_TEST(test_boot_reportable_rule_gpio_output);
+    RUN_TEST(test_boot_reportable_rule_pwm);
+    RUN_TEST(test_boot_reportable_rule_event_only_not);
+    RUN_TEST(test_boot_reportable_rule_script_display_not);
+    RUN_TEST(test_boot_reportable_rule_mixed_has_reportable);
+    RUN_TEST(test_boot_gate_not_initialized);
+    RUN_TEST(test_boot_gate_mqtt_disconnected);
+    RUN_TEST(test_boot_throttle_one_rule_per_tick);
+    RUN_TEST(test_boot_idempotent_after_done);
+    RUN_TEST(test_boot_snapshot_filters_ineligible_rules);
+    RUN_TEST(test_boot_snapshot_empty_when_no_rules);
+
+    // Group 18K: 传感器 dataField 上报 ID 选择（问题1：平台未显示温湿度）
+    RUN_TEST(test_report_id_sensor_temperature_uses_datafield);
+    RUN_TEST(test_report_id_sensor_humidity_uses_datafield);
+    RUN_TEST(test_report_id_temp_humidity_distinct);
+    RUN_TEST(test_report_id_gpio_no_datafield_falls_back_to_periph);
+    RUN_TEST(test_report_id_empty_datafield_uses_periph);
+    RUN_TEST(test_report_id_datafield_priority_over_periph);
+
+    // Group 18L: GPIO 控制动作目标有效性（问题2：LED 始终亮，控制未生效）
+    RUN_TEST(test_gpio_peripheral_digital_output);
+    RUN_TEST(test_gpio_peripheral_digital_input);
+    RUN_TEST(test_gpio_peripheral_pwm_output);
+    RUN_TEST(test_gpio_peripheral_touch);
+    RUN_TEST(test_gpio_peripheral_lower_bound);
+    RUN_TEST(test_gpio_peripheral_upper_bound);
+    RUN_TEST(test_gpio_peripheral_below_range);
+    RUN_TEST(test_gpio_peripheral_above_range);
+    RUN_TEST(test_gpio_peripheral_uart_not);
+    RUN_TEST(test_gpio_peripheral_lcd_not);
+    RUN_TEST(test_gpio_peripheral_modbus_not);
+    RUN_TEST(test_gpio_peripheral_lcd1602_not);
+    RUN_TEST(test_gpio_control_high_on_gpio_output_succeeds);
+    RUN_TEST(test_gpio_control_high_on_lcd_fails);
+    RUN_TEST(test_gpio_control_low_on_lcd_fails);
+    RUN_TEST(test_gpio_control_high_on_modbus_fails);
+    RUN_TEST(test_gpio_control_low_on_gpio_output_succeeds);
+    RUN_TEST(test_gpio_control_pwm_on_gpio_pwm_succeeds);
+    RUN_TEST(test_gpio_control_blink_on_lcd_fails);
+    RUN_TEST(test_non_gpio_control_action_not_constrained);
+
+    // Group 19: 传感器模板变量解析（文档一致性验证）
+    RUN_TEST(test_sensor_template_no_placeholder_passthrough);
+    RUN_TEST(test_sensor_template_single_var_parsed);
+    RUN_TEST(test_sensor_template_multiple_vars);
+    RUN_TEST(test_sensor_template_unclosed_brace_kept);
+    RUN_TEST(test_sensor_template_oled_title_hash_prefix);
+    RUN_TEST(test_sensor_template_value_placeholder);
 }

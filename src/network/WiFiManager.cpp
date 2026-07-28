@@ -116,6 +116,13 @@ bool WiFiManager::connectToWiFi() {
     connecting = true;
     connectingStartTime = millis();
 
+    // STA 连接可靠性增强：全信道扫描 + 按信号强度择优 AP + 关闭省电
+    // 应对同名 SSID 多 AP（CMCC/放大器/双频合一）择到弱 AP 后认证被拒
+    // （reason=6 NOT_AUTHED）的问题，详见 NetworkManager::connectToWiFiBlocking。
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    WiFi.setSleep(false);
+
     // 开始连接
     WiFi.begin(targetSSID.c_str(), targetPassword.c_str());
     staInitialized = true;  // 标记STA已初始化
@@ -329,18 +336,39 @@ bool WiFiManager::configureDHCP() {
 }
 
 String WiFiManager::scanNetworks() {
+    // 使用异步扫描 + 定时 yield，避免阻塞 Web 服务器
+    int numNetworks = WiFi.scanNetworks(true);  // async=true
+    if (numNetworks == WIFI_SCAN_RUNNING || numNetworks == WIFI_SCAN_FAILED) {
+        unsigned long startMs = millis();
+        while (millis() - startMs < 8000) {
+            delay(10);
+            numNetworks = WiFi.scanComplete();
+            if (numNetworks >= 0) break;
+        }
+    } else {
+        unsigned long startMs = millis();
+        while (millis() - startMs < 8000) {
+            delay(10);
+            numNetworks = WiFi.scanComplete();
+            if (numNetworks >= 0) break;
+        }
+    }
+    if (numNetworks < 0) numNetworks = 0;
+
     // 使用静态JSON文档减少内存碎片
     static char buffer[2048];
     StaticJsonDocument<2048> doc;
     JsonArray networks = doc.to<JsonArray>();
 
-    int numNetworks = WiFi.scanNetworks();
     for (int i = 0; i < numNetworks; i++) {
         JsonObject network = networks.createNestedObject();
         network["ssid"] = WiFi.SSID(i);
         network["rssi"] = WiFi.RSSI(i);
         network["strength"] = NetworkUtils::rssiToPercentage(WiFi.RSSI(i));
-        network["channel"] = WiFi.channel(i);
+        int ch = WiFi.channel(i);
+        network["channel"] = ch;
+        // 频段标识：ESP32 全系列仅支持 2.4GHz (channel 1-14)
+        network["band"] = (ch > 14) ? "5GHz" : "2.4GHz";
         // 返回具体加密类型，便于前端自动匹配安全类型下拉选项
         wifi_auth_mode_t authMode = WiFi.encryptionType(i);
         const char* enc;
@@ -359,6 +387,7 @@ String WiFiManager::scanNetworks() {
         network["encryption"] = enc;
         network["bssid"] = WiFi.BSSIDstr(i);
     }
+    WiFi.scanDelete();  // 释放扫描结果内存
 
     // 序列化到静态缓冲区
     size_t len = serializeJson(doc, buffer, sizeof(buffer));
@@ -501,10 +530,11 @@ void WiFiManager::updateStatusInfo() {
 }
 
 void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
+    // 注意：此函数运行在 arduino_events 任务栈上，必须保持轻量
+    // 禁止使用 LOGGER 日志宏（内部有 256 字节栈缓冲区），统一用 Serial.printf
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            LOG_INFO("WiFiManager: WiFi STA connected (awaiting IP...)");
-            Serial.printf("[WiFi] STA connected to: %s ch=%d\n",
+            Serial.printf("[WiFi] STA connected: %s ch=%d\n",
                           WiFi.SSID().c_str(), WiFi.channel());
             statusInfo.status = NetworkStatus::CONNECTING;
             connecting = true;
@@ -517,48 +547,27 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             connectingStartTime = 0;
             statusInfo.lastConnectionTime = millis();
             statusInfo.reconnectAttempts = 0;
-            modeTransitioning = false;  // 连接成功，清除模式切换标志
+            modeTransitioning = false;
 
-            LOG_INFO("WiFiManager: Got IP: " + statusInfo.ipAddress);
-            Serial.printf("[WiFi] Connected! IP=%s GW=%s RSSI=%d DNS=%s\n",
-                          WiFi.localIP().toString().c_str(),
+            Serial.printf("[WiFi] Connected! IP=%s GW=%s RSSI=%d\n",
+                          statusInfo.ipAddress.c_str(),
                           WiFi.gatewayIP().toString().c_str(),
-                          WiFi.RSSI(),
-                          WiFi.dnsIP(0).toString().c_str());
+                          WiFi.RSSI());
 
             // 更新网络信息
             statusInfo.currentGateway = WiFi.gatewayIP().toString();
             statusInfo.currentSubnet = WiFi.subnetMask().toString();
             statusInfo.dnsServer = WiFi.dnsIP(0).toString();
 
-            // 触发WiFi连接成功系统事件
-#if FASTBEE_ENABLE_PERIPH_EXEC
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONNECTED, statusInfo.ipAddress);
-#endif
-
-            // WiFi 重连成功后，通知 MQTT 客户端重置退避计数器并立即尝试重连
-            // 避免等待定时器的 5-300s 延迟（原 MQTT 需等到次 handle() 周期才发现 WiFi 已就绪）
-#if FASTBEE_ENABLE_MQTT
-            {
-                auto* fw = FastBeeFramework::getInstance();
-                auto* pm = fw ? fw->getProtocolManager() : nullptr;
-                MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
-                if (mqtt) {
-                    mqtt->resetErrorCounters();
-                }
-            }
-#endif
-
-            char buffer[100];
-            snprintf(buffer, sizeof(buffer), "WiFi connected: %s", statusInfo.ipAddress.c_str());
-            triggerEvent(NetworkStatus::CONNECTED, buffer);
+            // 重量级后续处理（PeriphExec 规则分发/MQTT 退避重置/上层回调）
+            // 延迟到 loopTask 的 processPendingEvents() 执行，
+            // 避免在 arduino_events 任务栈上执行导致栈溢出崩溃
+            pendingGotIPEvent = true;
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
             // ESP32-C3 在 STA+AP 双模下可能会收到此事件，但实际 STA 仍然连接
-            // 需要检查实际连接状态，避免误报
             if (WiFi.status() == WL_CONNECTED) {
-                LOG_DEBUG("WiFiManager: STA disconnected event received but still connected (dual-mode behavior)");
                 return;  // 忽略误报事件
             }
 
@@ -566,38 +575,67 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             connecting = false;
             Serial.printf("[WiFi] Disconnected! reason=%d reconnects=%d\n",
                           (int)WiFi.status(), (int)statusInfo.reconnectAttempts);
-            // 触发WiFi断开连接系统事件
-#if FASTBEE_ENABLE_PERIPH_EXEC
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_DISCONNECTED, "");
-#endif
-            // 模式切换时的断开是预期行为，不记录警告
-            if (modeTransitioning) {
-                LOG_DEBUG("WiFiManager: WiFi STA disconnected (mode transition)");
-            } else {
-                LOG_WARNING("WiFiManager: WiFi STA disconnected");
-                // 非模式切换的断开，可能是连接失败
-                if (connectingStartTime > 0) {
-                    // 曾尝试连接但失败了
-#if FASTBEE_ENABLE_PERIPH_EXEC
-                    PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONN_FAILED, "");
-#endif
-                }
+            // 重量级后续处理延迟到 loopTask 执行（同上）
+            if (!modeTransitioning && connectingStartTime > 0) {
+                pendingConnFailedEvent = true;
             }
-            triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
+            pendingDisconnectEvent = true;
             break;
 
         case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
             statusInfo.apClientCount = WiFi.softAPgetStationNum();
-            LOG_INFO("WiFiManager: Client connected to AP");
+            Serial.printf("[WiFi] AP client connected (total=%d)\n", statusInfo.apClientCount);
             break;
 
         case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
             statusInfo.apClientCount = WiFi.softAPgetStationNum();
-            LOG_INFO("WiFiManager: Client disconnected from AP");
+            Serial.printf("[WiFi] AP client disconnected (total=%d)\n", statusInfo.apClientCount);
             break;
 
         default:
             break;
+    }
+}
+
+void WiFiManager::processPendingEvents() {
+    // 在 loopTask 上执行 WiFi 事件的重量级后续处理，
+    // 标志由 handleWiFiEvent（arduino_events 栈）置位
+    if (pendingGotIPEvent) {
+        pendingGotIPEvent = false;
+
+        // 触发WiFi连接成功系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONNECTED, statusInfo.ipAddress);
+#endif
+
+        // WiFi 重连成功后，通知 MQTT 客户端重置退避计数器
+#if FASTBEE_ENABLE_MQTT
+        {
+            auto* fw = FastBeeFramework::getInstance();
+            auto* pm = fw ? fw->getProtocolManager() : nullptr;
+            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+            if (mqtt) {
+                mqtt->resetErrorCounters();
+            }
+        }
+#endif
+
+        triggerEvent(NetworkStatus::CONNECTED, statusInfo.ipAddress.c_str());
+    }
+
+    if (pendingDisconnectEvent) {
+        pendingDisconnectEvent = false;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_DISCONNECTED, "");
+#endif
+        triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
+    }
+
+    if (pendingConnFailedEvent) {
+        pendingConnFailedEvent = false;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONN_FAILED, "");
+#endif
     }
 }
 
@@ -739,6 +777,80 @@ String WiFiManager::getChipID() {
     snprintf(chipidStr, sizeof(chipidStr), "%04X%08X",
              (uint16_t)(chipid >> 32), (uint32_t)chipid);
     return String(chipidStr);
+}
+
+// ── WiFi 状态码可读映射 ──────────────────────────────────────────────
+const char* WiFiManager::wifiStatusToString(wl_status_t status) {
+    switch (status) {
+        case WL_IDLE_STATUS:      return "IDLE";
+        case WL_NO_SSID_AVAIL:   return "NO_SSID_AVAIL (network not found)";
+        case WL_SCAN_COMPLETED:  return "SCAN_COMPLETED";
+        case WL_CONNECTED:       return "CONNECTED";
+        case WL_CONNECT_FAILED:  return "CONNECT_FAILED (auth/assoc rejected)";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED:    return "DISCONNECTED";
+        default:                 return "UNKNOWN";
+    }
+}
+
+// ── WiFi 频段诊断 ──────────────────────────────────────────────────────
+BandDiagnosis WiFiManager::diagnoseBandMismatch(const String& ssid) {
+    // 执行快速扫描，检查目标 SSID 的频段分布
+    int numFound = WiFi.scanNetworks(false, false, false, 300);
+    if (numFound <= 0) {
+        WiFi.scanDelete();
+        Serial.printf("[WiFi-Diag] Scan returned 0 networks\n");
+        return BandDiagnosis::NOT_FOUND;
+    }
+
+    bool has24GHz = false;
+    bool has5GHz = false;
+    int matchCount = 0;
+
+    for (int i = 0; i < numFound; i++) {
+        if (WiFi.SSID(i) == ssid) {
+            matchCount++;
+            int ch = WiFi.channel(i);
+            int32_t rssi = WiFi.RSSI(i);
+            const char* band = (ch > 14) ? "5GHz" : "2.4GHz";
+
+            if (ch > 14) {
+                has5GHz = true;
+            } else {
+                has24GHz = true;
+            }
+
+            // 输出详细诊断信息
+            Serial.printf("[WiFi-Diag] Found '%s' BSSID=%s ch=%d band=%s RSSI=%d enc=%d\n",
+                          ssid.c_str(), WiFi.BSSIDstr(i).c_str(),
+                          ch, band, (int)rssi, (int)WiFi.encryptionType(i));
+        }
+    }
+    WiFi.scanDelete();
+
+    if (matchCount == 0) {
+        Serial.printf("[WiFi-Diag] SSID '%s' not found in %d scanned networks\n",
+                      ssid.c_str(), numFound);
+        LOG_WARNING("WiFiManager: Band diagnosis - target SSID not found in scan");
+        return BandDiagnosis::NOT_FOUND;
+    }
+
+    if (has5GHz && !has24GHz) {
+        Serial.printf("[WiFi-Diag] ERROR: '%s' only broadcasts on 5GHz (ch>14). "
+                      "ESP32 only supports 2.4GHz (ch 1-14).\n", ssid.c_str());
+        LOG_ERROR("WiFiManager: Network only supports 5GHz but device only supports 2.4GHz!");
+        return BandDiagnosis::ONLY_5GHZ;
+    }
+
+    if (has24GHz && has5GHz) {
+        Serial.printf("[WiFi-Diag] '%s' has both 2.4GHz and 5GHz bands (dual-band OK)\n",
+                      ssid.c_str());
+        return BandDiagnosis::MIXED_BAND;
+    }
+
+    // has24GHz && !has5GHz
+    Serial.printf("[WiFi-Diag] '%s' is on 2.4GHz — band is compatible\n", ssid.c_str());
+    return BandDiagnosis::BAND_OK;
 }
 
 bool WiFiManager::selectBestNetwork(String& outSSID, String& outPassword) {

@@ -427,9 +427,10 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
 }
 
 bool ScriptEngine::scriptDelay(uint32_t ms, unsigned long scriptStartTime) {
-    unsigned long endTime = millis() + ms;
+    unsigned long delayStart = millis();
 
-    while (millis() < endTime) {
+    // 减法写法兼容 millis 回绕（millis()+ms 溢出会导致 delay 被直接跳过）
+    while (millis() - delayStart < ms) {
         // 总执行超时检测
         if (millis() - scriptStartTime > MAX_EXECUTION_TIME_MS) {
             return false;

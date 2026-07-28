@@ -114,7 +114,10 @@
             div.className = 'periph-exec-config-item';
             div.dataset.index = index;
             const isPollMode = this._isPollTriggerActive();
-            let actionType = String(isPollMode ? 18 : (data.actionType ?? 0));
+            // 仅在轮询模式且为新动作（无已有 actionType）时默认 Modbus 轮询(18)
+            // 编辑已有规则时必须保留原始 actionType（如 19=传感器读取, 27=OLED显示）
+            const hasExistingActionType = data.actionType !== undefined && data.actionType !== null && data.actionType !== '';
+            let actionType = String((isPollMode && !hasExistingActionType) ? 18 : (data.actionType ?? 0));
             if (!isPollMode && actionType === '9') {
                 actionType = '0';
             }
@@ -127,19 +130,45 @@
             const isRuleCtrlAction = (actionTypeInt === 22 || actionTypeInt === 23);
             const isDisplayAction = (actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 26);
             const isOledDisplay = (actionTypeInt === 27);
-            const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 9) || isModbusPoll || isTriggerEvent));
-            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 10 || actionTypeInt === 11 || actionTypeInt === 12 || actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 28 || actionTypeInt === 29 || isOledDisplay || isScriptAction || isTriggerEvent);
-            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction && !isTriggerEvent;
-            const showActionType = !isPollMode && !isModbusTarget;
+            const showPeriphGroup = isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 9) || isModbusPoll || isTriggerEvent));
+            const needsValue = !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 10 || actionTypeInt === 11 || actionTypeInt === 12 || actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 28 || actionTypeInt === 29 || isOledDisplay || isScriptAction || isTriggerEvent);
+            const showRecv = !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction && !isTriggerEvent;
+            const showActionType = !isModbusTarget;
             const showExecRow = true;
             const execMode = parseInt(data.execMode ?? 0);
             const sel = (v) => actionType === String(v) ? 'selected' : '';
-            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:0.00080586,offset:0,decimalPlaces:2,sensorLabel:'电压',unit:'V',dataField:'voltage',deviceIndex:0};
+            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:1,sensorLabel:'',unit:'',dataField:'',deviceIndex:0};
             if (isSensorRead && data.actionValue) { try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {} }
+            // 根据传感器类别设置合理默认值（数字传感器不需要缩放系数）
+            var digitalSensors = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+            var isDigitalSensor = digitalSensors.indexOf(String(sensorCfg.sensorCategory || '').toLowerCase()) >= 0;
+            if (isDigitalSensor && (!data.actionValue || sensorCfg.scaleFactor === 0.00080586)) {
+                sensorCfg.scaleFactor = 1;
+                sensorCfg.offset = 0;
+            }
             if (!sensorCfg.dataField) {
                 var sensorCatLower = String(sensorCfg.sensorCategory || '').toLowerCase();
-                sensorCfg.dataField = sensorCatLower === 'analog' ? 'voltage' :
-                    (sensorCatLower === 'radar' ? 'presence' : 'temperature');
+                var fieldMap = {analog:'voltage',radar:'presence',dht11:'temperature',dht22:'temperature',
+                    ds18b20:'temperature',sht31:'temperature',aht20:'temperature',
+                    ultrasonic:'distance',current:'current',voltage:'voltage',
+                    bh1750:'lux',bmp280:'pressure',mpu6050:'accel_x',rf:'rssi',
+                    digital:'state',pulse:'frequency'};
+                sensorCfg.dataField = fieldMap[sensorCatLower] || 'value';
+            }
+            if (!sensorCfg.sensorLabel) {
+                var labelMap = {temperature:'温度',humidity:'湿度',distance:'距离',current:'电流',
+                    voltage:'电压',presence:'存在',lux:'光照',pressure:'气压',
+                    accel_x:'加速度',rssi:'信号强度',state:'状态',frequency:'频率',value:'数值'};
+                sensorCfg.sensorLabel = labelMap[sensorCfg.dataField] || sensorCfg.dataField;
+            }
+            if (!sensorCfg.unit) {
+                var unitMap = {temperature:'°C',humidity:'%RH',distance:'cm',current:'A',
+                    voltage:'V',presence:'',lux:'lx',pressure:'hPa',
+                    accel_x:'g',rssi:'dBm',state:'',frequency:'Hz',value:''};
+                sensorCfg.unit = unitMap[sensorCfg.dataField] || '';
+            }
+            if (sensorCfg.decimalPlaces === undefined || sensorCfg.decimalPlaces === null) {
+                sensorCfg.decimalPlaces = isDigitalSensor ? 1 : 2;
             }
             const sensorBaseKeys = {
                 periphId: 1, sensorCategory: 1, scaleFactor: 1, offset: 1, decimalPlaces: 1,
@@ -207,6 +236,7 @@
                     '<label>' + '动作参数' + '</label>' +
                     '<input type="text" class="pe-action-value' + ((isOledDisplay || isScriptAction) ? ' is-hidden' : '') + '" value="' + ((isOledDisplay || isScriptAction) ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
                     '<textarea class="pe-action-value-oled pe-script-textarea' + (isOledDisplay ? '' : ' is-hidden') + '" rows="6" maxlength="512" placeholder="' + escapeHtml('多行文本，每行一条。首行以 # 开头为居中标题。支持 ${periphId.field}（传感器缓存）和 $value（下发变量）模板。例：\n# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n设备:$value') + '">' + (isOledDisplay ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
+                                        '<small class="pe-oled-counter' + (isOledDisplay ? '' : ' is-hidden') + '">' + this._formatOledCounterStats(data.actionValue || '') + '</small>' +
                     '<textarea class="pe-action-value-script pe-script-textarea' + (isScriptAction ? '' : ' is-hidden') + '" rows="7" maxlength="1024" placeholder="' + escapeHtml('每行一条命令，如:\nGPIO 2 HIGH\nDELAY 500\nGPIO 2 LOW\nLOG 执行完成') + '">' + (isScriptAction ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
                     '<small class="pe-help-text">' + (actionTypeInt === 10 ? '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值' : actionTypeInt === 11 ? '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值' : actionTypeInt === 12 ? '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)' : actionTypeInt === 28 ? '输入射频编码，如十六进制编码字符串' : actionTypeInt === 29 ? '输入要发送的文本，支持 $value 占位符' : (isScriptAction ? '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作' : (isOledDisplay ? '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值' : (isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255')))) + '</small>' +
                     '<select class="pe-neopixel-preset is-hidden">' +
@@ -280,7 +310,7 @@
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
                     '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
                     '勾选后动作参数将使用平台下发或触发源的值' + '</label></div>' +
-                    '<div class="fb-form-group pe-poll-tasks-group pe-span-all' + this._hiddenClass(!isPollMode && isModbusPoll && !isModbusTarget) + '">' +
+                    '<div class="fb-form-group pe-poll-tasks-group pe-span-all' + this._hiddenClass(isModbusPoll && !isModbusTarget) + '">' +
                     '<label>' + '选择子设备' + '</label>' +
                     '<div class="pe-poll-tasks-list"></div>' +
                     '<small class="pe-help-text">' + '选择要执行的 Modbus 子设备' + '</small></div>' +
@@ -309,29 +339,51 @@
                     sensorFieldOptions + '</select></div>' +
                     '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(sensorCfg.sensorCategory === 'ds18b20') + '"><label>' + '设备索引' + '</label>' +
                     '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + sensorCfg.deviceIndex + '"></div>' +
+                    '<div class="fb-form-group pe-sensor-calibration-group' + this._hiddenClass(isDigitalSensor) + '">' +
                     '<div class="fb-form-group"><label>' + '缩放系数' + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
                     '<div class="fb-form-group"><label>' + '偏移量' + '</label><input type="number" class="pe-sensor-offset" step="any" value="' + sensorCfg.offset + '"></div>' +
+                    '</div>' +
                     '<div class="fb-form-group"><label>' + '小数位数' + '</label><input type="number" class="pe-sensor-decimals" min="0" max="6" value="' + sensorCfg.decimalPlaces + '"></div>' +
                     '<div class="fb-form-group"><label>' + '数据标签' + '</label><input type="text" class="pe-sensor-label" value="' + escapeHtml(sensorCfg.sensorLabel) + '" placeholder="' + '数据标签' + '"></div>' +
                     '<div class="fb-form-group"><label>' + '单位' + '</label><input type="text" class="pe-sensor-unit" value="' + escapeHtml(sensorCfg.unit) + '" maxlength="8" placeholder="°C, %, V..."></div>' +
-                    '<div class="fb-form-group pe-span-all"><label>' + '高级参数(JSON)' + '</label>' +
-                    '<textarea class="pe-sensor-extra-json" rows="2" maxlength="512" placeholder="' + escapeHtml('{"driverParams":{"addr":"0x44","sda":21,"scl":22}}') + '">' + escapeHtml(sensorExtraJson) + '</textarea>' +
-                    '<small class="pe-help-text">' + '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。' + '</small></div>' +
+                    '<div class="fb-form-group pe-sensor-advanced-group pe-span-all' + this._hiddenClass(isDigitalSensor) + '"><label>' + '高级参数(JSON)' + '</label>' +
+                    '<textarea class="pe-sensor-extra-json" rows="2" maxlength="512" placeholder="' + escapeHtml(isDigitalSensor ? '' : '{"driverParams":{"addr":"0x44","sda":21,"scl":22}}') + '">' + escapeHtml(sensorExtraJson) + '</textarea>' +
+                    '<small class="pe-help-text">' + (isDigitalSensor ? '数字传感器（DHT/DS18B20等）无需高级参数' : '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。') + '</small></div>' +
                     '</div></div>' +
                     '</div>';
             container.appendChild(div);
-            if (!isPollMode && isSensorRead) {
+            // OLED 计数器：实时显示字符数/行数
+            var oledTa = div.querySelector('.pe-action-value-oled');
+            var oledCnt = div.querySelector('.pe-oled-counter');
+            if (oledTa && oledCnt) {
+                oledTa.addEventListener('input', function() {
+                    var v = this.value;
+                    var lines = v ? v.split('\n').length : 0;
+                    oledCnt.textContent = '已输入 ' + v.length + '/512 字符，' + lines + '/6 行';
+                    if (lines > 6) oledCnt.style.color = '#e74c3c';
+                    else oledCnt.style.color = '';
+                });
+            }
+            if (!isModbusPoll && isSensorRead) {
                 this._populateSensorPeriphSelect(div, sensorCfg.sensorCategory || 'analog', sensorCfg.periphId || data.targetPeriphId || '');
             } else {
                 var initActType = parseInt(data.actionType);
-                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', isPollMode, initActType === 21, (initActType === 22 || initActType === 23));
+                // 仅 Modbus 轮询动作(18)限制为 Modbus 采集任务；传感器读取(19)、OLED显示(27)、GPIO 等本地动作即使在轮询触发模式下也显示全部外设
+                var effectivePollOnly = isPollMode && isModbusPoll;
+                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', effectivePollOnly, initActType === 21, (initActType === 22 || initActType === 23));
             }
-            if (!isPollMode && isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
+            if (isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
             if (isModbusTarget) this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'), data.targetPeriphId, data.actionValue || '');
-            // 触发设备事件(actionType=21): 初始化事件下拉框
-            if (isTriggerEvent && data.actionValue) {
+            // 触发设备事件(actionType=21): 初始化事件下拉框并恢复可见
+            // 模板默认带 is-hidden，重建(切换触发类型)/编辑已有规则时必须移除，否则事件选择框保持隐藏
+            if (isTriggerEvent) {
                 var evtSel = div.querySelector('.pe-trigger-event-select');
-                if (evtSel) evtSel.value = data.actionValue;
+                if (evtSel) {
+                    evtSel.classList.remove('is-hidden');
+                    if (data.actionValue) evtSel.value = data.actionValue;
+                }
+                var evtHelp = div.querySelector('.pe-trigger-event-help');
+                if (evtHelp) evtHelp.classList.remove('is-hidden');
             }
             // NeoPixel 预设灯效：初始化下拉框并同步显示状态
             if ((data.actionType ?? 0) == 11) {
@@ -346,6 +398,12 @@
             }
             this._updateNeoPixelPresetVisibility(div);
             this._updatePeriphExecAddButtons();
+        },
+
+        _formatOledCounterStats(text) {
+            var len = (text || '').length;
+            var lines = text ? text.split('\n').length : 0;
+            return '已输入 ' + len + '/512 字符，' + lines + '/6 行';
         },
 
         _getPeriphExecBlockLimit(kind) {
@@ -516,7 +574,7 @@
                 const valueInput = item.querySelector('.pe-action-value');
                 const recvGroup = item.querySelector('.pe-use-received-value-group');
                 const actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
-                const needsValue = (actionType >= 2 && actionType <= 5) || actionType === 10;
+                const needsValue = (actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 24 || actionType === 25 || actionType === 28 || actionType === 29;
                 const showRecv = isSetMode && needsValue;
                 if (recvGroup) {
                     if (showRecv) recvGroup.classList.remove('is-hidden');
@@ -577,8 +635,6 @@
         onPeriphExecActionTypeChangeInBlock(val, index) {
             const block = this._getPeriphExecBlock('periph-exec-actions', index);
             if (!block) return;
-            // 轮询触发模式不处理动作类型变更
-            if (this._isPollTriggerActive()) return;
             const actionType = parseInt(val);
             const targetGroup = block.querySelector('.pe-target-group');
             const valueGroup = block.querySelector('.pe-action-value-group');
@@ -587,6 +643,8 @@
             const isSensorRead = actionType === 19;
             const isTriggerEvent = actionType === 21;
             const isRuleCtrlAction = (actionType === 22 || actionType === 23);
+            // 检查当前目标是否为 Modbus 设备（与创建路径保持一致）
+            const isModbusTarget = (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
             const showTargetGroup = isRuleCtrlAction || !((actionType >= 6 && actionType <= 9) || isModbusPoll || isTriggerEvent);
             this._setSectionVisible(targetGroup, showTargetGroup);
             // 切换目标分组的 label 和空选项提示（规则 vs 外设）
@@ -594,7 +652,7 @@
                 var labelEl = targetGroup.querySelector('label');
                 if (labelEl) labelEl.textContent = isRuleCtrlAction ? '目标执行规则' : '执行外设';
             }
-            const needsValue = !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 15 || actionType === 24 || actionType === 25 || actionType === 27 || actionType === 28 || actionType === 29);
+            const needsValue = !isModbusTarget && !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 15 || actionType === 24 || actionType === 25 || actionType === 27 || actionType === 28 || actionType === 29);
             // 触发设备事件(21)也需要显示 value-group（内含事件下拉框）
             this._setSectionVisible(valueGroup, needsValue || isTriggerEvent);
             // OLED 自定义显示：在 value-group 内 input / textarea 两种控件互斥显示
@@ -611,6 +669,12 @@
                 if (multiEl) {
                     if (isOled) multiEl.classList.remove('is-hidden');
                     else multiEl.classList.add('is-hidden');
+                }
+                // OLED 计数器同步显隐
+                const oledCounter = valueGroup.querySelector('.pe-oled-counter');
+                if (oledCounter) {
+                    if (isOled) { oledCounter.classList.remove('is-hidden'); if (multiEl) multiEl.dispatchEvent(new Event('input')); }
+                    else oledCounter.classList.add('is-hidden');
                 }
                 if (scriptEl) {
                     if (isScript) scriptEl.classList.remove('is-hidden');
@@ -654,12 +718,11 @@
             // 切换动作类型时，隐藏 Modbus 控制面板（ctrlPanel 仅在选择 modbus:xxx 目标时由 _onTargetPeriphChange 管理）
             const ctrlPanel = block.querySelector('.pe-modbus-ctrl-panel');
             this._setSectionVisible(ctrlPanel, false);
-            if (isSensorRead) {
-                var cat = block.querySelector('.pe-sensor-category')?.value || 'analog';
-            }
             if (targetGroup && !targetGroup.classList.contains('is-hidden')) {
                 var peSelect = block.querySelector('.pe-target-periph');
-                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive(), isTriggerEvent, isRuleCtrlAction);
+                // 仅 Modbus 轮询动作(18)限制为 Modbus 采集任务；其他本地动作显示全部外设
+                var effectivePollOnly = this._isPollTriggerActive() && isModbusPoll;
+                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', effectivePollOnly, isTriggerEvent, isRuleCtrlAction);
             }
             // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示（OLED_DISPLAY 不需要整体替换，通过 $value 占位符嵌入）
             const recvGroup = block.querySelector('.pe-use-received-value-group');
@@ -725,6 +788,10 @@
                 if (curActionType === 21) {
                     if (singleEl) singleEl.classList.add('is-hidden');
                     if (helpTextEl) helpTextEl.classList.add('is-hidden');
+                } else if (curActionType === 27 || curActionType === 15) {
+                    // OLED自定义显示(27)/命令脚本(15): 单行输入框保持隐藏（由 textarea 接管），帮助文本可见
+                    if (singleEl) singleEl.classList.add('is-hidden');
+                    if (helpTextEl) helpTextEl.classList.remove('is-hidden');
                 } else {
                     if (singleEl) singleEl.classList.remove('is-hidden');
                     if (helpTextEl) helpTextEl.classList.remove('is-hidden');
@@ -1200,8 +1267,10 @@
             const actions = [];
             const isPollMode = this._isPollTriggerActive();
             container.querySelectorAll('.periph-exec-config-item').forEach(item => {
-                // 轮询触发模式: 从目标外设下拉读取 modbus-task:N，自动生成 ACTION_MODBUS_POLL 动作
-                if (isPollMode) {
+                // 轮询触发模式下仅 Modbus 轮询(18)或默认动作强制为 actionType=18
+                // 传感器读取(19)、OLED(27)等保留其原始 actionType 和采集逻辑
+                var curActType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
+                if (isPollMode && (curActType === 18 || curActType === 0)) {
                     var periphVal = item.querySelector('.pe-target-periph')?.value || '';
                     var jsonObj = {};
                     if (periphVal.indexOf('modbus-task:') === 0) {
@@ -1218,6 +1287,7 @@
                     });
                     return;
                 }
+                // 非 Modbus 轮询动作：继续正常采集流程
                 const targetPeriphId = item.querySelector('.pe-target-periph')?.value || '';
                 const isModbusTarget = targetPeriphId && targetPeriphId.indexOf('modbus:') === 0;
                 const actionType = item.querySelector('.pe-action-type')?.value || '0';
@@ -1262,6 +1332,12 @@
                     if (isNaN(scaleFactor)) scaleFactor = 1;
                     var sOffset = parseFloat(item.querySelector('.pe-sensor-offset')?.value);
                     if (isNaN(sOffset)) sOffset = 0;
+                    // 数字传感器无需缩放系数，强制重置避免隐藏字段残留值
+                    var _digSensors = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+                    if (_digSensors.indexOf(String(sensorCat).toLowerCase()) >= 0) {
+                        scaleFactor = 1;
+                        sOffset = 0;
+                    }
                     var decimals = parseInt(item.querySelector('.pe-sensor-decimals')?.value);
                     if (isNaN(decimals)) decimals = 2;
                     var sensorLabel = item.querySelector('.pe-sensor-label')?.value?.trim() || '';
@@ -1344,6 +1420,26 @@
 
         // ============ Save (form validation + API call) ============
 
+        _highlightFieldError(field, msg, errEl) {
+            if (!field) return;
+            field.style.borderColor = '#e74c3c';
+            field.style.boxShadow = '0 0 0 2px rgba(231,76,60,0.2)';
+            this.showInlineError(errEl, msg);
+            field.addEventListener('change', function _clr() {
+                this.style.borderColor = '';
+                this.style.boxShadow = '';
+                this.removeEventListener('change', _clr);
+            }, {once: false});
+        },
+
+        _clearAllFieldErrors() {
+            document.querySelectorAll('.periph-exec-config-item .pe-field-error').forEach(function(el) {
+                el.style.borderColor = '';
+                el.style.boxShadow = '';
+                el.classList.remove('pe-field-error');
+            });
+        },
+
         savePeriphExecRule() {
             if (!this.guardDeveloperModeAction()) return;
             const errEl = document.getElementById('periph-exec-error');
@@ -1379,24 +1475,54 @@
                 return;
             }
             ruleData.actions = actions;
+            this._clearAllFieldErrors();
+            // 获取动作块 DOM 引用，用于字段级高亮
+            var actionBlocks = document.getElementById('periph-exec-actions')?.querySelectorAll('.periph-exec-config-item') || [];
             for (let i = 0; i < actions.length; i++) {
-                if (actions[i].actionType === 19) {
+                var at = actions[i].actionType;
+                var blk = actionBlocks[i];
+                if (at === 19) {
                     var sv = {};
                     try { sv = JSON.parse(actions[i].actionValue); } catch(e) {}
                     if (!sv.periphId) {
-                        this.showInlineError(errEl, '请选择传感器外设');
+                        this._highlightFieldError(blk?.querySelector('.pe-target-periph'), '请选择传感器外设', errEl);
                         return;
                     }
-                } else if (actions[i].actionType === 15) {
+                } else if (at === 15) {
                     var scriptValue = actions[i].actionValue || '';
                     if (!scriptValue.trim()) {
-                        this.showInlineError(errEl, '脚本内容不能为空');
+                        this._highlightFieldError(blk?.querySelector('.pe-action-value-script'), '脚本内容不能为空', errEl);
                         return;
                     }
                     if (scriptValue.length > 1024) {
                         this.showInlineError(errEl, '脚本超过最大长度限制(1024字节)');
                         return;
                     }
+                } else if (at === 27) {
+                    var oledValue = actions[i].actionValue || '';
+                    if (!oledValue.trim()) {
+                        this._highlightFieldError(blk?.querySelector('.pe-action-value-oled'), 'OLED 显示内容不能为空', errEl);
+                        return;
+                    }
+                } else if (at === 24 || at === 25) {
+                    var dispValue = actions[i].actionValue || '';
+                    if (!dispValue.trim()) {
+                        this._highlightFieldError(blk?.querySelector('.pe-action-value'), at === 24 ? '显示数字的值不能为空' : '显示文本的内容不能为空', errEl);
+                        return;
+                    }
+                } else if (at === 18) {
+                    // Modbus 轮询: 检查采集任务是否配置有效
+                    var pollPeriph = actions[i].targetPeriphId || '';
+                    if (!pollPeriph) {
+                        this._highlightFieldError(blk?.querySelector('.pe-poll-task-select'), 'Modbus 轮询需选择至少一个采集任务', errEl);
+                        return;
+                    }
+                }
+                // 通用：非系统/规则控制动作必须有目标外设
+                var needsTarget = !(at >= 6 && at <= 9) && at !== 18 && at !== 21 && at !== 22 && at !== 23;
+                if (needsTarget && !actions[i].targetPeriphId) {
+                    this._highlightFieldError(blk?.querySelector('.pe-target-periph'), '请选择执行外设', errEl);
+                    return;
                 }
             }
 

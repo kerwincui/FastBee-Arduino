@@ -123,6 +123,13 @@ bool WebConfigManager::start() {
     // 给 AsyncTCP 额外时间释放旧 socket（如果之前 end() 后立即调用 begin()）
     delay(50);
 
+    // 先回收占用端口 80 的残留 PCB，否则 tcp_bind 会返回 ERR_USE(-8) 导致启动失败
+    const uint8_t reclaimed = abortPcbsOnLocalPort(80);
+    if (reclaimed > 0) {
+        LOG_WARNINGF("[WebConfig] Reclaimed %u stale pcbs on port 80 before start", (unsigned)reclaimed);
+        delay(50);  // 给 lwIP/AsyncTCP 处理 abort 事件的时间
+    }
+
     server->begin();
     // 等待 AsyncTCP 任务处理 begin() 请求
     delay(100);
@@ -155,11 +162,15 @@ void WebConfigManager::stop() {
 
 bool WebConfigManager::isServerRunning() const { return isRunning; }
 
-bool WebConfigManager::pauseForMqttsHandshake(unsigned long holdMs) {
+bool WebConfigManager::pauseForMqttsHandshake(unsigned long holdMs, bool force) {
     if (!server) return false;
     if (isForegroundRequestActive()) {
-        LOG_INFO("[WebConfig] Keeping Web online for active foreground request; MQTTS deep pause skipped");
-        return false;
+        if (!force) {
+            LOG_INFO("[WebConfig] Keeping Web online for active foreground request; MQTTS deep pause skipped");
+            return false;
+        }
+        // 前台推迟超限后的强制暂停：防止前端轮询无限续期前台窗口导致 MQTTS 永久无法上线
+        LOG_WARNING("[WebConfig] Forcing MQTTS deep pause despite active foreground request (defer limit reached)");
     }
 
     const unsigned long now = millis();
@@ -486,12 +497,24 @@ void WebConfigManager::performMaintenance() {
                     LOG_DEBUGF("[WebConfig] No-request watchdog skipped: port healthy, no stale connections (%lus idle)",
                                (unsigned long)(noRequestDuration / 1000));
                 } else {
-                    // 有僵死连接或异常堆积 → 触发软重启清理
-                    LOG_WARNINGF("[WebConfig] No HTTP requests for %lus with %u active/%u TIME_WAIT connections, triggering soft restart",
+                    // 有僵死连接或异常堆积 → 就地回收残留 PCB，不动监听器
+                    // （软重启会 end()/begin()，一旦 bind 失败服务永久下线，风险远大于收益）
+                    LOG_WARNINGF("[WebConfig] No HTTP requests for %lus with %u active/%u TIME_WAIT connections, reaping stale pcbs",
                                  (unsigned long)(noRequestDuration / 1000),
                                  (unsigned)activeConns, (unsigned)timeWaitCount);
                     lastRequestSeenMs = millis();  // 重置避免连续触发
-                    softRestartWebServer("no_request_watchdog");
+                    // 先断开 SSE 客户端（走正常关闭流程），再回收端口 80 上的残留 PCB
+                    if (sseRouteHandler) {
+                        sseRouteHandler->closeAllClients();
+                    }
+                    const uint8_t reaped = abortPcbsOnLocalPort(80);
+                    LOG_INFOF("[WebConfig] Stale pcb reaper: aborted %u pcbs on port 80", (unsigned)reaped);
+                    recordRecoveryEvent("stale_pcb_reap",
+                                        "no_request_watchdog",
+                                        maintenanceNow,
+                                        ESP.getFreeHeap(),
+                                        heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                        0);
                     return;
                 }
             }
@@ -591,17 +614,84 @@ uint16_t WebConfigManager::countTcpConnections(uint8_t* outTimeWait) const {
     return total;
 }
 
+uint8_t WebConfigManager::pruneTimeWaitPcbs(uint8_t maxToKill) {
+    uint8_t killed = 0;
+
+    // 必须持有 TCPIP 核心锁：tcp_abort 会修改 tcp_tw_pcbs 链表
+    LOCK_TCPIP_CORE();
+    while (killed < maxToKill && tcp_tw_pcbs != nullptr) {
+        // 找最老的 TIME_WAIT（新 PCB 头插，链表尾部驻留最久，与 lwIP tcp_kill_timewait 同策略）
+        struct tcp_pcb* oldest = tcp_tw_pcbs;
+        for (struct tcp_pcb* pcb = tcp_tw_pcbs; pcb != nullptr; pcb = pcb->next) {
+            oldest = pcb;
+        }
+        // TIME_WAIT 状态下 tcp_abort 直接移除 PCB，不发 RST，对已关闭连接无副作用
+        tcp_abort(oldest);
+        killed++;
+    }
+    UNLOCK_TCPIP_CORE();
+
+    return killed;
+}
+
+uint8_t WebConfigManager::abortPcbsOnLocalPort(uint16_t port) {
+    uint8_t aborted = 0;
+
+    // 必须持有 TCPIP 核心锁：tcp_abort 会修改 PCB 链表
+    LOCK_TCPIP_CORE();
+    // active 链表：僵死的 ESTABLISHED/FIN_WAIT/CLOSE_WAIT 等连接
+    // 对端被强杀（如测试进程被 kill）后这些连接无保活会永久驻留，
+    // 既占用 AsyncTCP 客户端槽位，又导致重新 bind 该端口时返回 ERR_USE
+    struct tcp_pcb* pcb = tcp_active_pcbs;
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        if (pcb->local_port == port) {
+            // tcp_abort 会触发 AsyncTCP 的 error 回调（ERR_ABRT），走正常清理路径
+            tcp_abort(pcb);
+            aborted++;
+        }
+        pcb = next;
+    }
+    // TIME_WAIT 链表：无回调，直接释放
+    pcb = tcp_tw_pcbs;
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        if (pcb->local_port == port) {
+            tcp_abort(pcb);
+            aborted++;
+        }
+        pcb = next;
+    }
+    UNLOCK_TCPIP_CORE();
+
+    return aborted;
+}
+
 void WebConfigManager::checkAndRecoverWebServer() {
     if (!isRunning) return;
 
     const unsigned long now = millis();
 
-    // 启动保护期：前 120 秒不做 TCP 健康检查（系统初始化 TCP 连接多属正常）
-    if (now < 120000UL) return;
-
     // 按间隔执行检查
     if (now - lastTcpCheckMs < CHECK_INTERVAL_MS) return;
     lastTcpCheckMs = now;
+
+    uint8_t timeWaitCount = 0;
+    uint16_t totalConn = countTcpConnections(&timeWaitCount);
+
+    // TIME_WAIT 主动修剪（启动保护期内也执行：只回收已关闭连接，无服务中断风险）
+    // 密集短连接场景（自动化测试/频繁刷新）下 TIME_WAIT 持续 120s，会占满 16 个 PCB
+    // 导致新连接被拒，表现为设备“假死”十几秒后自行恢复
+    if (timeWaitCount > TIME_WAIT_PRUNE_THRESHOLD) {
+        const uint8_t toKill = timeWaitCount - TIME_WAIT_PRUNE_KEEP;
+        const uint8_t killed = pruneTimeWaitPcbs(toKill);
+        LOG_INFOF("[WebConfig] Pruned %u TIME_WAIT pcbs (was total=%u tw=%u)",
+                  (unsigned)killed, (unsigned)totalConn, (unsigned)timeWaitCount);
+        totalConn = countTcpConnections(&timeWaitCount);
+    }
+
+    // 启动保护期：前 120 秒不做恢复决策（系统初始化 TCP 连接多属正常）
+    if (now < 120000UL) return;
 
     // 冷却期内不检查
     if (lastWebRecoveryMs > 0 && (now - lastWebRecoveryMs < RECOVERY_COOLDOWN_MS)) {
@@ -610,10 +700,7 @@ void WebConfigManager::checkAndRecoverWebServer() {
         return;
     }
 
-    uint8_t timeWaitCount = 0;
-    uint16_t totalConn = countTcpConnections(&timeWaitCount);
-
-    // 判断 TCP 连接池是否处于耗尽状态
+    // 判断 TCP 连接池是否处于耗尽状态（修剪后仍耗尽才升级软重启）
     const bool tcpExhausted = (totalConn >= TCP_CONN_EXHAUSTION_THRESHOLD) ||
                                (timeWaitCount >= (TCP_CONN_EXHAUSTION_THRESHOLD - 2));
 
@@ -731,19 +818,12 @@ void WebConfigManager::driveSoftRestartStateMachine() {
     switch (_softRestartPhase) {
         case SoftRestartPhase::WAIT_TCP_CLOSE:
             if (elapsed >= 200) {
-                // 步骤4：强制清理 TIME_WAIT 连接（通过 tcp_abort）
-                uint8_t aborted = 0;
-                LOCK_TCPIP_CORE();
-                struct tcp_pcb* pcb = tcp_tw_pcbs;
-                while (pcb != nullptr) {
-                    struct tcp_pcb* next = pcb->next;
-                    tcp_abort(pcb);
-                    aborted++;
-                    pcb = next;
-                }
-                UNLOCK_TCPIP_CORE();
+                // 步骤4：强制回收占用端口 80 的全部残留 PCB（active + TIME_WAIT）
+                // 只清 TIME_WAIT 不够：僵死 ESTABLISHED 同样占用本地端口 80，
+                // 会使后续 tcp_bind 返回 ERR_USE(-8)，软重启永久失败
+                const uint8_t aborted = abortPcbsOnLocalPort(80);
                 if (aborted > 0) {
-                    LOG_INFOF("[WebConfig] Aborted %u TIME_WAIT connections", (unsigned)aborted);
+                    LOG_INFOF("[WebConfig] Aborted %u pcbs on port 80 before rebind", (unsigned)aborted);
                 }
                 // 进入 lwIP 清理等待（原 delay(100)）
                 _softRestartPhase = SoftRestartPhase::WAIT_LWIP_CLEANUP;
@@ -755,9 +835,45 @@ void WebConfigManager::driveSoftRestartStateMachine() {
             if (elapsed >= 100) {
                 // 步骤6：重新启动 Web 服务器
                 server->begin();
-                isRunning = true;
-                _softRestartPhase = SoftRestartPhase::IDLE;
-                LOG_INFO("[WebConfig] Web server soft-restart completed (async)");
+                // 进入端口绑定等待阶段（最多重试 3 次，每次等待 100ms）
+                _softRestartBindRetries = 0;
+                _softRestartPhase = SoftRestartPhase::WAIT_PORT_BIND;
+                _softRestartPhaseStartMs = millis();
+            }
+            break;
+
+        case SoftRestartPhase::WAIT_PORT_BIND:
+            if (elapsed >= 100) {
+                // 验证服务器是否真的在监听端口 80
+                if (isPortListening(80)) {
+                    isRunning = true;
+                    _softRestartPhase = SoftRestartPhase::IDLE;
+                    LOG_INFO("[WebConfig] Web server soft-restart completed (port 80 verified)");
+                } else if (_softRestartBindRetries < 3) {
+                    // 重试：先回收端口 80 残留 PCB 再 end()/begin()，避免 ERR_USE 反复失败
+                    LOG_WARNINGF("[WebConfig] Port 80 not listening after begin(), retry %u/3",
+                                 (unsigned)(_softRestartBindRetries + 1));
+                    server->end();
+                    const uint8_t reclaimed = abortPcbsOnLocalPort(80);
+                    if (reclaimed > 0) {
+                        LOG_WARNINGF("[WebConfig] Reclaimed %u stale pcbs on port 80 before retry", (unsigned)reclaimed);
+                    }
+                    delay(50);
+                    server->begin();
+                    _softRestartBindRetries++;
+                    _softRestartPhaseStartMs = millis();
+                } else {
+                    // 超过重试次数，标记为失败
+                    isRunning = false;
+                    _softRestartPhase = SoftRestartPhase::IDLE;
+                    LOG_ERROR("[WebConfig] Web server soft-restart FAILED: port 80 bind error after 3 retries");
+                    recordRecoveryEvent("soft_restart_bind_failed",
+                                        _softRestartReason,
+                                        millis(),
+                                        ESP.getFreeHeap(),
+                                        heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                        0);
+                }
             }
             break;
 

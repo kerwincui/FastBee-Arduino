@@ -437,15 +437,34 @@ static void test_source_web_config_manager_delegates_to_rebooter() {
 }
 
 static void test_source_mqtt_reconnect_uses_system_rebooter() {
-    // 验证 MqttRouteHandler 手动重连使用 SystemRebooter
+    // 验证 MqttRouteHandler 手动重连使用 SystemRebooter（仅 MQTTS 场景）
     std::string content = readSourceFile("src/network/handlers/MqttRouteHandler.cpp");
     if (content.empty()) {
         TEST_IGNORE_MESSAGE("MqttRouteHandler.cpp not readable, skipping source check");
         return;
     }
+    // MQTTS 场景仍使用 SystemRebooter 安全重启
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("SystemRebooter::scheduleConfigReboot") != std::string::npos,
-        "MQTT manual reconnect must use SystemRebooter::scheduleConfigReboot()");
+        "MQTTS manual reconnect must use SystemRebooter::scheduleConfigReboot()");
+    // 非 TLS 场景使用运行时重建，不重启设备
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("restartMQTTDeferred(true)") != std::string::npos,
+        "Non-TLS manual reconnect must use restartMQTTDeferred(true) for runtime rebuild");
+    // scheme 分级判断逻辑存在
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("scheme == \"mqtts\"") != std::string::npos,
+        "Manual reconnect must check scheme == \"mqtts\" for TLS branching");
+    // 不直接调用 ESP.restart()（所有重启通过 SystemRebooter 保证诊断）
+    // 只检查 handleMqttReconnect 区域
+    size_t reconnectFn = content.find("handleMqttReconnect");
+    size_t nextFn = content.find("void MqttRouteHandler::", reconnectFn + 10);
+    if (reconnectFn != std::string::npos && nextFn != std::string::npos) {
+        std::string fnBody = content.substr(reconnectFn, nextFn - reconnectFn);
+        TEST_ASSERT_TRUE_MESSAGE(
+            fnBody.find("ESP.restart()") == std::string::npos,
+            "handleMqttReconnect must never call ESP.restart() directly");
+    }
 }
 
 static void test_source_periph_exec_restarts_use_system_rebooter() {

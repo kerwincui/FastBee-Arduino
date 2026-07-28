@@ -2710,6 +2710,163 @@ void test_regression_4g_ethernet_mqtt_reconnect_notification() {
     TestLog::testEnd(true);
 }
 
+// ========== Bug Fix 回归：Worker 栈 clamp + 未匹配项回显抑制 ==========
+
+// C3/C6 的 SIMPLE_TASK_STACK=4096 不足以覆盖传感器采集+JSON 上报路径
+// （实机 HWM 仅剩 ~948B，频繁开关灯+定时采集并发时栈溢出 panic 重启），
+// PeriphExecWorkerPool.h 必须将 WORKER_STACK 抬升到至少 6144
+void test_regression_worker_stack_clamp_in_source() {
+    TestLog::testStart("Regression: WorkerPool WORKER_STACK clamped to min 6144");
+
+    std::string src = readRegressionSrcFile("include/core/PeriphExecWorkerPool.h");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read PeriphExecWorkerPool.h");
+
+    // 必须存在 clamp 表达式：(SIMPLE_TASK_STACK < 6144) ? 6144 : SIMPLE_TASK_STACK
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("(SIMPLE_TASK_STACK < 6144) ? 6144 : SIMPLE_TASK_STACK") != std::string::npos,
+        "WORKER_STACK must clamp SIMPLE_TASK_STACK to min 6144");
+    TestLog::step("WORKER_STACK clamp expression present");
+
+    // 不得退回直接赋值 WORKER_STACK = SIMPLE_TASK_STACK;（C3/C6 会变回 4096）
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("WORKER_STACK    = SIMPLE_TASK_STACK;") == std::string::npos &&
+        src.find("WORKER_STACK = SIMPLE_TASK_STACK;") == std::string::npos,
+        "WORKER_STACK must not be directly assigned SIMPLE_TASK_STACK");
+    TestLog::step("no direct SIMPLE_TASK_STACK assignment");
+
+    TestLog::testEnd(true);
+}
+
+// 平台属性下发附带的 temperature/humidity 只读项（无规则匹配、无对应外设）
+// 不得原样回显到 property/post，否则平台把回显值当成设备新上报的传感器数据
+void test_regression_data_cmd_unmatched_skip_echo_in_source() {
+    TestLog::testStart("Regression: DataCommand unmatched item skip echo");
+
+    std::string src = readRegressionSrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read PeriphExecManager.cpp");
+
+    // 未匹配项处理块：无对应外设时必须跳过回显（skip echo 日志 + continue）
+    size_t skipPos = src.find("has no rule/peripheral, skip echo");
+    TEST_ASSERT_TRUE_MESSAGE(skipPos != std::string::npos,
+        "unmatched item without peripheral must log skip echo");
+    TestLog::step("skip echo log present");
+
+    // 跳过日志后紧跟 continue（在后续 200 字符内）
+    size_t continuePos = src.find("continue;", skipPos);
+    TEST_ASSERT_TRUE_MESSAGE(continuePos != std::string::npos && continuePos - skipPos < 200,
+        "skip echo must be followed by continue");
+    TestLog::step("continue after skip echo");
+
+    // 跳过块必须位于 getPeripheral 判空之后、"no matching rule" 回显之前
+    size_t directCfgPos = src.find("if (!directCfg) {");
+    size_t noRulePos = src.find("\"no matching rule\"", skipPos);
+    TEST_ASSERT_TRUE_MESSAGE(directCfgPos != std::string::npos && directCfgPos < skipPos,
+        "skip echo must be guarded by !directCfg check");
+    TEST_ASSERT_TRUE_MESSAGE(noRulePos != std::string::npos,
+        "skip block must precede 'no matching rule' echo for existing peripherals");
+    TestLog::step("skip block guarded by !directCfg and precedes echo");
+
+    TestLog::testEnd(true);
+}
+
+// ========== 启动后一次性物模型状态上报回归保护 ==========
+
+// reportRuleCurrentState 必须“只读”采集：通过 readPin 读当前电平，绝不重新驱动输出，
+// 否则启动上报会产生副作用（重新拉高/拉低 GPIO），违反“反映当前实际状态”要求。
+void test_regression_boot_report_read_only_in_source() {
+    TestLog::testStart("Regression: boot reportRuleCurrentState is read-only");
+
+    std::string src = readRegressionSrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read PeriphExecExecutor.cpp");
+
+    size_t fnPos = src.find("PeriphExecExecutor::reportRuleCurrentState");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "reportRuleCurrentState must exist in executor");
+    TestLog::step("reportRuleCurrentState present");
+
+    // 截取函数体（到下一个顶级注释分隔）进行局部扫描
+    size_t bodyEnd = src.find("// ========== 具体动作执行方法", fnPos);
+    TEST_ASSERT_TRUE_MESSAGE(bodyEnd != std::string::npos && bodyEnd > fnPos,
+        "cannot locate reportRuleCurrentState body end");
+    std::string body = src.substr(fnPos, bodyEnd - fnPos);
+
+    // 必须通过 readPin 读当前电平（只读）
+    TEST_ASSERT_TRUE_MESSAGE(body.find("pm.readPin(") != std::string::npos,
+        "boot state must read current pin level via readPin");
+    // 必须复用现有上报路径 reportActionResults（保证 id/value 格式）
+    TEST_ASSERT_TRUE_MESSAGE(body.find("reportActionResults(") != std::string::npos,
+        "boot state must reuse reportActionResults for correct id/value format");
+    // remark 标记为 boot_state
+    TEST_ASSERT_TRUE_MESSAGE(body.find("boot_state") != std::string::npos,
+        "boot state results should be tagged boot_state");
+    // 不得在其函数体内重新驱动输出（不得调用 executeActionItem / executePeripheralAction / executeAllActions）
+    TEST_ASSERT_TRUE_MESSAGE(body.find("executeActionItem(") == std::string::npos,
+        "boot state must NOT re-drive outputs via executeActionItem");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("executePeripheralAction(") == std::string::npos,
+        "boot state must NOT re-drive outputs via executePeripheralAction");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("executeAllActions(") == std::string::npos,
+        "boot state must NOT re-execute the whole rule");
+    TestLog::step("read-only: readPin + reportActionResults, no output re-drive");
+
+    // 反转归一（通用、配置驱动）：输出上报必须按动作反转属性把物理电平翻译成逻辑值，
+    // 不得使用裸的物理电平硬映射（否则低电平点亮 LED 重启后平台显示与实际相反）。
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("physicalStateToLogicalValue(") != std::string::npos,
+        "boot state must translate physical level via config-driven physicalStateToLogicalValue");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("(st == GPIOState::STATE_HIGH) ? \"1\" : \"0\"") == std::string::npos,
+        "boot state must NOT hardcode raw physical-level mapping (breaks inverted/active-low peripherals)");
+    TestLog::step("inversion normalization: config-driven, no hardcoded level polarity");
+
+    TestLog::testEnd(true);
+}
+
+// processBootReport 必须：幂等（完成后不重复） + MQTT 连接门控 + 队列节流（每次一条）
+void test_regression_boot_report_gated_and_throttled_in_source() {
+    TestLog::testStart("Regression: processBootReport gating & throttle");
+
+    std::string src = readRegressionSrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read PeriphExecManager.cpp");
+
+    size_t fnPos = src.find("PeriphExecManager::processBootReport");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos, "processBootReport must exist");
+    size_t bodyEnd = src.find("bool PeriphExecManager::tryReportDeviceData", fnPos);
+    TEST_ASSERT_TRUE_MESSAGE(bodyEnd != std::string::npos && bodyEnd > fnPos,
+        "cannot locate processBootReport body end");
+    std::string body = src.substr(fnPos, bodyEnd - fnPos);
+
+    // 幂等门控：_bootReportDone 早期返回
+    TEST_ASSERT_TRUE_MESSAGE(body.find("_bootReportDone") != std::string::npos,
+        "processBootReport must guard on _bootReportDone (idempotent)");
+    // MQTT 连接门控
+    TEST_ASSERT_TRUE_MESSAGE(body.find("_mqttIsConnectedCb") != std::string::npos,
+        "processBootReport must gate on MQTT connection");
+    // 初始化门控
+    TEST_ASSERT_TRUE_MESSAGE(body.find("isInitialized()") != std::string::npos,
+        "processBootReport must gate on isInitialized");
+    // 节流：每次仅 pop 一条规则
+    TEST_ASSERT_TRUE_MESSAGE(body.find("_bootReportQueue.pop_back()") != std::string::npos,
+        "processBootReport must process one rule per tick (throttle)");
+    // 采集委托给 executor 的只读采集接口
+    TEST_ASSERT_TRUE_MESSAGE(body.find("reportRuleCurrentState(") != std::string::npos,
+        "processBootReport must delegate to reportRuleCurrentState");
+    TestLog::step("gating (done/mqtt/init) + throttle + delegate present");
+
+    // initialize() 末尾必须调度启动上报
+    TEST_ASSERT_TRUE_MESSAGE(src.find("scheduleBootReport();") != std::string::npos,
+        "initialize must schedule boot report");
+    TestLog::step("scheduleBootReport wired in initialize");
+
+    // Scheduler::checkTimers 必须驱动 processBootReport
+    std::string sched = readRegressionSrcFile("src/core/PeriphExecScheduler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sched.empty(), "cannot read PeriphExecScheduler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(sched.find("_manager->processBootReport()") != std::string::npos,
+        "checkTimers must drive processBootReport each cycle");
+    TestLog::step("checkTimers drives processBootReport");
+
+    TestLog::testEnd(true);
+}
+
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
 
@@ -2826,6 +2983,14 @@ void test_regression_guard_group() {
     // P1 改进验证：WebConfigManager 异步软重启状态机
     RUN_TEST(test_regression_web_soft_restart_async_state_machine);
     RUN_TEST(test_regression_4g_ethernet_mqtt_reconnect_notification);
+
+    // Bug Fix 回归：Worker 栈 clamp（C3/C6 栈溢出重启）+ 未匹配项回显抑制（假数据污染）
+    RUN_TEST(test_regression_worker_stack_clamp_in_source);
+    RUN_TEST(test_regression_data_cmd_unmatched_skip_echo_in_source);
+
+    // 启动后一次性物模型状态上报：只读采集 + 门控与节流
+    RUN_TEST(test_regression_boot_report_read_only_in_source);
+    RUN_TEST(test_regression_boot_report_gated_and_throttled_in_source);
 
     TestLog::groupEnd();
 }

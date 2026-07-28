@@ -939,18 +939,48 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         }
     }
 
-    // 未连接时，使用 SystemRebooter 重启设备（避免运行时 destroy/rebuild MQTT 客户端导致 DRAM 碎片化）
-    // 重启后 MQTT 会在 boot 流程中自动连接，确保干净的堆状态
+    // 读取 MQTT scheme 判断是否需要 TLS（MQTTS 重建会导致 DRAM 碎片化，需设备重启）
+    bool isMqtts = false;
+    {
+        JsonDocument schemeDoc;
+        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", schemeDoc)) {
+            String scheme = schemeDoc["mqtt"]["scheme"].as<String>();
+            isMqtts = (scheme == "mqtts");
+        }
+    }
+
+    if (isMqtts) {
+        // MQTTS 场景：运行时 destroy/rebuild TLS 客户端会导致 DRAM 碎片化，
+        // 后续 TLS 握手需要 ~42KB 连续内存，碎片化后无法分配。
+        // 通过设备重启获得干净的堆状态，确保 MQTTS 握手成功。
+        JsonDocument doc;
+        doc["success"] = true;
+        doc["data"]["connected"] = false;
+        doc["data"]["rebooting"] = true;
+        doc["data"]["message"] = "Device will reboot to reconnect MQTTS cleanly";
+
+        HandlerUtils::sendJsonStream(request, doc);
+
+        // HTTP 响应已发送，调度延迟重启
+        SystemRebooter::scheduleConfigReboot("MQTT manual reconnect (MQTTS)");
+        return;
+    }
+
+    // 非 TLS 场景：运行时销毁并重建 MQTT 客户端（约 6KB，碎片化风险低）
+    // restartMQTTDeferred(true) 会 stop+reset 旧客户端，创建新客户端，
+    // 由 MQTTClient::handle() 的 auto-reconnect 在 loop 中异步连接
+    LOG_INFO("[MQTT Reconnect] Non-TLS: attempting runtime reconnect");
+    bool deferredOk = pm->restartMQTTDeferred(true);
+
     JsonDocument doc;
     doc["success"] = true;
     doc["data"]["connected"] = false;
-    doc["data"]["rebooting"] = true;
-    doc["data"]["message"] = "Device will reboot to reconnect MQTT cleanly";
+    doc["data"]["reconnecting"] = deferredOk;
+    doc["data"]["message"] = deferredOk
+        ? "MQTT client rebuilt, reconnecting in background"
+        : "MQTT rebuild failed, insufficient memory";
 
     HandlerUtils::sendJsonStream(request, doc);
-
-    // HTTP 响应已发送，调度延迟重启
-    SystemRebooter::scheduleConfigReboot("MQTT manual reconnect");
 }
 
 // ============================================================================

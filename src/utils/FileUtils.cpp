@@ -171,9 +171,18 @@ bool FileUtils::atomicWriteFile(const String& path, const String& content) {
         LittleFS.remove(tmpPath);
         return false;
     }
-    // 删除旧文件，重命名临时文件
+    // littlefs rename 具备 POSIX 覆盖语义（lfs_rename 原子替换已存在目标），
+    // 优先直接 rename，消除 remove→rename 之间断电导致目标文件丢失的窗口
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    // 兜底：个别分区状态下 rename 覆盖失败时退回 remove+rename
     LittleFS.remove(path);
-    return LittleFS.rename(tmpPath, path);
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    LittleFS.remove(tmpPath);
+    return false;
 }
 
 bool FileUtils::copyFile(const String& sourcePath, const String& destPath) {

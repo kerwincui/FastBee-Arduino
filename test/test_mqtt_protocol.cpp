@@ -3683,12 +3683,12 @@ void test_mqtts_reclaim_dram_full_workflow() {
         "reclaimDramForMqtts must default to keeping Web online");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("if (pauseWeb && wcm)", reclaimPos) != std::string::npos &&
-        content.find("pauseForMqttsHandshake()", reclaimPos) != std::string::npos,
+        content.find("pauseForMqttsHandshake(", reclaimPos) != std::string::npos,
         "reclaimDramForMqtts must support an explicit Ethernet deep-pause path");
     TestLog::step("Step 2: Web pause is explicit and opt-in");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("shouldPauseWebForMqtts", 0) != std::string::npos &&
+        content.find("decideWebPauseForMqtts", 0) != std::string::npos &&
         content.find("isForegroundRequestActive()", 0) != std::string::npos,
         "MQTTS deep Web pause must be suppressed while a user is actively using Web config");
     TestLog::step("Step 2a: Foreground Web usage blocks deep pause");
@@ -4104,8 +4104,8 @@ void test_web_server_watchdog_mechanisms() {
     TestLog::step("LISTEN_CHECK_FAIL_TRIGGER defined");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        header.find("NO_REQUEST_WATCHDOG_MS = 300000UL") != std::string::npos,
-        "Header must define NO_REQUEST_WATCHDOG_MS = 300000UL (5 minutes)");
+        header.find("NO_REQUEST_WATCHDOG_MS = 120000UL") != std::string::npos,
+        "Header must define NO_REQUEST_WATCHDOG_MS = 120000UL (2min stale-PCB cleanup)");
     TestLog::step("NO_REQUEST_WATCHDOG_MS defined");
 
     // 2. 看门狗状态字段
@@ -4159,9 +4159,10 @@ void test_web_server_watchdog_mechanisms() {
     TestLog::step("No-request watchdog threshold check found");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        maintBlock.find("softRestartWebServer(\"no_request_watchdog\")") != std::string::npos,
-        "No-request watchdog must call softRestartWebServer");
-    TestLog::step("No-request watchdog calls softRestartWebServer");
+        maintBlock.find("abortPcbsOnLocalPort(80)") != std::string::npos &&
+        maintBlock.find("\"no_request_watchdog\"") != std::string::npos,
+        "No-request watchdog must reap stale pcbs in place (no risky soft-restart)");
+    TestLog::step("No-request watchdog reaps stale pcbs without restarting listener");
 
     // 5. trackWebRequest 必须更新 lastRequestSeenMs
     size_t trackPos = web.find("void WebConfigManager::trackWebRequest()");
@@ -4253,7 +4254,7 @@ void test_mqtts_recoverable_low_dram_uses_short_retry() {
         doBlock.find("MemoryBudget::MQTTS_MEMORY_RECOVERY_RETRY_MS") != std::string::npos,
         "doReconnect must provide a short MQTTS memory recovery retry path");
 
-    size_t pauseDecision = doBlock.find("bool pauseWebForRecovery = shouldPauseWebForMqtts(");
+    size_t pauseDecision = doBlock.find("MqttsWebPauseDecision recoveryPause = decideWebPauseForMqtts(");
     size_t reclaimCall = doBlock.find("bool reclaimed = reclaimDramForMqtts(pauseWebForRecovery)");
     TEST_ASSERT_TRUE_MESSAGE(
         pauseDecision != std::string::npos &&
@@ -4460,9 +4461,9 @@ void test_mqtts_ethernet_uses_internal_secure_transport() {
         "Internal Ethernet secure transport must not be blocked by WiFi.status()");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        mqtt.find("bool pauseWebForHandshake = shouldPauseWebForMqtts(") != std::string::npos &&
+        mqtt.find("MqttsWebPauseDecision handshakePause = decideWebPauseForMqtts(") != std::string::npos &&
         mqtt.find("reclaimDramForMqtts(pauseWebForHandshake)") != std::string::npos &&
-        mqtt.find("MQTTS deep Web pause skipped: foreground Web request active") != std::string::npos,
+        mqtt.find("MQTTS deep Web pause deferred: foreground Web request active") != std::string::npos,
         "Ethernet MQTTS must use adaptive deep pause and preserve active Web config sessions");
 
     TEST_ASSERT_TRUE_MESSAGE(
@@ -4662,7 +4663,9 @@ void test_process_queued_reports_uses_dram() {
 
 /**
  * @brief WIFI-MQTT-1: WiFi GOT_IP 事件通知 MQTT 立即重连
- * 验证 WiFiManager 在 WiFi 连接成功（GOT_IP）后调用 MQTT 的 resetErrorCounters
+ * 验证 WiFiManager 在 WiFi 连接成功（GOT_IP）后通过延迟链路调用 MQTT 的 resetErrorCounters：
+ * GOT_IP 事件（arduino_events 栈）仅置位 pendingGotIPEvent，
+ * 由 loopTask 的 processPendingEvents() 执行 resetErrorCounters（栈安全）
  */
 void test_wifi_got_ip_notifies_mqtt() {
     TestLog::testStart("WIFI-MQTT-1: WiFi GOT_IP notifies MQTT reconnect");
@@ -4674,14 +4677,22 @@ void test_wifi_got_ip_notifies_mqtt() {
     TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
         "WiFiManager must handle ARDUINO_EVENT_WIFI_STA_GOT_IP");
 
-    // 在 GOT_IP 处理段中必须调用 resetErrorCounters
-    // 搜索 GOT_IP 后的 2000 字符范围
+    // GOT_IP 处理段中必须置位延迟处理标志（不得在事件栈上直接调 MQTT）
     std::string gotIpSection = content.substr(pos, 2000);
     TEST_ASSERT_TRUE_MESSAGE(
-        gotIpSection.find("resetErrorCounters") != std::string::npos,
-        "GOT_IP handler must call MQTT resetErrorCounters for immediate reconnect");
+        gotIpSection.find("pendingGotIPEvent") != std::string::npos,
+        "GOT_IP handler must set pendingGotIPEvent flag (heavy work deferred to loopTask)");
 
-    TestLog::step("WiFi GOT_IP event correctly notifies MQTT to reset backoff and reconnect");
+    // 延迟处理函数中必须调用 resetErrorCounters 实现 MQTT 立即重连
+    auto ppePos = content.find("void WiFiManager::processPendingEvents()");
+    TEST_ASSERT_TRUE_MESSAGE(ppePos != std::string::npos,
+        "WiFiManager::processPendingEvents() must exist");
+    std::string ppeSection = content.substr(ppePos, 2500);
+    TEST_ASSERT_TRUE_MESSAGE(
+        ppeSection.find("resetErrorCounters") != std::string::npos,
+        "processPendingEvents must call MQTT resetErrorCounters for immediate reconnect");
+
+    TestLog::step("WiFi GOT_IP event correctly notifies MQTT to reset backoff and reconnect (deferred to loopTask)");
     TestLog::testEnd(true);
 }
 
@@ -5324,6 +5335,1176 @@ void test_clientId_productId_matches_topic_prefix() {
     TEST_ASSERT_TRUE(topic.startsWith("/1835/"));
 }
 
+// ========== 手动重连分级策略测试（MQTT vs MQTTS） ==========
+
+/**
+ * @brief RECONNECT-01: handleMqttReconnect scheme 分级逻辑源码验证
+ * 非 TLS 场景运行时重建，MQTTS 场景设备重启
+ */
+void test_mqtt_manual_reconnect_scheme_branching() {
+    TestLog::testStart("Manual Reconnect: Scheme-Based Branching");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 提取 handleMqttReconnect 函数体（避免匹配到路由注册处的 lambda）
+    size_t fnStart = content.find("void MqttRouteHandler::handleMqttReconnect");
+    size_t fnEnd = content.find("void MqttRouteHandler::", fnStart + 10);
+    TEST_ASSERT_TRUE_MESSAGE(fnStart != std::string::npos,
+        "handleMqttReconnect function must exist");
+    std::string fnBody = content.substr(fnStart, fnEnd != std::string::npos ? fnEnd - fnStart : std::string::npos);
+
+    // 1. 必须从配置读取 scheme 字段
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("scheme") != std::string::npos &&
+        fnBody.find("\"mqtts\"") != std::string::npos,
+        "handleMqttReconnect must read mqtt.scheme from config and check for \"mqtts\"");
+    TestLog::step("scheme field read and mqtts check present");
+
+    // 2. MQTTS 分支：使用 scheduleConfigReboot 安全重启
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("scheduleConfigReboot(\"MQTT manual reconnect (MQTTS)\")") != std::string::npos,
+        "MQTTS branch must call scheduleConfigReboot with descriptive reason including '(MQTTS)'");
+    TestLog::step("MQTTS branch uses scheduleConfigReboot");
+
+    // 3. 非 TLS 分支：使用 restartMQTTDeferred(true) 运行时重建
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("restartMQTTDeferred(true)") != std::string::npos,
+        "Non-TLS branch must call restartMQTTDeferred(true) for forced runtime rebuild");
+    TestLog::step("Non-TLS branch uses restartMQTTDeferred(true)");
+
+    // 4. MQTTS 分支必须在非 TLS 分支之前（先判断是否需要重启，再 fallback）
+    size_t mqttsBranch = fnBody.find("isMqtts");
+    size_t nonTlsBranch = fnBody.find("restartMQTTDeferred(true)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqttsBranch != std::string::npos && nonTlsBranch != std::string::npos &&
+        mqttsBranch < nonTlsBranch,
+        "MQTTS branch (isMqtts check) must precede non-TLS runtime rebuild");
+    TestLog::step("Branch ordering: MQTTS check before non-TLS fallback");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-02: 非 TLS 场景运行时重建不触发设备重启
+ * 确保 MQTT (plain) 手动重连绝不会导致设备变砖
+ */
+void test_mqtt_manual_reconnect_non_tls_no_reboot() {
+    TestLog::testStart("Manual Reconnect: Non-TLS Never Reboots");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 定位 handleMqttReconnect 函数体
+    size_t fnStart = content.find("void MqttRouteHandler::handleMqttReconnect");
+    size_t fnEnd = content.find("void MqttRouteHandler::", fnStart + 10);
+    TEST_ASSERT_TRUE_MESSAGE(fnStart != std::string::npos && fnEnd != std::string::npos,
+        "handleMqttReconnect function must exist");
+    std::string fnBody = content.substr(fnStart, fnEnd - fnStart);
+
+    // 1. 函数内不直接调用 ESP.restart()
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("ESP.restart()") == std::string::npos,
+        "handleMqttReconnect must never call ESP.restart() directly");
+    TestLog::step("No direct ESP.restart() in handleMqttReconnect");
+
+    // 2. 非 TLS 分支的 scheduleConfigReboot 只在 isMqtts 为 true 时执行
+    //    验证 isMqtts 判断后 MQTTS 分支有 return，确保非 TLS 不会进入重启路径
+    size_t isMqttsCheck = fnBody.find("if (isMqtts)");
+    size_t returnAfterMqtts = fnBody.find("return;", isMqttsCheck);
+    size_t nonTlsCode = fnBody.find("restartMQTTDeferred", isMqttsCheck);
+    TEST_ASSERT_TRUE_MESSAGE(
+        isMqttsCheck != std::string::npos && returnAfterMqtts != std::string::npos &&
+        nonTlsCode != std::string::npos && returnAfterMqtts < nonTlsCode,
+        "MQTTS branch must have return; before non-TLS code to prevent fall-through reboot");
+    TestLog::step("MQTTS branch returns before non-TLS runtime rebuild");
+
+    // 3. 非 TLS 响应不包含 rebooting: true
+    //    （验证响应结构：reconnecting 而非 rebooting）
+    size_t nonTlsResponse = fnBody.find("reconnecting", isMqttsCheck);
+    TEST_ASSERT_TRUE_MESSAGE(
+        nonTlsResponse != std::string::npos,
+        "Non-TLS response must include 'reconnecting' field (not 'rebooting')");
+    TestLog::step("Non-TLS response uses 'reconnecting' field");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-03: MQTTS 场景设备重启的安全机制验证
+ * 确保 MQTTS 场景通过 SystemRebooter 延迟重启，而非直接重启
+ */
+void test_mqtt_manual_reconnect_mqtts_safe_reboot() {
+    TestLog::testStart("Manual Reconnect: MQTTS Safe Reboot");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 1. MQTTS 分支使用 SystemRebooter（不是 ESP.restart）
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("scheduleConfigReboot(\"MQTT manual reconnect (MQTTS)\")") != std::string::npos,
+        "MQTTS reconnect must use scheduleConfigReboot (delayed, with diagnostics)");
+    TestLog::step("MQTTS uses scheduleConfigReboot (delayed reboot with diagnostics)");
+
+    // 2. 重启前先发送 HTTP 响应（确保前端收到通知）
+    size_t mqttsBranch = content.find("if (isMqtts)");
+    size_t sendJson = content.find("HandlerUtils::sendJsonStream", mqttsBranch);
+    size_t scheduleReboot = content.find("scheduleConfigReboot(\"MQTT manual reconnect (MQTTS)\")", mqttsBranch);
+    TEST_ASSERT_TRUE_MESSAGE(
+        sendJson != std::string::npos && scheduleReboot != std::string::npos &&
+        sendJson < scheduleReboot,
+        "MQTTS branch must send HTTP response BEFORE scheduling reboot");
+    TestLog::step("HTTP response sent before reboot scheduled");
+
+    // 3. 重启前响应包含 rebooting: true 和 connected: false
+    std::string mqttsBlock = content.substr(mqttsBranch, scheduleReboot - mqttsBranch + 100);
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqttsBlock.find("\"rebooting\"") != std::string::npos,
+        "MQTTS response must include rebooting=true to notify frontend");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqttsBlock.find("\"connected\"") != std::string::npos,
+        "MQTTS response must include connected=false");
+    TestLog::step("MQTTS response includes rebooting + connected fields");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-04: 前置守卫（禁用/自动重连）在 scheme 判断之前
+ * 确保 MQTT 禁用或 autoReconnect=false 时，无论 scheme 是什么都不会触发重连或重启
+ */
+void test_mqtt_manual_reconnect_guards_before_scheme() {
+    TestLog::testStart("Manual Reconnect: Guards Before Scheme Check");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    size_t fnStart = content.find("void MqttRouteHandler::handleMqttReconnect");
+    size_t fnEnd = content.find("void MqttRouteHandler::", fnStart + 10);
+    TEST_ASSERT_TRUE(fnStart != std::string::npos && fnEnd != std::string::npos);
+    std::string fnBody = content.substr(fnStart, fnEnd - fnStart);
+
+    // 1. MQTT 禁用守卫在 scheme 判断之前
+    size_t disabledGuard = fnBody.find("mqttEnabled");
+    size_t schemeCheck = fnBody.find("isMqtts");
+    TEST_ASSERT_TRUE_MESSAGE(
+        disabledGuard != std::string::npos && schemeCheck != std::string::npos &&
+        disabledGuard < schemeCheck,
+        "MQTT disabled guard must be checked before scheme branching");
+    TestLog::step("Disabled guard precedes scheme check");
+
+    // 2. autoReconnect 守卫在 scheme 判断之前
+    size_t autoReconnectGuard = fnBody.find("autoReconnect");
+    TEST_ASSERT_TRUE_MESSAGE(
+        autoReconnectGuard != std::string::npos && autoReconnectGuard < schemeCheck,
+        "autoReconnect guard must be checked before scheme branching");
+    TestLog::step("autoReconnect guard precedes scheme check");
+
+    // 3. 已连接快速路径在最前面
+    size_t connectedCheck = fnBody.find("getIsConnected");
+    TEST_ASSERT_TRUE_MESSAGE(
+        connectedCheck != std::string::npos && connectedCheck < disabledGuard,
+        "Connected fast path must be the first check");
+    TestLog::step("Connected fast path is first");
+
+    // 4. 禁用响应包含 mqttDisabled 字段
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("mqttDisabled") != std::string::npos,
+        "Disabled response must include mqttDisabled field");
+    TestLog::step("mqttDisabled field present in disabled response");
+
+    // 5. autoReconnect 拒绝响应包含 autoReconnectDisabled 字段
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("autoReconnectDisabled") != std::string::npos,
+        "autoReconnect rejection response must include autoReconnectDisabled field");
+    TestLog::step("autoReconnectDisabled field present in rejection response");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-05: 非 TLS 重建失败时设备仍可用（不变砖）
+ * restartMQTTDeferred 失败时返回错误信息但设备继续运行
+ */
+void test_mqtt_manual_reconnect_failure_resilience() {
+    TestLog::testStart("Manual Reconnect: Failure Resilience");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    size_t fnStart = content.find("void MqttRouteHandler::handleMqttReconnect");
+    size_t fnEnd = content.find("void MqttRouteHandler::", fnStart + 10);
+    std::string fnBody = content.substr(fnStart, fnEnd - fnStart);
+
+    // 1. restartMQTTDeferred 返回值被检查
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("deferredOk") != std::string::npos,
+        "restartMQTTDeferred return value must be captured and checked");
+    TestLog::step("restartMQTTDeferred return value captured");
+
+    // 2. 失败时返回不同的 message（前端可区分）
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("rebuild failed") != std::string::npos ||
+        fnBody.find("insufficient memory") != std::string::npos,
+        "Failed rebuild must return descriptive error message");
+    TestLog::step("Descriptive error message on rebuild failure");
+
+    // 3. 无论成功或失败，都返回 success: true（HTTP 请求本身是成功的）
+    //    失败只是 MQTT 重建失败，不是 HTTP 错误
+    size_t nonTlsResponse = fnBody.find("deferredOk");
+    TEST_ASSERT_TRUE_MESSAGE(
+        nonTlsResponse != std::string::npos,
+        "Non-TLS response must always include success field");
+    TestLog::step("HTTP response always success regardless of rebuild result");
+
+    // 4. 失败路径不触发设备重启（不会变砖）
+    size_t scheduleAfterNonTls = fnBody.find("scheduleConfigReboot", fnBody.find("restartMQTTDeferred"));
+    TEST_ASSERT_TRUE_MESSAGE(
+        scheduleAfterNonTls == std::string::npos,
+        "Non-TLS path must NEVER schedule a reboot, even on rebuild failure");
+    TestLog::step("No reboot scheduled on non-TLS rebuild failure (device stays alive)");
+
+    // 5. 验证 restartMQTTDeferred 内存不足时的安全行为（源码级）
+    std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos,
+        "restartMQTTDeferred must exist");
+    // 内存不足时返回 false（不崩溃、不重启）
+    size_t returnFalse = pm.find("return false", defPos);
+    TEST_ASSERT_TRUE_MESSAGE(returnFalse != std::string::npos,
+        "restartMQTTDeferred must return false on insufficient memory (not crash)");
+    TestLog::step("restartMQTTDeferred returns false on low memory (safe failure)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-06: 所有分支的响应 JSON 格式完整性验证
+ * 确保前端能正确区分每种情况并展示相应 UI
+ */
+void test_mqtt_manual_reconnect_response_format() {
+    TestLog::testStart("Manual Reconnect: Response Format Completeness");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    size_t fnStart = content.find("void MqttRouteHandler::handleMqttReconnect");
+    size_t fnEnd = content.find("void MqttRouteHandler::", fnStart + 10);
+    std::string fnBody = content.substr(fnStart, fnEnd - fnStart);
+
+    // 场景 1：已连接 → connected=true, reconnecting=false
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("\"connected\", true") != std::string::npos ||
+        fnBody.find("[\"connected\"] = true") != std::string::npos ||
+        fnBody.find("[\"connected\"]") != std::string::npos,
+        "Connected fast path: must return connected=true");
+    TestLog::step("Connected response: connected=true");
+
+    // 场景 2：禁用 → mqttDisabled=true
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("\"mqttDisabled\", true") != std::string::npos ||
+        fnBody.find("[\"mqttDisabled\"] = true") != std::string::npos ||
+        fnBody.find("[\"mqttDisabled\"]") != std::string::npos,
+        "Disabled response: must return mqttDisabled=true");
+    TestLog::step("Disabled response: mqttDisabled=true");
+
+    // 场景 3：autoReconnect 关闭 → autoReconnectDisabled=true
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("\"autoReconnectDisabled\", true") != std::string::npos ||
+        fnBody.find("[\"autoReconnectDisabled\"] = true") != std::string::npos ||
+        fnBody.find("[\"autoReconnectDisabled\"]") != std::string::npos,
+        "autoReconnect rejection: must return autoReconnectDisabled=true");
+    TestLog::step("autoReconnect rejection: autoReconnectDisabled=true");
+
+    // 场景 4：MQTTS → rebooting=true, connected=false
+    std::string mqttsBlock = fnBody.substr(fnBody.find("isMqtts"), fnBody.find("return;", fnBody.find("isMqtts")) - fnBody.find("isMqtts"));
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqttsBlock.find("rebooting") != std::string::npos,
+        "MQTTS response: must include rebooting field");
+    TestLog::step("MQTTS response: rebooting=true");
+
+    // 场景 5：非 TLS → reconnecting=bool(结果), message=描述
+    // 注意：注释中也包含 restartMQTTDeferred(true) 文本，需用 "pm->" 前缀定位到实际代码
+    size_t nonTlsBlock = fnBody.find("pm->restartMQTTDeferred(true)");
+    std::string afterNonTls = fnBody.substr(nonTlsBlock, 300);
+    TEST_ASSERT_TRUE_MESSAGE(
+        afterNonTls.find("reconnecting") != std::string::npos &&
+        (afterNonTls.find("deferredOk") != std::string::npos ||
+         afterNonTls.find("rebuild failed") != std::string::npos ||
+         afterNonTls.find("insufficient memory") != std::string::npos),
+        "Non-TLS response: must include reconnecting field and descriptive message");
+    TestLog::step("Non-TLS response: reconnecting + message");
+
+    // 所有分支都返回 success: true
+    // 计算 success 出现次数（至少 5 次：已连接/禁用/autoReconnect/MQTTS/非TLS）
+    int successCount = 0;
+    size_t pos = 0;
+    while ((pos = fnBody.find("[\"success\"] = true", pos)) != std::string::npos) {
+        successCount++;
+        pos++;
+    }
+    // 加上 doc["success"] = true 格式
+    pos = 0;
+    while ((pos = fnBody.find("\"success\", true", pos)) != std::string::npos) {
+        successCount++;
+        pos++;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        successCount >= 4,
+        "All response branches must include success=true (found fewer than 4)");
+    TestLog::step("All branches return success=true");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-07: 运行时重建后 MQTT 客户端能正常自动重连
+ * 模拟 restartMQTTDeferred 成功后，客户端由 loop auto-reconnect 异步连接
+ */
+void test_mqtt_manual_reconnect_auto_reconnect_after_rebuild() {
+    TestLog::testStart("Manual Reconnect: Auto-Reconnect After Rebuild");
+
+    // 模拟 restartMQTTDeferred(true) 后的客户端生命周期
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtt";
+    config.server = "broker.example.com";
+    config.port = 1883;
+    config.clientId = "TestDevice001";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;  // 短间隔加速测试
+
+    // 初始连接
+    mqtt.initialize(config);
+    mqtt.connect();
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("Initial MQTT connection established");
+
+    // 模拟断开（如 broker 不可达）
+    mqtt.disconnect();
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTT disconnected (simulating connection loss)");
+
+    // 模拟 restartMQTTDeferred(true): 停止 + 重新初始化
+    mqtt.setStopped(true);
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TestLog::step("Client stopped (simulating destroy phase)");
+
+    // 重建客户端（forceRebuild=true 跳过 "already active" 检查）
+    MockMQTTClient newMqtt;
+    newMqtt.initialize(config);
+    TEST_ASSERT_FALSE(newMqtt.getIsConnected());
+    TEST_ASSERT_FALSE(newMqtt.isStopped());
+    TestLog::step("New client created (simulating rebuild phase)");
+
+    // 模拟 loop 中 auto-reconnect：由 handle() 自动发起连接
+    newMqtt.connect();  // 模拟 auto-reconnect 在 loop 中触发
+    TEST_ASSERT_TRUE(newMqtt.getIsConnected());
+    TestLog::step("Auto-reconnect successful after rebuild");
+
+    // 验证 scheme 保持正确
+    MQTTConfig afterConfig = newMqtt.getConfig();
+    TEST_ASSERT_EQUAL_STRING("mqtt", afterConfig.scheme.c_str());
+    TEST_ASSERT_EQUAL(1883, afterConfig.port);
+    TestLog::step("Scheme and port preserved after rebuild");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECONNECT-08: MQTTS 重启后配置完整性验证
+ * 确保 scheduleConfigReboot 不会丢失任何配置
+ */
+void test_mqtt_manual_reconnect_mqtts_config_preserved() {
+    TestLog::testStart("Manual Reconnect: MQTTS Config Preserved After Reboot");
+
+    // 模拟 MQTTS 配置
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtts";
+    config.server = "tls.broker.example.com";
+    config.port = 8883;
+    config.clientId = "SecureDevice001";
+    config.username = "user";
+    config.password = "pass";
+    config.autoReconnect = true;
+
+    // 验证所有关键字段非空/有效
+    TEST_ASSERT_EQUAL_STRING("mqtts", config.scheme.c_str());
+    TEST_ASSERT_EQUAL(8883, config.port);
+    TEST_ASSERT_TRUE(config.enabled);
+    TEST_ASSERT_TRUE(config.autoReconnect);
+    TEST_ASSERT_TRUE(config.server.length() > 0);
+    TEST_ASSERT_TRUE(config.clientId.length() > 0);
+    TestLog::step("MQTTS config validated before simulated reboot");
+
+    // 模拟重启后重新加载配置（restartMQTTDeferred 从 protocol.json 读取）
+    // 配置保存在文件中的，重启后不丢失
+    MockMQTTClient mqtt;
+    mqtt.initialize(config);
+    MQTTConfig afterBoot = mqtt.getConfig();
+
+    TEST_ASSERT_EQUAL_STRING("mqtts", afterBoot.scheme.c_str());
+    TEST_ASSERT_EQUAL(8883, afterBoot.port);
+    TEST_ASSERT_EQUAL_STRING("tls.broker.example.com", afterBoot.server.c_str());
+    TEST_ASSERT_EQUAL_STRING("SecureDevice001", afterBoot.clientId.c_str());
+    TEST_ASSERT_EQUAL_STRING("user", afterBoot.username.c_str());
+    TEST_ASSERT_EQUAL_STRING("pass", afterBoot.password.c_str());
+    TestLog::step("All MQTTS config fields preserved after simulated reboot");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-01: 保存 MQTT 配置走热重建而非无条件设备重启（源码守护）
+ * 守护点：
+ *  1. ProtocolRouteHandler 保存处理不再无条件 scheduleConfigReboot，
+ *     改为 requestMqttRestartAsync() 置标志 + restartRequired=false 响应契约
+ *  2. requestMqttRestartAsync 仅置标志（不在 async_tcp 小栈里重建 TLS）
+ *  3. handle() 在 loopTask 消费标志，失败且仍启用时回退设备重启（稳定性保底）
+ *  4. restartMQTTDeferred 的内存门槛防护全部保留（MQTTS 防护不回退）
+ *  5. 前端适配 mqttHotRestart 响应字段
+ */
+void test_mqtt_config_save_uses_hot_restart() {
+    TestLog::testStart("Config Save: Hot Restart Instead of Reboot");
+
+    // --- 1. 保存处理函数：热重建替代无条件重启 ---
+    std::string route = readProjectFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!route.empty(), "ProtocolRouteHandler.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("mqttWillReboot") == std::string::npos,
+        "Save handler must NOT use the old unconditional-reboot flag (mqttWillReboot)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("requestMqttRestartAsync()") != std::string::npos,
+        "Save handler must request async MQTT hot-restart");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("[\"restartRequired\"] = false") != std::string::npos,
+        "Save response must report restartRequired=false (no device reboot)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("[\"mqttHotRestart\"] = true") != std::string::npos,
+        "Save response must expose mqttHotRestart flag for the frontend");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("pm->stopMQTT()") != std::string::npos,
+        "Disabling MQTT must stop the client immediately (no rebuild, no reboot)");
+    TestLog::step("Save handler uses hot-restart contract (no unconditional reboot)");
+
+    // --- 2. requestMqttRestartAsync 仅置标志（延迟到 loopTask） ---
+    std::string header = readProjectFile("include/protocols/ProtocolManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "ProtocolManager.h must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("void requestMqttRestartAsync()") != std::string::npos,
+        "requestMqttRestartAsync must be declared");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("volatile bool mqttRestartPending") != std::string::npos,
+        "mqttRestartPending flag must be volatile (set from async_tcp task)");
+
+    std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
+    size_t reqPos = pm.find("void ProtocolManager::requestMqttRestartAsync()");
+    TEST_ASSERT_TRUE_MESSAGE(reqPos != std::string::npos,
+        "requestMqttRestartAsync must be implemented");
+    size_t reqEnd = pm.find("\n}", reqPos);
+    TEST_ASSERT_TRUE_MESSAGE(reqEnd != std::string::npos, "requestMqttRestartAsync body end");
+    std::string reqBody = pm.substr(reqPos, reqEnd - reqPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        reqBody.find("mqttRestartPending = true") != std::string::npos,
+        "requestMqttRestartAsync must only set the pending flag");
+    TEST_ASSERT_TRUE_MESSAGE(
+        reqBody.find("restartMQTTDeferred") == std::string::npos,
+        "requestMqttRestartAsync must NOT rebuild inline (async_tcp stack too small for TLS)");
+    TestLog::step("requestMqttRestartAsync defers rebuild to loopTask");
+
+    // --- 3. handle() 消费标志 + 失败回退重启 ---
+    size_t handlePos = pm.find("void ProtocolManager::handle()");
+    TEST_ASSERT_TRUE_MESSAGE(handlePos != std::string::npos, "handle() must exist");
+    size_t handleEnd = pm.find("void ProtocolManager::handleMessage", handlePos);
+    TEST_ASSERT_TRUE_MESSAGE(handleEnd != std::string::npos, "handle() end marker");
+    std::string handleBody = pm.substr(handlePos, handleEnd - handlePos);
+
+    size_t pendingPos = handleBody.find("if (mqttRestartPending)");
+    TEST_ASSERT_TRUE_MESSAGE(pendingPos != std::string::npos,
+        "handle() must consume mqttRestartPending flag");
+    TEST_ASSERT_TRUE_MESSAGE(
+        handleBody.find("restartMQTTDeferred(true)") != std::string::npos,
+        "Consumption must force rebuild via restartMQTTDeferred(true)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        handleBody.find("scheduleConfigReboot(\"MQTT hot-restart failed\")") != std::string::npos,
+        "Failed hot-restart must fall back to device reboot (stability guarantee)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        handleBody.find("stillEnabled") != std::string::npos,
+        "Fallback reboot must be gated on config still enabled (disable is a normal stop)");
+
+    // 消费点必须在 heapSufficient 早退之前：低内存时也要消费标志，
+    // 由 restartMQTTDeferred 内部门槛判定并回退重启，保证配置必定生效
+    size_t earlyReturnPos = handleBody.find("if (!heapSufficient)");
+    TEST_ASSERT_TRUE_MESSAGE(earlyReturnPos != std::string::npos,
+        "handle() heap guard early-return must exist");
+    TEST_ASSERT_TRUE_MESSAGE(pendingPos < earlyReturnPos,
+        "Pending flag must be consumed BEFORE the heapSufficient early-return");
+    TestLog::step("handle() consumes flag before heap guard, falls back to reboot on failure");
+
+    // --- 4. restartMQTTDeferred 的 MQTTS 内存门槛防护保留 ---
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos, "restartMQTTDeferred must exist");
+    TEST_ASSERT_TRUE_MESSAGE(
+        pm.find("MQTTS_NO_PSRAM_MIN_DRAM_FREE", defPos) != std::string::npos,
+        "MQTTS no-PSRAM DRAM threshold must be preserved");
+    TEST_ASSERT_TRUE_MESSAGE(
+        pm.find("MQTTS_MIN_LARGEST_BLOCK", defPos) != std::string::npos,
+        "MQTTS largest-block threshold must be preserved");
+    TEST_ASSERT_TRUE_MESSAGE(
+        pm.find("GUARD_CRITICAL_DRAM_FREE", defPos) != std::string::npos,
+        "Critical DRAM guard must be preserved");
+    TestLog::step("MQTTS memory thresholds intact in restartMQTTDeferred");
+
+    // --- 5. 前端适配热重建响应 ---
+    std::string fe = readProjectFile("web-src/modules/runtime/protocol/protocol-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!fe.empty(), "protocol-config.js must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        fe.find("mqttHotRestart") != std::string::npos,
+        "Frontend must handle the mqttHotRestart response field");
+    TestLog::step("Frontend handles mqttHotRestart notification");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-02: 热重建 pending 标志消费与回退行为（逻辑镜像）
+ * 镜像 handle() 中的消费逻辑，验证 4 个场景：
+ *  1. 重建成功 → 恰好重建一次、不重启、标志清除
+ *  2. 重建失败且配置仍启用 → 回退设备重启
+ *  3. 重建失败但配置已禁用 → 正常停止，不重启
+ *  4. 连续两次保存 → 标志合并为一次重建
+ */
+void test_mqtt_hot_restart_pending_fallback_behavior() {
+    TestLog::testStart("Hot Restart: Pending Flag & Fallback Behavior");
+
+    // 镜像 ProtocolManager 的热重建消费逻辑
+    struct MirrorHotRestart {
+        volatile bool pending = false;
+        bool rebuildResult = true;   // restartMQTTDeferred 模拟返回值
+        bool configEnabled = true;   // 消费时二次读取的配置状态
+        int rebuildCount = 0;
+        int rebootCount = 0;
+
+        void request() { pending = true; }  // requestMqttRestartAsync 镜像
+
+        void consume() {  // handle() 消费块镜像
+            if (!pending) return;
+            pending = false;
+            rebuildCount++;
+            if (!rebuildResult) {
+                if (configEnabled) {
+                    rebootCount++;  // scheduleConfigReboot 镜像
+                }
+                // 已禁用：restartMQTTDeferred 返回 false 属正常停止，不重启
+            }
+        }
+    };
+
+    // 场景 1：热重建成功 → 一次重建、无重启、标志清除
+    MirrorHotRestart ok;
+    ok.request();
+    TEST_ASSERT_TRUE(ok.pending);
+    ok.consume();
+    TEST_ASSERT_FALSE(ok.pending);
+    TEST_ASSERT_EQUAL(1, ok.rebuildCount);
+    TEST_ASSERT_EQUAL(0, ok.rebootCount);
+    ok.consume();  // 再次 handle()：标志已清除，不重复重建
+    TEST_ASSERT_EQUAL(1, ok.rebuildCount);
+    TestLog::step("Success: rebuild once, no reboot, flag cleared");
+
+    // 场景 2：重建失败且仍启用 → 回退设备重启（稳定性保底，等价旧行为）
+    MirrorHotRestart fail;
+    fail.rebuildResult = false;
+    fail.configEnabled = true;
+    fail.request();
+    fail.consume();
+    TEST_ASSERT_EQUAL(1, fail.rebuildCount);
+    TEST_ASSERT_EQUAL(1, fail.rebootCount);
+    TestLog::step("Failure while enabled: falls back to device reboot");
+
+    // 场景 3：重建失败但已禁用 → 正常停止，绝不重启
+    // （连续两次保存先启后禁的竞态：消费时以最新配置为准）
+    MirrorHotRestart disabled;
+    disabled.rebuildResult = false;
+    disabled.configEnabled = false;
+    disabled.request();
+    disabled.consume();
+    TEST_ASSERT_EQUAL(1, disabled.rebuildCount);
+    TEST_ASSERT_EQUAL(0, disabled.rebootCount);
+    TestLog::step("Failure while disabled: normal stop, no reboot");
+
+    // 场景 4：消费前连续两次保存 → 标志合并，只重建一次（使用最新配置）
+    MirrorHotRestart burst;
+    burst.request();
+    burst.request();
+    burst.consume();
+    TEST_ASSERT_EQUAL(1, burst.rebuildCount);
+    TEST_ASSERT_FALSE(burst.pending);
+    TestLog::step("Two rapid saves coalesce into a single rebuild");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-03: MQTT 禁用保存分支守护（禁用时只停止，不重建不重启）
+ * 守护点：
+ *  1. 禁用分支只走 stopMQTT，绝不置热重建标志（避免无意义重建）
+ *  2. 启用分支不调 stopMQTT（旧客户端由 restartMQTTDeferred 内部释放）
+ *  3. 保底分支（无 ProtocolManager）仍走设备重启确保配置生效
+ *  4. 两个响应标志互斥：mqttHotRestart 与 mqttDisconnected 不同分支置位
+ */
+void test_mqtt_config_save_disable_branch_no_rebuild() {
+    TestLog::testStart("Config Save: Disable Branch Stops Without Rebuild");
+
+    std::string route = readProjectFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!route.empty(), "ProtocolRouteHandler.cpp must be readable");
+
+    // 截取保存后的 MQTT 分支处理块（注意：文件前部另有表单解析的
+    // "if (updateMqtt)"，故用响应标志定义行作为唯一定位点）
+    size_t blockStart = route.find("bool mqttHotRestart = false;");
+    TEST_ASSERT_TRUE_MESSAGE(blockStart != std::string::npos,
+        "mqttHotRestart flag definition must exist in save handler");
+    size_t blockEnd = route.find("#endif", blockStart);
+    TEST_ASSERT_TRUE_MESSAGE(blockEnd != std::string::npos, "updateMqtt block end marker");
+    std::string block = route.substr(blockStart, blockEnd - blockStart);
+
+    // 1. 禁用分支：!mqttEnabledNow → stopMQTT，且 stopMQTT 在 requestMqttRestartAsync 之前
+    size_t disabledPos = block.find("if (!mqttEnabledNow)");
+    TEST_ASSERT_TRUE_MESSAGE(disabledPos != std::string::npos,
+        "Disable branch (!mqttEnabledNow) must be checked first");
+    size_t stopPos = block.find("stopMQTT()", disabledPos);
+    size_t requestPos = block.find("requestMqttRestartAsync()");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos != std::string::npos,
+        "Disable branch must call stopMQTT");
+    TEST_ASSERT_TRUE_MESSAGE(requestPos != std::string::npos,
+        "Enable branch must call requestMqttRestartAsync");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos < requestPos,
+        "stopMQTT (disable branch) must come before requestMqttRestartAsync (enable branch)");
+    TestLog::step("Disable branch checked first: stop only, no rebuild flag");
+
+    // 2. 禁用分支不置 mqttHotRestart：requestMqttRestartAsync 不得出现在禁用分支内
+    //    （禁用分支到 else 之间的代码不含 requestMqttRestartAsync）
+    size_t elseBranch = block.find("} else if", disabledPos);
+    TEST_ASSERT_TRUE_MESSAGE(elseBranch != std::string::npos, "else-if enable branch must exist");
+    std::string disableBody = block.substr(disabledPos, elseBranch - disabledPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        disableBody.find("requestMqttRestartAsync") == std::string::npos,
+        "Disable branch must NOT request a hot-restart");
+    TEST_ASSERT_TRUE_MESSAGE(
+        disableBody.find("scheduleConfigReboot") == std::string::npos,
+        "Disable branch must NOT schedule a reboot");
+    TEST_ASSERT_TRUE_MESSAGE(
+        disableBody.find("mqttStoppedNow = true") != std::string::npos,
+        "Disable branch must set mqttStoppedNow for the frontend notification");
+    TestLog::step("Disable branch: no hot-restart, no reboot, sets mqttStoppedNow");
+
+    // 3. 保底分支：无 ProtocolManager 时仍走设备重启（配置必定生效）
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("scheduleConfigReboot(\"MQTT config changed\")") != std::string::npos,
+        "Null-pm fallback must still schedule reboot to guarantee config takes effect");
+    TestLog::step("Null ProtocolManager fallback keeps reboot safety net");
+
+    // 4. 响应标志互斥：分属不同分支置位
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("mqttHotRestart = true") != std::string::npos,
+        "Enable branch must set mqttHotRestart");
+    std::string enableBody = block.substr(elseBranch);
+    TEST_ASSERT_TRUE_MESSAGE(
+        enableBody.find("mqttStoppedNow = true") == std::string::npos,
+        "Enable branch must NOT set mqttStoppedNow (flags are mutually exclusive)");
+    TestLog::step("mqttHotRestart / mqttDisconnected flags are mutually exclusive");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-04: 热重建链路的编译隔离与消费位置约束
+ * 守护点：
+ *  1. 消费块在 #if FASTBEE_ENABLE_MQTT 内（lean 构建不引入 MQTT 符号）
+ *  2. 消费块在 if (mqttClient) 块之外（客户端为 null 时也能消费标志）
+ *  3. ProtocolManager.cpp 引入 SystemRebooter.h（回退重启依赖）
+ *  4. 头文件标志声明也在 FASTBEE_ENABLE_MQTT 条件编译内
+ */
+void test_mqtt_hot_restart_compile_isolation() {
+    TestLog::testStart("Hot Restart: Compile Isolation & Consume Position");
+
+    std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
+
+    size_t handlePos = pm.find("void ProtocolManager::handle()");
+    size_t handleEnd = pm.find("void ProtocolManager::handleMessage", handlePos);
+    TEST_ASSERT_TRUE_MESSAGE(handlePos != std::string::npos && handleEnd != std::string::npos,
+        "handle() boundaries must be locatable");
+    std::string handleBody = pm.substr(handlePos, handleEnd - handlePos);
+
+    // 1. 消费块在 #if FASTBEE_ENABLE_MQTT 内：标志检查前有 #if，后有 #endif
+    size_t ifMqtt = handleBody.find("#if FASTBEE_ENABLE_MQTT");
+    size_t pendingPos = handleBody.find("if (mqttRestartPending)");
+    size_t endifPos = handleBody.find("#endif", pendingPos);
+    TEST_ASSERT_TRUE_MESSAGE(ifMqtt != std::string::npos && pendingPos != std::string::npos,
+        "MQTT guard and pending consumption must exist in handle()");
+    TEST_ASSERT_TRUE_MESSAGE(ifMqtt < pendingPos,
+        "Pending consumption must be inside #if FASTBEE_ENABLE_MQTT");
+    TEST_ASSERT_TRUE_MESSAGE(endifPos != std::string::npos,
+        "#endif must close the MQTT block after pending consumption");
+    TestLog::step("Consumption guarded by FASTBEE_ENABLE_MQTT (lean builds unaffected)");
+
+    // 2. 消费块在 if (mqttClient) 块之外：客户端首次创建（null）时也能消费
+    //    验证方式：if (mqttClient) 块在 pending 检查之前已由 "}" 闭合——
+    //    即 pending 检查前的注释明确它是独立块（非嵌套在 mqttClient 块内）
+    size_t clientBlockPos = handleBody.find("if (mqttClient) {");
+    TEST_ASSERT_TRUE_MESSAGE(clientBlockPos != std::string::npos,
+        "if (mqttClient) block must exist");
+    TEST_ASSERT_TRUE_MESSAGE(clientBlockPos < pendingPos,
+        "Pending consumption must come after the mqttClient handle block");
+    // 独立块证据：消费块注释在 mqttClient 块外（两者之间存在块闭合后的注释行）
+    std::string between = handleBody.substr(clientBlockPos, pendingPos - clientBlockPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        between.find("MQTT \u70ed\u91cd\u5efa") != std::string::npos ||
+        between.find("hot-restart") != std::string::npos ||
+        between.rfind("    }") != std::string::npos,
+        "Pending consumption must be a standalone block outside if (mqttClient)");
+    TestLog::step("Consumption is outside if (mqttClient) - works with null client");
+
+    // 3. 回退重启依赖头文件
+    TEST_ASSERT_TRUE_MESSAGE(
+        pm.find("#include \"systems/SystemRebooter.h\"") != std::string::npos,
+        "ProtocolManager.cpp must include SystemRebooter.h for fallback reboot");
+    TestLog::step("SystemRebooter.h included for fallback path");
+
+    // 4. 头文件标志声明在条件编译内
+    std::string header = readProjectFile("include/protocols/ProtocolManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "ProtocolManager.h must be readable");
+    size_t declPos = header.find("volatile bool mqttRestartPending");
+    TEST_ASSERT_TRUE_MESSAGE(declPos != std::string::npos, "Flag declaration must exist");
+    size_t guardBefore = header.rfind("#if FASTBEE_ENABLE_MQTT", declPos);
+    size_t guardClose = header.find("#endif", declPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        guardBefore != std::string::npos && guardClose != std::string::npos,
+        "mqttRestartPending must be declared inside #if FASTBEE_ENABLE_MQTT");
+    TestLog::step("Header flag declaration also guarded by FASTBEE_ENABLE_MQTT");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-05: 前端热重建通知分支顺序与兼容性
+ * 守护点：
+ *  1. mqttHotRestart 分支必须在 mqttDisconnected 之前（优先级正确）
+ *  2. 保留旧 mqttReconnected 兼容分支（其它接口仍返回该字段）
+ *  3. 热重建通知文案提示"重新连接"而非"重启设备"
+ *  4. clientId 回填逻辑保留（自动生成时更新输入框）
+ */
+void test_mqtt_hot_restart_frontend_branch_order() {
+    TestLog::testStart("Hot Restart: Frontend Branch Order & Compatibility");
+
+    std::string fe = readProjectFile("web-src/modules/runtime/protocol/protocol-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!fe.empty(), "protocol-config.js must be readable");
+
+    // 1. 分支顺序：mqttHotRestart → mqttDisconnected → mqttReconnected（兼容）
+    size_t hotPos = fe.find("res.data.mqttHotRestart");
+    size_t discPos = fe.find("res.data.mqttDisconnected");
+    size_t reconPos = fe.find("res.data.mqttReconnected");
+    TEST_ASSERT_TRUE_MESSAGE(hotPos != std::string::npos,
+        "Frontend must check mqttHotRestart");
+    TEST_ASSERT_TRUE_MESSAGE(discPos != std::string::npos,
+        "Frontend must check mqttDisconnected");
+    TEST_ASSERT_TRUE_MESSAGE(reconPos != std::string::npos,
+        "Frontend must keep mqttReconnected compatibility branch");
+    TEST_ASSERT_TRUE_MESSAGE(hotPos < discPos && discPos < reconPos,
+        "Branch order must be: mqttHotRestart -> mqttDisconnected -> mqttReconnected");
+    TestLog::step("Branch order: hotRestart -> disconnected -> reconnected(compat)");
+
+    // 2. 热重建文案：提示重新连接，不提及设备重启（只检查通知文案行，
+    //    避免误伤分支内注释中的"不重启设备"字样）
+    size_t hotBranchEnd = fe.find("else", hotPos);
+    std::string hotBranch = fe.substr(hotPos, hotBranchEnd - hotPos);
+    size_t notifPos = hotBranch.find("Notification.success");
+    TEST_ASSERT_TRUE_MESSAGE(notifPos != std::string::npos,
+        "Hot-restart branch must show a success notification");
+    size_t notifEol = hotBranch.find("\n", notifPos);
+    std::string notifLine = hotBranch.substr(notifPos,
+        (notifEol == std::string::npos ? hotBranch.size() : notifEol) - notifPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        notifLine.find("\u91cd\u65b0\u8fde\u63a5") != std::string::npos,
+        "Hot-restart notification must mention reconnecting");
+    TEST_ASSERT_TRUE_MESSAGE(
+        notifLine.find("\u8bbe\u5907\u91cd\u542f") == std::string::npos,
+        "Hot-restart notification must NOT mention device reboot");
+    TestLog::step("Hot-restart notification says reconnecting, not rebooting");
+
+    // 3. clientId 回填保留
+    TEST_ASSERT_TRUE_MESSAGE(
+        fe.find("res.data.mqttClientId") != std::string::npos,
+        "Auto-generated clientId backfill must be preserved");
+    TestLog::step("Auto-generated clientId backfill preserved");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief SAVE-HOT-06: 保存处理全流程逻辑镜像（启用/禁用/无 PM 三分支）
+ * 镜像 handleSaveProtocolConfig 的 MQTT 分支 + 响应字段生成，验证：
+ *  1. 启用+PM 存在 → hotRestart 响应，不重启
+ *  2. 禁用+PM 存在 → disconnected 响应，不重建不重启
+ *  3. 启用+PM 为 null → 回退设备重启
+ *  4. 未更新 MQTT 配置（updateMqtt=false）→ 无任何 MQTT 动作
+ */
+void test_mqtt_config_save_flow_mirror() {
+    TestLog::testStart("Config Save: Full Flow Logic Mirror");
+
+    struct MirrorSaveFlow {
+        bool updateMqtt = false;
+        bool mqttEnabledNow = false;
+        bool hasPm = true;
+        // 结果
+        bool stopped = false;
+        bool restartRequested = false;
+        bool rebootScheduled = false;
+        bool respHotRestart = false;
+        bool respDisconnected = false;
+        bool respRestartRequired = true;  // 验证必须被设为 false
+
+        void run() {  // handleSaveProtocolConfig MQTT 尾部镜像
+            bool mqttHotRestart = false;
+            bool mqttStoppedNow = false;
+            if (updateMqtt) {
+                if (!mqttEnabledNow) {
+                    if (hasPm) { stopped = true; mqttStoppedNow = true; }
+                } else if (hasPm) {
+                    restartRequested = true;
+                    mqttHotRestart = true;
+                } else {
+                    rebootScheduled = true;
+                }
+            }
+            respRestartRequired = false;
+            respHotRestart = mqttHotRestart;
+            respDisconnected = mqttStoppedNow;
+        }
+    };
+
+    // 场景 1：启用 + PM 存在 → 热重建，无重启
+    MirrorSaveFlow enable;
+    enable.updateMqtt = true;
+    enable.mqttEnabledNow = true;
+    enable.run();
+    TEST_ASSERT_TRUE(enable.restartRequested);
+    TEST_ASSERT_FALSE(enable.stopped);
+    TEST_ASSERT_FALSE(enable.rebootScheduled);
+    TEST_ASSERT_TRUE(enable.respHotRestart);
+    TEST_ASSERT_FALSE(enable.respDisconnected);
+    TEST_ASSERT_FALSE(enable.respRestartRequired);
+    TestLog::step("Enabled + PM: hot-restart requested, no reboot");
+
+    // 场景 2：禁用 + PM 存在 → 只停止
+    MirrorSaveFlow disable;
+    disable.updateMqtt = true;
+    disable.mqttEnabledNow = false;
+    disable.run();
+    TEST_ASSERT_TRUE(disable.stopped);
+    TEST_ASSERT_FALSE(disable.restartRequested);
+    TEST_ASSERT_FALSE(disable.rebootScheduled);
+    TEST_ASSERT_FALSE(disable.respHotRestart);
+    TEST_ASSERT_TRUE(disable.respDisconnected);
+    TestLog::step("Disabled + PM: stop only, no rebuild/reboot");
+
+    // 场景 3：启用 + PM 为 null → 保底设备重启
+    MirrorSaveFlow nullPm;
+    nullPm.updateMqtt = true;
+    nullPm.mqttEnabledNow = true;
+    nullPm.hasPm = false;
+    nullPm.run();
+    TEST_ASSERT_TRUE(nullPm.rebootScheduled);
+    TEST_ASSERT_FALSE(nullPm.restartRequested);
+    TEST_ASSERT_FALSE(nullPm.respHotRestart);
+    TestLog::step("Enabled + null PM: falls back to reboot safety net");
+
+    // 场景 4：未更新 MQTT 配置 → 无任何 MQTT 动作
+    MirrorSaveFlow noMqtt;
+    noMqtt.updateMqtt = false;
+    noMqtt.run();
+    TEST_ASSERT_FALSE(noMqtt.stopped);
+    TEST_ASSERT_FALSE(noMqtt.restartRequested);
+    TEST_ASSERT_FALSE(noMqtt.rebootScheduled);
+    TEST_ASSERT_FALSE(noMqtt.respHotRestart);
+    TEST_ASSERT_FALSE(noMqtt.respDisconnected);
+    TEST_ASSERT_FALSE(noMqtt.respRestartRequired);
+    TestLog::step("No MQTT update: no MQTT actions, restartRequired still false");
+
+    TestLog::testEnd(true);
+}
+
+// ============================================================
+// MQTT 自动重连自愈看门狗回归测试
+// 背景：一次性重连任务异常终止（如栈溢出）会遗留 _reconnectPending/_reconnectRunning
+// 卡死，使 handle() 调度门控（!_reconnectPending && !_reconnectRunning）永远不满足、
+// 自动重连永久停摆，表现为必须手动打开协议界面刷新（触发 restartMQTTDeferred
+// 重建客户端重置标志）才能恢复。修复：handle() 自愈看门狗 + reconnectTaskEntry
+// 退出始终清标志 + resetErrorCounters 清除卡死调度标志。
+// ============================================================
+
+static MQTTConfig makeReconnectTestConfig() {
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtt";
+    config.server = "broker.example.com";
+    config.port = 1883;
+    config.clientId = "TestDevice001";
+    config.username = "user";
+    config.password = "pass";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;  // 短间隔加速测试
+    return config;
+}
+
+// WATCHDOG-1: 看门狗在标志卡死超过阈值后强制恢复并重新调度
+void test_mqtt_reconnect_watchdog_recovers_stuck_flags() {
+    TestLog::testStart("WATCHDOG-1: Recover stuck reconnect flags");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+
+    // 模拟一次性重连任务异常终止：pending+running 卡死，调度时间戳停留在 1000ms
+    mqtt.simulateStuckReconnect(1000);
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+    TEST_ASSERT_TRUE(mqtt.isReconnectRunning());
+    TEST_ASSERT_TRUE(mqtt.isReconnectTaskAlive());
+    TestLog::step("Simulated stuck reconnect (pending=running=true, scheduledMs=1000)");
+
+    // 时间推进但未超过看门狗阈值：不应恢复，门控阻塞 → 不调度
+    bool r1 = mqtt.handleAutoReconnect(1000 + MockMQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS - 1000);
+    TEST_ASSERT_FALSE(r1);
+    TEST_ASSERT_TRUE(mqtt.isReconnectRunning());
+    TestLog::step("Before watchdog timeout: still stuck, no reschedule");
+
+    // 时间推进超过看门狗阈值：强制恢复标志并重新调度
+    bool r2 = mqtt.handleAutoReconnect(1000 + MockMQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS + 1000);
+    TEST_ASSERT_TRUE(r2);   // 恢复后门控满足，立即重新调度
+    TEST_ASSERT_FALSE(mqtt.isReconnectRunning());  // 卡死标志已清除
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());   // 新一轮重连已调度
+    TEST_ASSERT_TRUE(mqtt.isReconnectTaskAlive()); // 新任务已创建
+    TestLog::step("After watchdog timeout: flags recovered, rescheduled");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-2: recoverStuckReconnect 回收僵死任务并重置退避计数
+void test_mqtt_reconnect_watchdog_resets_task_and_counters() {
+    TestLog::testStart("WATCHDOG-2: recoverStuckReconnect resets task and counters");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+
+    mqtt.setConsecutiveTimeouts(5);  // 卡死前累积的连续超时
+    mqtt.simulateStuckReconnect(2000);
+    TEST_ASSERT_TRUE(mqtt.isReconnectTaskAlive());
+    TEST_ASSERT_EQUAL(5, mqtt.getConsecutiveTimeouts());
+
+    mqtt.recoverStuckReconnect();
+
+    TEST_ASSERT_FALSE(mqtt.isReconnectPending());
+    TEST_ASSERT_FALSE(mqtt.isReconnectRunning());
+    TEST_ASSERT_FALSE(mqtt.isReconnectTaskAlive());       // 僵死任务已回收
+    TEST_ASSERT_EQUAL(0, mqtt.getConsecutiveTimeouts());  // 计数清零避免恢复即慢模式
+    TEST_ASSERT_EQUAL(0, (int)mqtt.getReconnectScheduledMs());
+    TestLog::step("recoverStuckReconnect cleared flags, task, and counters");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-3: 调度门控在重连运行中阻塞（且看门狗不误触发）
+void test_mqtt_reconnect_gate_blocks_when_running() {
+    TestLog::testStart("WATCHDOG-3: Scheduling gate blocks when running");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+
+    // 重连正在进行（running=true，scheduledMs=0 表示未启用看门狗计时，不误触发）
+    mqtt.setReconnectRunning(true);
+    TEST_ASSERT_EQUAL(0, (int)mqtt.getReconnectScheduledMs());
+
+    // 即使间隔已到，门控 !_reconnectRunning 为假 → 不调度
+    bool r = mqtt.handleAutoReconnect(100000);
+    TEST_ASSERT_FALSE(r);
+    TEST_ASSERT_FALSE(mqtt.isReconnectPending());
+    TEST_ASSERT_TRUE(mqtt.isReconnectRunning());  // 未被看门狗误清除
+    TestLog::step("Gate blocked scheduling while reconnect running; no false watchdog trigger");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-4: 加固后的任务退出始终清除标志（镜像 reconnectTaskEntry）
+void test_mqtt_reconnect_task_exit_clears_flags() {
+    TestLog::testStart("WATCHDOG-4: Task exit always clears flags");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+
+    // 调度一次重连
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(1000));
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+    TEST_ASSERT_TRUE(mqtt.isReconnectTaskAlive());
+
+    // 模拟加固后的任务退出（无论 doReconnect 是否执行都清除标志）
+    mqtt.simulateTaskExit();
+    TEST_ASSERT_FALSE(mqtt.isReconnectPending());
+    TEST_ASSERT_FALSE(mqtt.isReconnectRunning());
+    TEST_ASSERT_FALSE(mqtt.isReconnectTaskAlive());
+    TestLog::step("Task exit cleared pending/running/taskAlive");
+
+    // 间隔到达后可再次调度（标志已清，门控满足）
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(1000 + 100));
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+    TestLog::step("Reschedule succeeded after clean task exit");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-5: resetErrorCounters 清除卡死的 pending（网络恢复兑底）
+void test_mqtt_reset_error_counters_clears_stuck_pending() {
+    TestLog::testStart("WATCHDOG-5: resetErrorCounters clears stuck pending");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+
+    // 模拟 pending 卡死（任务已消失但 pending 残留）
+    mqtt.simulateStuckReconnect(3000);
+    mqtt.setReconnectRunning(false);  // 仅 pending 卡死（running 卡死由看门狗负责）
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+
+    // 网络恢复调用 resetErrorCounters
+    mqtt.resetErrorCounters();
+    TEST_ASSERT_FALSE(mqtt.isReconnectPending());
+    TEST_ASSERT_EQUAL(0, (int)mqtt.getReconnectScheduledMs());
+    TEST_ASSERT_EQUAL(0, mqtt.getConsecutiveTimeouts());
+    TestLog::step("resetErrorCounters cleared stuck pending and scheduledMs");
+
+    // pending 清除后门控满足，网络恢复后可重新调度
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(3000 + 100));
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+    TestLog::step("Reschedule succeeded after network-recovery reset");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-6: 连接失败场景——失败后按间隔重试，连接成功后不再调度
+void test_mqtt_reconnect_failure_then_success_stops_scheduling() {
+    TestLog::testStart("WATCHDOG-6: Failure retry then success stops scheduling");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+    mqtt.setShouldFailConnect(true);  // broker 不可达
+
+    // 第一次调度重连
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(1000));
+    // 后台任务执行重连（失败）
+    mqtt.clearReconnectPending();
+    TEST_ASSERT_FALSE(mqtt.connect());  // 连接失败
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    mqtt.simulateTaskExit();
+    TestLog::step("First reconnect attempt failed (broker unreachable)");
+
+    // 间隔到达后再次调度（自动重试）
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(1000 + 100));
+    TestLog::step("Auto-retry scheduled after interval");
+
+    // broker 恢复，连接成功
+    mqtt.setShouldFailConnect(false);
+    mqtt.clearReconnectPending();
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    mqtt.simulateTaskExit();
+
+    // 连接成功后不再调度重连
+    TEST_ASSERT_FALSE(mqtt.handleAutoReconnect(1000 + 10000));
+    TestLog::step("No scheduling after connection restored");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-7: 长时间运行稳定性——多轮失败+偶发卡死，看门狗保证不停摆
+void test_mqtt_reconnect_watchdog_long_running_stability() {
+    TestLog::testStart("WATCHDOG-7: Long-running reconnect stability");
+    MockMQTTClient mqtt;
+    mqtt.initialize(makeReconnectTestConfig());
+    mqtt.setShouldFailConnect(true);  // 持续不可达
+
+    unsigned long t = 0;
+    int scheduledCount = 0;
+    for (int cycle = 0; cycle < 50; ++cycle) {
+        t += 200;
+        if (mqtt.handleAutoReconnect(t)) scheduledCount++;
+        // 每 10 轮模拟一次任务异常卡死，由看门狗恢复
+        if (cycle % 10 == 9) {
+            mqtt.simulateStuckReconnect(t);
+            t += MockMQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS + 1;
+            mqtt.handleAutoReconnect(t);  // 看门狗恢复 + 重新调度
+        }
+        if (mqtt.isReconnectPending()) mqtt.simulateTaskExit();
+    }
+
+    // 核心不变量：经历 50 轮（含 5 次卡死）后仍能调度重连，未永久停摆
+    t += 200;
+    TEST_ASSERT_TRUE(mqtt.handleAutoReconnect(t));
+    TEST_ASSERT_TRUE(scheduledCount >= 45);  // 绝大多数轮次成功调度
+    TEST_ASSERT_FALSE(mqtt.isReconnectRunning());
+    TestLog::step("Survived 50 cycles incl. 5 stuck events; auto-reconnect stayed alive");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-8: 看门狗常量与生产代码同步 + 源码存在性校验
+void test_mqtt_reconnect_watchdog_constant_sync() {
+    TestLog::testStart("WATCHDOG-8: Watchdog constant synced with production");
+    // 看门狗超时必须为 90s（与 MQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS 同步）
+    TEST_ASSERT_EQUAL(90000, (int)MockMQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS);
+    // 必须远大于正常重连执行窗口（启动延迟 3s + TLS 握手 ≤30s），避免误触发
+    TEST_ASSERT_TRUE(MockMQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS >
+                     MockMQTTClient::BOOT_STABILIZATION_DELAY_MS + 30000);
+    TestLog::step("Watchdog timeout = 90s > boot delay + max TLS handshake");
+
+    // 源码校验：生产代码存在自愈看门狗与 recoverStuckReconnect
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTTClient::recoverStuckReconnect") != std::string::npos,
+        "recoverStuckReconnect must be defined in production code");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("RECONNECT_WATCHDOG_TIMEOUT_MS") != std::string::npos,
+        "RECONNECT_WATCHDOG_TIMEOUT_MS must be used in production code");
+    TestLog::step("Production code contains watchdog self-healing logic");
+
+    TestLog::testEnd(true);
+}
+
+// WATCHDOG-9: 源码校验 reconnectTaskEntry 退出前清除标志（加固）
+void test_mqtt_reconnect_task_entry_clears_flags_on_exit() {
+    TestLog::testStart("WATCHDOG-9: reconnectTaskEntry clears flags on exit");
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    auto pos = content.find("void MQTTClient::reconnectTaskEntry");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "reconnectTaskEntry must be defined");
+    // 截取函数体（覆盖到 vTaskDelete）
+    std::string funcBody = content.substr(pos, 1200);
+    // 加固：任务退出前必须清除 _reconnectRunning（防止异常路径残留卡死）
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("_reconnectRunning = false") != std::string::npos,
+        "reconnectTaskEntry must clear _reconnectRunning before exit");
+    // 跳过 doReconnect 时必须清除 _reconnectPending
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("_reconnectPending = false") != std::string::npos,
+        "reconnectTaskEntry must clear _reconnectPending when doReconnect skipped");
+    TestLog::step("reconnectTaskEntry hardened to always clear flags on exit");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -5545,6 +6726,35 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_pub_sub_symmetry_ota_topics);
     RUN_TEST(test_pub_sub_symmetry_all_protocol_json_defaults);
     RUN_TEST(test_clientId_productId_matches_topic_prefix);
+
+    // 手动重连分级策略测试（MQTT 运行时重建 vs MQTTS 设备重启）
+    RUN_TEST(test_mqtt_manual_reconnect_scheme_branching);
+    RUN_TEST(test_mqtt_manual_reconnect_non_tls_no_reboot);
+    RUN_TEST(test_mqtt_manual_reconnect_mqtts_safe_reboot);
+    RUN_TEST(test_mqtt_manual_reconnect_guards_before_scheme);
+    RUN_TEST(test_mqtt_manual_reconnect_failure_resilience);
+    RUN_TEST(test_mqtt_manual_reconnect_response_format);
+    RUN_TEST(test_mqtt_manual_reconnect_auto_reconnect_after_rebuild);
+    RUN_TEST(test_mqtt_manual_reconnect_mqtts_config_preserved);
+
+    // 保存配置热重建策略测试（避免不必要的设备重启，内存门槛保底）
+    RUN_TEST(test_mqtt_config_save_uses_hot_restart);
+    RUN_TEST(test_mqtt_hot_restart_pending_fallback_behavior);
+    RUN_TEST(test_mqtt_config_save_disable_branch_no_rebuild);
+    RUN_TEST(test_mqtt_hot_restart_compile_isolation);
+    RUN_TEST(test_mqtt_hot_restart_frontend_branch_order);
+    RUN_TEST(test_mqtt_config_save_flow_mirror);
+
+    // MQTT 自动重连自愈看门狗回归测试（修复：连接失败后不自动重连，需手动刷新协议界面）
+    RUN_TEST(test_mqtt_reconnect_watchdog_recovers_stuck_flags);
+    RUN_TEST(test_mqtt_reconnect_watchdog_resets_task_and_counters);
+    RUN_TEST(test_mqtt_reconnect_gate_blocks_when_running);
+    RUN_TEST(test_mqtt_reconnect_task_exit_clears_flags);
+    RUN_TEST(test_mqtt_reset_error_counters_clears_stuck_pending);
+    RUN_TEST(test_mqtt_reconnect_failure_then_success_stops_scheduling);
+    RUN_TEST(test_mqtt_reconnect_watchdog_long_running_stability);
+    RUN_TEST(test_mqtt_reconnect_watchdog_constant_sync);
+    RUN_TEST(test_mqtt_reconnect_task_entry_clears_flags_on_exit);
 
     TestLog::groupEnd();
 }

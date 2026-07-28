@@ -63,6 +63,16 @@ enum class IPFailoverStrategy {
 };
 
 /**
+ * @brief WiFi 频段诊断结果
+ */
+enum class BandDiagnosis : uint8_t {
+    BAND_OK = 0,       // 网络有 2.4GHz 频段可用
+    ONLY_5GHZ = 1,     // 网络仅 5GHz，设备不支持
+    NOT_FOUND = 2,     // 扫描未发现目标 SSID
+    MIXED_BAND = 3     // 网络同时有 2.4GHz 和 5GHz（2.4GHz 可连接）
+};
+
+/**
  * @brief WiFi 网络条目（多 SSID 列表）
  */
 struct WiFiNetwork {
@@ -143,6 +153,9 @@ struct WiFiConfig {
     uint32_t connectTimeout = 10000;
     uint32_t reconnectInterval = 5000;
     uint8_t maxReconnectAttempts = 5;
+    
+    // 智能重连退避（指数退避封顶值）
+    static constexpr unsigned long RECONNECT_MAX_INTERVAL_MS = 60000;  // 最大重连间隔 60s
     
     // 域名配置
     String customDomain = "fastbee";
@@ -282,6 +295,13 @@ public:
     void updateStatusInfo();
     
     /**
+     * @brief 在 loopTask 上执行 WiFi 事件的重量级后续处理（PeriphExec/MQTT/回调）
+     * @note handleWiFiEvent 运行在 arduino_events 任务栈上，只置位标志；
+     *       重活由本方法在主循环中执行，避免 arduino_events 栈溢出崩溃
+     */
+    void processPendingEvents();
+    
+    /**
      * @brief 设置连接回调
      * @param callback 回调函数
      */
@@ -380,6 +400,21 @@ public:
      */
     void handleWiFiEvent(arduino_event_id_t event);
     
+    /**
+     * @brief 诊断 WiFi 频段不匹配问题
+     * @param ssid 目标 SSID
+     * @return BandDiagnosis 诊断结果
+     * @note 仅在连接失败后从主循环调用，不可在事件回调中使用
+     */
+    BandDiagnosis diagnoseBandMismatch(const String& ssid);
+    
+    /**
+     * @brief 将 WiFi 状态码转换为可读字符串
+     * @param status WiFi 状态码
+     * @return 状态描述字符串
+     */
+    static const char* wifiStatusToString(wl_status_t status);
+    
 private:
     WiFiConfig wifiConfig;
     NetworkStatusInfo statusInfo;
@@ -399,6 +434,12 @@ private:
     bool autoReconnectEnabled = true;
     bool modeTransitioning = false;  // 模式切换中标志，避免记录不必要的断开警告
     bool staInitialized = false;     // STA 已初始化标志（用于区分首次连接和重连）
+    
+    // WiFi 事件延迟处理标志：arduino_events 栈上仅置位，
+    // 重量级处理由 loopTask 的 processPendingEvents() 执行
+    volatile bool pendingGotIPEvent = false;
+    volatile bool pendingDisconnectEvent = false;
+    volatile bool pendingConnFailedEvent = false;
     
     /**
      * @brief 触发网络事件

@@ -2059,7 +2059,8 @@ bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr,
 void ModbusHandler::processCoilDelayTasks() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
-        if (coilDelayTasks[i].active && now >= coilDelayTasks[i].triggerTime) {
+        // 有符号差值比较：millis() 回绕（49.7 天）时 now >= triggerTime 会误触发
+        if (coilDelayTasks[i].active && (long)(now - coilDelayTasks[i].triggerTime) >= 0) {
             LOG_INFOF("[Modbus] DelayTask: executing slot %d, slave=%d addr=%d -> %s",
                       i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress,
                       coilDelayTasks[i].coilValue ? "ON" : "OFF");

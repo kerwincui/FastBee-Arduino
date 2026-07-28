@@ -364,6 +364,15 @@ private:
     static constexpr unsigned long AP_PROBE_BACKOFF_MS      = 600000;  // 退避探测间隔：10 分钟
     static constexpr int AP_PROBE_BACKOFF_THRESHOLD         = 5;       // 连续失败 5 次后进入退避
     static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 10000;   // 单次探测超时：10 秒
+
+    // STA 运行时长时间失联 → 调度重启回落 AP 的看门狗
+    // 背景：AP 回退仅在开机流程（connectToWiFiBlocking 失败）触发；开机已连上、
+    //       运行中才掉线的场景只会无限指数退避重连，永远不会回退 AP，导致设备
+    //       无 STA IP、mDNS 失效、局域网彻底不可达且无法自恢复（需物理断电）。
+    //       超过此阈值仍未重连成功则调度一次干净重启（重启后走开机 AP 回退路径，
+    //       恢复 192.168.4.1 可达）。不在运行时直接切模式，避免 arduino_events 栈溢出。
+    unsigned long _staDisconnectedSince;  // STA 持续断开起始时间戳（0=已连接/未计时）
+    static constexpr unsigned long STA_LOST_REBOOT_MS = 60000;  // 1 分钟：STA 连不上达此时长即重启回退 AP，让用户尽快能配置
 };
 
 #endif

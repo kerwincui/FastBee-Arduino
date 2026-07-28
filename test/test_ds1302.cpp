@@ -149,7 +149,8 @@ static void test_ds1302_timestamp_2024_06_15_12_30_45() {
 // ============================================================
 
 void test_ds1302_group() {
-    UNITY_BEGIN();
+    // 注意：不在此处调用 UNITY_BEGIN/UNITY_END，统一由 test_main.cpp 管理单一会话，
+    // 避免过早触发 Unity 汇总导致后续测试组被跳过。
     
     // BCD 转换
     RUN_TEST(test_ds1302_bcd_dec_to_bcd_0);
@@ -175,6 +176,4 @@ void test_ds1302_group() {
     RUN_TEST(test_ds1302_timestamp_2000_01_01);
     RUN_TEST(test_ds1302_timestamp_2024_01_01);
     RUN_TEST(test_ds1302_timestamp_2024_06_15_12_30_45);
-    
-    UNITY_END();
 }

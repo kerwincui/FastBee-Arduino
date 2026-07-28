@@ -69,6 +69,13 @@ public:
      * @return 启动是否成功
      */
     bool startOTA(const String& url);
+
+    /**
+     * @brief 在独立后台任务中执行URL OTA下载（不阻塞 async_tcp）
+     * @param url 固件下载URL
+     * @return 任务创建是否成功（已有OTA进行中时返回 false）
+     */
+    bool startOTAAsync(const String& url);
     
     /**
      * @brief 获取OTA状态字符串

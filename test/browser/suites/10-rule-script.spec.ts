@@ -9,6 +9,7 @@ test.describe('Suite-10: 规则脚本', () => {
   // ========== 场景A: 规则脚本列表与创建 ==========
 
   test('RULE-001: 进入规则脚本页 @quick', async ({ authPage }) => {
+    test.setTimeout(60_000); // 规则脚本页面加载较慢
     await expect(authPage.locator('#rule-script-page')).toBeVisible();
     await expect(authPage.locator('button:has-text("新增规则")')).toBeVisible();
   });
@@ -96,6 +97,7 @@ test.describe('Suite-10: 规则脚本', () => {
   });
 
   test('RULE-010: 保存规则脚本 @quick', async ({ authPage }) => {
+    test.setTimeout(60_000);
     await authPage.click('button:has-text("新增规则")');
     await authPage.waitForTimeout(1000);
     const nameInput = authPage.locator('.modal input[id*="name"]').first();

@@ -132,8 +132,11 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.addRule(rule)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule added");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule added");
+        } else {
+            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 500, "Failed to add rule");
     }
@@ -169,8 +172,11 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.targetTopic = ctx->getParamValue(request, "targetTopic", existing->targetTopic);
 
     if (mgr.updateRule(id, rule)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule updated");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule updated");
+        } else {
+            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 500, "Failed to update rule");
     }
@@ -190,8 +196,11 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.removeRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule deleted");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule deleted");
+        } else {
+            ctx->sendError(request, 500, "Rule deleted in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
@@ -211,8 +220,11 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.enableRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule enabled");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule enabled");
+        } else {
+            ctx->sendError(request, 500, "Rule enabled in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
@@ -232,8 +244,11 @@ void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.disableRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule disabled");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule disabled");
+        } else {
+            ctx->sendError(request, 500, "Rule disabled in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }

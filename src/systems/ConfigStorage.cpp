@@ -17,6 +17,19 @@
 #include <LittleFS.h>
 #include <core/SystemConstants.h>
 
+namespace {
+// 原子替换：临时文件 rename 覆盖目标（littlefs rename 具备 POSIX 覆盖语义），
+// 避免断电/崩溃时配置文件半截损坏（旧实现 FILE_WRITE 直接截断原文件）
+bool atomicReplaceFromTmp(const String& tmpPath, const String& filename) {
+    if (LittleFS.rename(tmpPath, filename)) return true;
+    // 兜底：rename 覆盖失败时退回 remove+rename
+    LittleFS.remove(filename);
+    if (LittleFS.rename(tmpPath, filename)) return true;
+    LittleFS.remove(tmpPath);
+    return false;
+}
+}  // namespace
+
 // ── 单例（Meyers' Singleton，无裸指针，线程安全）────────────────────────────
 ConfigStorage& ConfigStorage::getInstance() {
     static ConfigStorage instance;
@@ -138,18 +151,23 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     }
     return result;
 #else
-    // 未启用缓存：原有逻辑
-    File file = LittleFS.open(filename, FILE_WRITE);
+    // 未启用缓存：原子写入（临时文件 + rename 覆盖）
+    String tmpPath = filename + ".tmp";
+    File file = LittleFS.open(tmpPath, FILE_WRITE);
     if (!file) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", filename.c_str());
+        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", tmpPath.c_str());
         LOG_ERROR(buf);
         return false;
     }
 
     size_t written = serializeJson(config, file);
     file.close();
-    return written > 0;
+    if (written == 0) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return atomicReplaceFromTmp(tmpPath, filename);
 #endif
 }
 
@@ -161,24 +179,32 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
         if (lock) {
             ConfigCacheEntry* entry = findInCache(filename);
             if (entry && entry->rawJson.length() > 0 && entry->lastLoadTime > 0) {
-                // 检查文件是否被外部修改
-                File checkFile = LittleFS.open(filename, FILE_READ);
-                if (checkFile) {
-                    time_t fileTime = checkFile.getLastWrite();
-                    checkFile.close();
-                    if (fileTime <= entry->fileModifyTime) {
-                        // 缓存命中：从 rawJson 反序列化到调用方 Doc
-                        // （相比旧实现 config = *entry->cachedDoc 的 DOM 深拷贝，
-                        //   绕行缓存是小文件 <=4KB，临时峰值几乎可忽）
-                        DeserializationError err = deserializeJson(config, entry->rawJson);
-                        if (!err) {
-                            entry->accessCount++;
-                            return true;
-                        }
-                        // 缓存文本损坏，清除后走文件 I/O
-                        entry->rawJson = "";
-                        entry->lastLoadTime = 0;
+                // 读己之写：dirty 条目（debounce 待写入）本身就是最新数据，
+                // 磁盘上还是旧版本，跳过 mtime 检查直接命中；否则会读回旧数据
+                // 并在 updateCacheEntry 中用旧数据覆盖待写入的新配置（写丢失）
+                bool cacheFresh = entry->dirty;
+                if (!cacheFresh) {
+                    // 检查文件是否被外部修改
+                    File checkFile = LittleFS.open(filename, FILE_READ);
+                    if (checkFile) {
+                        time_t fileTime = checkFile.getLastWrite();
+                        checkFile.close();
+                        cacheFresh = (fileTime <= entry->fileModifyTime);
                     }
+                }
+                if (cacheFresh) {
+                    // 缓存命中：从 rawJson 反序列化到调用方 Doc
+                    // （相比旧实现 config = *entry->cachedDoc 的 DOM 深拷贝，
+                    //   绕行缓存是小文件 <=4KB，临时峰值几乎可忽）
+                    DeserializationError err = deserializeJson(config, entry->rawJson);
+                    if (!err) {
+                        entry->accessCount++;
+                        return true;
+                    }
+                    // 缓存文本损坏，清除后走文件 I/O
+                    entry->rawJson = "";
+                    entry->lastLoadTime = 0;
+                    entry->dirty = false;
                 }
             }
         }
@@ -425,6 +451,11 @@ bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
     }
 
     ConfigCacheEntry* entry = findInCache(filename);
+    if (entry && entry->dirty && modTime != 0) {
+        // load 回填路径（modTime!=0）不得用磁盘旧数据覆盖 debounce 待写入的
+        // 新配置，否则后续 flush 会把旧数据写回磁盘造成写丢失
+        return true;
+    }
     if (!entry) {
         // 缓存已满，淘汰一个
         if (_cacheSize >= MAX_CONFIG_CACHE_ENTRIES) {
@@ -445,38 +476,51 @@ bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
 }
 
 bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& config) {
-    File file = LittleFS.open(filename, FILE_WRITE);
+    // 原子写：先写临时文件再 rename 覆盖，断电时保留旧版本而非半截文件
+    String tmpPath = filename + ".tmp";
+    File file = LittleFS.open(tmpPath, FILE_WRITE);
     if (!file) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", filename.c_str());
+        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", tmpPath.c_str());
         LOG_ERROR(buf);
         return false;
     }
     size_t written = serializeJson(config, file);
     file.close();
-    return written > 0;
+    if (written == 0) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return atomicReplaceFromTmp(tmpPath, filename);
 }
 
 bool ConfigStorage::flushRawToDisk(const String& filename, const String& rawJson) {
-    File file = LittleFS.open(filename, FILE_WRITE);
+    String tmpPath = filename + ".tmp";
+    File file = LittleFS.open(tmpPath, FILE_WRITE);
     if (!file) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", filename.c_str());
+        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", tmpPath.c_str());
         LOG_ERROR(buf);
         return false;
     }
     size_t written = file.print(rawJson);
     file.close();
-    return written > 0;
+    if (written != rawJson.length()) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return atomicReplaceFromTmp(tmpPath, filename);
 }
 
-void ConfigStorage::flushDirtyEntries() {
+void ConfigStorage::flushDirtyEntries(bool force) {
     CacheLock lock(_cacheMutex);
     if (!lock) return;
 
     unsigned long now = millis();
     for (size_t i = 0; i < _cacheSize; i++) {
-        if (_cache[i].dirty && now >= _cache[i].debounceUntil && _cache[i].rawJson.length() > 0) {
+        // 有符号差值比较兼容 millis 回绕（debounceUntil = millis()+3000 可能溢出）
+        if (_cache[i].dirty && (force || (long)(now - _cache[i].debounceUntil) >= 0) &&
+            _cache[i].rawJson.length() > 0) {
             if (flushRawToDisk(_cache[i].filename, _cache[i].rawJson)) {
                 _cache[i].dirty = false;
                 _cache[i].fileModifyTime = 0; // 下次 load 时会刷新

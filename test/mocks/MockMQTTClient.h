@@ -63,6 +63,10 @@ public:
         _lastError = 0;
         _lastReconnectAttempt = 0;
         _reconnectPending = false;
+        _reconnectRunning = false;
+        _reconnectScheduledMs = 0;
+        _reconnectTaskAlive = false;
+        _consecutiveTimeouts = 0;
         _stopped = false;
     }
 
@@ -264,31 +268,80 @@ public:
         _statusChangeCallback(json);
     }
 
-    // 自动重连调度模拟 (模拟 handle() 中的逻辑)
+    // 自动重连调度模拟（镜像生产 handle() 断开分支：看门狗自愈 + 调度门控）
     // 返回是否调度了重连
     bool handleAutoReconnect(unsigned long currentMillis) {
         if (_stopped) return false;
         if (_connected) return false;
         if (!_config.autoReconnect) return false;
+
+        // 自愈看门狗：标志卡死超过最大执行窗口时强制重置（镜像 recoverStuckReconnect）
+        if ((_reconnectPending || _reconnectRunning) &&
+            _reconnectScheduledMs != 0 &&
+            (currentMillis - _reconnectScheduledMs > RECONNECT_WATCHDOG_TIMEOUT_MS)) {
+            recoverStuckReconnect();
+        }
+
         unsigned long elapsed = currentMillis - _lastReconnectAttempt;
         unsigned long interval = (unsigned long)_config.reconnectInterval;
         if (elapsed >= interval) {
             _lastReconnectAttempt = currentMillis;
-            if (!_reconnectPending) {
+            // 调度门控：pending/running 任一为真都不再调度（镜像生产代码）
+            if (!_reconnectPending && !_reconnectRunning) {
                 _reconnectPending = true;
+                _reconnectScheduledMs = currentMillis;  // 记录调度时间戳（看门狗用）
+                _reconnectTaskAlive = true;             // 模拟任务创建成功
                 return true;
             }
         }
         return false;
     }
 
+    // 镜像生产 recoverStuckReconnect：强制重置卡死标志并回收僵死任务
+    void recoverStuckReconnect() {
+        _reconnectPending = false;
+        _reconnectRunning = false;
+        _reconnectScheduledMs = 0;
+        _reconnectTaskAlive = false;   // 模拟 vTaskDelete 回收僵死任务
+        _consecutiveTimeouts = 0;      // 卡死前的连续超时不延续到恢复后
+    }
+
+    // 镜像生产 resetErrorCounters：网络恢复后清除卡死调度标志、重置退避
+    void resetErrorCounters() {
+        _consecutiveTimeouts = 0;
+        _reconnectPending = false;
+        _reconnectScheduledMs = 0;
+        _lastReconnectAttempt = 0;  // 强制下次 handle() 立即尝试重连
+    }
+
     bool isReconnectPending() const { return _reconnectPending; }
     void clearReconnectPending() { _reconnectPending = false; }
+    bool isReconnectRunning() const { return _reconnectRunning; }
+    void setReconnectRunning(bool v) { _reconnectRunning = v; }
+    bool isReconnectTaskAlive() const { return _reconnectTaskAlive; }
+    unsigned long getReconnectScheduledMs() const { return _reconnectScheduledMs; }
+    int getConsecutiveTimeouts() const { return _consecutiveTimeouts; }
+    void setConsecutiveTimeouts(int v) { _consecutiveTimeouts = v; }
+    // 模拟一次性重连任务异常终止（如栈溢出）后遗留的卡死状态
+    void simulateStuckReconnect(unsigned long scheduledMs) {
+        _reconnectPending = true;
+        _reconnectRunning = true;
+        _reconnectScheduledMs = scheduledMs;
+        _reconnectTaskAlive = true;
+    }
+    // 模拟加固后的 reconnectTaskEntry 正常退出：始终清除标志
+    void simulateTaskExit() {
+        _reconnectPending = false;
+        _reconnectRunning = false;
+        _reconnectTaskAlive = false;
+    }
     void setStopped(bool s) { _stopped = s; }
     bool isStopped() const { return _stopped; }
 
     // 后台重连延迟常量 (与生产代码同步: reconnectTaskEntry 中 vTaskDelay 3s)
     static constexpr uint32_t BOOT_STABILIZATION_DELAY_MS = 3000;
+    // 重连自愈看门狗超时（与生产代码 MQTTClient::RECONNECT_WATCHDOG_TIMEOUT_MS 同步）
+    static constexpr uint32_t RECONNECT_WATCHDOG_TIMEOUT_MS = 90000;
 
 private:
     bool validateAuth() {
@@ -310,6 +363,10 @@ private:
     bool _connected;
     bool _stopped = false;
     bool _reconnectPending = false;
+    bool _reconnectRunning = false;
+    unsigned long _reconnectScheduledMs = 0;
+    bool _reconnectTaskAlive = false;
+    int _consecutiveTimeouts = 0;
     int _reconnectCount;
     int _lastError;
     int _messageId;

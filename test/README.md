@@ -14,6 +14,7 @@
 | `test_web_api.cpp` | Web API 路由和响应格式测试 |
 | `test_network_config.cpp` | 网络配置解析、保存和切换逻辑测试 |
 | `test_wifi_ip_dns.cpp` | WiFi / IP / DNS 管理测试 |
+| `test_wifi_network.cpp` | WiFi 连接改进：频段检测、指数退避、内存保护、开机 STA 优先模式校正、连接可靠性回归测试 |
 | `test_mqtt_protocol.cpp` | MQTT 协议配置、主题和认证相关测试 |
 | `test_system_stability.cpp` | 系统稳定性、资源保护和边界条件测试 |
 | `test_e2e_scenarios.cpp` | 端到端场景组合测试 |

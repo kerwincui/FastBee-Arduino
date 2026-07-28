@@ -163,6 +163,7 @@ public:
 
     char operator[](size_t index) const { return _value[index]; }
     char& operator[](size_t index) { return _value[index]; }
+    char charAt(size_t index) const { return _value[index]; }
     void setCharAt(size_t index, char c) {
         if (index < _value.length()) _value[index] = c;
     }

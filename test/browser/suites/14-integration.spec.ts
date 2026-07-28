@@ -1,4 +1,4 @@
-﻿import { test, expect, env, waitForDevice } from '../fixtures/base.fixture';
+﻿import { test, expect, env, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-14: 跨页面集成测试', () => {
 
@@ -77,8 +77,10 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     });
     expect(healthOk).toBeTruthy();
 
-    // 验证各页面可访问
-    for (const page of ['dashboard', 'device', 'logs']) {
+    // 验证各页面可访问（仅测试设备支持的页面）
+    const pagesToTest = ['dashboard', 'device'];
+    if (await hasMenuPage(authPage, 'logs')) pagesToTest.push('logs');
+    for (const page of pagesToTest) {
       await navigateTo(page);
       await expect(authPage.locator('#app-container')).toBeVisible();
     }
@@ -129,7 +131,7 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     await authPage.waitForLoadState('domcontentloaded');
     const dashData = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/info');
         return await r.json();
       } catch { return null; }
     });
@@ -139,17 +141,20 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     await authPage.waitForLoadState('domcontentloaded');
     const devData = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/info');
         return await r.json();
       } catch { return null; }
     });
 
     if (dashData && devData) {
-      console.log(`Dashboard chip: ${dashData?.chip}, Device chip: ${devData?.chip}`);
+      console.log(`Dashboard chip: ${dashData?.data?.device?.chipModel}, Device chip: ${devData?.data?.device?.chipModel}`);
     }
   });
 
   test('INT-010: 日志记录操作验证 @quick', async ({ authPage, navigateTo }) => {
+    test.setTimeout(60_000);
+    // 检测设备是否支持日志页面
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持日志页面');
     // 1. 执行一些操作（网络设置）
     await navigateTo('network');
     await authPage.waitForLoadState('domcontentloaded');
@@ -162,10 +167,15 @@ test.describe('Suite-14: 跨页面集成测试', () => {
   // ========== 全页面导航 ==========
 
   test('INT-011: 全页面导航不报错', async ({ authPage, navigateTo }) => {
-    const menuPages = [
+    const allPages = [
       'dashboard', 'device', 'network', 'peripheral', 'periph-exec',
       'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'
     ];
+    // 仅测试设备支持的页面
+    const menuPages: string[] = [];
+    for (const p of allPages) {
+      if (await hasMenuPage(authPage, p)) menuPages.push(p);
+    }
     for (const menuPage of menuPages) {
       await navigateTo(menuPage);
       await authPage.waitForTimeout(500);
@@ -243,9 +253,9 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     await authPage.waitForLoadState('domcontentloaded');
     const flashDash = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+                const r = await fetch('/api/system/info');
         const data = await r.json();
-        return data?.flash?.used ?? data?.fsUsed ?? -1;
+        return data?.data?.filesystem?.used ?? -1;
       } catch { return -1; }
     });
 

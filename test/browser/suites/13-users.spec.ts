@@ -1,8 +1,9 @@
-﻿import { test, expect, waitForDevice } from '../fixtures/base.fixture';
+﻿import { test, expect, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-13: 用户管理', () => {
 
   test.beforeEach(async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'users')), '设备不支持用户管理页面');
     await navigateTo('users');
   });
 

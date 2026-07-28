@@ -1,8 +1,9 @@
-import { test, expect } from '../fixtures/base.fixture';
+import { test, expect, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-11: 设备日志', () => {
 
   test.beforeEach(async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持日志页面');
     await navigateTo('logs');
   });
 

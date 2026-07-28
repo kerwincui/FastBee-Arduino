@@ -492,6 +492,8 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config) {
 }
 
 bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& errorMsg) {
+    // 容器线程安全：Web handler(async_tcp)/worker pool/loopTask 并发增删改查
+    RecursiveMutexGuard lock(_mutex);
     // 验证配置
     if (!validateConfig(config, errorMsg)) {
         LOG_ERRORF("Peripheral Manager: Invalid config - %s", errorMsg.c_str());
@@ -570,6 +572,7 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& er
 }
 
 bool PeripheralManager::updatePeripheral(const String& id, const PeripheralConfig& config) {
+    RecursiveMutexGuard lock(_mutex);
     if (!hasPeripheral(id)) {
         LOG_ERRORF("Peripheral Manager: Peripheral '%s' not found", id.c_str());
         return false;
@@ -614,6 +617,7 @@ bool PeripheralManager::updatePeripheral(const String& id, const PeripheralConfi
 }
 
 bool PeripheralManager::removePeripheral(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     if (!hasPeripheral(id)) {
         return false;
     }
@@ -636,6 +640,9 @@ bool PeripheralManager::removePeripheral(const String& id) {
 }
 
 PeripheralConfig* PeripheralManager::getPeripheral(const String& id) {
+    // 注意：返回的裸指针仅在调用方持有 _mutex 期间保证有效（递归锁），
+    // 外部调用应优先使用返回拷贝的 getAllPeripherals/getPeripheralsByType
+    RecursiveMutexGuard lock(_mutex);
     auto it = peripherals.find(id);
     if (it != peripherals.end()) {
         return &(it->second);
@@ -644,6 +651,7 @@ PeripheralConfig* PeripheralManager::getPeripheral(const String& id) {
 }
 
 const PeripheralConfig* PeripheralManager::getPeripheral(const String& id) const {
+    RecursiveMutexGuard lock(_mutex);
     auto it = peripherals.find(id);
     if (it != peripherals.end()) {
         return &(it->second);
@@ -652,6 +660,7 @@ const PeripheralConfig* PeripheralManager::getPeripheral(const String& id) const
 }
 
 std::vector<PeripheralConfig> PeripheralManager::getPeripheralsByType(PeripheralType type) const {
+    RecursiveMutexGuard lock(_mutex);
     std::vector<PeripheralConfig> result;
     for (const auto& pair : peripherals) {
         if (pair.second.type == type) {
@@ -662,6 +671,7 @@ std::vector<PeripheralConfig> PeripheralManager::getPeripheralsByType(Peripheral
 }
 
 std::vector<PeripheralConfig> PeripheralManager::getPeripheralsByCategory(PeripheralCategory category) const {
+    RecursiveMutexGuard lock(_mutex);
     std::vector<PeripheralConfig> result;
     for (const auto& pair : peripherals) {
         if (getPeripheralCategory(pair.second.type) == category) {
@@ -672,6 +682,7 @@ std::vector<PeripheralConfig> PeripheralManager::getPeripheralsByCategory(Periph
 }
 
 std::vector<PeripheralConfig> PeripheralManager::getAllPeripherals() const {
+    RecursiveMutexGuard lock(_mutex);
     std::vector<PeripheralConfig> result;
     for (const auto& pair : peripherals) {
         result.push_back(pair.second);
@@ -680,18 +691,21 @@ std::vector<PeripheralConfig> PeripheralManager::getAllPeripherals() const {
 }
 
 void PeripheralManager::forEachPeripheral(std::function<void(const PeripheralConfig&)> callback) const {
+    RecursiveMutexGuard lock(_mutex);
     for (const auto& pair : peripherals) {
         callback(pair.second);
     }
 }
 
 bool PeripheralManager::hasPeripheral(const String& id) const {
+    RecursiveMutexGuard lock(_mutex);
     return peripherals.find(id) != peripherals.end();
 }
 
 // ========== 外设操作 ==========
 
 bool PeripheralManager::enablePeripheral(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(id);
     if (!config) return false;
 
@@ -725,6 +739,7 @@ bool PeripheralManager::enablePeripheral(const String& id) {
 }
 
 bool PeripheralManager::disablePeripheral(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(id);
     if (!config) return false;
 
@@ -734,11 +749,13 @@ bool PeripheralManager::disablePeripheral(const String& id) {
 }
 
 bool PeripheralManager::isPeripheralEnabled(const String& id) const {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(id);
     return config ? config->enabled : false;
 }
 
 PeripheralStatus PeripheralManager::getPeripheralStatus(const String& id) const {
+    RecursiveMutexGuard lock(_mutex);
     auto it = runtimeStates.find(id);
     if (it != runtimeStates.end()) {
         return it->second.status;
@@ -747,6 +764,7 @@ PeripheralStatus PeripheralManager::getPeripheralStatus(const String& id) const 
 }
 
 PeripheralRuntimeState* PeripheralManager::getRuntimeState(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto it = runtimeStates.find(id);
     if (it != runtimeStates.end()) {
         return &(it->second);
@@ -757,6 +775,7 @@ PeripheralRuntimeState* PeripheralManager::getRuntimeState(const String& id) {
 // ========== 硬件初始化 ==========
 
 bool PeripheralManager::initHardware(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(id);
     if (!config) return false;
 
@@ -778,6 +797,7 @@ bool PeripheralManager::initHardware(const String& id) {
 }
 
 bool PeripheralManager::deinitHardware(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(id);
     if (!config) return false;
 
@@ -873,11 +893,14 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
 
     // 编码器：返回计数值（转换为GPIOState，HIGH表示非零计数）
     if (config->type == PeripheralType::ENCODER) {
-        auto it = encoderCounters.find(peripheralId);
-        if (it == encoderCounters.end()) {
+        EncoderIsrSlot* slot = findEncoderSlot(peripheralId);
+        if (!slot) {
             return GPIOState::STATE_UNDEFINED;
         }
-        return it->second != 0 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+        portENTER_CRITICAL(&_encoderMux);
+        int32_t cnt = slot->count;
+        portEXIT_CRITICAL(&_encoderMux);
+        return cnt != 0 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
 
     if (config->type == PeripheralType::RF_MODULE && config->params.rf.mode == RF_MODE_RX) {
@@ -939,7 +962,12 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     // 编码器：支持重置计数器（写入LOW表示重置）
     if (config->type == PeripheralType::ENCODER) {
         if (state == GPIOState::STATE_LOW) {
-            encoderCounters[peripheralId] = 0;
+            EncoderIsrSlot* slot = findEncoderSlot(peripheralId);
+            if (slot) {
+                portENTER_CRITICAL(&_encoderMux);
+                slot->count = 0;
+                portEXIT_CRITICAL(&_encoderMux);
+            }
             LOG_INFOF("Peripheral Manager: Encoder '%s' counter reset to 0", peripheralId.c_str());
         }
         return true;
@@ -1770,17 +1798,19 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         pinMode(pinB, INPUT_PULLUP);
         
         // 如果启用中断模式，附加GPIO中断
-        // 中断处理函数将在PeripheralManager::attachEncoderInterrupt()中实现
         if (config.params.encoder.useInterrupt) {
-            // 初始化计数器
-            encoderCounters[config.id] = 0;
-            
-            // 附加中断到A相（上升沿和下降沿都触发）
-            attachInterruptArg(pinA, handleEncoderInterrupt, 
-                               const_cast<PeripheralConfig*>(&config), CHANGE);
-            
-            LOG_INFOF("Peripheral Manager: Encoder '%s' using GPIO interrupt mode (A=%d, B=%d)",
-                      config.id.c_str(), pinA, pinB);
+            // 分配静态 ISR 槽位（含计数器初始化），ISR 参数指向槽位而非 map 节点
+            EncoderIsrSlot* slot = allocEncoderSlot(config.id, pinA, pinB);
+            if (slot) {
+                // 附加中断到A相（上升沿和下降沿都触发）
+                attachInterruptArg(pinA, handleEncoderInterrupt, slot, CHANGE);
+
+                LOG_INFOF("Peripheral Manager: Encoder '%s' using GPIO interrupt mode (A=%d, B=%d)",
+                          config.id.c_str(), pinA, pinB);
+            } else {
+                LOG_WARNINGF("Peripheral Manager: Encoder '%s' interrupt slots exhausted (max %u), polling only",
+                             config.id.c_str(), (unsigned)MAX_ENCODER_SLOTS);
+            }
         }
         
         LOG_INFOF("Peripheral Manager: Encoder '%s' initialized A=%d B=%d resolution=%d interrupt=%d",
@@ -2019,6 +2049,14 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         if (pin != 255) {
             detachInterrupt(pin);
         }
+    }
+
+    // 编码器：先 detach A 相中断再释放 ISR 槽位，防止删除/更新后 ISR 悬垂
+    if (config.type == PeripheralType::ENCODER) {
+        if (config.pinCount >= 1 && config.pins[0] != 255) {
+            detachInterrupt(config.pins[0]);
+        }
+        releaseEncoderSlot(config.id);
     }
 
     if (config.type == PeripheralType::UART) {
@@ -3561,32 +3599,57 @@ bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint1
 // - 根据A相上升/下降沿时B相的状态判断转向
 // - 顺时针：计数+1；逆时针：计数-1
 
-void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
-    // arg指向PeripheralConfig结构体
-    PeripheralConfig* config = static_cast<PeripheralConfig*>(arg);
-    if (!config || config->type != PeripheralType::ENCODER) return;
-    
-    uint8_t pinA = config->pins[0];
-    uint8_t pinB = config->pins[1];
-    
-    // 读取A相和B相的当前状态
-    int stateA = digitalRead(pinA);
-    int stateB = digitalRead(pinB);
-    
-    // 使用简化的方向判断：
-    // 当A相发生中断时，根据B相状态判断方向
-    // B相为HIGH时顺时针，B相为LOW时逆时针
-    int32_t direction = stateB ? 1 : -1;
-    
-    // 获取当前外设ID
-    String peripheralId = config->id;
-    
-    // 更新计数器（在中断上下文中使用volatile变量）
-    auto& pm = PeripheralManager::getInstance();
-    auto it = pm.encoderCounters.find(peripheralId);
-    if (it != pm.encoderCounters.end()) {
-        it->second += direction;
-    } else {
-        pm.encoderCounters[peripheralId] = direction;
+// 静态槽位存储：ISR 只触碰固定内存，不做任何堆分配
+PeripheralManager::EncoderIsrSlot PeripheralManager::_encoderSlots[PeripheralManager::MAX_ENCODER_SLOTS];
+portMUX_TYPE PeripheralManager::_encoderMux = portMUX_INITIALIZER_UNLOCKED;
+
+PeripheralManager::EncoderIsrSlot* PeripheralManager::findEncoderSlot(const String& id) {
+    for (auto& slot : _encoderSlots) {
+        if (slot.used && slot.id == id) return &slot;
     }
+    return nullptr;
+}
+
+PeripheralManager::EncoderIsrSlot* PeripheralManager::allocEncoderSlot(const String& id,
+                                                                       uint8_t pinA, uint8_t pinB) {
+    EncoderIsrSlot* slot = findEncoderSlot(id);
+    if (!slot) {
+        for (auto& s : _encoderSlots) {
+            if (!s.used) { slot = &s; break; }
+        }
+    }
+    if (!slot) return nullptr;
+    slot->id = id;  // String 赋值在临界区外（关中断时不可 malloc）
+    portENTER_CRITICAL(&_encoderMux);
+    slot->pinA = pinA;
+    slot->pinB = pinB;
+    slot->count = 0;
+    slot->used = true;
+    portEXIT_CRITICAL(&_encoderMux);
+    return slot;
+}
+
+void PeripheralManager::releaseEncoderSlot(const String& id) {
+    EncoderIsrSlot* slot = findEncoderSlot(id);
+    if (!slot) return;
+    portENTER_CRITICAL(&_encoderMux);
+    slot->used = false;
+    slot->pinA = 255;
+    slot->pinB = 255;
+    slot->count = 0;
+    portEXIT_CRITICAL(&_encoderMux);
+    slot->id = "";  // String 释放在临界区外
+}
+
+void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
+    // arg 指向静态槽位：不做 String 拷贝/map 插入等堆分配（非 ISR-safe），
+    // 外设删除后槽位被标记 used=false，不存在悬垂解引用
+    EncoderIsrSlot* slot = static_cast<EncoderIsrSlot*>(arg);
+    if (!slot) return;
+    portENTER_CRITICAL_ISR(&_encoderMux);
+    if (slot->used) {
+        // A相变化时根据B相状态判断方向：B=HIGH 顺时针，B=LOW 逆时针
+        slot->count += digitalRead(slot->pinB) ? 1 : -1;
+    }
+    portEXIT_CRITICAL_ISR(&_encoderMux);
 }

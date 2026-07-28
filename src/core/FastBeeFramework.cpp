@@ -1044,12 +1044,14 @@ bool FastBeeFramework::addSystemTasks() {
 #endif
 
     // 协议处理任务（每100ms）— 维持MQTT心跳和消息收发
+    // 优先级 HIGH：MEMGUARD SEVERE 时不可跳过，否则 keepalive 停摆→broker 踢线
+    // →重连再做一轮 TLS 建/毁，内存越紧张越断连的正反馈（handle 内部已有细粒度堆保护）
     if (!taskManager->addTask("protocol_handle", [](void* param) {
         FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
         if (framework && framework->protocolManager) {
             framework->protocolManager->handle();
         }
-    }, this, 100)) {
+    }, this, 100, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add protocol handle task");
     }
 
@@ -1174,11 +1176,12 @@ void FastBeeFramework::run() {
 
 // 检查是否需要重启
 void FastBeeFramework::checkForRestart() {
-    // HealthMonitor 宸茬粡璐熻矗鍐呭瓨瀹堟姢鍜屾渶鍚庣殑閲嶅惎淇濇姢锛岄伩鍏嶈繖閲屽啀鍙犲姞涓€灞傞噸鍚垽鏂?
+    // When HealthMonitor is enabled it owns memory guarding and the final low-memory reboot; this body is compiled out to avoid a second reboot layer.
     if (healthMonitor) {
         return;
     }
 
+#if !FASTBEE_ENABLE_HEALTH_MONITOR
     static unsigned long lastRestartCheck = 0;
     static unsigned long criticalSince = 0;   // CRITICAL 状态持续时间
     unsigned long currentTime = millis();
@@ -1222,6 +1225,7 @@ void FastBeeFramework::checkForRestart() {
             ESP.restart();
         }
     }
+#endif  // !FASTBEE_ENABLE_HEALTH_MONITOR
 }
 
 // 关闭框架

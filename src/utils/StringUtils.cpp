@@ -535,3 +535,58 @@ String StringUtils::buildJsonResponse(int status, const String& msg, const Strin
     json += "}";
     return json;
 }
+
+bool StringUtils::tryParseBoolLike(const String& rawValue, bool& outValue) {
+    String value = rawValue;
+    value.trim();
+    value.toLowerCase();
+    if (value.isEmpty()) return false;
+
+    if (value == "1" || value == "true" || value == "on" ||
+        value == "high" || value == "open") {
+        outValue = true;
+        return true;
+    }
+
+    if (value == "0" || value == "false" || value == "off" ||
+        value == "low" || value == "close") {
+        outValue = false;
+        return true;
+    }
+
+    if (value == "+1") {
+        outValue = true;
+        return true;
+    }
+
+    if (value == "-1") {
+        outValue = false;
+        return true;
+    }
+
+    bool isNum = true;
+    bool hasDigit = false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char c = value.charAt(i);
+        if (c >= '0' && c <= '9') {
+            hasDigit = true;
+            continue;
+        }
+        if ((c == '+' || c == '-') && i == 0) {
+            continue;
+        }
+        if (c == '.' && i > 0) {
+            // Allow decimal point
+            continue;
+        }
+        isNum = false;
+        break;
+    }
+
+    if (isNum && hasDigit) {
+        outValue = value.toInt() != 0;
+        return true;
+    }
+
+    return false;
+}

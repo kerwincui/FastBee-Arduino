@@ -1,4 +1,4 @@
-import { test, expect, env, waitForDevice } from '../fixtures/base.fixture';
+import { test, expect, env, waitForDevice, hasMenuPage, fetchDeviceFeatureFlags, detectDeviceCapabilities } from '../fixtures/base.fixture';
 
 test.describe('Suite-18: 多模块综合联动测试', () => {
 
@@ -94,6 +94,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-003: 规则脚本转换→MQTT主题转发→执行触发', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'rule-script')), '设备不支持规则脚本');
     // 1. 检查规则脚本
     await navigateTo('rule-script');
     const scripts = await authPage.evaluate(async () => {
@@ -275,6 +276,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-009: Modbus轮询+规则脚本数据转换', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'rule-script')), '设备不支持规则脚本');
     // Modbus状态
     await navigateTo('protocol');
     const modbusStatus = await authPage.evaluate(async () => {
@@ -323,12 +325,13 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   // ========== 场景C：网络变更→全功能联动 ==========
 
   test('LNK-011: WiFi→MQTT→外设→日志 全链路', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     // 1. 检查WiFi状态
     await navigateTo('network');
     const netStatus = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
-        return (await r.json())?.network?.status ?? 'unknown';
+        const r = await fetch('/api/system/status');
+        return (await r.json())?.data?.networkStatus ?? 'unknown';
       } catch { return 'error'; }
     });
     console.log(`网络状态: ${netStatus}`);
@@ -476,13 +479,15 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   // ========== 场景D：用户权限→功能访问联动 ==========
 
   test('LNK-015: 创建操作员→验证页面访问', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'users')), '设备不支持用户管理');
     // 检查用户管理
     await navigateTo('users');
     const users = await authPage.evaluate(async () => {
       try {
         const r = await fetch('/api/users?page=1&limit=20');
         const data = await r.json();
-        return data?.data || [];
+        const d = data?.data;
+        return Array.isArray(d) ? d : (Array.isArray(d?.users) ? d.users : []);
       } catch { return []; }
     });
     console.log(`用户数: ${users.length}`);
@@ -495,6 +500,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-016: 管理员修改密码→重新登录→功能验证', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'users')), '设备不支持用户管理');
     // 进入用户管理
     await navigateTo('users');
     const editBtn = authPage.locator('button:has-text("编辑"), button:has-text("修改密码")').first();
@@ -519,16 +525,16 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     // 标签A: admin登录
     const pageA = await context.newPage();
     await pageA.goto(baseURL || '/', { waitUntil: 'load' });
-    await pageA.fill('#username', 'admin');
-    await pageA.fill('#password', 'admin');
+    await pageA.fill('#username', env.auth.username);
+    await pageA.fill('#password', env.auth.password);
     await pageA.click('#login-button');
     await pageA.waitForSelector('#app-container', { state: 'visible', timeout: 15_000 });
 
     // 标签B: admin登录（同一账号，不同session）
     const pageB = await context.newPage();
     await pageB.goto(baseURL || '/', { waitUntil: 'load' });
-    await pageB.fill('#username', 'admin');
-    await pageB.fill('#password', 'admin');
+    await pageB.fill('#username', env.auth.username);
+    await pageB.fill('#password', env.auth.password);
     await pageB.click('#login-button');
     await pageB.waitForSelector('#app-container', { state: 'visible', timeout: 15_000 });
 
@@ -549,13 +555,15 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-018: 删除用户→会话失效', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'users')), '设备不支持用户管理');
     // 检查用户列表
     await navigateTo('users');
     const users = await authPage.evaluate(async () => {
       try {
         const r = await fetch('/api/users?page=1&limit=20');
         const data = await r.json();
-        return data?.data || [];
+        const d = data?.data;
+        return Array.isArray(d) ? d : (Array.isArray(d?.users) ? d.users : []);
       } catch { return []; }
     });
     const nonAdminUsers = users.filter((u: any) => u.username !== 'admin');
@@ -588,9 +596,9 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await authPage.waitForLoadState('networkidle');
     const dashboardStatus = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/device/config');
         const data = await r.json();
-        return data?.deviceName ?? data?.name ?? '';
+        return data?.data?.deviceName ?? '';
       } catch { return ''; }
     });
     console.log(`仪表盘设备名: ${dashboardStatus}`);
@@ -617,6 +625,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-021: NTP同步→日志时间戳更新', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     await navigateTo('device');
     const ntpTab = authPage.locator('[data-tab="ntp"], :text("NTP")').first();
     if (await ntpTab.isVisible()) {
@@ -630,6 +639,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-022: 日志级别切换→日志输出变化', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     // 进入设备配置查看日志级别
     await navigateTo('device');
     const advTab = authPage.locator('[data-tab="advanced"], :text("高级")').first();
@@ -651,14 +661,15 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-023: Flash使用率→文件管理一致性', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'data')), '设备不支持文件管理');
     // 1. 仪表盘获取Flash使用率
     await navigateTo('dashboard');
     await authPage.waitForLoadState('networkidle');
     const flashDashboard = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/info');
         const data = await r.json();
-        return data?.flash?.used ?? data?.fsUsed ?? -1;
+        return data?.data?.filesystem?.used ?? -1;
       } catch { return -1; }
     });
 
@@ -690,7 +701,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     // 尝试访问API
     const apiResult = await page.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/status');
         return r.status;
       } catch { return 0; }
     });
@@ -739,14 +750,15 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-027: WiFi断开→MQTT断开→日志记录', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     // 检查网络状态
     await navigateTo('network');
     const netStatus = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/status');
         const data = await r.json();
         return {
-          wifi: data?.network?.status ?? data?.wifi?.status ?? 'unknown',
+          wifi: data?.data?.networkStatus ?? 'unknown',
           mqtt: 'check_next'
         };
       } catch { return { wifi: 'error', mqtt: 'error' }; }
@@ -770,6 +782,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-028: MQTTS失败→Web正常→日志记录', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     const healthOk = await authPage.evaluate(async () => {
       try { return (await fetch('/api/health')).ok; } catch { return false; }
     });
@@ -786,9 +799,9 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await navigateTo('network');
     const netStatus = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/status');
         const data = await r.json();
-        return { ssid: data?.wifi?.ssid ?? data?.network?.ssid ?? 'unknown' };
+        return { ssid: data?.data?.ssid ?? 'unknown' };
       } catch { return { ssid: 'error' }; }
     });
     console.log(`WiFi SSID: ${netStatus.ssid}`);
@@ -861,7 +874,10 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   // ========== 场景H：长时间运行联动稳定性 ==========
 
   test('LNK-032: 全功能5分钟稳定性', async ({ authPage, navigateTo }) => {
-    const menuPages = ['dashboard', 'device', 'network', 'protocol', 'logs'];
+    test.setTimeout(300_000); // 5轮×5页面×5s + 导航开销
+    const caps = await detectDeviceCapabilities(authPage);
+    const menuPages = ['dashboard', 'device', 'network', 'protocol',
+      ...(caps.menuPages.includes('logs') ? ['logs'] : [])];
     for (let round = 0; round < 5; round++) {
       for (const page of menuPages) {
         await navigateTo(page);
@@ -887,9 +903,9 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
       // 每轮检查Heap
       const heap = await authPage.evaluate(async () => {
         try {
-          const r = await fetch('/api/status');
+          const r = await fetch('/api/system/health');
           const data = await r.json();
-          return data?.heap?.free ?? data?.freeHeap ?? -1;
+          return data?.data?.freeHeap ?? -1;
         } catch { return -1; }
       });
 
@@ -902,8 +918,11 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   });
 
   test('LNK-034: 高频操作10分钟压测(抽样)', async ({ authPage, navigateTo }) => {
+    test.setTimeout(180_000); // 60s持续操作 + 导航开销
     // 高频操作抽样（每2秒一次操作，持续约1分钟）
-    const menuPages = ['dashboard', 'device', 'network', 'protocol', 'logs'];
+    const caps = await detectDeviceCapabilities(authPage);
+    const menuPages = ['dashboard', 'device', 'network', 'protocol',
+      ...(caps.menuPages.includes('logs') ? ['logs'] : [])];
     const start = Date.now();
     let opCount = 0;
 
@@ -966,7 +985,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
 
     // 验证NVS存储持久性（设备已运行中，配置应已持久化）
     const statusOk = await authPage.evaluate(async () => {
-      try { return (await fetch('/api/status')).ok; } catch { return false; }
+      try { return (await fetch('/api/system/status')).ok; } catch { return false; }
     });
     expect(statusOk).toBeTruthy();
   });
@@ -1007,10 +1026,10 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await navigateTo('dashboard');
     await expect(authPage.locator('#app-container')).toBeVisible();
     const dashData = await authPage.evaluate(async () => {
-      try { return await (await fetch('/api/status')).json(); } catch { return null; }
+      try { return await (await fetch('/api/system/info')).json(); } catch { return null; }
     });
     expect(dashData).toBeTruthy();
-    console.log(`仪表盘 chip=${dashData?.chip}, heap=${dashData?.heap}`);
+    console.log(`仪表盘 chip=${dashData?.data?.device?.chipModel}, heap=${dashData?.data?.device?.freeHeap}`);
   });
 
   // ========== 外设配置→执行规则→动作触发 ==========
@@ -1027,7 +1046,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     console.log(`外设总数: ${periphCount}`);
 
     await navigateTo('periph-exec');
-    await expect(authPage.locator('#periph-exec-page, #app-container')).toBeVisible();
+    await expect(authPage.locator('#periph-exec-page, #app-container').first()).toBeVisible();
     const rules = await authPage.evaluate(async () => {
       try {
         const r = await fetch('/api/periph-exec?pageSize=100');
@@ -1058,9 +1077,9 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   test('LNK-042: GPIO配置→引脚冲突检测反馈', async ({ authPage, navigateTo }) => {
     const chipInfo = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/info');
         const data = await r.json();
-        return { chip: data?.chip, maxGpio: data?.maxGpio ?? data?.gpioMax };
+        return { chip: data?.data?.device?.chipModel, maxGpio: data?.maxGpio ?? data?.gpioMax };
       } catch { return null; }
     });
     console.log(`芯片: ${chipInfo?.chip}, MAX_GPIO: ${chipInfo?.maxGpio}`);
@@ -1123,6 +1142,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   // ========== 配置变更→日志审计 ==========
 
   test('LNK-044: 配置变更→日志审计', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'logs')), '设备不支持设备日志');
     await navigateTo('logs');
     const logsBefore = await authPage.evaluate(async () => {
       try { return await (await fetch('/api/logs/list?limit=5')).json(); } catch { return null; }
@@ -1133,7 +1153,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await navigateTo('network');
     await authPage.waitForLoadState('networkidle');
     const netStatus = await authPage.evaluate(async () => {
-      try { return await (await fetch('/api/status')).json(); } catch { return null; }
+      try { return await (await fetch('/api/system/status')).json(); } catch { return null; }
     });
     expect(netStatus).toBeTruthy();
 
@@ -1148,6 +1168,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
   // ========== 用户权限联动 ==========
 
   test('LNK-045: 用户权限联动', async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'users')), '设备不支持用户管理');
     const onlineUsers = await authPage.evaluate(async () => {
       try { return await (await fetch('/api/users/online')).json(); } catch { return null; }
     });

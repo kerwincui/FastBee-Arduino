@@ -174,7 +174,8 @@ static void test_lcd1602_config_20x4() {
 // ============================================================
 
 void test_lcd1602_group() {
-    UNITY_BEGIN();
+    // 注意：不在此处调用 UNITY_BEGIN/UNITY_END，统一由 test_main.cpp 管理单一会话，
+    // 避免过早触发 Unity 汇总导致后续测试组被跳过。
     
     // 行偏移
     RUN_TEST(test_lcd1602_row_offset_0);
@@ -206,6 +207,4 @@ void test_lcd1602_group() {
     // 配置参数
     RUN_TEST(test_lcd1602_config_defaults);
     RUN_TEST(test_lcd1602_config_20x4);
-    
-    UNITY_END();
 }

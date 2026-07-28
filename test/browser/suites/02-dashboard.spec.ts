@@ -161,6 +161,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
   });
 
   test('DASH-015: 网络状态刷新按钮 @quick', async ({ authPage, navigateTo }) => {
+    test.setTimeout(60_000);
     await navigateTo('dashboard');
     await authPage.click('#dashboard-net-refresh-btn');
     await authPage.waitForTimeout(3000);

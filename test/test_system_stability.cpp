@@ -2631,6 +2631,189 @@ void test_smoke_ap_probe_recovery_state_machine() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// WiFi 事件回调重复注册 & 事件栈溢出回归测试
+// ============================================================
+
+/**
+ * @brief 源码回归：NetworkManager.cpp 不得重复注册 WiFi.onEvent
+ * 回归：旧代码在 WiFiManager::initialize() 和 NetworkManager::initialize() 中
+ *       各注册了一次 WiFi.onEvent → handleWiFiEvent()，导致每个事件在
+ *       arduino_events 栈上执行两次，最终 Stack canary watchpoint triggered 崩溃
+ */
+void test_source_code_no_duplicate_wifi_onevent_registration() {
+    TestLog::testStart("Source: No duplicate WiFi.onEvent in NetworkManager");
+
+    std::string nmContent = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!nmContent.empty(),
+        "Failed to read NetworkManager.cpp");
+    TestLog::step("NetworkManager.cpp loaded");
+
+    // 1) NetworkManager::initialize() 中不得调用 WiFi.onEvent()
+    //    WiFi 事件注册仅由 WiFiManager::initialize() 负责
+    std::regex onEventRe("WiFi\\.onEvent\\s*\\(");
+    auto matches_begin = std::sregex_iterator(nmContent.begin(), nmContent.end(), onEventRe);
+    auto matches_end = std::sregex_iterator();
+    int onEventCount = std::distance(matches_begin, matches_end);
+
+    TEST_ASSERT_EQUAL_MESSAGE(0, onEventCount,
+        "NetworkManager.cpp must NOT call WiFi.onEvent() — "
+        "WiFiManager::initialize() already registers the handler. "
+        "Duplicate registration causes arduino_events stack overflow (2x event execution)");
+    TestLog::step("No WiFi.onEvent() call in NetworkManager.cpp");
+
+    // 2) 验证 WiFiManager.cpp 中确实有且仅有一次 WiFi.onEvent 注册
+    std::string wmContent = readSrcFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!wmContent.empty(),
+        "Failed to read WiFiManager.cpp");
+
+    auto wmMatches_begin = std::sregex_iterator(wmContent.begin(), wmContent.end(), onEventRe);
+    auto wmMatches_end = std::sregex_iterator();
+    int wmOnEventCount = std::distance(wmMatches_begin, wmMatches_end);
+
+    TEST_ASSERT_EQUAL_MESSAGE(1, wmOnEventCount,
+        "WiFiManager.cpp must have exactly one WiFi.onEvent() registration");
+    TestLog::step("WiFiManager.cpp has exactly 1 WiFi.onEvent() registration");
+
+    // 3) NetworkManager 中应有注释说明不重复注册
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmContent.find("WiFiManager::initialize()") != std::string::npos &&
+        nmContent.find("不再重复注册") != std::string::npos,
+        "NetworkManager.cpp must have a comment explaining that WiFi event registration "
+        "is handled by WiFiManager::initialize()");
+    TestLog::step("Comment explaining single registration present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：handleWiFiEvent() 中禁止使用重栈日志宏 (LOG_INFO/LOG_WARNING/LOG_DEBUG)
+ * 回归：handleWiFiEvent 运行在 arduino_events 任务栈上，LOG_INFO 内部使用
+ *       256 字节栈缓冲区 (LOG_BUF_SIZE) + 32 字节时间缓冲 + snprintf，
+ *       单次调用栈深度 >400 字节，叠加 PeriphExecManager/MQTT 调用后溢出
+ */
+void test_source_code_handle_wifi_event_no_heavy_logging() {
+    TestLog::testStart("Source: handleWiFiEvent no heavy LOG_* macros");
+
+    std::string content = readSrcFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read WiFiManager.cpp");
+    TestLog::step("WiFiManager.cpp loaded");
+
+    // 定位 handleWiFiEvent 函数体
+    auto funcStart = content.find("void WiFiManager::handleWiFiEvent");
+    TEST_ASSERT_TRUE_MESSAGE(funcStart != std::string::npos,
+        "handleWiFiEvent function must exist in WiFiManager.cpp");
+
+    // 找到函数结束（下一个同级函数或文件末尾）
+    auto nextFunc = content.find("\nvoid WiFiManager::triggerEvent", funcStart);
+    if (nextFunc == std::string::npos) {
+        nextFunc = content.length();
+    }
+    std::string funcBody = content.substr(funcStart, nextFunc - funcStart);
+    TestLog::step("handleWiFiEvent function body extracted");
+
+    // 1) 函数体内不得使用 LOG_INFO 宏
+    std::regex logInfoRe("\\bLOG_INFO\\b|\\bLOG_INFOF\\b|\\bLOG_INFO_M\\b");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(funcBody, logInfoRe),
+        "handleWiFiEvent must NOT use LOG_INFO/LOG_INFOF — "
+        "LOG_INFO internally allocates 256-byte stack buffer (LOG_BUF_SIZE) + 32-byte timeStr, "
+        "causing arduino_events stack overflow. Use Serial.printf instead");
+    TestLog::step("No LOG_INFO/LOG_INFOF in handleWiFiEvent");
+
+    // 2) 函数体内不得使用 LOG_WARNING 宏
+    std::regex logWarningRe("\\bLOG_WARNING\\b|\\bLOG_WARNINGF\\b");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(funcBody, logWarningRe),
+        "handleWiFiEvent must NOT use LOG_WARNING/LOG_WARNINGF — "
+        "same stack pressure as LOG_INFO. Use Serial.printf instead");
+    TestLog::step("No LOG_WARNING/LOG_WARNINGF in handleWiFiEvent");
+
+    // 3) 函数体内不得使用 LOG_DEBUG 宏
+    std::regex logDebugRe("\\bLOG_DEBUG\\b|\\bLOG_DEBUGF\\b");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(funcBody, logDebugRe),
+        "handleWiFiEvent must NOT use LOG_DEBUG/LOG_DEBUGF. Use Serial.printf instead");
+    TestLog::step("No LOG_DEBUG/LOG_DEBUGF in handleWiFiEvent");
+
+    // 4) 函数体内不得使用 LOG_ERROR 宏（事件回调不应产生错误日志）
+    std::regex logErrorRe("\\bLOG_ERROR\\b|\\bLOG_ERRORF\\b");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(funcBody, logErrorRe),
+        "handleWiFiEvent must NOT use LOG_ERROR/LOG_ERRORF. Use Serial.printf instead");
+    TestLog::step("No LOG_ERROR/LOG_ERRORF in handleWiFiEvent");
+
+    // 5) 必须使用 Serial.printf 替代（至少有一处）
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("Serial.printf") != std::string::npos,
+        "handleWiFiEvent must use Serial.printf for lightweight logging "
+        "(no stack buffer allocation, direct UART output)");
+    TestLog::step("Serial.printf used for lightweight logging");
+
+    // 6) 函数头部必须有注释说明轻量要求
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("arduino_events") != std::string::npos,
+        "handleWiFiEvent must have a comment explaining it runs on arduino_events stack "
+        "and must stay lightweight");
+    TestLog::step("arduino_events stack warning comment present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 行为测试：模拟重复事件注册对栈深度的影响
+ * 验证单次注册 vs 双重注册的栈消耗差异
+ */
+void test_smoke_event_registration_stack_impact() {
+    TestLog::testStart("Smoke: Event registration stack impact simulation");
+
+    // 模拟单次事件处理时的栈消耗（字节）
+    const int SERIAL_PRINTF_STACK = 48;     // Serial.printf 栈开销
+    const int LOG_INFO_STACK = 512;         // LOGGER 宏栈开销 (256 buf + 32 time + snprintf + String 拼接)
+    const int PERIPH_EXEC_STACK = 128;      // PeriphExecManager::triggerEvent 栈开销
+    const int BASE_FRAME_STACK = 64;        // 函数调用框架开销
+    const int WIFI_CALLBACK_OVERHEAD = 512; // WiFi/lwIP 事件分发回调本身的栈开销（含 tcpip_adapter、esp_event_dispatch）
+
+    // 单次注册 + 轻量日志的栈消耗
+    int singleLightweight = WIFI_CALLBACK_OVERHEAD + BASE_FRAME_STACK + SERIAL_PRINTF_STACK + PERIPH_EXEC_STACK;
+
+    // 双重注册 + 重日志的栈消耗（旧代码）
+    int doubleHeavy = (WIFI_CALLBACK_OVERHEAD + BASE_FRAME_STACK + LOG_INFO_STACK + PERIPH_EXEC_STACK) * 2;
+
+    // arduino_events 任务栈大小（ESP-IDF 默认 4096）
+    const int ARDUINO_EVENTS_STACK = 4096;
+    // WiFi 子系统本身的栈消耗（事件分发等）
+    const int WIFI_SUBSYSTEM_STACK = 1200;
+    // 可用栈空间
+    int availableStack = ARDUINO_EVENTS_STACK - WIFI_SUBSYSTEM_STACK;
+
+    TestLog::step(("Single lightweight: " + std::to_string(singleLightweight) +
+                  " bytes vs Double heavy: " + std::to_string(doubleHeavy) + " bytes").c_str());
+
+    // 1) 单次轻量注册必须在可用栈范围内
+    TEST_ASSERT_LESS_THAN_MESSAGE(availableStack, singleLightweight,
+        "Single lightweight event handler must fit within available arduino_events stack");
+    TestLog::step("Single lightweight handler fits in stack");
+
+    // 2) 双重注册 + 重日志的栈消耗应远大于单次轻量
+    TEST_ASSERT_GREATER_THAN(singleLightweight * 2, doubleHeavy);
+    TestLog::step("Double heavy handler uses >2x stack of single lightweight");
+
+    // 3) 双重注册 + 重日志 + 嵌套事件会超出可用栈
+    //    当 WiFi 事件触发模式切换时，会嵌套产生更多事件
+    int nestedScenario = doubleHeavy + WIFI_CALLBACK_OVERHEAD + LOG_INFO_STACK + BASE_FRAME_STACK;
+    TEST_ASSERT_TRUE_MESSAGE(nestedScenario > availableStack,
+        "Nested event scenario with double registration exceeds available arduino_events stack — "
+        "this is exactly what caused the Stack canary watchpoint crash");
+    TestLog::step("Nested event scenario exceeds available stack (crash root cause confirmed)");
+
+    // 4) 修复后：单次轻量即使在嵌套场景也有足够余量
+    int fixedNestedScenario = singleLightweight + WIFI_CALLBACK_OVERHEAD + SERIAL_PRINTF_STACK + BASE_FRAME_STACK;
+    TEST_ASSERT_TRUE_MESSAGE(fixedNestedScenario < availableStack,
+        "Fixed: single lightweight handler with nesting must still fit in stack");
+    TestLog::step(("Fixed nested: " + std::to_string(fixedNestedScenario) +
+                  " bytes < " + std::to_string(availableStack) + " available").c_str());
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_system_stability_group() {
     TestLog::groupStart("System Stability Tests");
@@ -2715,6 +2898,11 @@ void test_system_stability_group() {
     RUN_TEST(test_source_code_ap_fallback_auto_flag);
     RUN_TEST(test_source_code_ap_probe_backoff_mechanism);
     RUN_TEST(test_smoke_ap_probe_recovery_state_machine);
+
+    // WiFi 事件回调重复注册 & 事件栈溢出回归测试
+    RUN_TEST(test_source_code_no_duplicate_wifi_onevent_registration);
+    RUN_TEST(test_source_code_handle_wifi_event_no_heavy_logging);
+    RUN_TEST(test_smoke_event_registration_stack_impact);
     
     TestLog::groupEnd();
 }

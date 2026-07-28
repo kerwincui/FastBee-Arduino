@@ -1,10 +1,11 @@
-import { test, expect, env, waitForDevice } from '../fixtures/base.fixture';
+import { test, expect, env, waitForDevice, fetchDeviceFeatureFlags } from '../fixtures/base.fixture';
 
 test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
 
   // ========== 场景A: WiFi环境下MQTT联动 ==========
 
   test('NWMS-001: WiFi连接后mqtt://首次连接 @quick', async ({ authPage, navigateTo }) => {
+    test.setTimeout(90_000); // WiFi保存 + MQTT配置 + 等待连接
     // 1. 配置 WiFi STA
     await navigateTo('network');
     await authPage.fill('#wifi-ssid', env.wifi.ssid);
@@ -130,17 +131,17 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   // ========== 场景B: 以太网环境下MQTT联动 ==========
 
   test('NWMS-010: 以太网连接后mqtt://连接 @quick', async ({ authPage, navigateTo }) => {
-    // 切换到以太网
+    // 切换到以太网并检测是否支持
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
       await networkType.selectOption('1'); // 以太网
       await authPage.waitForTimeout(1000);
-      // 以太网面板应可见
       const ethPanel = authPage.locator('#ethernet-panel');
-      if (await ethPanel.isVisible()) {
-        await expect(ethPanel).toBeVisible();
-      }
+      test.skip(!(await ethPanel.isVisible()), '设备不支持以太网');
+      await expect(ethPanel).toBeVisible();
+    } else {
+      test.skip(true, '无网络类型选择器');
     }
   });
 
@@ -198,6 +199,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   // ========== 场景C: 4G环境下MQTT联动 ==========
 
   test('NWMS-016: 4G连接后mqtt://连接', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -234,6 +237,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-020: 4G APN切换后MQTT重连 @quick', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -250,6 +255,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   // ========== 场景D: 联网方式之间切换 ==========
 
   test('NWMS-021: WiFi→以太网切换后MQTT', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -275,6 +282,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-023: WiFi→4G切换后MQTT', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -295,6 +304,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-025: 以太网→4G切换后MQTT', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false || flags.cellular === false, '设备不支持以太网或4G');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -305,6 +316,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-026: 4G→以太网切换后MQTT', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false || flags.cellular === false, '设备不支持以太网或4G');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -315,6 +328,8 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-027: 连续三次切换联网方式', async ({ authPage, navigateTo }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false || flags.cellular === false, '设备不支持以太网或4G');
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {
@@ -412,6 +427,7 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   // ========== 场景F: MQTT连接稳定性 ==========
 
   test('NWMS-033: MQTT长连接稳定性(5分钟)', async ({ authPage, navigateTo }) => {
+    test.setTimeout(360_000); // 10×30s + 导航开销
     await navigateTo('protocol');
     // 每30秒检查一次，共10次（5分钟）
     for (let i = 0; i < 10; i++) {
@@ -425,15 +441,16 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
   });
 
   test('NWMS-034: MQTT长连接稳定性(15分钟)', async ({ authPage, navigateTo }) => {
+    test.setTimeout(960_000); // 15×60s + 导航开销
     await navigateTo('protocol');
     // 每60秒检查一次，共15次
     for (let i = 0; i < 15; i++) {
       await authPage.waitForTimeout(60_000);
       const status = await authPage.evaluate(async () => {
         try {
-          const r = await fetch('/api/status');
+          const r = await fetch('/api/system/health');
           const data = await r.json();
-          return { ok: true, heapFree: data?.heap?.free ?? -1 };
+          return { ok: true, heapFree: data?.data?.freeHeap ?? -1 };
         } catch { return { ok: false, heapFree: -1 }; }
       });
       console.log(`[${i}min] ok=${status.ok}, heap=${status.heapFree}`);

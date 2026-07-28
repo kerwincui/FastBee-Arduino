@@ -269,6 +269,9 @@ void PeriphExecScheduler::checkTimers() {
     checkSerialEvents();
     _manager->checkTimerTriggers(now, modbusAvailable);
 
+    // 启动后一次性物模型状态上报（MQTT 连接成功后分批执行，每周期最多一条规则，节流）
+    _manager->processBootReport();
+
     // 定期淘汰过期传感器缓存（每次定时器检查周期顺带执行，开销忽略不计）
     _manager->evictStaleSensorCache();
 }

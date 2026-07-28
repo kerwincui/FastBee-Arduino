@@ -259,7 +259,12 @@
                 .then(res => {
                     if (res && res.success) {
                         this._protocolConfig = null;
-                        if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
+                        if (res.data && res.data.mqttHotRestart) {
+                            // 后端热重建 MQTT（不重启设备），连接进度由状态轮询展示
+                            Notification.success('配置已应用，MQTT 正在重新连接', '通信协议');
+                        } else if (res.data && res.data.mqttDisconnected) {
+                            Notification.success('MQTT已断开连接', '通信协议');
+                        } else if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
                             if (res.data.mqttReconnected && res.data.mqttDeferred) {
                                 Notification.success('MQTT已重新连接', '通信协议');
                             } else if (res.data.mqttReconnected) {

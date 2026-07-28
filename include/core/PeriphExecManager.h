@@ -84,6 +84,21 @@ public:
     // 定时器检查（由 TaskManager 定时任务调用）
     void checkTimers();
 
+    // ========== 启动后主动上报当前物模型状态（一次性） ==========
+
+    // 调度一次性启动上报：由 initialize() 末尾调用，仅置位待上报标志。
+    // 实际上报在 MQTT 连接成功后由 processBootReport() 分批执行。
+    void scheduleBootReport();
+
+    // 处理启动上报（由 Scheduler::checkTimers 每周期调用）：
+    // 门控（已初始化 + MQTT 已连接）通过后，首次快照所有
+    // “启用 && 勾选上报 && 含可上报动作”的规则 ID，随后每周期只读采集并上报一条规则（节流）。
+    // 队列清空后置完成标志，保证整个生命周期只上报一次（幂等，避免重复/无效上报）。
+    void processBootReport();
+
+    // 查询启动上报是否仍在进行（已调度且未完成）
+    bool isBootReportPending() const { return _bootReportPending && !_bootReportDone; }
+
     // ========== 触发事件（委托给 Scheduler） ==========
 
     // 触发事件（由各系统模块调用）
@@ -227,7 +242,8 @@ public:
     void executeWorkerJob(AsyncExecContext* ctx);
 
     // 执行规则的所有动作（供异步任务调用）
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
+    // reportCountOut（可选）：回填本次实际上报的动作结果数量
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
 
     // 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
     void executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue);
@@ -262,6 +278,8 @@ private:
     // ========== 子模块 ==========
     bool ruleNeedsModbus(const PeriphExecRule& rule) const;
     bool ruleHasPollCollectionAction(const PeriphExecRule& rule) const;
+    // 规则是否包含可作为物模型状态上报的动作（传感器读取 / Modbus 轮询 / 物理输出控制）
+    bool ruleHasReportableStateAction(const PeriphExecRule& rule) const;
     bool shouldAvoidSyncFallback(const PeriphExecRule& rule) const;
     void sanitizeTriggerForSafety(ExecTrigger& trigger, bool hasPollCollectionAction, const String& ruleName) const;
     void sanitizeRuleForSafety(PeriphExecRule& rule) const;
@@ -357,6 +375,12 @@ private:
     static const unsigned long PENDING_REPORT_RETRY_MS = 5000;  // 重试间隔 5秒
     std::vector<String> _pendingReports;                    // 待上报数据缓存
     unsigned long _lastPendingReportRetry = 0;              // 上次重试时间
+
+    // ========== 启动一次性物模型状态上报（重启后主动对齐平台显示） ==========
+    bool _bootReportPending = false;       // 已调度但未完成
+    bool _bootReportDone = false;          // 已完成（幂等标志，防重复上报）
+    bool _bootReportListBuilt = false;     // 规则 ID 快照是否已构建
+    std::vector<String> _bootReportQueue;  // 待上报规则 ID 队列（每周期处理一条，节流）
 
 
 

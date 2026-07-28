@@ -223,6 +223,8 @@ struct ActionExecResult {
     String actualValue;             // 执行后的实际值
     bool success = false;           // 是否成功
     String remark;                  // 执行备注（成功/失败原因）
+    String dataField;               // 传感器数据字段（如 temperature/humidity）：上报时作为物模型标识符，
+                                    // 避免同一外设的多个数据字段（如 DHT11 温/湿）都用 periphId 上报而冲突
 };
 
 // 外设执行规则结构体

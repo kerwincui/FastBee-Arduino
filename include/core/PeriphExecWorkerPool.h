@@ -19,7 +19,11 @@
 //
 // 关键参数（经初版 3×8192 在线验证后下调以保留充足空闲 heap）：
 //   WORKER_COUNT  = 2   符合实测并发峰值，对齐 AsyncExecContextPool=4 的边界
-//   WORKER_STACK  = SIMPLE_TASK_STACK (6144) 实测 HWM 仅用 4036B，留 ~2KB 余量
+//   WORKER_STACK  = max(SIMPLE_TASK_STACK, 6144)
+//     注意：SIMPLE_TASK_STACK 在 C3/C6 环境为 4096（platformio.ini），
+//     实测传感器采集+上报规则在 4096 栈上 HWM 仅剩 ~948B，频繁触发
+//     （如高频开关灯 + 定时采集并发）时更深路径（DHT 重试/断连重试队列/
+//     日志格式化）会击穿栈 canary 导致 panic 重启，故此处强制 6144 下限。
 //   QUEUE_CAPACITY= 16  突发缓冲（满则走原失败回退分支）
 //
 // 启动期一次性付出：2 × 6144 = 12KB 永久驻留栈（原 3×8192=24KB）
@@ -30,7 +34,10 @@ class PeriphExecWorkerPool {
 public:
     static constexpr size_t   WORKER_COUNT    = 2;                     // 目标并发 2，与 AsyncExecContextPool 对齐
     static constexpr size_t   QUEUE_CAPACITY  = 16;
-    static constexpr uint32_t WORKER_STACK    = SIMPLE_TASK_STACK;     // 6144 （platformio.ini 为各环境已统一）
+    // 强制最小 6144：C3/C6 的 SIMPLE_TASK_STACK=4096 不足以覆盖
+    // 传感器采集+JSON 上报路径（实测 HWM 剩 948B，濒临栈溢出重启）
+    static constexpr uint32_t WORKER_STACK    =
+        (SIMPLE_TASK_STACK < 6144) ? 6144 : SIMPLE_TASK_STACK;
 
     PeriphExecWorkerPool();
     ~PeriphExecWorkerPool();

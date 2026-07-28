@@ -27,6 +27,13 @@ struct MemoryBudget {
     // still needs a contiguous socket/control block, but Ethernet restore logs
     // show stable MQTTS retry windows around 17KB after Web/SSE reclaim.
     static constexpr uint32_t MQTTS_MIN_LARGEST_BLOCK = 16384U;
+    // 无 PSRAM 构建：mbedTLS 的 16KB in + 16KB out + ~10KB context 全部落内部
+    // DRAM（~42KB 峰值）。准入门槛必须覆盖峰值 + lwIP/AsyncTCP 小分配余量，
+    // 否则握手中途把 largest block 打穿，lwIP 的 nothrow 小分配失败直接 panic
+    // （tcp_receive assert）。宁可进 300s backoff 也不做边缘尝试。
+    static constexpr uint32_t MQTTS_NO_PSRAM_MIN_DRAM_FREE = 52224U;
+    // 单个 record buffer 含分配器 overhead：16384 + 1024
+    static constexpr uint32_t MQTTS_NO_PSRAM_MIN_LARGEST_BLOCK = 17408U;
     // Keep the reconnect worker small: mbedTLS consumes heap buffers, and the
     // task stack itself comes from the same scarce internal DRAM pool.
     static constexpr uint32_t MQTTS_RECONNECT_TASK_STACK = 6144U;
@@ -63,10 +70,31 @@ struct MemoryBudget {
                largestBlock >= MQTTS_MIN_LARGEST_BLOCK;
     }
 
+    // PSRAM 感知重载：psramAvailable=false 时使用无 PSRAM 严格门槛，
+    // 避免在 DRAM 必然耗尽的窗口内发起 TLS 握手
+    static constexpr bool canAttemptMqtts(uint32_t dramFree, uint32_t largestBlock,
+                                          bool psramAvailable) {
+        return psramAvailable
+            ? canAttemptMqtts(dramFree, largestBlock)
+            : (dramFree >= MQTTS_NO_PSRAM_MIN_DRAM_FREE &&
+               largestBlock >= MQTTS_NO_PSRAM_MIN_LARGEST_BLOCK);
+    }
+
     static constexpr bool canRetryMqttsMemoryRecovery(uint32_t dramFree,
                                                        uint32_t largestBlock) {
         return dramFree >= MQTTS_MIN_DRAM_FREE &&
                largestBlock >= GUARD_WARN_LARGEST_BLOCK;
+    }
+
+    // 无 PSRAM 时：离严格门槛太远就不要 10s 高频重试（反复 pause/resume Web
+    // 只会把堆越切越碎），直接交给 300s backoff
+    static constexpr bool canRetryMqttsMemoryRecovery(uint32_t dramFree,
+                                                       uint32_t largestBlock,
+                                                       bool psramAvailable) {
+        return psramAvailable
+            ? canRetryMqttsMemoryRecovery(dramFree, largestBlock)
+            : (dramFree >= MQTTS_NO_PSRAM_MIN_DRAM_FREE - 8192U &&
+               largestBlock >= GUARD_WARN_LARGEST_BLOCK);
     }
 
     static constexpr bool shouldReclaimBeforeMqtts(uint32_t dramFree, uint32_t largestBlock) {

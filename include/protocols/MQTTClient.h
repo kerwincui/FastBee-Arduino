@@ -222,11 +222,17 @@ private:
     volatile bool _reconnectRunning;
     TaskHandle_t _reconnectTaskHandle;
     uint32_t _taskStartupDelayMs;  // 重连任务启动延迟（ms），首次启动 3000ms，deferred 重启 500ms
+    // 重连自愈看门狗：记录调度重连任务的时间戳，若标志卡死超过阈值则强制重置，
+    // 避免一次性重连任务异常终止（如栈溢出）后 _reconnectPending/_reconnectRunning 永久卡死、
+    // 导致 handle() 永不再调度自动重连（表现为必须手动打开协议界面刷新才能恢复）。
+    unsigned long _reconnectScheduledMs = 0;
+    static constexpr uint32_t RECONNECT_WATCHDOG_TIMEOUT_MS = 90000;  // 重连执行最大允许时长（ms）
     bool _lastMqttsTlsMemoryFailure = false;
     bool _mqttsMemoryBackoffActive = false;
     static void reconnectTaskEntry(void* param);
     bool ensureReconnectTask();  // 按需创建重连任务（连接时任务已删除，断开时重新创建）
     void doReconnect();  // 实际执行重连（在后台任务中调用）
+    void recoverStuckReconnect(const char* reason);  // 自愈：强制重置卡死的重连标志与僵死任务
 
     // MQTTS TLS 内存管理：动态创建/销毁 WiFiClientSecure，确保失败后释放全部 TLS DRAM
     void ensureTlsTransport();    // 按需创建 _wifiClientSecure（已存在则跳过）
@@ -235,9 +241,14 @@ private:
     void resumeWebServices();     // 显式暂停路径使用后恢复 Web 服务
     bool _webServerPaused = false; // MQTTS 深度回收时短暂停止 Web，握手后恢复
     bool _mdnsPausedForMqtts = false;
+    // 前台推迟超限后的强制深度暂停标志（一次性，reclaimDramForMqtts 消费后清零）
+    bool _mqttsForceWebPause = false;
 
     // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
     SemaphoreHandle_t _publishMutex = nullptr;
+
+    // 查找已启用的发布主题索引（按 topicType），找不到返回 -1
+    int findEnabledPublishTopicIndex(MqttTopicType type) const;
 
     // DATA_COMMAND 延迟处理队列（避免在 MQTT 回调中同步执行重操作）
     QueueHandle_t _dataCommandQueue = nullptr;
@@ -250,6 +261,9 @@ private:
     uint8_t _slotWriteIndex = 0;                // 写入位置
     uint8_t _slotReadIndex = 0;                 // 读取位置
     uint8_t _slotCount = 0;                     // 当前已占用的槽位数
+    // 环形缓冲索引自旋锁：生产者(pexec worker任务)与消费者(loopTask)跨核并发，
+    // 三个索引的读改写必须在同一临界区内完成（临界区仅含索引操作+memcpy，微秒级）
+    portMUX_TYPE _slotMux = portMUX_INITIALIZER_UNLOCKED;
     uint32_t _minReportInterval = 0;            // 最小上报间隔（ms），0=无限制
     unsigned long _lastReportQueueTime = 0;     // 上次入队上报数据的时间
     void processQueuedReports();

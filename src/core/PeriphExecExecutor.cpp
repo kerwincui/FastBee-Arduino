@@ -13,6 +13,7 @@
 #include "core/RuleScript.h"
 #include "core/ScriptEngine.h"
 #include "core/FastBeeFramework.h"
+#include "utils/StringUtils.h"
 #include "protocols/ProtocolManager.h"
 #if FASTBEE_ENABLE_MODBUS
 #include "protocols/ModbusHandler.h"
@@ -41,54 +42,7 @@
 
 namespace {
 bool tryParseBoolLike(const String& rawValue, bool& outValue) {
-    String value = rawValue;
-    value.trim();
-    value.toLowerCase();
-    if (value.isEmpty()) return false;
-
-    if (value == "1" || value == "true" || value == "on" ||
-        value == "high" || value == "open") {
-        outValue = true;
-        return true;
-    }
-
-    if (value == "0" || value == "false" || value == "off" ||
-        value == "low" || value == "close") {
-        outValue = false;
-        return true;
-    }
-
-    if (value == "+1") {
-        outValue = true;
-        return true;
-    }
-
-    if (value == "-1") {
-        outValue = false;
-        return true;
-    }
-
-    bool isNumeric = true;
-    bool hasDigit = false;
-    for (size_t i = 0; i < value.length(); ++i) {
-        const char c = value.charAt(i);
-        if (c >= '0' && c <= '9') {
-            hasDigit = true;
-            continue;
-        }
-        if ((c == '+' || c == '-') && i == 0) {
-            continue;
-        }
-        isNumeric = false;
-        break;
-    }
-
-    if (isNumeric && hasDigit) {
-        outValue = value.toInt() != 0;
-        return true;
-    }
-
-    return false;
+    return StringUtils::tryParseBoolLike(rawValue, outValue);
 }
 
 String normalizeBinaryReportValue(const String& preferredValue,
@@ -170,6 +124,39 @@ MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
     return d;
 }
 #endif
+
+/** 判断动作是否为“物理输出控制”类（GPIO 电平/PWM/DAC），其执行结果可作为设备属性上报物联网平台。
+ *  采集类（SENSOR_READ/MODBUS_POLL）在调用处单独标记；系统指令/脚本/事件/显示类不作为设备属性上报。 */
+bool isReportableOutputAction(uint8_t actionType) {
+    switch (static_cast<ExecActionType>(actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/** 判断输出动作是否为“电平反转”类（低电平有效外设，如低电平点亮的 LED / 继电器）。
+ *  反转与否完全由规则动作配置决定，不在代码中对具体外设的电平极性做任何硬编码假设。 */
+bool isInvertedOutputAction(uint8_t actionType) {
+    ExecActionType t = static_cast<ExecActionType>(actionType);
+    return t == ExecActionType::ACTION_HIGH_INVERTED ||
+           t == ExecActionType::ACTION_LOW_INVERTED;
+}
+
+/** 将“物理引脚电平”翻译为“上报逻辑值”，与正常执行经 buildActionReportValue 的语义一致：
+ *  非反转外设 物理HIGH=逻辑"1"；反转外设（低电平有效）物理LOW=逻辑"1"。
+ *  反转与否由动作配置决定，不假设 LED 总是高/低电平点亮，保证不同接法的外设通用。 */
+const char* physicalStateToLogicalValue(GPIOState physical, uint8_t actionType) {
+    bool physicalHigh = (physical == GPIOState::STATE_HIGH);
+    bool logicalOn = physicalHigh ^ isInvertedOutputAction(actionType);
+    return logicalOn ? "1" : "0";
+}
 
 String buildActionReportValue(const ExecAction& action,
                               const String& effectiveValue,
@@ -309,12 +296,12 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
 }
 
 std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport, size_t* reportCountOut) {
 
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
-    // 仅采集类动作（SENSOR_READ / MODBUS_POLL）的结果才进入实时监测上报队列
-    // 其他动作（GPIO/PWM/系统指令等）的执行结果不触发实时监测上报
+    // 可上报动作的结果进入上报队列：采集类（SENSOR_READ / MODBUS_POLL）
+    // 以及物理输出控制类（GPIO 电平/PWM/DAC）。系统指令/脚本/事件/显示类不上报。
     std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
@@ -398,10 +385,15 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 ok,
                 ok ? "success" : "execute_failed"
             );
+            // 物理输出控制动作（GPIO 电平/PWM/DAC）的结果也作为设备属性上报：
+            // 用户勾选“上报数据”后，LED/继电器等控制状态可同步到物联网平台
+            if (isReportableOutputAction(action.actionType)) {
+                isReportableAction = true;
+            }
         }
 
         results.insert(results.end(), actionResults.begin(), actionResults.end());
-        // 仅 SENSOR_READ / MODBUS_POLL 结果进入上报列表
+        // 采集类（SENSOR_READ / MODBUS_POLL）与物理输出控制类结果进入上报列表
         if (isReportableAction) {
             reportableResults.insert(reportableResults.end(),
                                      actionResults.begin(), actionResults.end());
@@ -415,17 +407,77 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
     }
 
-    // 精准上报执行结果（仅上报采集类动作的结果）
+    // 精准上报执行结果（采集类 + 物理输出控制类动作的结果）
     if (rule.reportAfterExec && !suppressReport && !reportableResults.empty()) {
-        LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d sensor/poll results",
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d action results",
             rule.name.c_str(), reportableResults.size());
         reportActionResults(reportableResults);
+        // 回填本次实际上报的动作结果数量（供执行结果接口/回归测试观测）
+        if (reportCountOut) {
+            *reportCountOut = reportableResults.size();
+        }
     } else if (!results.empty()) {
         LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (no sensor/poll data to report)",
             rule.name.c_str(), results.size());
     }
 
     return results;
+}
+
+// ========== 启动后当前状态只读采集与上报 ==========
+// 与 executeAllActions 严格区分：本方法“只读”采集规则内可上报动作的当前实际状态，
+// 绝不重新驱动任何输出（无副作用），用于设备重启后一次性对齐平台显示状态。
+size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
+    // 只上报启用且勾选“上报数据”的规则，与正常 reportAfterExec 语义一致
+    if (!rule.enabled || !rule.reportAfterExec) return 0;
+
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    std::vector<ActionExecResult> reportableResults;
+    reportableResults.reserve(rule.actions.size());
+
+    for (const auto& action : rule.actions) {
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            // 传感器读取：采集当前实时值（无副作用）
+            ActionExecResult ar;
+            if (executeSensorReadAction(action, ar)) {
+                ar.success = true;
+                ar.remark = "boot_state";
+                reportableResults.push_back(ar);
+            }
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
+            // Modbus 轮询：只读采集从站寄存器当前值
+            std::vector<ActionExecResult> pollResults;
+            executeModbusPollAction(action, rule, &pollResults);
+            for (auto& pr : pollResults) {
+                if (pr.success) {
+                    pr.remark = "boot_state";
+                    reportableResults.push_back(pr);
+                }
+            }
+        } else if (isReportableOutputAction(action.actionType)) {
+            // 物理输出控制：只读当前引脚电平，绝不重写输出（保持设备当前实际状态）
+            if (action.targetPeriphId.isEmpty()) continue;
+            GPIOState st = pm.readPin(action.targetPeriphId);
+            if (st == GPIOState::STATE_UNDEFINED) {
+                // 无法确定实际电平（如 PWM/DAC 或引脚未初始化）：跳过，避免上报无效/缓存值
+                continue;
+            }
+            // 按动作配置的反转属性将物理电平翻译为逻辑上报值，与正常执行一致：
+            // 低电平点亮（*_INVERTED）的 LED 物理LOW=亮=逻辑"1"，避免重启后平台显示与实际相反。
+            appendActionResult(reportableResults, action.targetPeriphId,
+                               physicalStateToLogicalValue(st, action.actionType),
+                               true, "boot_state");
+        }
+        // 其它动作类型（系统/脚本/事件/显示/调用）不代表可上报的物模型状态，跳过
+    }
+
+    if (reportableResults.empty()) return 0;
+
+    LOGGER.infof("[PeriphExec] Boot state report for rule '%s': %d items",
+                 rule.name.c_str(), (int)reportableResults.size());
+    // 复用现有上报路径：保证 id/value 格式、dataField 物模型标识、MQTT 门控与未连接时缓存重试
+    reportActionResults(reportableResults);
+    return reportableResults.size();
 }
 
 // ========== 具体动作执行方法 ==========
@@ -1279,6 +1331,9 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 
     result.targetPeriphId = String(periphId);
     result.actualValue = String(processed, (unsigned int)decimals);
+    // 携带数据字段（temperature/humidity 等）：上报时作为物模型标识符，
+    // 使平台能区分同一外设的不同数据字段（如 DHT11 的温度与湿度）
+    result.dataField = String(dataField);
 
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
         periphId, category, rawValue, result.actualValue.c_str(), unit, label);
@@ -1659,6 +1714,13 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         // 确定上报 ID 和 value
         String reportId = ar.targetPeriphId;
         String reportValue = ar.actualValue;
+
+        // 传感器读取结果：使用 dataField 作为上报 ID（物模型标识符，如 temperature/humidity）。
+        // 若继续用 periphId（如 dht11）上报，平台无法区分同一外设的温度与湿度字段，
+        // 且不匹配产品物模型标识符，导致温湿度数据不在平台显示。
+        if (!ar.dataField.isEmpty()) {
+            reportId = ar.dataField;
+        }
 
         if (isModbusTarget
 #if FASTBEE_ENABLE_MODBUS

@@ -67,7 +67,8 @@ public:
                            const String& receivedValue = String());
 
     // 执行规则的所有动作（同步）
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
+    // reportCountOut（可选）：回填本次实际上报的动作结果数量（reportAfterExec 勾选且产生可上报结果时 > 0）
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
 
     // ========== 具体动作执行方法 ==========
 
@@ -114,6 +115,15 @@ public:
 
     // 上报动作执行结果
     void reportActionResults(const std::vector<ActionExecResult>& results);
+
+    // ========== 启动后当前物模型状态只读采集与上报 ==========
+    // 与 executeAllActions 不同：此方法“只读”采集规则内可上报动作的当前实际状态，
+    // 绝不重新驱动任何输出（无副作用），用于设备重启后一次性对齐平台显示状态：
+    //   - SENSOR_READ  → 读取传感器当前值（executeSensorReadAction 本身即只读）
+    //   - MODBUS_POLL  → 轮询读取从站寄存器当前值（只读）
+    //   - 物理输出控制 → 通过 readPin 读取引脚“当前电平”，不重写输出
+    // 返回：实际纳入上报的动作结果数量（无可上报项或规则未启用/未勾选上报时为 0）。
+    size_t reportRuleCurrentState(const PeriphExecRule& rule);
 
     // ========== Modbus 缓冲池管理 ==========
     ModbusBuffer* acquireBuffer();

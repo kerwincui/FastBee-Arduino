@@ -585,8 +585,11 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     PeripheralManager& pm = PeripheralManager::getInstance();
     String errorMsg;
     if (pm.addPeripheral(config, errorMsg)) {
-        pm.saveConfiguration();
-        ctx->sendSuccess(request, "Peripheral added");
+        if (pm.saveConfiguration()) {
+            ctx->sendSuccess(request, "Peripheral added");
+        } else {
+            ctx->sendError(request, 500, "Peripheral added in memory but save to flash failed");
+        }
     } else {
         String msg = errorMsg.isEmpty() ? String("Failed to add peripheral")
                                         : (String("Failed to add peripheral: ") + errorMsg);
@@ -723,8 +726,11 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     }
 
     if (pm.updatePeripheral(id, config)) {
-        pm.saveConfiguration();
-        ctx->sendSuccess(request, "Peripheral updated");
+        if (pm.saveConfiguration()) {
+            ctx->sendSuccess(request, "Peripheral updated");
+        } else {
+            ctx->sendError(request, 500, "Peripheral updated in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, "Failed to update peripheral");
     }
@@ -742,8 +748,11 @@ void PeripheralRouteHandler::handleDeletePeripheral(AsyncWebServerRequest* reque
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     if (pm.removePeripheral(id)) {
-        pm.saveConfiguration();
-        ctx->sendSuccess(request, "Peripheral deleted");
+        if (pm.saveConfiguration()) {
+            ctx->sendSuccess(request, "Peripheral deleted");
+        } else {
+            ctx->sendError(request, 500, "Peripheral deleted in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Peripheral not found");
     }
@@ -761,8 +770,11 @@ void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* reque
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     if (pm.enablePeripheral(id)) {
-        pm.saveConfiguration();
-        ctx->sendSuccess(request, "Peripheral enabled");
+        if (pm.saveConfiguration()) {
+            ctx->sendSuccess(request, "Peripheral enabled");
+        } else {
+            ctx->sendError(request, 500, "Peripheral enabled in memory but save to flash failed");
+        }
     } else {
         String errMsg = "Failed to enable peripheral";
         if (pm.lastEnableError.length() > 0) {
@@ -784,8 +796,11 @@ void PeripheralRouteHandler::handleDisablePeripheral(AsyncWebServerRequest* requ
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     if (pm.disablePeripheral(id)) {
-        pm.saveConfiguration();
-        ctx->sendSuccess(request, "Peripheral disabled");
+        if (pm.saveConfiguration()) {
+            ctx->sendSuccess(request, "Peripheral disabled");
+        } else {
+            ctx->sendError(request, 500, "Peripheral disabled in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, "Failed to disable peripheral");
     }

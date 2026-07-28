@@ -112,6 +112,13 @@ public:
     bool restartMQTTDeferred(bool forceRebuild = false);
 
     /**
+     * @brief 异步请求重启MQTT（仅置标志，由 handle() 在 loopTask 中执行）
+     * 用于保存协议配置后热应用新配置，避免在 AsyncTCP 小栈任务中
+     * 执行 TLS 级别的销毁/重建；若热重建内存门槛不过则自动回退调度设备重启
+     */
+    void requestMqttRestartAsync();
+
+    /**
      * @brief 停止MQTT连接
      */
     void stopMQTT();
@@ -186,6 +193,9 @@ private:
     bool isInitialized;
 #if FASTBEE_ENABLE_MODBUS
     volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
+#endif
+#if FASTBEE_ENABLE_MQTT
+    volatile bool mqttRestartPending = false;  // MQTT 热重建标志，由 handle() 在 loopTask 中消费
 #endif
     
     // 网络类型追踪：用于在 handle() 中检测网络类型变更并立即重启 MQTT

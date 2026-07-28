@@ -143,7 +143,7 @@ private:
 
 public:
 #if FASTBEE_ENABLE_STORAGE_CACHE
-    void flushDirtyEntries();   // 供定时任务调用
+    void flushDirtyEntries(bool force = false);  // 供定时任务调用；force=true 忽略 debounce（重启前落盘）
     void clearCache();          // 供 OTA 完成后调用
     void clearCache(const String& filename);  // 清除指定文件的缓存
 #endif

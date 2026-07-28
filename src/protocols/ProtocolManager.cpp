@@ -14,6 +14,7 @@
 #include "core/MemoryBudget.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
+#include "systems/SystemRebooter.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
@@ -401,6 +402,32 @@ void ProtocolManager::handle() {
             ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
         }
     }
+
+    // MQTT 热重建：保存协议配置后由 HTTP handler 置标志，在 loopTask 大栈中执行。
+    // 故意放在 heapSufficient 早退之前：低内存时也要消费标志，
+    // 由 restartMQTTDeferred 内部门槛判定，失败则回退调度重启保证新配置生效
+    if (mqttRestartPending) {
+        mqttRestartPending = false;
+        LOG_INFO("[MQTT] Executing deferred hot-restart in loopTask...");
+        if (!restartMQTTDeferred(true)) {
+            // restartMQTTDeferred 在配置已禁用时也返回 false（属正常停止，
+            // 如连续两次保存先启后禁的竞态），此时不应回退重启
+            bool stillEnabled = false;
+            {
+                JsonDocument d;
+                if (ConfigStorage::getInstance().loadProtocolSection("mqtt", d)) {
+                    stillEnabled = d["mqtt"]["enabled"].as<bool>();
+                }
+            }
+            if (stillEnabled) {
+                // 热重建失败（DRAM 不足/碎片化/无可用传输）：
+                // 回退到设备重启获得干净堆，与旧版"保存即重启"行为等价，
+                // 确保配置必定生效且不会因碎片化堆强行 TLS 握手导致长期不可用
+                LOG_WARNING("[MQTT] Hot-restart failed, falling back to device reboot");
+                SystemRebooter::scheduleConfigReboot("MQTT hot-restart failed");
+            }
+        }
+    }
 #endif
 
     // 堆保护：低于阈值时跳过其余重型协议处理
@@ -644,11 +671,19 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
         }
     }
     
+    // 无 PSRAM 时 mbedTLS 大缓冲全部落内部 DRAM，使用严格门槛
+#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
+    const bool tlsUsesPsram = psramFound();
+#else
+    const bool tlsUsesPsram = false;
+#endif
     uint32_t minHeap = isMqtts
-        ? FastBee::MemoryBudget::MQTTS_MIN_DRAM_FREE
+        ? (tlsUsesPsram ? FastBee::MemoryBudget::MQTTS_MIN_DRAM_FREE
+                        : FastBee::MemoryBudget::MQTTS_NO_PSRAM_MIN_DRAM_FREE)
         : FastBee::MemoryBudget::MQTT_MIN_HEAP;
     uint32_t minLargestBlock = isMqtts
-        ? FastBee::MemoryBudget::MQTTS_MIN_LARGEST_BLOCK
+        ? (tlsUsesPsram ? FastBee::MemoryBudget::MQTTS_MIN_LARGEST_BLOCK
+                        : FastBee::MemoryBudget::MQTTS_NO_PSRAM_MIN_LARGEST_BLOCK)
         : FastBee::MemoryBudget::MQTT_MIN_LARGEST_BLOCK;
     if (freeHeap < minHeap || largestBlock < minLargestBlock) {
         if (isMqtts &&
@@ -728,6 +763,13 @@ void ProtocolManager::stopMQTT() {
     if (mqttClient) {
         mqttClient->stop();
     }
+}
+
+void ProtocolManager::requestMqttRestartAsync() {
+    // 仅置标志：实际重建由 handle() 在 loopTask（16KB 栈）中执行，
+    // 避免在 async_tcp 小栈任务里做 TLS 销毁/重建
+    LOG_INFO("Protocol Manager: MQTT restart requested (deferred to loopTask)");
+    mqttRestartPending = true;
 }
 #endif // FASTBEE_ENABLE_MQTT (restartMQTT + restartMQTTDeferred + stopMQTT)
 

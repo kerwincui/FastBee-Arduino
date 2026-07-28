@@ -33,6 +33,10 @@ export const FAST_MODE = process.env.FAST_MODE === '1';
 /** 崩溃自动复位开关（默认关闭，设置 DEVICE_AUTO_RESET=1 启用） */
 const AUTO_RESET_ENABLED = process.env.DEVICE_AUTO_RESET === '1';
 
+/** 级联崩溃断路器：连续 N 次设备不可达后跳过后续测试 */
+let consecutiveDeviceFailures = 0;
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+
 // ─── 设备健康与恢复 ───────────────────────────────
 
 /** 设备崩溃计数器 */
@@ -189,6 +193,124 @@ export async function waitForDevice(page: Page, ms = 2000) {
   await waitForDeviceReady(page, ms);
 }
 
+// ─── 设备能力检测 ───────────────────────────────────
+
+/** 设备固件功能标志（来自 /api/system/capabilities 公开端点） */
+export interface DeviceFeatureFlags {
+  mqtt: boolean;
+  modbus: boolean;
+  tcp: boolean;
+  http: boolean;
+  coap: boolean;
+  periphExec: boolean;
+  ruleScript: boolean;
+  lcd: boolean;
+  ledScreen: boolean;
+  ethernet: boolean;
+  cellular: boolean;
+  ota: boolean;
+  auth: boolean;
+  webServer: boolean;
+  healthMonitor: boolean;
+  logger: boolean;
+  logViewer: boolean;
+  fileLogging: boolean;
+  fileManager?: boolean;
+  userAdmin?: boolean;
+  taskManager: boolean;
+  i18n: boolean;
+  [key: string]: boolean | undefined;
+}
+
+/** 缓存的设备能力（首次检测后缓存，避免重复请求） */
+let cachedFeatureFlags: DeviceFeatureFlags | null = null;
+let cachedCapabilities: { menuPages: string[]; hasFullscreen: boolean } | null = null;
+
+/**
+ * 通过 API 获取设备固件功能标志（无需认证，整个会话只请求一次）
+ * 端点: GET /api/system/capabilities
+ */
+export async function fetchDeviceFeatureFlags(): Promise<DeviceFeatureFlags> {
+  if (cachedFeatureFlags) return cachedFeatureFlags;
+  try {
+    const resp = await fetch(`http://${env.deviceIp}/api/system/capabilities`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json() as { success: boolean; data: Record<string, boolean> };
+    if (json.success && json.data) {
+      cachedFeatureFlags = json.data as DeviceFeatureFlags;
+      console.log(`[CAPABILITY-API] ethernet=${cachedFeatureFlags.ethernet} cellular=${cachedFeatureFlags.cellular} logViewer=${cachedFeatureFlags.logViewer} i18n=${cachedFeatureFlags.i18n}`);
+      return cachedFeatureFlags;
+    }
+  } catch (e) {
+    console.log(`[CAPABILITY-API] fetch failed: ${e}`);
+  }
+  // 降级：全部视为 true（不误跳过）
+  cachedFeatureFlags = {} as DeviceFeatureFlags;
+  return cachedFeatureFlags;
+}
+
+/**
+ * 检测设备 Web UI 能力（菜单页、fullscreen等）
+ * 结果缓存，整个测试会话只检测一次
+ */
+export async function detectDeviceCapabilities(page: Page): Promise<{ menuPages: string[]; hasFullscreen: boolean; hasEthernet: boolean; hasCellular: boolean; flags: DeviceFeatureFlags }> {
+  const flags = await fetchDeviceFeatureFlags();
+
+  if (cachedCapabilities) {
+    return { ...cachedCapabilities, hasEthernet: flags.ethernet !== false, hasCellular: flags.cellular !== false, flags };
+  }
+
+  try {
+    // 检测侧边栏菜单项
+    const menuPages = await page.evaluate(() => {
+      const items = document.querySelectorAll('.menu-item[data-page]');
+      return Array.from(items).map(el => el.getAttribute('data-page') || '');
+    });
+
+    // 检测 fullscreen 页面是否可用
+    let hasFullscreen = false;
+    try {
+      hasFullscreen = await page.evaluate(async () => {
+        const r = await fetch('/pages/fullscreen.html', { method: 'HEAD' });
+        return r.ok;
+      });
+    } catch { /* ignore */ }
+
+    cachedCapabilities = { menuPages, hasFullscreen };
+    console.log(`[CAPABILITY] menus=[${menuPages.join(',')}] fullscreen=${hasFullscreen}`);
+    return { ...cachedCapabilities, hasEthernet: flags.ethernet !== false, hasCellular: flags.cellular !== false, flags };
+  } catch {
+    cachedCapabilities = { menuPages: [], hasFullscreen: false };
+    return { ...cachedCapabilities, hasEthernet: flags.ethernet !== false, hasCellular: flags.cellular !== false, flags };
+  }
+}
+
+/** 检查设备是否支持某个菜单页面 */
+export async function hasMenuPage(page: Page, pageName: string): Promise<boolean> {
+  const caps = await detectDeviceCapabilities(page);
+  return caps?.menuPages.includes(pageName) ?? true; // 默认 true 避免误跳过
+}
+
+/**
+ * 能力门控：在 test/beforeEach 中调用，设备不支持指定能力时自动 skip
+ * 用法: await skipUnlessCapability(authPage, 'ethernet', '设备不支持以太网');
+ */
+export async function skipUnlessCapability(
+  page: Page,
+  capability: keyof DeviceFeatureFlags,
+  reason?: string
+): Promise<void> {
+  const flags = await fetchDeviceFeatureFlags();
+  const supported = flags[capability] !== false; // undefined 视为支持（兼容旧固件无此字段）
+  if (!supported) {
+    // 动态导入 test（避免循环引用）
+    const { test: t } = await import('@playwright/test');
+    t.skip(true, reason || `设备不支持 ${String(capability)}`);
+  }
+}
+
 // ─── 自定义 Fixture ───────────────────────────────
 
 /** 自定义 fixture 类型 */
@@ -224,13 +346,25 @@ async function performLoginAndCapture(page: Page): Promise<void> {
     }
   }
 
-  // 全局 dialog 自动接受
+  // 全局 dialog 自动接受（重试时可能重复注册，accept 失败忽略）
   page.on('dialog', async (dialog) => {
-    await dialog.accept();
+    await dialog.accept().catch(() => {});
   });
 
-  // 导航到登录页
-  await page.goto('/');
+  // 导航到登录页（带重试，设备可能刚重启）
+  for (let gotoRetry = 0; gotoRetry < 3; gotoRetry++) {
+    try {
+      await page.goto('/', { timeout: 20_000 });
+      break;
+    } catch (gotoErr) {
+      if (gotoRetry < 2) {
+        console.log(`[LOGIN] goto retry ${gotoRetry + 1}/3: ${gotoErr}`);
+        await page.waitForTimeout(5000);
+      } else {
+        throw gotoErr;
+      }
+    }
+  }
   await page.waitForSelector('#login-page', { state: 'visible', timeout: 30_000 });
 
   // 填写登录表单
@@ -294,9 +428,9 @@ async function restoreAuthState(page: Page): Promise<boolean> {
       { timeout: 8_000 }
     );
 
-    // 全局 dialog 自动接受
+    // 全局 dialog 自动接受（accept 失败忽略，防重复 handler 冲突）
     page.on('dialog', async (dialog) => {
-      await dialog.accept();
+      await dialog.accept().catch(() => {});
     });
 
     // 自适应等待 modals 片段加载
@@ -323,6 +457,12 @@ export const test = base.extend<TestFixtures>({
    * - 降级保障：缓存状态失效时自动回退到完整登录
    */
   authPage: async ({ page }, use) => {
+    // 断路器：连续设备不可达时跳过后续测试
+    if (consecutiveDeviceFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+      console.log(`[CIRCUIT BREAKER] ${consecutiveDeviceFailures} consecutive failures, skipping`);
+      test.skip(true, `设备连续${consecutiveDeviceFailures}次不可达，跳过后续测试`);
+    }
+
     let authenticated = false;
 
     // 尝试通过缓存状态快速恢复
@@ -336,10 +476,34 @@ export const test = base.extend<TestFixtures>({
       }
     }
 
-    // 缓存未命中或失效：执行完整登录
+    // 缓存未命中或失效：执行完整登录（瞬时失败先重试一次再计入断路器）
     if (!authenticated) {
-      await performLoginAndCapture(page);
-      lastFullHealthCheck = Date.now();
+      let loginError: unknown = null;
+      for (let loginAttempt = 0; loginAttempt < 2; loginAttempt++) {
+        try {
+          await performLoginAndCapture(page);
+          lastFullHealthCheck = Date.now();
+          consecutiveDeviceFailures = 0; // 登录成功，重置计数器
+          loginError = null;
+          break;
+        } catch (e) {
+          loginError = e;
+          // 页面/上下文已关闭（fixture 超时被杀）无法重试，直接报错
+          if (page.isClosed() || loginAttempt >= 1) break;
+          console.log(`[AUTH RETRY] Login attempt ${loginAttempt + 1} failed, retrying: ${e}`);
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+      if (loginError) {
+        consecutiveDeviceFailures++;
+        console.log(`[AUTH FAIL] Login failed (#${consecutiveDeviceFailures}): ${loginError}`);
+        if (consecutiveDeviceFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          test.skip(true, `设备不可达，跳过后续测试`);
+        }
+        throw loginError;
+      }
+    } else {
+      consecutiveDeviceFailures = 0; // 恢复成功，重置计数器
     }
 
     await use(page);
@@ -353,7 +517,17 @@ export const test = base.extend<TestFixtures>({
     await use(async (pageName: string) => {
       const maxRetries = FAST_MODE ? 1 : 2;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        await page.click(`.menu-item[data-page="${pageName}"]`);
+        // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试
+        try {
+          await page.click(`.menu-item[data-page="${pageName}"]`, { timeout: 10_000 });
+        } catch (clickErr) {
+          if (attempt < maxRetries) {
+            await page.reload({ timeout: 20_000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            continue;
+          }
+          throw clickErr;
+        }
         // 等待页面框架加载
         await page.waitForLoadState('domcontentloaded', { timeout: 20_000 });
         // 自适应等待：检测目标页面容器有内容

@@ -345,6 +345,15 @@ public:
      * 构建json响应信息
      */
     static String buildJsonResponse(int status, const String& msg, const String& data = "\"\"");
+
+    /**
+     * @brief 尝试将字符串解析为布尔值
+     * 支持: "true"/"false", "on"/"off", "1"/"0", "high"/"low", "open"/"close", "+1"/"-1", 数值型
+     * @param rawValue 原始字符串
+     * @param outValue 输出布尔值
+     * @return 是否解析成功
+     */
+    static bool tryParseBoolLike(const String& rawValue, bool& outValue);
 };
 
 #endif

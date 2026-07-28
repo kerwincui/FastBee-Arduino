@@ -1,6 +1,11 @@
-import { test, expect } from '../fixtures/base.fixture';
+import { test, expect, detectDeviceCapabilities } from '../fixtures/base.fixture';
 
 test.describe('Suite-09: 设备大屏', () => {
+
+  test.beforeEach(async ({ authPage }) => {
+    const caps = await detectDeviceCapabilities(authPage);
+    test.skip(!caps?.hasFullscreen, '设备不支持大屏页面（精简版无此功能）');
+  });
 
   test('SCR-001: 打开设备大屏 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('device-control');
@@ -33,7 +38,8 @@ test.describe('Suite-09: 设备大屏', () => {
     await expect(page.locator('#monitor-fs-percent')).toBeVisible({ timeout: 5_000 });
   });
 
-  test('SCR-005: 全屏网络状态展示 @quick', async ({ page, baseURL }) => {
+  test('SCR-005: 全屏网络状态展示 @quick', async ({ page, baseURL, authPage }) => {
+    test.setTimeout(60_000); // authPage设置 + 全屏导航需要更多时间
     await page.goto(`${baseURL}/pages/fullscreen.html`);
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     await page.waitForTimeout(3000);
@@ -80,7 +86,7 @@ test.describe('Suite-09: 设备大屏', () => {
     await expect(page.locator('.fullscreen-container')).toBeVisible({ timeout: 10_000 });
   });
 
-  test('SCR-010: 关闭标签页按钮 @quick', async ({ page, baseURL }) => {
+  test('SCR-010: 关闭标签页按钮 @quick', async ({ page, baseURL, authPage }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     await page.waitForTimeout(2000);

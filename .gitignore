@@ -7,7 +7,11 @@
 .codex-logs
 dist/
 node_modules/
+# Python
 *.pyc
+__pycache__/
+
+# Logs
 *.log
 compile_commands.json
 upload_log.txt
@@ -28,6 +32,12 @@ partitions_dump.bin
 test/browser/playwright.stability*.config.ts
 test/browser/playwright.fast-stability.config.ts
 test/browser/reports/
+
+# Generated test/soak reports
+docs/soak-report-*.html
+docs/soak-summary-*.json
+docs/test-report.md
+test/browser/test-regression-output.txt
 
 # ESP-IDF sdkconfig generated files
 sdkconfig*

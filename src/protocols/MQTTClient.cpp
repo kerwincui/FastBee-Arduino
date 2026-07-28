@@ -14,7 +14,6 @@
 #include "protocols/MQTTClient.h"
 #include "protocols/ProtocolManager.h"
 #include "protocols/ModbusHandler.h"
-#include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
@@ -32,7 +31,6 @@
 #include "network/WebConfigManager.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/SSERouteHandler.h"
-#include <core/FeatureFlags.h>
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include <core/PeriphExecManager.h>
 #endif
@@ -62,18 +60,46 @@ NetworkType getActiveMqttNetworkType() {
     return netMgr ? netMgr->getNetworkType() : NetworkType::NET_WIFI;
 }
 
-bool shouldPauseWebForMqtts(uint32_t dramFree, uint32_t largestBlock) {
+// TLS 大缓冲是否可路由到 PSRAM：无 PSRAM 时 mbedTLS 全部落内部 DRAM，
+// 握手准入必须使用 MemoryBudget 的无 PSRAM 严格门槛
+bool mqttsTlsUsesPsram() {
+#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
+    return psramFound();
+#else
+    return false;
+#endif
+}
+
+// 深度暂停决策：前台 Web 请求活跃时不应“跳过暂停继续握手”（历史 panic
+// 现场条件），而应推迟握手；连续推迟超限后强制深度暂停，防止前台窗口
+// 被前端轮询无限续期导致 MQTTS 永久无法上线
+enum class MqttsWebPauseDecision : uint8_t { NO_PAUSE, PAUSE, FORCE_PAUSE, DEFER };
+constexpr uint8_t MQTTS_FOREGROUND_DEFER_MAX = 6;
+uint8_t g_mqttsForegroundDeferCount = 0;
+
+MqttsWebPauseDecision decideWebPauseForMqtts(uint32_t dramFree, uint32_t largestBlock) {
     if (!FastBee::MemoryBudget::shouldPauseWebBeforeMqtts(dramFree, largestBlock)) {
-        return false;
+        g_mqttsForegroundDeferCount = 0;
+        return MqttsWebPauseDecision::NO_PAUSE;
     }
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
     if (wcm && wcm->isForegroundRequestActive()) {
-        ets_printf("[MQTT] MQTTS deep Web pause skipped: foreground Web request active\n");
-        return false;
+        if (g_mqttsForegroundDeferCount < MQTTS_FOREGROUND_DEFER_MAX) {
+            ++g_mqttsForegroundDeferCount;
+            ets_printf("[MQTT] MQTTS deep Web pause deferred: foreground Web request active (%u/%u)\n",
+                       (unsigned)g_mqttsForegroundDeferCount,
+                       (unsigned)MQTTS_FOREGROUND_DEFER_MAX);
+            return MqttsWebPauseDecision::DEFER;
+        }
+        ets_printf("[MQTT] MQTTS deep Web pause FORCED after %u foreground defers\n",
+                   (unsigned)MQTTS_FOREGROUND_DEFER_MAX);
+        g_mqttsForegroundDeferCount = 0;
+        return MqttsWebPauseDecision::FORCE_PAUSE;
     }
-    return true;
+    g_mqttsForegroundDeferCount = 0;
+    return MqttsWebPauseDecision::PAUSE;
 }
 
 void* fastbeeMbedtlsCalloc(size_t n, size_t size) {
@@ -569,7 +595,31 @@ void MQTTClient::resetErrorCounters() {
     lastReconnectAttempt = 0;   // 强制下次 handle() 立即尝试重连
     lastErrorCode = 0;
     _mqttsMemoryBackoffActive = false;
+    // 清除可能卡死的重连调度标志，使网络恢复后能立即重新调度。
+    // 注意：不在此处删除任务/清 _reconnectRunning，避免跨任务竞态；
+    // 若 _reconnectRunning 卡死，由 handle() 看门狗兑底回收。
+    _reconnectPending = false;
+    _reconnectScheduledMs = 0;
     LOG_INFO("[MQTT] Error counters reset — immediate reconnect on next handle()");
+}
+
+// 自愈：强制重置卡死的重连标志与僵死任务。
+// 触发场景：一次性重连任务异常终止（如栈溢出）后遗留 _reconnectPending/_reconnectRunning，
+// 使 handle() 调度门控（!_reconnectPending && !_reconnectRunning）永远不满足、自动重连永久停摆。
+void MQTTClient::recoverStuckReconnect(const char* reason) {
+    LOG_WARNINGF("[MQTT] Reconnect stuck detected (%s), forcing reset (pending=%d running=%d)",
+                 reason ? reason : "unknown", (int)_reconnectPending, (int)_reconnectRunning);
+    _reconnectPending = false;
+    _reconnectRunning = false;
+    _reconnectScheduledMs = 0;
+    TaskHandle_t stuck = _reconnectTaskHandle;
+    _reconnectTaskHandle = nullptr;
+    // 回收僵死任务（避免与本任务同一时删除）
+    if (stuck && stuck != xTaskGetCurrentTaskHandle()) {
+        vTaskDelete(stuck);
+    }
+    // 重置退避计数：卡死前的连续超时不应延续到恢复后，避免一恢复就陷入慢模式
+    consecutiveTimeouts = 0;
 }
 
 bool MQTTClient::publish(const String& topic, const String& message) {
@@ -647,6 +697,16 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     return ok;
 }
 
+int MQTTClient::findEnabledPublishTopicIndex(MqttTopicType type) const {
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        if (config.publishTopics[i].topicType == type &&
+            config.publishTopics[i].enabled) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 bool MQTTClient::publishDeviceInfo() {
     if (!isConnected) {
         return false;
@@ -658,14 +718,7 @@ bool MQTTClient::publishDeviceInfo() {
     }
 
     // 查找 topicType==DEVICE_INFO 的发布主题
-    int infoTopicIdx = -1;
-    for (size_t i = 0; i < config.publishTopics.size(); i++) {
-        if (config.publishTopics[i].topicType == MqttTopicType::DEVICE_INFO &&
-            config.publishTopics[i].enabled) {
-            infoTopicIdx = (int)i;
-            break;
-        }
-    }
+    int infoTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::DEVICE_INFO);
     if (infoTopicIdx < 0) {
         LOG_DEBUG("MQTT: No enabled DEVICE_INFO publish topic found");
         return false;
@@ -735,14 +788,7 @@ bool MQTTClient::publishMonitorData() {
     }
 
     // 查找 topicType==REALTIME_MON 的发布主题
-    int monTopicIdx = -1;
-    for (size_t i = 0; i < config.publishTopics.size(); i++) {
-        if (config.publishTopics[i].topicType == MqttTopicType::REALTIME_MON &&
-            config.publishTopics[i].enabled) {
-            monTopicIdx = (int)i;
-            break;
-        }
-    }
+    int monTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::REALTIME_MON);
     if (monTopicIdx < 0) {
         LOG_DEBUG("MQTT: No enabled REALTIME_MON publish topic found");
         return false;
@@ -805,14 +851,7 @@ bool MQTTClient::publishReportData(const String& payload) {
     }
 
     // 查找 topicType==DATA_REPORT 的发布主题
-    int reportTopicIdx = -1;
-    for (size_t i = 0; i < config.publishTopics.size(); i++) {
-        if (config.publishTopics[i].topicType == MqttTopicType::DATA_REPORT &&
-            config.publishTopics[i].enabled) {
-            reportTopicIdx = (int)i;
-            break;
-        }
-    }
+    int reportTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::DATA_REPORT);
     if (reportTopicIdx < 0) {
         LOG_DEBUG("MQTT: No enabled DATA_REPORT publish topic found");
         return false;
@@ -958,14 +997,7 @@ bool MQTTClient::publishNtpSync() {
     }
 
     // 查找 topicType==NTP_SYNC 的发布主题
-    int ntpTopicIdx = -1;
-    for (size_t i = 0; i < config.publishTopics.size(); i++) {
-        if (config.publishTopics[i].topicType == MqttTopicType::NTP_SYNC &&
-            config.publishTopics[i].enabled) {
-            ntpTopicIdx = (int)i;
-            break;
-        }
-    }
+    int ntpTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::NTP_SYNC);
     if (ntpTopicIdx < 0) {
         LOG_DEBUG("MQTT: No enabled NTP_SYNC publish topic found");
         return false;
@@ -1092,6 +1124,16 @@ void MQTTClient::handle() {
             isConnected = false;
             if (config.scheme == "mqtts" && _mqttsMemoryBackoffActive) {
                 lastReconnectAttempt = millis();
+            } else if (lastConnectedTime != 0 &&
+                       millis() - lastConnectedTime < 60000UL) {
+                // flapping 抑制：本次会话存活 <60s（连上即断）说明链路/broker 不稳，
+                // 不重置为 5s 快速重连，而是在现有间隔上翻倍封顶 60s，
+                // 避免 MQTTS 反复 TLS 建/毁加剧 DRAM 碎片
+                reconnectInterval = min(max(reconnectInterval, (uint32_t)5000) * 2,
+                                        (uint32_t)60000);
+                consecutiveTimeouts = 0;
+                ets_printf("[MQTT] Flapping detected (session<60s), backoff %lus\n",
+                           (unsigned long)(reconnectInterval / 1000));
             } else {
                 reconnectInterval = 5000;  // 刚断开时重置重连间隔
                 consecutiveTimeouts = 0;
@@ -1120,6 +1162,16 @@ void MQTTClient::handle() {
         }
 
         unsigned long now = millis();
+
+        // 自愈看门狗：一次性重连任务若异常终止（如栈溢出）可能遗留
+        // _reconnectPending/_reconnectRunning 卡死，使调度门控永远不满足、自动重连永久停摆。
+        // 若标志持续超过最大执行窗口（正常 doReconnect < 40s），强制重置并回收僵死任务。
+        if ((_reconnectPending || _reconnectRunning) &&
+            _reconnectScheduledMs != 0 &&
+            (now - _reconnectScheduledMs > RECONNECT_WATCHDOG_TIMEOUT_MS)) {
+            recoverStuckReconnect("watchdog_timeout");
+        }
+
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
             // WiFi 未连接时跳过重连（仅当未使用外部 Client 时检查）
@@ -1130,10 +1182,12 @@ void MQTTClient::handle() {
             // 调度后台任务执行重连（避免 reconnect() 阻塞 loopTask 7秒+）
             if (!_reconnectPending && !_reconnectRunning) {
                 _reconnectPending = true;
+                _reconnectScheduledMs = now;  // 记录调度时间戳（看门狗用）
                 ets_printf("[MQTT] Reconnect scheduled (heap=%lu cnt=%lu interval=%lu)\n",
                     (unsigned long)ESP.getFreeHeap(), (unsigned long)reconnectCount, (unsigned long)reconnectInterval);
                 if (!ensureReconnectTask()) {
                     _reconnectPending = false;
+                    _reconnectScheduledMs = 0;
                     LOG_WARNING("[MQTT] Reconnect skipped: failed to create background task");
                 } else {
                     LOG_INFO("[MQTT] Reconnect scheduled in background task");
@@ -1147,6 +1201,13 @@ void MQTTClient::handle() {
         if (!isConnected) {
             isConnected = true;
             lastConnectedTime = millis();
+        }
+        // reconnectCount 老化：连接稳定 5 分钟后清零，避免历史累计次数
+        // 让下一次偶发断开直接落入 5 分钟慢模式（MAX_FAST_RETRIES 误判）
+        if (reconnectCount > 0 && millis() - lastConnectedTime > 300000UL) {
+            ets_printf("[MQTT] Connection stable 5min, reconnectCount reset (was %lu)\n",
+                       (unsigned long)reconnectCount);
+            reconnectCount = 0;
         }
         lastLoopTime = millis();
         mqttClient.loop();
@@ -1204,25 +1265,41 @@ void MQTTClient::processQueuedReports() {
     // 内存保护：publishReportData 构造 String + MQTT publish
     // 使用 DRAM 内部内存检测（排除 PSRAM），与 mqttHasInternalDram() 保持一致
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 20000) return;
-    
+
     // 背压机制：队列深度 >= HIGH_WATERMARK 时加速排空（处理更多批次）
-    const uint8_t maxBatch = (_slotCount >= BACKPRESSURE_HIGH_WATERMARK)
+    portENTER_CRITICAL(&_slotMux);
+    uint8_t depthSnapshot = _slotCount;
+    portEXIT_CRITICAL(&_slotMux);
+    const uint8_t maxBatch = (depthSnapshot >= BACKPRESSURE_HIGH_WATERMARK)
         ? BACKPRESSURE_DRAIN_BATCH : 4;
-    
+
     int processed = 0;
-    while (processed < maxBatch && _slotCount > 0) {
-        MqttSlot& slot = _reportSlots[_slotReadIndex];
-        if (slot.occupied) {
-            if (publishReportData(String(slot.payload, slot.length))) {
-                _queueStats.publishTotal++;
+    while (processed < maxBatch) {
+        // 临界区内只做索引操作+memcpy拷出，publish（网络 IO/堆分配）在锁外执行
+        char localPayload[MQTT_SLOT_MAX_PAYLOAD];
+        uint16_t localLength = 0;
+        // 0=队列空 1=取到数据 2=异常槽位（未占用但 count>0，跳过）
+        int slotState = 0;
+        portENTER_CRITICAL(&_slotMux);
+        if (_slotCount > 0) {
+            MqttSlot& slot = _reportSlots[_slotReadIndex];
+            if (slot.occupied) {
+                localLength = slot.length;
+                memcpy(localPayload, slot.payload, localLength);
+                slotState = 1;
+            } else {
+                slotState = 2;
             }
             slot.clear();
             _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
             _slotCount--;
-        } else {
-            // 异常：slot 标记未占用但 count > 0，跳过
-            _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
-            _slotCount--;
+        }
+        portEXIT_CRITICAL(&_slotMux);
+        if (slotState == 0) break;  // 队列已排空
+        if (slotState == 1) {
+            if (publishReportData(String(localPayload, localLength))) {
+                _queueStats.publishTotal++;
+            }
         }
         processed++;
     }
@@ -1230,7 +1307,12 @@ void MQTTClient::processQueuedReports() {
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     if (processed > 0) {
         HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
-        if (hm) hm->setMqttQueueDepth(_slotCount);
+        if (hm) {
+            portENTER_CRITICAL(&_slotMux);
+            uint8_t depthNow = _slotCount;
+            portEXIT_CRITICAL(&_slotMux);
+            hm->setMqttQueueDepth(depthNow);
+        }
     }
 #endif
 }
@@ -1264,30 +1346,41 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
         LOGGER.warningf("[MQTT] Payload truncated: %u -> %u bytes", length, MQTT_SLOT_MAX_PAYLOAD - 1);
         length = MQTT_SLOT_MAX_PAYLOAD - 1;
     }
-    
-    // 缓冲区满时丢弃最旧的（背压：队列深度 >= HIGH_WATERMARK 时也拒绝新数据入队）
+
+    // 入队与队满丢旧在同一临界区内完成，避免生产者(worker任务)与
+    // 消费者(loopTask)并发修改 _slotReadIndex/_slotCount 导致索引错乱
+    bool droppedOldest = false;
+    portENTER_CRITICAL(&_slotMux);
     if (_slotCount >= MQTT_REPORT_SLOTS) {
-        LOGGER.warning("[MQTT] Report queue full, dropping oldest");
+        // 缓冲区满时丢弃最旧的
         _reportSlots[_slotReadIndex].clear();
         _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
         _slotCount--;
-        _queueStats.dropTotal++;
+        droppedOldest = true;
     }
-    
+
     // 拷贝到下一个空闲 slot
     MqttSlot& slot = _reportSlots[_slotWriteIndex];
     memcpy(slot.payload, payload, length);
     slot.payload[length] = '\0';
     slot.length = length;
     slot.occupied = true;
-    
+
     _slotWriteIndex = (_slotWriteIndex + 1) % MQTT_REPORT_SLOTS;
     _slotCount++;
+    uint8_t depthNow = _slotCount;
+    portEXIT_CRITICAL(&_slotMux);
+
+    // 日志/统计在锁外执行（LOGGER 可能阻塞，禁止在自旋锁临界区内调用）
+    if (droppedOldest) {
+        LOGGER.warning("[MQTT] Report queue full, dropping oldest");
+        _queueStats.dropTotal++;
+    }
     _queueStats.enqueueTotal++;
 
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
-    if (hm) hm->setMqttQueueDepth(_slotCount);
+    if (hm) hm->setMqttQueueDepth(depthNow);
 #endif
     
     return true;
@@ -1894,11 +1987,13 @@ bool MQTTClient::reclaimDramForMqtts(bool pauseWeb) {
     _webServerPaused = false;
     _mdnsPausedForMqtts = false;
     if (pauseWeb && wcm) {
-        _webServerPaused = wcm->pauseForMqttsHandshake();
+        _webServerPaused = wcm->pauseForMqttsHandshake(
+            FastBee::MemoryBudget::MQTTS_WEB_PAUSE_HOLD_MS, _mqttsForceWebPause);
         if (_webServerPaused) {
             delay(100);
         }
     }
+    _mqttsForceWebPause = false;  // 一次性标志：用完即清，避免影响后续常规回收
 
     // Step 3: 关闭 SSE 客户端连接
     size_t closed = 0;
@@ -1931,7 +2026,8 @@ bool MQTTClient::reclaimDramForMqtts(bool pauseWeb) {
                (unsigned)closed, (unsigned long)dramFree, (unsigned long)dramLargest);
 
     // 预编译 mbedtls 需要 ~42KB DRAM（16KB in + 16KB out + ~10KB context）
-    return FastBee::MemoryBudget::canAttemptMqtts(dramFree, dramLargest);
+    // 无 PSRAM 时走 MemoryBudget::canAttemptMqtts 的严格门槛重载
+    return FastBee::MemoryBudget::canAttemptMqtts(dramFree, dramLargest, mqttsTlsUsesPsram());
 }
 
 void MQTTClient::resumeWebServices() {
@@ -1965,8 +2061,15 @@ void MQTTClient::reconnectTaskEntry(void* param) {
 
     if (client->_reconnectPending && !client->_reconnectRunning) {
         client->doReconnect();
+    } else {
+        // doReconnect 被跳过（如状态被并发重置）：主动清除 pending，
+        // 避免 _reconnectPending 卡死为 true 导致 handle() 永不再调度。
+        client->_reconnectPending = false;
     }
 
+    // 加固：无论 doReconnect 是否执行/是否正常返回，任务退出前必须清除运行标志，
+    // 防止异常路径下 _reconnectRunning 残留为 true 而永久阻塞重连调度。
+    client->_reconnectRunning = false;
     client->_reconnectTaskHandle = nullptr;
     LOG_INFO("[MQTT] Reconnect task exiting");
     vTaskDelete(nullptr);
@@ -2061,10 +2164,14 @@ void MQTTClient::doReconnect() {
     //                    large mbedTLS/RSA buffers prefer PSRAM, so internal DRAM keeps socket/control headroom.
     // MQTT 阈值：任意 8KB 总空闲 + 2KB 连续即可
     uint32_t minHeap = needsMqttsDramBudget
-        ? FastBee::MemoryBudget::MQTTS_MIN_DRAM_FREE
+        ? (mqttsTlsUsesPsram()
+               ? FastBee::MemoryBudget::MQTTS_MIN_DRAM_FREE
+               : FastBee::MemoryBudget::MQTTS_NO_PSRAM_MIN_DRAM_FREE)
         : FastBee::MemoryBudget::MQTT_MIN_HEAP;
     uint32_t minLargestBlock = needsMqttsDramBudget
-        ? FastBee::MemoryBudget::MQTTS_MIN_LARGEST_BLOCK
+        ? (mqttsTlsUsesPsram()
+               ? FastBee::MemoryBudget::MQTTS_MIN_LARGEST_BLOCK
+               : FastBee::MemoryBudget::MQTTS_NO_PSRAM_MIN_LARGEST_BLOCK)
         : FastBee::MemoryBudget::MQTT_MIN_LARGEST_BLOCK;
 
     // 获取 DRAM 内部内存统计（排除 PSRAM）
@@ -2098,9 +2205,15 @@ void MQTTClient::doReconnect() {
         // MQTTS: 确保 Web 服务恢复（可能之前在 reclaim 中停止了）
         bool mqttsMemoryRecoverable = false;
         if (usesInternalTls) {
-            bool pauseWebForRecovery = shouldPauseWebForMqtts(
+            MqttsWebPauseDecision recoveryPause = decideWebPauseForMqtts(
                 reconnectFreeHeap,
                 reconnectLargestBlock);
+            // DEFER：前台活跃时维持“不暂停 Web”的回收（本路径只是探测可恢复性，
+            // 不直接进入握手），但累积推迟计数，为后续 FORCE_PAUSE 铺垫
+            bool pauseWebForRecovery =
+                (recoveryPause == MqttsWebPauseDecision::PAUSE ||
+                 recoveryPause == MqttsWebPauseDecision::FORCE_PAUSE);
+            _mqttsForceWebPause = (recoveryPause == MqttsWebPauseDecision::FORCE_PAUSE);
             bool reclaimed = reclaimDramForMqtts(pauseWebForRecovery);
             reconnectFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
             reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
@@ -2108,7 +2221,8 @@ void MQTTClient::doReconnect() {
                 (reconnectFreeHeap >= minHeap && reconnectLargestBlock >= minLargestBlock);
             mqttsMemoryRecoverable = FastBee::MemoryBudget::canRetryMqttsMemoryRecovery(
                 reconnectFreeHeap,
-                reconnectLargestBlock);
+                reconnectLargestBlock,
+                mqttsTlsUsesPsram());
             ets_printf("[MQTT] doReconnect: low-memory reclaim result reclaimed=%u dram=%lu largest=%lu ready=%u recoverable=%u\n",
                        reclaimed ? 1U : 0U,
                        (unsigned long)reconnectFreeHeap,
@@ -2144,9 +2258,23 @@ void MQTTClient::doReconnect() {
         if (FastBee::MemoryBudget::shouldReclaimBeforeMqtts(postReleaseDram, postReleaseLargest)) {
             ets_printf("[MQTT] doReconnect: DRAM marginal (dram=%lu largest=%lu), trying reclaim\n",
                        (unsigned long)postReleaseDram, (unsigned long)postReleaseLargest);
-            bool pauseWebForHandshake = shouldPauseWebForMqtts(
+            MqttsWebPauseDecision handshakePause = decideWebPauseForMqtts(
                 postReleaseDram,
                 postReleaseLargest);
+            if (handshakePause == MqttsWebPauseDecision::DEFER) {
+                // 历史 panic 现场：前台请求活跃时硬闯 TLS 握手会把 DRAM 打穿
+                // （largest→308B → lwIP nothrow new 失败 → tcp_receive assert）。
+                // 改为推迟握手，短退避后重查；连续推迟超限由 FORCE_PAUSE 兜底
+                ets_printf("[MQTT] doReconnect: handshake deferred, foreground Web busy\n");
+                enterMqttsMemoryRecoveryRetry("web_foreground_busy");
+                releaseTlsTransport();
+                _reconnectRunning = false;
+                return;
+            }
+            bool pauseWebForHandshake =
+                (handshakePause == MqttsWebPauseDecision::PAUSE ||
+                 handshakePause == MqttsWebPauseDecision::FORCE_PAUSE);
+            _mqttsForceWebPause = (handshakePause == MqttsWebPauseDecision::FORCE_PAUSE);
             if (reclaimDramForMqtts(pauseWebForHandshake)) {
                 ets_printf("[MQTT] doReconnect: reclaimDramForMqtts SUCCESS\n");
             } else {
@@ -2182,6 +2310,7 @@ void MQTTClient::doReconnect() {
         consecutiveTimeouts = 0;
         _lastMqttsTlsMemoryFailure = false;
         _mqttsMemoryBackoffActive = false;
+        g_mqttsForegroundDeferCount = 0;  // 前台推迟计数随连接成功清零
         LOG_INFO("[MQTT] Background reconnect successful");
         // MQTTS TLS 连接成功：重启之前临时停止的 Web 服务器和 mDNS
         if (isMqtts) {
@@ -2194,7 +2323,8 @@ void MQTTClient::doReconnect() {
             isMqtts &&
             (_lastMqttsTlsMemoryFailure ||
              lastErrorCode == -4 ||
-             !FastBee::MemoryBudget::canAttemptMqtts(failDramFree, failDramLargest));
+             !FastBee::MemoryBudget::canAttemptMqtts(failDramFree, failDramLargest,
+                                                     mqttsTlsUsesPsram()));
 
         // 检测连续 TCP/DNS 连接失败（rc=-2: MQTT_CONNECT_FAILED）
         // DNS 解析失败时 WiFiClient::connect() 返回 0，PubSubClient 报告 rc=-2
@@ -2273,6 +2403,7 @@ void MQTTClient::doReconnect() {
     }
 
     _reconnectRunning = false;
+    _reconnectScheduledMs = 0;  // 本次重连已结束，清除看门狗时间戳
 }
 
 // ============ FastBee认证方法 ============

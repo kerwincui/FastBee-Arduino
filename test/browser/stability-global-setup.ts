@@ -42,8 +42,9 @@ function serialReset(port: string): boolean {
 async function waitForDevice(maxMs = 60_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
-    const health = await fetchJson(`${BASE_URL}/api/health`, 5_000);
-    if (health && health.ok) return true;
+    // 固件实际端点为 /api/system/health，返回 { success: true, data: { status: 'healthy' } }
+    const health = await fetchJson(`${BASE_URL}/api/system/health`, 5_000);
+    if (health && (health.success === true || health.ok)) return true;
     await new Promise(r => setTimeout(r, 2_000));
   }
   return false;

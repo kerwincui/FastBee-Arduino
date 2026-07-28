@@ -1,4 +1,4 @@
-﻿import { test, expect, env, waitForDevice, restoreNetworkConfig, waitForHealth } from '../fixtures/base.fixture';
+﻿import { test, expect, env, waitForDevice, restoreNetworkConfig, waitForHealth, fetchDeviceFeatureFlags } from '../fixtures/base.fixture';
 
 test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
 
@@ -188,6 +188,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   // ========== 场景B: 联网方式切换 ==========
 
   test('NET-019: 切换到以太网', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     const networkType = authPage.locator('#network-type');
     await networkType.selectOption('1'); // 以太网
     await authPage.waitForTimeout(1000);
@@ -198,8 +200,11 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-020: 以太网引脚输入 @quick', async ({ authPage }) => {
+    // 检测设备是否支持以太网
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
+    const ethPanel = authPage.locator('#ethernet-panel');
+    test.skip(!(await ethPanel.isVisible()), '设备不支持以太网');
     await authPage.fill('#eth-mosi', '11');
     await authPage.fill('#eth-miso', '13');
     await authPage.fill('#eth-sck', '12');
@@ -211,6 +216,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-021: 以太网配置保存', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     await authPage.click('#ethernet-save-btn');
@@ -219,6 +226,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-022: 切换到4G蜂窝', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     const networkType = authPage.locator('#network-type');
     await networkType.selectOption('2'); // 4G
     await authPage.waitForTimeout(1000);
@@ -227,6 +236,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-023: 4G配置-TX/RX/PWR', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-tx', '39');
@@ -237,6 +248,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-024: 4G配置-波特率和APN', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-baud', '115200');
@@ -246,6 +259,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-025: 4G配置保存', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.click('#cellular-save-btn');
@@ -515,9 +530,9 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   test('NET-054: WiFi连接后网关验证', async ({ authPage }) => {
     const status = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/network/status');
         const data = await r.json();
-        return data?.network?.gateway ?? data?.gateway ?? 'unknown';
+        return data?.data?.gateway ?? 'unknown';
       } catch { return 'error'; }
     });
     console.log(`网关: ${status}`);
@@ -526,9 +541,9 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   test('NET-055: WiFi连接后DNS验证', async ({ authPage }) => {
     const status = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/network/status');
         const data = await r.json();
-        return data?.network?.dns ?? data?.dns ?? 'unknown';
+        return data?.data?.dnsServer ?? 'unknown';
       } catch { return 'error'; }
     });
     console.log(`DNS: ${status}`);
@@ -542,9 +557,9 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   test('NET-057: WiFi MAC地址显示', async ({ authPage }) => {
     const status = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/network/status');
         const data = await r.json();
-        return data?.network?.mac ?? data?.mac ?? 'unknown';
+        return data?.data?.macAddress ?? 'unknown';
       } catch { return 'error'; }
     });
     console.log(`MAC: ${status}`);
@@ -569,9 +584,9 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     await authPage.waitForLoadState('domcontentloaded');
     const reconnects = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/network/status');
         const data = await r.json();
-        return data?.network?.reconnects ?? data?.reconnectCount ?? -1;
+        return data?.data?.reconnectAttempts ?? -1;
       } catch { return -1; }
     });
     console.log(`重连次数: ${reconnects}`);
@@ -615,6 +630,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   // ========== 场景F: 以太网深度测试 ==========
 
   test('NET-066: 以太网引脚配置完整性', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     const fields = ['#eth-mosi', '#eth-miso', '#eth-sck', '#eth-cs', '#eth-rst', '#eth-int'];
@@ -625,6 +642,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-067: 以太网引脚冲突检测', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     await authPage.click('#ethernet-save-btn');
@@ -633,6 +652,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-068: 以太网无效引脚拒绝', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     const csInput = authPage.locator('#eth-cs');
@@ -683,6 +704,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-075: 以太网与WiFi互斥验证', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.ethernet === false, '设备不支持以太网');
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     await expect(authPage.locator('#wifi-panel')).toBeHidden();
@@ -693,6 +716,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   // ========== 场景G: 4G深度测试 ==========
 
   test('NET-076: 4G串口引脚配置', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-tx', '39');
@@ -704,6 +729,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-077: 4G APN配置', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-apn', 'CMNET');
@@ -712,6 +739,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-078: 4G APN-联通配置', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-apn', '3GNET');
@@ -720,6 +749,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-079: 4G APN-电信配置', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-apn', 'CTNET');
@@ -728,6 +759,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-080: 4G PWR引脚控制', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     const pwrVal = await authPage.locator('#cell-pwr').inputValue();
@@ -739,6 +772,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-082: 4G联网后AP热点提示', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     const hint = authPage.locator('.fb-info-box');
@@ -749,6 +784,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-083: 4G配置持久化', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     const apn = await authPage.locator('#cell-apn').inputValue();
@@ -758,6 +795,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-084: 4G与WiFi互斥', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await expect(authPage.locator('#wifi-panel')).toBeHidden();
@@ -765,6 +804,8 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   });
 
   test('NET-085: 4G串口波特率验证', async ({ authPage }) => {
+    const flags = await fetchDeviceFeatureFlags();
+    test.skip(flags.cellular === false, '设备不支持4G蜂窝');
     await authPage.locator('#network-type').selectOption('2');
     await authPage.waitForTimeout(500);
     await authPage.fill('#cell-baud', '9600');

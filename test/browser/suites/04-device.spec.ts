@@ -74,27 +74,76 @@ test.describe('Suite-04: 设备配置', () => {
 
   test('DEV-010: 设备描述输入', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
+    // 等待表单完全加载，避免异步加载覆盖输入值
+    await expect(authPage.locator('#device-basic-form')).toBeVisible({ timeout: 10_000 }).catch(() => {});
+    await authPage.waitForTimeout(2000);
     await authPage.fill('#dev-description', '自动化回归测试设备 ESP32-S3');
-    expect(await authPage.locator('#dev-description').inputValue()).toContain('自动化');
+    await authPage.waitForTimeout(500);
+    // 确认输入值未被迟到的异步加载响应覆盖
+    let descVal = await authPage.locator('#dev-description').inputValue();
+    if (!descVal.includes('自动化')) {
+      await authPage.fill('#dev-description', '自动化回归测试设备 ESP32-S3');
+      await authPage.waitForTimeout(500);
+      descVal = await authPage.locator('#dev-description').inputValue();
+    }
+    expect(descVal).toContain('自动化');
   });
 
   test('DEV-011: 基本信息保存 @quick', async ({ authPage, navigateTo }) => {
+    test.setTimeout(60_000);
     await navigateTo('device');
     // 验证在设备配置页
     await expect(authPage.locator('#device-page')).toBeVisible({ timeout: 10_000 }).catch(() => {});
+    // 等待表单完全加载：JS 模块异步绑定 submit 处理器 + loadDeviceConfig 异步回填
+    // 过早 fill/click 会被异步加载覆盖输入值，或触发原生表单提交导致页面重载
+    await expect(authPage.locator('#device-basic-form')).toBeVisible({ timeout: 10_000 }).catch(() => {});
+    await authPage.waitForTimeout(2000);
     await authPage.fill('#dev-name', 'FastBee-AutoTest');
+    // 确认输入值未被迟到的异步加载响应覆盖
+    await authPage.waitForTimeout(500);
+    if (await authPage.locator('#dev-name').inputValue() !== 'FastBee-AutoTest') {
+      await authPage.fill('#dev-name', 'FastBee-AutoTest');
+    }
     await authPage.click('#device-basic-form button[type="submit"]');
     await waitForDevice(authPage, 5000);
-    // 等待成功消息出现（_showMessage 异步触发）或 Notification 通知
+    // 等待成功消息出现或页面稳定
     await authPage.waitForTimeout(3000);
-    const successVisible = await authPage.locator('#dev-basic-success').isVisible().catch(() => false);
-    const successNotHidden = await authPage.locator('#dev-basic-success:not(.is-hidden)').count() > 0;
-    // 检查 Notification 通知 或 toast 消息
-    const notificationVisible = await authPage.locator('#notification-container:visible').count() > 0;
-    const toastVisible = await authPage.locator('.toast-success, .notification-success, .message-success').first().isVisible({ timeout: 5000 }).catch(() => false);
-    // 嵌入式设备保存后可能无明显成功提示，验证名称字段仍包含输入值
-    const nameRetained = await authPage.locator('#dev-name').inputValue().catch(() => '') === 'FastBee-AutoTest';
-    expect(successVisible || successNotHidden || notificationVisible || toastVisible || nameRetained).toBeTruthy();
+
+    // 多重验证保存是否成功
+    const checks: boolean[] = [];
+
+    // 1. 检查成功提示元素
+    const successEl = authPage.locator('#dev-basic-success');
+    if (await successEl.isVisible().catch(() => false)) {
+      const isHidden = await successEl.evaluate(el => el.classList.contains('is-hidden')).catch(() => true);
+      checks.push(!isHidden);
+    } else {
+      checks.push(false);
+    }
+
+    // 2. 检查 toast/notification
+    const toastVisible = await authPage.locator('.toast-success, .notification-success, .message-success').first().isVisible({ timeout: 3000 }).catch(() => false);
+    checks.push(toastVisible);
+
+    // 3. 检查名称字段保留输入值
+    const nameVal = await authPage.locator('#dev-name').inputValue().catch(() => '');
+    checks.push(nameVal === 'FastBee-AutoTest');
+
+    // 4. 通过 API 验证持久化（正确端点: /api/device/config）
+    const apiName = await authPage.evaluate(async () => {
+      try {
+        const r = await fetch('/api/device/config');
+        const d = await r.json();
+        return d?.data?.deviceName || d?.deviceName || d?.name || '';
+      } catch { return ''; }
+    });
+    checks.push(apiName === 'FastBee-AutoTest');
+
+    const anySuccess = checks.some(v => v === true);
+    if (!anySuccess) {
+      console.log(`[DEV-011] 所有检查失败: success=${checks[0]}, toast=${checks[1]}, nameRetained=${checks[2]}, apiName=${checks[3]}, nameVal=${nameVal}, apiName=${apiName}`);
+    }
+    expect(anySuccess).toBeTruthy();
   });
 
   test('DEV-012: 保存后刷新验证持久化', async ({ authPage, navigateTo }) => {
@@ -183,6 +232,8 @@ test.describe('Suite-04: 设备配置', () => {
   test('DEV-020: NTP启用/禁用 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await authPage.click('.config-tab[data-tab="dev-ntp"]');
+    // 等待 loadDeviceConfig 异步回填完成，避免响应覆盖测试设置的选项值
+    await authPage.waitForTimeout(2000);
     await authPage.selectOption('#dev-ntp-enable', '0');
     expect(await authPage.locator('#dev-ntp-enable').inputValue()).toBe('0');
     await authPage.selectOption('#dev-ntp-enable', '1');

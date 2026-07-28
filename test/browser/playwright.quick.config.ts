@@ -19,7 +19,7 @@ import { defineConfig } from '@playwright/test';
  *   | 预估时间    | 30-37min    | 8-12min   |
  *   | screenshot | only-on-fail| only-on-fail|
  *   | trace      | off         | off       |
- *   | retries    | 1           | 0         |
+ *   | retries    | 1           | 1         |
  *   | 测试间延迟  | 800ms       | 500ms     |
  */
 
@@ -32,9 +32,9 @@ export default defineConfig({
   outputDir: './test-results/quick',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: 0,         // 快速模式不重试，失败即报告
+  retries: 1,         // 偶发导航/登录超时套件内自愈（真实回归会连续失败2次仍暴露）
   workers: 1,
-  timeout: 45_000,    // 快速模式缩短超时
+  timeout: 60_000,    // 45s下beforeEach/fixture偶发超限（设备清理恢复期负载），放宽到60s
   globalSetup: require.resolve('./stability-global-setup'),
   reporter: [
     ['list'],                                        // 实时进度

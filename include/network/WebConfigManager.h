@@ -74,7 +74,8 @@ public:
     bool start();
     void stop();
     bool isServerRunning() const;
-    bool pauseForMqttsHandshake(unsigned long holdMs = FastBee::MemoryBudget::MQTTS_WEB_PAUSE_HOLD_MS);
+    bool pauseForMqttsHandshake(unsigned long holdMs = FastBee::MemoryBudget::MQTTS_WEB_PAUSE_HOLD_MS,
+                                bool force = false);
     bool resumeFromMqttsHandshake();
     bool isPausedForMqttsHandshake() const { return webPauseReason == WebServicePauseReason::MqttsHandshake; }
 
@@ -168,6 +169,11 @@ private:
     // ── TCP 连接池健康监测与 Web 服务自动恢复 ──
     void checkAndRecoverWebServer();
     uint16_t countTcpConnections(uint8_t* outTimeWait = nullptr) const;
+    uint8_t pruneTimeWaitPcbs(uint8_t maxToKill);
+    // 强制回收占用指定本地端口的所有非监听 PCB（active + TIME_WAIT）
+    // 用于：1) 软重启前释放端口，避免 tcp_bind 返回 ERR_USE(-8) 永久失败
+    //       2) 清理对端已消失的僵死 ESTABLISHED 连接（占满 AsyncTCP 客户端槽位）
+    uint8_t abortPcbsOnLocalPort(uint16_t port);
     bool softRestartWebServer(const char* reason);
     void driveSoftRestartStateMachine();  // 异步软重启状态机驱动
     bool isPortListening(uint16_t port = 80) const;
@@ -179,6 +185,11 @@ private:
     static constexpr uint8_t  UNHEALTHY_COUNT_TRIGGER = 3;         // 连续不健康次数触发恢复
     static constexpr unsigned long RECOVERY_COOLDOWN_MS = 30000UL; // 恢复冷却期 30s
     static constexpr unsigned long CHECK_INTERVAL_MS = 10000UL;    // 检查间隔 10s
+
+    // TIME_WAIT 主动修剪：lwIP TIME_WAIT 默认持续 2×MSL(120s)，密集短连接很快占满 PCB 池
+    // 超过阈值时主动回收（与 lwIP tcp_alloc 耗尽时杀 TIME_WAIT 同理），避免软重启造成服务中断
+    static constexpr uint8_t TIME_WAIT_PRUNE_THRESHOLD = 6;  // TIME_WAIT 超过此值开始修剪
+    static constexpr uint8_t TIME_WAIT_PRUNE_KEEP = 2;       // 修剪后保留的 TIME_WAIT 数量
 
     uint8_t  tcpUnhealthyCount = 0;       // 连续检测到TCP不健康的次数
     unsigned long lastTcpCheckMs = 0;     // 上次TCP健康检查时间
@@ -192,10 +203,12 @@ private:
     enum class SoftRestartPhase : uint8_t {
         IDLE,                // 无进行中的软重启
         WAIT_TCP_CLOSE,      // 等待 TCP FIN/RST 处理 (200ms)
-        WAIT_LWIP_CLEANUP   // 等待 lwIP 完成 TIME_WAIT 清理 (100ms)
+        WAIT_LWIP_CLEANUP,   // 等待 lwIP 完成 TIME_WAIT 清理 (100ms)
+        WAIT_PORT_BIND       // 等待端口 80 绑定成功（最多重试 3 次）
     };
     SoftRestartPhase _softRestartPhase = SoftRestartPhase::IDLE;
     unsigned long _softRestartPhaseStartMs = 0;
+    uint8_t _softRestartBindRetries = 0;
     char _softRestartReason[48] = {0};
 
     // ── 请求突增检测与主动恢复 ──
@@ -214,7 +227,7 @@ private:
     uint8_t  listenCheckFailCount = 0;             // 连续检测到端口未监听的次数
     static constexpr unsigned long LISTEN_CHECK_INTERVAL_MS = 30000UL;  // 30s 检查一次
     static constexpr uint8_t LISTEN_CHECK_FAIL_TRIGGER = 3;  // 连续 3 次失败触发恢复
-    static constexpr unsigned long NO_REQUEST_WATCHDOG_MS = 300000UL;   // 5 分钟无请求触发重启
+    static constexpr unsigned long NO_REQUEST_WATCHDOG_MS = 120000UL;   // 2 分钟无请求且有残留连接时清理僵死 PCB
 };
 
 #endif // WEB_CONFIG_MANAGER_H

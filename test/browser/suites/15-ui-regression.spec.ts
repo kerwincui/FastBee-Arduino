@@ -1,11 +1,30 @@
-﻿import { test, expect } from '../fixtures/base.fixture';
+﻿import { test, expect, env, waitForDeviceReady } from '../fixtures/base.fixture';
+
+/** 带重试的 page.goto（设备可能临时不可达） */
+async function gotoWithRetry(page: import('@playwright/test').Page, maxRetries = 3) {
+  const baseURL = `http://${env.deviceIp}/`;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await page.goto(baseURL, { timeout: 15_000 });
+      return;
+    } catch (e) {
+      if (i < maxRetries - 1) {
+        console.log(`[UI] goto retry ${i + 1}/${maxRetries}: ${e}`);
+        await page.waitForTimeout(5000);
+      } else {
+        throw e;
+      }
+    }
+  }
+}
 
 test.describe('Suite-15: UI布局与视觉回归', () => {
 
   // ========== 登录页布局 ==========
 
   test('UI-001: 登录页布局 @quick', async ({ page }) => {
-    await page.goto('/');
+    test.setTimeout(60_000);
+    await gotoWithRetry(page);
     await expect(page.locator('#login-page')).toBeVisible();
     // 截图存档
     await page.screenshot({ path: 'test-results/ui/UI-001-login.png', fullPage: true });
@@ -191,7 +210,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
   // ========== 语言切换 ==========
 
   test('UI-016: 中英文切换-登录页', async ({ page }) => {
-    await page.goto('/');
+    await gotoWithRetry(page);
     await expect(page.locator('#login-page')).toBeVisible();
     // 切换到英文
     const langSelect = page.locator('#login-language-select');
@@ -242,7 +261,8 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
   });
 
   test('UI-020: 错误提示显示 @quick', async ({ page }) => {
-    await page.goto('/');
+    test.setTimeout(60_000);
+    await gotoWithRetry(page);
     await page.fill('#username', 'admin');
     await page.fill('#password', 'wrong_password');
     await page.click('#login-button');

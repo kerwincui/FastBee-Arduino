@@ -497,6 +497,17 @@
             // 显示/隐藏 DS18B20 设备索引
             var diGroup = block.querySelector('.pe-sensor-devindex-group');
             if (diGroup) this._setSectionVisible(diGroup, normCat === 'ds18b20');
+            // 数字传感器隐藏缩放系数/偏移量和高级参数（它们直接输出物理值，不需要校准）
+            var digitalCats = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+            var isDigital = digitalCats.indexOf(normCat) >= 0;
+            var calGroup = block.querySelector('.pe-sensor-calibration-group');
+            if (calGroup) this._setSectionVisible(calGroup, !isDigital);
+            var advGroup = block.querySelector('.pe-sensor-advanced-group');
+            if (advGroup) {
+                this._setSectionVisible(advGroup, !isDigital);
+                var advHelp = advGroup.querySelector('.pe-help-text');
+                if (advHelp) advHelp.textContent = isDigital ? '数字传感器（DHT/DS18B20等）无需高级参数' : '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。';
+            }
         },
 
         // ============ Poll tasks / Modbus device panel ============

@@ -267,10 +267,24 @@ private:
     std::map<String, uint8_t, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, uint8_t>>> uartPortById;
 
-    // 编码器计数器存储（外设ID -> 当前计数值）
-    std::map<String, volatile int32_t> encoderCounters;
+    // 编码器 ISR 槽位：静态固定内存，ISR 参数指向槽位而非 map 节点
+    // （旧实现在 ISR 内做 String 拷贝 + std::map 插入 → 非 ISR-safe 的 malloc，
+    //   且 arg 指向 peripherals map 节点内部地址，删除外设后成悬垂指针）
+    static constexpr size_t MAX_ENCODER_SLOTS = 4;
+    struct EncoderIsrSlot {
+        volatile bool used = false;
+        uint8_t pinA = 255;
+        uint8_t pinB = 255;
+        volatile int32_t count = 0;
+        String id;   // 仅任务上下文读写，ISR 不触碰
+    };
+    static EncoderIsrSlot _encoderSlots[MAX_ENCODER_SLOTS];
+    static portMUX_TYPE _encoderMux;   // ISR 与任务间的自旋锁临界区
+    EncoderIsrSlot* findEncoderSlot(const String& id);
+    EncoderIsrSlot* allocEncoderSlot(const String& id, uint8_t pinA, uint8_t pinB);
+    void releaseEncoderSlot(const String& id);
 
-    // 编码器中断处理函数
+    // 编码器中断处理函数（arg = EncoderIsrSlot*，静态内存，无悬垂风险）
     static void IRAM_ATTR handleEncoderInterrupt(void* arg);
 
     // Modbus 通信委托

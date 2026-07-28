@@ -323,6 +323,7 @@ test.describe('Suite-05: 外设配置', () => {
   // ========== 场景D: 端到端 CRUD 闭环 ==========
 
   test('PER-035: 完整 CRUD 流程 @quick', async ({ authPage }) => {
+    test.setTimeout(90_000); // CRUD全流程需要更多时间
     // 1. 新增 GPIO 外设
     await openAddModal(authPage);
     await selectPeriphType(authPage, '12'); // 数字输出

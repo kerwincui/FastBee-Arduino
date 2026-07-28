@@ -468,8 +468,11 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String errorMsg;
     if (mgr.addRule(rule, errorMsg)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule added");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule added");
+        } else {
+            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
     }
@@ -535,8 +538,11 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 
     String errorMsg;
     if (mgr.updateRule(id, rule, errorMsg)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule updated");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule updated");
+        } else {
+            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
     }
@@ -556,8 +562,11 @@ void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     if (mgr.removeRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule deleted");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule deleted");
+        } else {
+            ctx->sendError(request, 500, "Rule deleted in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
@@ -577,8 +586,11 @@ void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     if (mgr.enableRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule enabled");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule enabled");
+        } else {
+            ctx->sendError(request, 500, "Rule enabled in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
@@ -598,8 +610,11 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     if (mgr.disableRule(id)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule disabled");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule disabled");
+        } else {
+            ctx->sendError(request, 500, "Rule disabled in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
@@ -682,6 +697,8 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         items += String(result.endTime);
         items += F(",\"durationMs\":");
         items += String(duration);
+        items += F(",\"reportCount\":");
+        items += String(static_cast<unsigned int>(result.reportCount));
         items += F("}");
         emitted++;
     }
@@ -832,8 +849,11 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String errorMsg;
     if (mgr.addRule(rule, errorMsg)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule added");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule added");
+        } else {
+            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
     }
@@ -1033,8 +1053,11 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
 
     String errorMsg;
     if (mgr.updateRule(id, rule, errorMsg)) {
-        mgr.saveConfiguration();
-        ctx->sendSuccess(request, "Rule updated");
+        if (mgr.saveConfiguration()) {
+            ctx->sendSuccess(request, "Rule updated");
+        } else {
+            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
+        }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
     }

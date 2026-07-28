@@ -309,6 +309,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
   });
 
   test('MQTT-030: MQTTS连接验证 @quick', async ({ authPage }) => {
+    test.setTimeout(60_000); // MQTTS连接需要更长时间
     await authPage.locator('#mqtt-scheme').selectOption('mqtts');
     await authPage.waitForTimeout(500);
     await authPage.click('#mqtt-form button[type="submit"]');
@@ -523,9 +524,9 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     await authPage.waitForLoadState('networkidle');
     const heapData = await authPage.evaluate(async () => {
       try {
-        const r = await fetch('/api/status');
+        const r = await fetch('/api/system/health');
         const data = await r.json();
-        return data?.heap?.free ?? -1;
+        return data?.data?.freeHeap ?? -1;
       } catch { return -1; }
     });
     console.log(`Heap空闲: ${heapData}`);
@@ -553,9 +554,9 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     for (let i = 0; i < 3; i++) {
       const heap = await authPage.evaluate(async () => {
         try {
-          const r = await fetch('/api/status');
+          const r = await fetch('/api/system/health');
           const data = await r.json();
-          return data?.heap?.free ?? -1;
+          return data?.data?.freeHeap ?? -1;
         } catch { return -1; }
       });
       if (heap >= 0) heapValues.push(heap);
@@ -717,5 +718,86 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
       try { return (await fetch('/api/health')).ok; } catch { return false; }
     });
     expect(healthOk).toBeTruthy();
+  });
+
+  // ========== 场景G: MQTT自动重连机制回归 ==========
+  // 背景：修复前一次性重连任务异常终止会导致 _reconnectPending/_reconnectRunning 卡死，
+  // handle() 永不再调度自动重连，表现为必须手动打开协议界面刷新才能恢复。
+  // 以下用例验证状态接口暴露重连观测字段、手动恢复路径可用、刷新按钮可触发状态更新。
+
+  test('MQTT-066: 状态接口暴露重连观测字段 @quick', async ({ authPage }) => {
+    const status = await authPage.evaluate(async () => {
+      try {
+        const r = await fetch('/api/mqtt/status');
+        if (!r.ok) return null;
+        return await r.json();
+      } catch { return null; }
+    });
+    expect(status).not.toBeNull();
+    expect(status.success).toBeTruthy();
+    expect(status.data).toBeDefined();
+    // connected 必须是布尔值（状态检测核心字段）
+    expect(typeof status.data.connected).toBe('boolean');
+    // autoReconnect 字段必须存在（自动重连开关观测）
+    expect('autoReconnect' in status.data).toBeTruthy();
+    // 已初始化时应暴露重连计数（重连机制可观测性）
+    if (status.data.initialized) {
+      expect('reconnectCount' in status.data).toBeTruthy();
+      expect(typeof status.data.reconnectCount).toBe('number');
+      expect(typeof status.data.connecting).toBe('boolean');
+    }
+    console.log(`MQTT状态: connected=${status.data.connected} autoReconnect=${status.data.autoReconnect} reconnectCount=${status.data.reconnectCount ?? 'n/a'}`);
+  });
+
+  test('MQTT-067: 手动重连接口可用（恢复路径）', async ({ authPage }) => {
+    // 镜像前端 mqtt-config.js 的恢复调用：apiPostSilent('/api/mqtt/reconnect', {})。
+    // 这是用户此前唯一能恢复连接的途径，修复后仍应保持可用（作为兜底）。
+    const result = await authPage.evaluate(async () => {
+      try {
+        const r = await fetch('/api/mqtt/reconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const text = await r.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* 非JSON响应 */ }
+        return { ok: r.ok, status: r.status, json };
+      } catch { return { ok: false, status: 0, json: null }; }
+    });
+    // 接口应返回 2xx（无论 MQTT 是否启用/已连接，端点本身必须可达且鉴权通过）
+    expect(result.ok).toBeTruthy();
+    expect(result.status).toBeGreaterThanOrEqual(200);
+    expect(result.status).toBeLessThan(300);
+    console.log(`手动重连接口响应: status=${result.status} body=${JSON.stringify(result.json)}`);
+  });
+
+  test('MQTT-068: 刷新状态按钮触发状态更新（UI交互回归）', async ({ authPage }) => {
+    const refreshBtn = authPage.locator('button[data-action="refreshMqttStatus"]');
+    await expect(refreshBtn).toBeVisible();
+
+    // 记录刷新前的状态徽章文本
+    const badge = authPage.locator('#mqtt-status-badge');
+    const before = (await badge.isVisible()) ? (await badge.textContent()) : null;
+
+    // 点击刷新并等待状态面板更新
+    await refreshBtn.click();
+    await authPage.waitForTimeout(2500);
+
+    // 刷新后状态徽章应仍然可见且可读（界面未崩溃、状态已重新拉取）
+    await expect(badge).toBeVisible();
+    const after = await badge.textContent();
+    expect(after).not.toBeNull();
+    console.log(`刷新状态徽章: before="${before}" after="${after}"`);
+
+    // 刷新后通过 API 复核：状态接口仍可正常返回（界面交互与后端一致）
+    const recheck = await authPage.evaluate(async () => {
+      try {
+        const r = await fetch('/api/mqtt/status');
+        return r.ok ? (await r.json()) : null;
+      } catch { return null; }
+    });
+    expect(recheck).not.toBeNull();
+    expect(recheck.success).toBeTruthy();
   });
 });

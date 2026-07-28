@@ -8,6 +8,7 @@
 #include "Network/OTAManager.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
@@ -33,6 +34,29 @@ static OTAStatus otaStatus = OTA_IDLE;
 static String otaErrorMessage = "";
 static String otaFirmwareUrl = "";
 static int otaTaskId = 0;
+
+// URL OTA 后台任务防重入门闩（与 otaInProgress 共同构成双重保护）
+static portMUX_TYPE s_otaSpawnMux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_otaUrlTaskActive = false;
+
+namespace {
+struct OtaUrlTaskParams {
+    OTAManager* manager;
+    String url;
+};
+
+// 独立低优先级任务执行下载+写 flash，避免在 async_tcp 上同步阻塞分钟级
+// （下载数据本身也走 async_tcp 收包，同任务执行存在自饿死风险）
+void otaUrlDownloadTask(void* pv) {
+    OtaUrlTaskParams* params = static_cast<OtaUrlTaskParams*>(pv);
+    params->manager->startOTA(params->url);  // 成功时内部自行重启
+    delete params;
+    portENTER_CRITICAL(&s_otaSpawnMux);
+    s_otaUrlTaskActive = false;
+    portEXIT_CRITICAL(&s_otaSpawnMux);
+    vTaskDelete(nullptr);
+}
+}  // namespace
 
 // 构造函数
 OTAManager::OTAManager(AsyncWebServer* webServer) 
@@ -188,13 +212,14 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
                     "{\"status\": \"OTA completed\", \"size\": " + String(currentSize) + 
                     ", \"md5\": \"" + md5 + "\", \"message\": \"Restarting in 3 seconds...\"}");
                 
-                // 延迟重启，让客户端有时间收到响应
-                delay(3000);
+                // 延迟重启交给主循环 SystemRebooter 执行，避免在 async_tcp 任务上
+                // 同步睡眠 3 秒导致响应无法 flush 给客户端（发送依赖 async_tcp 泵动）
                 RestartDiagnostics::savePreRestartState(
                     RestartReason::OTA_UPDATE,
                     "OTA firmware upload completed");
-                LOG_INFO("OTAManager: Restarting device...");
-                ESP.restart();
+                LOG_INFO("OTAManager: Restart scheduled in 3s...");
+                SystemRebooter::scheduleReboot("OTA firmware upload completed", 3000,
+                                               RestartReason::OTA_UPDATE);
             } else {
                 LOG_ERROR("OTAManager: Firmware verification failed");
                 request->send(500, "application/json", "{\"error\": \"Firmware verification failed\"}");
@@ -210,14 +235,9 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
             request->send(500, "application/json", "{\"error\": \"" + errorMsg + "\"}");
             otaInProgress = false;
         }
-    } else {
-        // 上传中，返回进度信息
-        if (index % (512 * 1024) == 0) { // 每512KB报告一次
-            AsyncWebServerResponse *response = request->beginResponse(200, "application/json", 
-                "{\"progress\": " + String(progress) + ", \"received\": " + String(currentSize) + "}");
-            request->send(response);
-        }
     }
+    // 注：非 final 分块不得对同一 request 多次 send（ESPAsyncWebServer 协议违规，
+    // 会导致重复响应/use-after-free），进度由 /api/ota/status 轮询获取
 }
 
 // 处理OTA状态查询
@@ -323,7 +343,13 @@ bool OTAManager::startOTA(const String& url) {
     WiFiClient* stream = http.getStreamPtr();
     uint8_t buff[1024];
     int bytesRead = 0;
-    
+
+    // 双重超时保护：服务器建连后停发数据时 http.connected() 保持 true，
+    // 无超时则此循环永久自旋直至 TWDT panic
+    const unsigned long STALL_TIMEOUT_MS = 15000;   // 15s 无新字节判定停滞
+    const unsigned long TOTAL_TIMEOUT_MS = 600000;  // 整体 10 分钟 deadline
+    unsigned long lastDataMs = millis();
+
     while (http.connected() && (totalSize > 0 || totalSize == -1)) {
         size_t available = stream->available();
         if (available) {
@@ -344,6 +370,24 @@ bool OTAManager::startOTA(const String& url) {
             if (totalSize > 0) {
                 totalSize -= c;
             }
+            lastDataMs = millis();
+        } else if (millis() - lastDataMs > STALL_TIMEOUT_MS) {
+            otaErrorMessage = "Download stalled: no data for 15s";
+            LOG_ERROR("OTAManager: " + otaErrorMessage);
+            Update.end(false);
+            otaStatus = OTA_FAILED;
+            otaInProgress = false;
+            http.end();
+            return false;
+        }
+        if (millis() - otaStartTime > TOTAL_TIMEOUT_MS) {
+            otaErrorMessage = "Download timeout: exceeded 10 minutes";
+            LOG_ERROR("OTAManager: " + otaErrorMessage);
+            Update.end(false);
+            otaStatus = OTA_FAILED;
+            otaInProgress = false;
+            http.end();
+            return false;
         }
         delay(1);
     }
@@ -371,6 +415,31 @@ bool OTAManager::startOTA(const String& url) {
     otaStatus = OTA_FAILED;
     otaInProgress = false;
     return false;
+}
+
+// 在独立后台任务中执行URL OTA（供 Web handler 调用，立即返回不阻塞）
+bool OTAManager::startOTAAsync(const String& url) {
+    portENTER_CRITICAL(&s_otaSpawnMux);
+    bool busy = otaInProgress || s_otaUrlTaskActive;
+    if (!busy) s_otaUrlTaskActive = true;
+    portEXIT_CRITICAL(&s_otaSpawnMux);
+    if (busy) {
+        LOG_WARNING("OTAManager: OTA already in progress, async start rejected");
+        return false;
+    }
+
+    OtaUrlTaskParams* params = new OtaUrlTaskParams{this, url};
+    // 栈 8KB：HTTPClient + TLS-free HTTP 下载 + Update 写入；优先级 1 低于网络任务
+    BaseType_t ok = xTaskCreate(otaUrlDownloadTask, "ota_url", 8192, params, 1, nullptr);
+    if (ok != pdPASS) {
+        delete params;
+        portENTER_CRITICAL(&s_otaSpawnMux);
+        s_otaUrlTaskActive = false;
+        portEXIT_CRITICAL(&s_otaSpawnMux);
+        LOG_ERROR("OTAManager: Failed to create OTA download task");
+        return false;
+    }
+    return true;
 }
 
 // 获取OTA状态字符串

@@ -1,8 +1,9 @@
-﻿import { test, expect, waitForDevice } from '../fixtures/base.fixture';
+﻿import { test, expect, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-12: 文件管理', () => {
 
   test.beforeEach(async ({ authPage, navigateTo }) => {
+    test.skip(!(await hasMenuPage(authPage, 'data')), '设备不支持文件管理页面');
     await navigateTo('data');
   });
 
@@ -162,9 +163,8 @@ test.describe('Suite-12: 文件管理', () => {
   test('FILE-016: 存储空间API一致性', async ({ authPage }) => {
     const fsInfo = await authPage.evaluate(async () => {
       try {
-        // 优先使用 /api/system/info（所有 profile 均支持），回退到 /api/status
-        let r = await fetch('/api/system/info');
-        if (!r.ok) r = await fetch('/api/status');
+        // /api/system/info 所有 profile 均支持，包含 filesystem 用量
+        const r = await fetch('/api/system/info');
         const data = await r.json();
         const d = data?.data || data;
         return {

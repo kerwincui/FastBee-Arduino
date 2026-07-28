@@ -59,8 +59,10 @@ static ChipProfile getESP32C6Profile() {
 }
 
 // 验证引脚是否可分配（非保留且非仅输入）
+// 注意：maxGpio 是最大合法 GPIO 编号（含），与生产代码 PeripheralManager::isValidPin
+// 的 `pin > CHIP_MAX_GPIO` 语义一致，因此 pin == maxGpio 仍是合法引脚（如 ESP32 GPIO39）。
 static bool isPinAssignable(const ChipProfile& chip, uint8_t pin) {
-    if (pin >= chip.maxGpio) return false;
+    if (pin > chip.maxGpio) return false;
     for (uint8_t r : chip.reservedPins) {
         if (r == pin) return false;
     }
@@ -268,8 +270,8 @@ static void test_pin_at_max_gpio_boundary() {
     auto chip = getESP32C3Profile();  // maxGpio=21
     // GPIO 20 应可分配（如果不在保留列表中）
     TEST_ASSERT_TRUE(isPinAssignable(chip, 20));
-    // GPIO 21 不可分配（== maxGpio）
-    TEST_ASSERT_FALSE(isPinAssignable(chip, 21));
+    // GPIO 21 应可分配（== maxGpio，为最大合法编号，与生产 isValidPin 语义一致）
+    TEST_ASSERT_TRUE(isPinAssignable(chip, 21));
     // GPIO 22 不可分配（> maxGpio）
     TEST_ASSERT_FALSE(isPinAssignable(chip, 22));
 }

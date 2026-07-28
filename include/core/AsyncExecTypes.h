@@ -68,6 +68,9 @@ struct AsyncExecResult {
     AsyncExecStatus  status;
     unsigned long    startTime;
     unsigned long    endTime;
+    // 本次执行实际上报物联网平台的动作结果数量（reportAfterExec 勾选且产生可上报结果时 > 0）。
+    // 用于回归验证：GPIO/PWM/DAC 等物理输出控制动作勾选“上报数据”后确实生成上报。
+    uint8_t          reportCount = 0;
 };
 
 // ========== RAII Mutex 守护 ==========

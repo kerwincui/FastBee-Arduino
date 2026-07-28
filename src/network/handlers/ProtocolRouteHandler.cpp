@@ -892,25 +892,30 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     }
 
     // 保存成功后，根据MQTT启用状态处理
-    // 策略：MQTT 配置变更采用设备重启（而非运行时 destroy/rebuild）
-    // 原因：运行时重建 MQTT 客户端会导致 DRAM 碎片化，TLS 握手失败
-    bool mqttWillReboot = false;
+    // 策略：MQTT 配置变更优先热重建（loopTask 中异步执行），避免不必要的设备重启；
+    // restartMQTTDeferred 内部按 scheme/PSRAM 实测内存门槛（含释放旧客户端后的
+    // 最大连续块检查），门槛不过时由 ProtocolManager::handle() 回退调度设备重启，
+    // 确保新配置必定生效且不会在碎片化堆上强行 TLS 握手导致长期不可用
+    bool mqttHotRestart = false;
     bool mqttStoppedNow = false;
 #if FASTBEE_ENABLE_MQTT
     if (updateMqtt) {
         bool mqttEnabledNow = doc["mqtt"]["enabled"].as<bool>();
+        ProtocolManager* pm = ctx->protocolManager;
         if (!mqttEnabledNow) {
-            // MQTT 已禁用：立即停止客户端，不等重启
-            // 确保在重启前的窗口期内不会继续保持与 Broker 的连接
-            ProtocolManager* pm = ctx->protocolManager;
+            // MQTT 已禁用：立即停止客户端即可，无需重启也无需重建
             if (pm) {
                 pm->stopMQTT();
                 mqttStoppedNow = true;
             }
+        } else if (pm) {
+            // MQTT 启用：置标志由 loopTask 热重建（避免在 async_tcp 小栈里重建 TLS）
+            pm->requestMqttRestartAsync();
+            mqttHotRestart = true;
+        } else {
+            // 无 ProtocolManager（不应发生）：保底走设备重启确保配置生效
+            SystemRebooter::scheduleConfigReboot("MQTT config changed");
         }
-        // MQTT 配置已保存到文件，调度设备重启
-        // 重启后 ProtocolManager::initialize() 会读取新配置并启动/停止 MQTT
-        mqttWillReboot = true;
     }
 #endif
 
@@ -932,12 +937,13 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     JsonDocument resp;
     resp["success"] = true;
-    resp["message"] = mqttWillReboot
-        ? "Protocol configuration saved, device will reboot"
-        : "Protocol configuration saved";
-    resp["data"]["restartRequired"] = mqttWillReboot;
+    resp["message"] = "Protocol configuration saved";
+    resp["data"]["restartRequired"] = false;
     resp["data"]["modbusRestarted"] = modbusRestarted;
-    // MQTT 断开/重连状态：前端依赖这些字段显示正确的通知
+    // MQTT 热重建/断开状态：前端依赖这些字段显示正确的通知
+    if (mqttHotRestart) {
+        resp["data"]["mqttHotRestart"] = true;
+    }
     if (mqttStoppedNow) {
         resp["data"]["mqttDisconnected"] = true;
     }
@@ -946,9 +952,4 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         resp["data"]["mqttClientId"] = clientId;
     }
     HandlerUtils::sendJsonStream(request, resp);
-
-    // HTTP 响应已发送，如果 MQTT 配置变更则调度延迟重启
-    if (mqttWillReboot) {
-        SystemRebooter::scheduleConfigReboot("MQTT config changed");
-    }
 }

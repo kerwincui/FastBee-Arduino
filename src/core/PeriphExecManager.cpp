@@ -18,6 +18,7 @@
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
+#include "utils/StringUtils.h"
 #include "utils/FileUtils.h"
 
 namespace {
@@ -106,29 +107,7 @@ static bool isNumericString(const String& s) {
 }
 
 static bool tryParseBoolLike(const String& rawValue, bool& outValue) {
-    String value = rawValue;
-    value.trim();
-    value.toLowerCase();
-    if (value.isEmpty()) return false;
-
-    if (value == "1" || value == "true" || value == "on" ||
-        value == "high" || value == "open") {
-        outValue = true;
-        return true;
-    }
-
-    if (value == "0" || value == "false" || value == "off" ||
-        value == "low" || value == "close") {
-        outValue = false;
-        return true;
-    }
-
-    if (isNumericString(value)) {
-        outValue = value.toInt() != 0;
-        return true;
-    }
-
-    return false;
+    return StringUtils::tryParseBoolLike(rawValue, outValue);
 }
 
 static bool executeDirectOutputCommand(PeripheralManager& pm,
@@ -202,6 +181,10 @@ bool PeriphExecManager::initialize() {
 
     LOGGER.infof("[PeriphExec] Initialized, loaded %d rules (async: max %d tasks)",
                  (int)rules.size(), MAX_ASYNC_TASKS);
+
+    // 初始化完成：调度一次性启动上报（实际上报等 MQTT 连接成功后由 processBootReport 执行）
+    scheduleBootReport();
+
     return loaded;
 }
 
@@ -228,6 +211,27 @@ bool PeriphExecManager::ruleHasPollCollectionAction(const PeriphExecRule& rule) 
     for (const auto& action : rule.actions) {
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
             return true;
+        }
+    }
+    return false;
+}
+
+bool PeriphExecManager::ruleHasReportableStateAction(const PeriphExecRule& rule) const {
+    // 与 Executor::reportRuleCurrentState 的采集范围保持一致：
+    //   传感器读取 / Modbus 轮询 / 物理输出控制（GPIO 电平/PWM/DAC）
+    for (const auto& action : rule.actions) {
+        switch (static_cast<ExecActionType>(action.actionType)) {
+            case ExecActionType::ACTION_SENSOR_READ:
+            case ExecActionType::ACTION_MODBUS_POLL:
+            case ExecActionType::ACTION_HIGH:
+            case ExecActionType::ACTION_LOW:
+            case ExecActionType::ACTION_HIGH_INVERTED:
+            case ExecActionType::ACTION_LOW_INVERTED:
+            case ExecActionType::ACTION_SET_PWM:
+            case ExecActionType::ACTION_SET_DAC:
+                return true;
+            default:
+                break;
         }
     }
     return false;
@@ -1017,6 +1021,79 @@ size_t PeriphExecManager::getPendingReportCount() const {
     return _pendingReports.size();
 }
 
+// ========== 启动后一次性物模型状态上报 ==========
+
+void PeriphExecManager::scheduleBootReport() {
+    // 仅置位标志；实际上报时机由 processBootReport() 在 MQTT 连接成功后把控
+    _bootReportPending = true;
+    _bootReportDone = false;
+    _bootReportListBuilt = false;
+    _bootReportQueue.clear();
+}
+
+void PeriphExecManager::processBootReport() {
+    // 幂等门控：未调度或已完成→直接返回（整个生命周期只上报一次）
+    if (!_bootReportPending || _bootReportDone) return;
+
+    // 启动保护：未初始化（mutex 未创建）时跳过
+    if (!isInitialized()) return;
+
+    // 上报时机门控：需网络且 MQTT 已连接后才上报（未连接则等待，每周期重入重试）
+    if (!_mqttIsConnectedCb || !_mqttIsConnectedCb()) return;
+
+    if (!_executor) {
+        _bootReportDone = true;
+        _bootReportPending = false;
+        return;
+    }
+
+    // 首次进入：在持锁下快照 “启用 && 勾选上报 && 含可上报动作” 的规则 ID
+    if (!_bootReportListBuilt) {
+        if (xSemaphoreTake(_rulesMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+            return;  // 拿不到锁：下周期重试
+        }
+        for (auto& kv : rules) {
+            const PeriphExecRule& r = kv.second;
+            if (!r.enabled || !r.reportAfterExec) continue;
+            if (!ruleHasReportableStateAction(r)) continue;
+            _bootReportQueue.push_back(r.id);
+        }
+        xSemaphoreGive(_rulesMutex);
+        _bootReportListBuilt = true;
+        LOGGER.infof("[PeriphExec] Boot report scheduled for %d rule(s)", (int)_bootReportQueue.size());
+    }
+
+    // 队列清空 → 完成
+    if (_bootReportQueue.empty()) {
+        _bootReportDone = true;
+        _bootReportPending = false;
+        LOGGER.info("[PeriphExec] Boot report completed");
+        return;
+    }
+
+    // 每周期只处理一条规则（节流：避免一次性占用主循环与堆，也避免一次性洪水式上报）
+    String ruleId = _bootReportQueue.back();
+    _bootReportQueue.pop_back();
+
+    PeriphExecRule ruleCopy;
+    bool found = false;
+    if (xSemaphoreTake(_rulesMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        auto it = rules.find(ruleId);
+        if (it != rules.end() && it->second.enabled && it->second.reportAfterExec) {
+            ruleCopy = it->second;  // 锁内拷贝，锁外采集，避免长时间持锁
+            found = true;
+        }
+        xSemaphoreGive(_rulesMutex);
+    } else {
+        _bootReportQueue.push_back(ruleId);  // 拿不到锁：放回队列下周期重试
+        return;
+    }
+
+    if (found) {
+        _executor->reportRuleCurrentState(ruleCopy);
+    }
+}
+
 bool PeriphExecManager::tryReportDeviceData() {
     if (_scheduler) return _scheduler->tryReportDeviceData();
     return false;
@@ -1383,13 +1460,14 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
     // 堆守卫：任务开始时检查堆内存，过低时直接放弃执行防止 abort()
     bool allOk = false;
+    size_t reportCount = 0;
     if (ESP.getFreeHeap() < 16384) {
         LOGGER.warningf("[PeriphExec] Heap too low (%d), skip execution: '%s'",
                         (int)ESP.getFreeHeap(), result.ruleName.c_str());
         result.status = AsyncExecStatus::FAILED;
     } else {
-        // 执行所有动作
-        auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue);
+        // 执行所有动作（reportCount 回填本次实际上报数量）
+        auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue, false, &reportCount);
 
         // 统计结果
         allOk = true;
@@ -1400,6 +1478,7 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     }
 
     result.endTime = millis();
+    result.reportCount = static_cast<uint8_t>(reportCount > 255 ? 255 : reportCount);
 
     LOGGER.infof("[PeriphExec] Async task finished: '%s' %s (%lums)",
                  result.ruleName.c_str(),
@@ -1451,9 +1530,9 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
 // 执行规则的所有动作（供异步任务调用）
 std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport, size_t* reportCountOut) {
     if (_executor) {
-        return _executor->executeAllActions(rule, receivedValue, suppressReport);
+        return _executor->executeAllActions(rule, receivedValue, suppressReport, reportCountOut);
     }
     return {};
 }
@@ -1471,8 +1550,9 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
         _runningStartTime[rule.id] = millis();
     }
 
-    // 2. 执行所有动作
-    auto actionResults = executeAllActions(rule, receivedValue);
+    // 2. 执行所有动作（reportCount 回填本次实际上报数量）
+    size_t reportCount = 0;
+    auto actionResults = executeAllActions(rule, receivedValue, false, &reportCount);
 
     // 3. 统计结果
     bool allOk = true;
@@ -1512,6 +1592,7 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     result.startTime = millis();
     result.endTime = millis();
     result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+    result.reportCount = static_cast<uint8_t>(reportCount > 255 ? 255 : reportCount);
     recordResult(result);
 }
 
@@ -2178,6 +2259,11 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             String reportId = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
             String reportValue = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
 
+            // 传感器读取结果：使用 dataField 作为上报 ID（物模型标识符，如 temperature/humidity）
+            if (!ar.dataField.isEmpty()) {
+                reportId = ar.dataField;
+            }
+
             // Modbus 目标 sensorId 映射（通过回调）
             if (_modbusBuildSensorIdCb && ar.targetPeriphId.startsWith("modbus:")) {
                 PeripheralManager& periMgr = PeripheralManager::getInstance();
@@ -2217,11 +2303,17 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 
         // 回退：尝试直接外设控制
         const PeripheralConfig* directCfg = periMgr.getPeripheral(unmatchedIds[i]);
-        String actualValue = unmatchedValues[i];
-        bool directOk = false;
-        if (directCfg) {
-            directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
+        if (!directCfg) {
+            // 既无规则匹配、也不存在对应外设（如平台属性下发附带的
+            // temperature/humidity 等只读项）：跳过，不回显到 property/post。
+            // 原样回显会被平台当成设备新上报的传感器数据（假数据污染），
+            // 频繁下发时还会带来无意义的 JSON 构建+MQTT 发布内存开销。
+            LOGGER.warningf("[PeriphExec] DataCommand item '%s' has no rule/peripheral, skip echo",
+                            unmatchedIds[i].c_str());
+            continue;
         }
+        String actualValue = unmatchedValues[i];
+        bool directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
 
         JsonObject reportItem = reportArr.add<JsonObject>();
         reportItem["id"] = unmatchedIds[i];

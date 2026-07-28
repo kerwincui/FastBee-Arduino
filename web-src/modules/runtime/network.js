@@ -212,6 +212,16 @@
                 : '<span class="wifi-lock-icon-open">🔓</span>';
         },
 
+        // SSID 可能含引号/尖括号，插入 HTML/属性前必须转义
+        _escapeHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        },
+
         _ensureWifiModalEvents(modal) {
             if (!modal || modal.dataset.bound === 'true') return;
             const closeBtn = document.getElementById('close-wifi-modal');
@@ -888,7 +898,8 @@
                         return;
                     }
 
-                    const networks = res.data || [];
+                    // 后端返回 {networks:[...], success, count}；兼容旧版 data 字段
+                    const networks = res.networks || res.data || [];
 
                     if (networks.length === 0) {
                         modalBody.innerHTML = '<div class="wifi-scan-state"><div class="wifi-scan-state-text">未找到WiFi网络</div></div>';
@@ -903,14 +914,17 @@
                     let html = '<div class="wifi-grid">';
                     networks.forEach((net) => {
                         const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
-                        const isOpen = net.encryption === 'open';
+                        // 优先用 encryption 字符串；旧固件仅有 encrypted 布尔时兜底推导
+                        const encryption = net.encryption || (net.encrypted ? 'wpa2' : 'open');
+                        const isOpen = encryption === 'open';
                         const encryptIcon = this._getWifiLockIcon(!isOpen);
-                        const encLabel = encryptLabels[net.encryption] || net.encryption;
+                        const encLabel = encryptLabels[encryption] || encryption;
+                        const ssidEsc = this._escapeHtml(net.ssid);
 
                         html += `
-                            <div class="wifi-grid-item" data-ssid="${net.ssid}" data-encryption="${net.encryption}">
+                            <div class="wifi-grid-item" data-ssid="${ssidEsc}" data-encryption="${encryption}">
                                 <div class="wifi-info">
-                                    <div class="wifi-ssid">${net.ssid}</div>
+                                    <div class="wifi-ssid">${ssidEsc}</div>
                                     <div class="wifi-meta">
                                         ${encryptIcon} ${encLabel}
                                     </div>
