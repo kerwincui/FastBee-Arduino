@@ -61,6 +61,12 @@ public:
     bool saveConfiguration();
     bool loadConfiguration();
 
+    // ========== IR 按键映射（随 periph_exec.json 统一持久化，不再单独建 ir_keys.json） ==========
+    // 返回当前红外按键映射 JSON 数组字符串（如 [{"name":"k1","code":"0x00FF6897","protocol":"NEC"}]，无配置时为空串）
+    String getIrKeysJson() const;
+    // 更新红外按键映射并保存配置（传空数组字符串表示清空）
+    bool setIrKeysJson(const String& jsonArray);
+
     // ========== 执行引擎（委托给 Executor） ==========
 
     // 获取执行引擎
@@ -352,13 +358,19 @@ public:
         String label;           // 显示标签
         String value;           // 格式化后的数值字符串
         String unit;            // 单位
+        String dataField;       // 显式配置的多字段名（temperature/humidity 等），实时监测上报时优先作为 id；
+                                // 未显式配置时为空，上报 id 回退为外设配置 id（与平台物模型标识符对应）
+        String periphId;        // 外设配置 id：dataField 未显式配置时的上报 id 回退来源
         unsigned long timestamp; // 更新时间 millis()
     };
     static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = FastBee::ResourceProfile::SENSOR_CACHE_MAX_ENTRIES;   // 最大缓存条目数
     static constexpr unsigned long SENSOR_CACHE_TTL_MS = 120000; // 缓存 TTL: 120s
 
-    void updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit);
+    void updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit,
+                               const String& dataField = "", const String& periphId = "");
     std::map<String, SensorReadCache> getSensorReadCacheCopy() const;  // 线程安全的拷贝访问
+    // 审计 P2-3：单条持锁查询，避免模板解析每次全量深拷贝整表
+    bool lookupSensorCache(const String& key, SensorReadCache& out) const;
     void evictStaleSensorCache();  // 淘汰过期条目（由 checkTimers 定期调用）
 private:
     std::map<String, SensorReadCache> _sensorReadCache;  // key = periphId + "_" + dataField
@@ -366,6 +378,9 @@ private:
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池
+
+    // ========== IR 按键映射（随 periph_exec.json 统一持久化） ==========
+    String _irKeysJson;  // JSON 数组字符串，空串表示无配置
 
     // ========== 常驻 Worker 任务池（D 方案：消除运行期 xTaskCreate 碎片）==========
     std::unique_ptr<PeriphExecWorkerPool> _workerPool;

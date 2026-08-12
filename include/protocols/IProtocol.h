@@ -20,9 +20,6 @@
 enum class ProtocolType {
     MQTT = 0,
     MODBUS,
-    TCP,
-    HTTP,
-    COAP,
     UNKNOWN
 };
 
@@ -126,9 +123,6 @@ public:
         switch (type) {
             case ProtocolType::MQTT:   return "MQTT";
             case ProtocolType::MODBUS: return "Modbus";
-            case ProtocolType::TCP:    return "TCP";
-            case ProtocolType::HTTP:   return "HTTP";
-            case ProtocolType::COAP:   return "CoAP";
             default:                   return "Unknown";
         }
     }

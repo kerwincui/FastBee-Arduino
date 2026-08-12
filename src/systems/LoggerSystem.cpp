@@ -15,6 +15,7 @@
 
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
+#include "core/MemoryBudget.h"
 #include "core/FastBeeFramework.h"
 #include "core/FeatureFlags.h"
 #include <Arduino.h>
@@ -290,7 +291,8 @@ size_t LoggerSystem::bufferedDataSize() const {
 
 void LoggerSystem::checkLogFileSize() {
     // 内存保护：低内存时跳过文件大小检查，避免 VFS abort()
-    if (ESP.getFreeHeap() < 8192) return;
+    // 2026-08-05：改用 8BIT 口径（INTERNAL 虚高 ~28KB，守卫失效）
+    if (FastBee::MemoryBudget::dram8Free() < 10240) return;
     if (getLogFileSize() >= logFileSizeLimit) {
         rotateLogFile();
     }
@@ -301,8 +303,9 @@ void LoggerSystem::flushBufferInternal() {
     if (dataSize == 0) return;
 
     // 内存保护：VFS 打开文件需要分配互斥锁，堆不足时会触发 abort()
-    // 安全阈值：确保至少有 8KB 可用堆内存才尝试文件操作
-    if (ESP.getFreeHeap() < 8192) {
+    // 2026-08-05：改用 8BIT 口径。exec 规则窗口内 INTERNAL 仍 42KB 但
+    // 8BIT 只剩 ~6KB，旧门控放行导致 LittleFS 写入继续挤占 8BIT。
+    if (FastBee::MemoryBudget::dram8Free() < 10240) {
         return;  // 内存不足，跳过本次flush，数据保留在环形缓冲区中
     }
 
@@ -348,7 +351,7 @@ void LoggerSystem::cleanupOldLogFiles() {
     constexpr size_t MAX_LOG_FILES = 20;
 
     // 内存保护：目录遍历和 vector 分配需要较多内存
-    if (ESP.getFreeHeap() < 12288) return;
+    if (FastBee::MemoryBudget::dramFree() < 12288) return;
 
     // 收集所有 system_*.log 备份文件
     std::vector<String> logFiles;

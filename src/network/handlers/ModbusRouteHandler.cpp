@@ -2,6 +2,7 @@
 #if FASTBEE_ENABLE_MODBUS
 
 #include "./network/handlers/ModbusRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
@@ -394,8 +395,8 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
     bool explicitFull = request->hasParam("full") && request->getParam("full")->value() == "1";
     bool compactStatus = !explicitFull ||
                          ctx->getParamBool(request, "compact", false) ||
-                         ESP.getFreeHeap() < 12288 ||
-                         ESP.getMaxAllocHeap() < 6144;
+                         FastBee::MemoryBudget::dramFree() < 12288 ||
+                         FastBee::MemoryBudget::dramLargest() < 6144;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {

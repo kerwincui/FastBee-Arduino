@@ -69,7 +69,21 @@ public:
     
     // 原子写入（先写临时文件，再 rename，防止断电导致文件损坏）
     static bool atomicWriteFile(const String& path, const String& content);
-    
+
+    // 原子写入 JSON：流式序列化 JsonDocument 到临时文件后 rename 原子替换。
+    // 相比 atomicWriteFile(String) 省去大体积 payload 的连续堆分配；
+    // 通过校验序列化字节数与 measureJson 一致来检测截断，截断时绝不覆盖已有文件。
+    static bool atomicWriteJsonFile(const String& path, JsonDocument& doc);
+
+    // 流式原子写入：打开 path + ".tmp" 临时文件供调用方流式写入（逐段 print/serializeJson），
+    // 内部处理父目录创建与残留 .tmp 清理；失败返回空 File。
+    // 写完后调用 commitAtomicWrite 原子替换目标文件，峰值内存不随整体配置体积增长。
+    static File openAtomicWrite(const String& path);
+
+    // 提交流式原子写入：rename 原子替换目标文件（失败兜底 remove+rename），
+    // 全部失败时删除临时文件并保留原目标文件内容。
+    static bool commitAtomicWrite(const String& tmpPath, const String& path);
+
     // 文本文件操作
     static bool appendToFile(const String& path, const String& content);
     static std::vector<String> readLines(const String& path);

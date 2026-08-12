@@ -363,7 +363,11 @@ private:
     static constexpr unsigned long AP_PROBE_INTERVAL_MS     = 120000;  // 正常探测间隔：2 分钟
     static constexpr unsigned long AP_PROBE_BACKOFF_MS      = 600000;  // 退避探测间隔：10 分钟
     static constexpr int AP_PROBE_BACKOFF_THRESHOLD         = 5;       // 连续失败 5 次后进入退避
-    static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 10000;   // 单次探测超时：10 秒
+    // 单次探测超时：6 秒（从 10s 缩短）——探测期间 AP 处于停摆状态，
+    // 窗口越短对 AP 客户端的影响越小；STA 可连时通常 1-4s 内完成关联
+    static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 6000;
+    // AP 有客户端连接时的探测顺延间隔：60s 后重试（不杀 AP，不计失败）
+    static constexpr unsigned long AP_PROBE_DEFER_MS        = 60000;
 
     // STA 运行时长时间失联 → 调度重启回落 AP 的看门狗
     // 背景：AP 回退仅在开机流程（connectToWiFiBlocking 失败）触发；开机已连上、

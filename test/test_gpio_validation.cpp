@@ -40,9 +40,18 @@ static ChipProfile getESP32Profile() {
             {34, 35, 36, 39}};
 }
 
+// S3 非 Octal PSRAM 变体（F8R0/F8R4 等：Quad PSRAM 或无 PSRAM）
 static ChipProfile getESP32S3Profile() {
     return {"ESP32-S3", 48, false, true, 8, true, 3,
             {0, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
+            {}};
+}
+
+// S3 Octal PSRAM 变体（F16R8：CONFIG_SPIRAM_MODE_OCT）
+// GPIO 33-37 被 PSRAM 总线独占（SPIIO4-7/SPIDQS），必须列为保留引脚
+static ChipProfile getESP32S3OctalProfile() {
+    return {"ESP32-S3-OCT", 48, false, true, 8, true, 3,
+            {0, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37},
             {}};
 }
 
@@ -52,9 +61,12 @@ static ChipProfile getESP32C3Profile() {
             {}};
 }
 
+// C6 实际可用 GPIO 仅 0-23（24-30 为封装内部 Flash/PSRAM SPI，无外部焊盘）；
+// 15/16/17 保留：GPIO16/17 = UART0 控制台 TX/RX，对其 pinMode 会切断串口输出，
+// 设备看似挂死（2026-08-05 实测）。与 ChipConfig.h CHIP_RESERVED_PIN_COUNT=13 一致。
 static ChipProfile getESP32C6Profile() {
-    return {"ESP32-C6", 30, false, false, 6, false, 2,
-            {12, 13, 14, 24, 25, 26, 27, 28, 29, 30},
+    return {"ESP32-C6", 23, false, false, 6, false, 2,
+            {12, 13, 14, 15, 16, 17, 24, 25, 26, 27, 28, 29, 30},
             {}};
 }
 
@@ -76,6 +88,16 @@ static bool isPinOutputCapable(const ChipProfile& chip, uint8_t pin) {
         if (io == pin) return false;
     }
     return true;
+}
+
+// 镜像生产代码 PeripheralManager::isValidPin 的 S3 绝对禁止区
+// （与保留列表不同：isReservedPin 仅拦输出类型，isValidPin 对任何类型绝对禁止）
+static bool isS3PinAbsolutelyRejected(bool octalPsram, uint8_t pin) {
+    if (pin >= 19 && pin <= 20) return true;
+    if (octalPsram) {
+        return (pin >= 22 && pin <= 37);
+    }
+    return (pin >= 22 && pin <= 32);
 }
 
 // 检测引脚冲突（两个设备列表是否有重叠）
@@ -103,6 +125,12 @@ static void test_esp32s3_reserved_count() {
     TEST_ASSERT_EQUAL(14, (int)chip.reservedPins.size());
 }
 
+static void test_esp32s3_octal_reserved_count() {
+    // 与 ChipConfig.h OCT 分支的 CHIP_RESERVED_PIN_COUNT = 19 保持一致
+    auto chip = getESP32S3OctalProfile();
+    TEST_ASSERT_EQUAL(19, (int)chip.reservedPins.size());
+}
+
 static void test_esp32c3_reserved_count() {
     auto chip = getESP32C3Profile();
     TEST_ASSERT_EQUAL(7, (int)chip.reservedPins.size());
@@ -110,7 +138,7 @@ static void test_esp32c3_reserved_count() {
 
 static void test_esp32c6_reserved_count() {
     auto chip = getESP32C6Profile();
-    TEST_ASSERT_EQUAL(10, (int)chip.reservedPins.size());
+    TEST_ASSERT_EQUAL(13, (int)chip.reservedPins.size());
 }
 
 static void test_esp32_reserved_has_flash_spi() {
@@ -149,6 +177,69 @@ static void test_esp32s3_reserved_has_usb() {
     TEST_ASSERT_TRUE(has20);
 }
 
+static void test_esp32c6_reserved_has_uart0_console() {
+    // C6 UART0 控制台 TX=GPIO16 / RX=GPIO17（CDC_ON_BOOT=0 时）。
+    // 对 GPIO16 做 pinMode(OUTPUT) 会切断串口 TX，后续日志全部丢失，
+    // 设备看似挂死（2026-08-05 实测挂死根因），必须保留。
+    auto chip = getESP32C6Profile();
+    bool has16 = false, has17 = false;
+    for (uint8_t r : chip.reservedPins) {
+        if (r == 16) has16 = true;
+        if (r == 17) has17 = true;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(has16, "C6 UART0 TX (GPIO16) must be reserved");
+    TEST_ASSERT_TRUE_MESSAGE(has17, "C6 UART0 RX (GPIO17) must be reserved");
+    TEST_ASSERT_FALSE(isPinAssignable(chip, 16));
+    TEST_ASSERT_FALSE(isPinAssignable(chip, 17));
+}
+
+static void test_esp32c6_reserved_has_usb() {
+    // C6 GPIO 12/13 = USB D-/D+
+    auto chip = getESP32C6Profile();
+    bool has12 = false, has13 = false;
+    for (uint8_t r : chip.reservedPins) {
+        if (r == 12) has12 = true;
+        if (r == 13) has13 = true;
+    }
+    TEST_ASSERT_TRUE(has12);
+    TEST_ASSERT_TRUE(has13);
+}
+
+static void test_esp32c6_max_gpio_boundary() {
+    auto chip = getESP32C6Profile();  // maxGpio=23
+    // GPIO 22/23 为合法引脚（23 == maxGpio，与生产 isValidPin 语义一致）
+    TEST_ASSERT_TRUE(isPinAssignable(chip, 22));
+    TEST_ASSERT_TRUE(isPinAssignable(chip, 23));
+    // GPIO 24-30 为封装内 Flash/PSRAM SPI：既超出 maxGpio 又在保留列表
+    for (uint8_t pin = 24; pin <= 30; pin++) {
+        TEST_ASSERT_FALSE_MESSAGE(isPinAssignable(chip, pin),
+            "C6 GPIO24-30 (package Flash/PSRAM SPI) must be rejected");
+    }
+}
+
+static void test_esp32s3_octal_reserved_has_psram_bus() {
+    // Octal PSRAM 总线 GPIO 33-37 必须在保留列表（真机事故回归保护：
+    // 配置 pin 33/34/35 通过校验后驱动 pinMode/analogRead 踩坏 PSRAM 总线，
+    // 导致随机内存损坏崩溃循环）
+    auto chip = getESP32S3OctalProfile();
+    for (uint8_t pin : {33, 34, 35, 36, 37}) {
+        bool found = false;
+        for (uint8_t r : chip.reservedPins) {
+            if (r == pin) { found = true; break; }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(found, "Octal PSRAM bus pin must be reserved");
+    }
+}
+
+static void test_esp32s3_non_octal_psram_pins_not_reserved() {
+    // 非 Octal 变体（F8R0/F8R4）GPIO 33-37 是普通可用引脚，不应误伤
+    auto chip = getESP32S3Profile();
+    for (uint8_t pin : {33, 34, 35, 36, 37}) {
+        TEST_ASSERT_TRUE_MESSAGE(isPinAssignable(chip, pin),
+            "Non-octal S3 must keep GPIO 33-37 assignable");
+    }
+}
+
 static void test_esp32c3_reserved_has_flash() {
     // C3 GPIO 11 = Flash VDD, 12-17 = Flash SPI
     auto chip = getESP32C3Profile();
@@ -178,6 +269,61 @@ static void test_esp32s3_reserved_not_assignable() {
     for (uint8_t r : chip.reservedPins) {
         TEST_ASSERT_FALSE_MESSAGE(isPinAssignable(chip, r),
             "Reserved pin must not be assignable");
+    }
+}
+
+static void test_esp32s3_octal_reserved_not_assignable() {
+    auto chip = getESP32S3OctalProfile();
+    for (uint8_t r : chip.reservedPins) {
+        TEST_ASSERT_FALSE_MESSAGE(isPinAssignable(chip, r),
+            "Octal PSRAM reserved pin must not be assignable");
+    }
+}
+
+// ============================================================
+// TEST GROUP 2b: S3 isValidPin 绝对禁止区（镜像生产逻辑）
+// ============================================================
+
+static void test_s3_octal_absolute_reject_psram_bus() {
+    // OCT 下 GPIO 22-37 全部绝对禁止（含输入类型，如 ADC/IR_RECEIVER）
+    for (uint8_t pin = 22; pin <= 37; pin++) {
+        TEST_ASSERT_TRUE_MESSAGE(isS3PinAbsolutelyRejected(true, pin),
+            "Octal S3 must absolutely reject GPIO 22-37 for any type");
+    }
+}
+
+static void test_s3_octal_absolute_reject_boundaries() {
+    // 边界：GPIO 21 和 GPIO 38 在 OCT 下仍可用
+    TEST_ASSERT_FALSE(isS3PinAbsolutelyRejected(true, 21));
+    TEST_ASSERT_FALSE(isS3PinAbsolutelyRejected(true, 38));
+    // GPIO 22 和 GPIO 37 是禁止区两端
+    TEST_ASSERT_TRUE(isS3PinAbsolutelyRejected(true, 22));
+    TEST_ASSERT_TRUE(isS3PinAbsolutelyRejected(true, 37));
+}
+
+static void test_s3_non_octal_absolute_reject_boundaries() {
+    // 非 OCT：禁止区止于 GPIO 32，GPIO 33-37 合法
+    TEST_ASSERT_TRUE(isS3PinAbsolutelyRejected(false, 32));
+    for (uint8_t pin = 33; pin <= 37; pin++) {
+        TEST_ASSERT_FALSE_MESSAGE(isS3PinAbsolutelyRejected(false, pin),
+            "Non-octal S3 must accept GPIO 33-37");
+    }
+}
+
+static void test_s3_usb_pins_rejected_both_variants() {
+    // GPIO 19/20 = USB，两种变体都禁止
+    for (bool oct : {false, true}) {
+        TEST_ASSERT_TRUE(isS3PinAbsolutelyRejected(oct, 19));
+        TEST_ASSERT_TRUE(isS3PinAbsolutelyRejected(oct, 20));
+    }
+}
+
+static void test_s3_accident_pins_rejected_under_octal() {
+    // 真机事故回归：ESP32 夹具的 GPIO 32/33/34/35 刷到 S3-F16R8 后
+    // 必须全部被 isValidPin 拦住（事故前 33/34/35 可通过校验）
+    for (uint8_t pin : {32, 33, 34, 35}) {
+        TEST_ASSERT_TRUE_MESSAGE(isS3PinAbsolutelyRejected(true, pin),
+            "Accident fixture pins must be rejected on octal S3");
     }
 }
 
@@ -263,7 +409,7 @@ static void test_esp32c3_max_gpio() {
 
 static void test_esp32c6_max_gpio() {
     auto chip = getESP32C6Profile();
-    TEST_ASSERT_EQUAL(30, chip.maxGpio);
+    TEST_ASSERT_EQUAL(23, chip.maxGpio);
 }
 
 static void test_pin_at_max_gpio_boundary() {
@@ -423,6 +569,10 @@ static void test_esp32s3_reserved_no_duplicates() {
     check_reserved_pins_no_duplicates(getESP32S3Profile());
 }
 
+static void test_esp32s3_octal_reserved_no_duplicates() {
+    check_reserved_pins_no_duplicates(getESP32S3OctalProfile());
+}
+
 static void test_esp32c3_reserved_no_duplicates() {
     check_reserved_pins_no_duplicates(getESP32C3Profile());
 }
@@ -449,18 +599,31 @@ void test_gpio_validation_group() {
     // 保留引脚数量
     RUN_TEST(test_esp32_reserved_count);
     RUN_TEST(test_esp32s3_reserved_count);
+    RUN_TEST(test_esp32s3_octal_reserved_count);
     RUN_TEST(test_esp32c3_reserved_count);
     RUN_TEST(test_esp32c6_reserved_count);
     RUN_TEST(test_esp32_reserved_has_flash_spi);
     RUN_TEST(test_esp32_reserved_has_uart0);
     RUN_TEST(test_esp32s3_reserved_has_usb);
+    RUN_TEST(test_esp32c6_reserved_has_uart0_console);
+    RUN_TEST(test_esp32c6_reserved_has_usb);
+    RUN_TEST(test_esp32s3_octal_reserved_has_psram_bus);
+    RUN_TEST(test_esp32s3_non_octal_psram_pins_not_reserved);
     RUN_TEST(test_esp32c3_reserved_has_flash);
 
     // 保留引脚不可分配
     RUN_TEST(test_esp32_reserved_not_assignable);
     RUN_TEST(test_esp32s3_reserved_not_assignable);
+    RUN_TEST(test_esp32s3_octal_reserved_not_assignable);
     RUN_TEST(test_esp32c3_reserved_not_assignable);
     RUN_TEST(test_esp32c6_reserved_not_assignable);
+
+    // S3 isValidPin 绝对禁止区（Octal PSRAM 防变砖回归保护）
+    RUN_TEST(test_s3_octal_absolute_reject_psram_bus);
+    RUN_TEST(test_s3_octal_absolute_reject_boundaries);
+    RUN_TEST(test_s3_non_octal_absolute_reject_boundaries);
+    RUN_TEST(test_s3_usb_pins_rejected_both_variants);
+    RUN_TEST(test_s3_accident_pins_rejected_under_octal);
 
     // 仅输入引脚
     RUN_TEST(test_esp32_input_only_count);
@@ -475,6 +638,7 @@ void test_gpio_validation_group() {
     RUN_TEST(test_esp32s3_max_gpio);
     RUN_TEST(test_esp32c3_max_gpio);
     RUN_TEST(test_esp32c6_max_gpio);
+    RUN_TEST(test_esp32c6_max_gpio_boundary);
     RUN_TEST(test_pin_at_max_gpio_boundary);
 
     // 双引脚设备冲突
@@ -503,6 +667,7 @@ void test_gpio_validation_group() {
     // 保留引脚无重复
     RUN_TEST(test_esp32_reserved_no_duplicates);
     RUN_TEST(test_esp32s3_reserved_no_duplicates);
+    RUN_TEST(test_esp32s3_octal_reserved_no_duplicates);
     RUN_TEST(test_esp32c3_reserved_no_duplicates);
     RUN_TEST(test_esp32c6_reserved_no_duplicates);
     RUN_TEST(test_reserved_pins_sorted_ascending);

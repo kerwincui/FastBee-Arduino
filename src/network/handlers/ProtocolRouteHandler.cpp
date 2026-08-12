@@ -1,4 +1,5 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "core/FeatureFlags.h"
 #include "systems/LoggerSystem.h"
@@ -326,14 +327,6 @@ void sendCompactRuntimeProtocolConfigFromFile(AsyncWebServerRequest* request, bo
         masterOut["devices"].to<JsonArray>();
     }
 
-#if FASTBEE_ENABLE_TCP
-    if (!deviceControlOnly) {
-        JsonObject tcpOut = data["modbusTcp"].to<JsonObject>();
-        tcpOut["enabled"] = false;
-        tcpOut["compact"] = true;
-    }
-#endif
-
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -363,19 +356,13 @@ void sendCompactRuntimeProtocolConfig(AsyncWebServerRequest* request,
         return;
     }
 
-#if FASTBEE_ENABLE_TCP
-    if (!deviceControlOnly) {
-        JsonObject tcpOut = data["modbusTcp"].to<JsonObject>();
-        tcpOut["enabled"] = false;
-        tcpOut["compact"] = true;
-    }
-#endif
-
     HandlerUtils::sendJsonStream(request, doc);
 }
 
 bool isInternalHeapTight(uint32_t minFreeHeap, uint32_t minMaxAlloc) {
-    return ESP.getFreeHeap() < minFreeHeap || ESP.getMaxAllocHeap() < minMaxAlloc;
+    // 审计 P2-4：函数名即内部堆，必须用 DRAM 口径（总堆含 PSRAM 会误判）
+    return FastBee::MemoryBudget::dramFree() < minFreeHeap ||
+           FastBee::MemoryBudget::dramLargest() < minMaxAlloc;
 }
 
 void sendDegradedRuntimeProtocolConfig(AsyncWebServerRequest* request) {
@@ -564,9 +551,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                       hasProtocolParam(request, "mqtt_publishTopics") ||
                       hasProtocolParam(request, "mqtt_subscribeTopics");
     bool updateModbusTcp = hasProtocolParam(request, "modbusTcp_enabled");
-    bool updateHttp = hasProtocolParam(request, "http_enabled");
-    bool updateCoap = hasProtocolParam(request, "coap_enabled");
-    bool updateTcp = hasProtocolParam(request, "tcp_enabled");
     bool clientIdGenerated = false;
     String clientId = doc["mqtt"]["clientId"] | "";
 
@@ -687,17 +671,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     } // end: masterDevicesJson.length() > 0
     } // end: updateModbusRtu
 
-#if FASTBEE_ENABLE_TCP
-    // Modbus TCP
-    if (updateModbusTcp) {
-    doc["modbusTcp"]["enabled"] = GP("modbusTcp_enabled", "false") == "true";
-    doc["modbusTcp"]["server"] = GP("modbusTcp_server", "192.168.1.100");
-    doc["modbusTcp"]["port"] = GPI("modbusTcp_port", "502");
-    doc["modbusTcp"]["slaveId"] = GPI("modbusTcp_slaveId", "1");
-    doc["modbusTcp"]["timeout"] = GPI("modbusTcp_timeout", "5000");
-    }
-#endif
-
     // MQTT
     if (updateMqtt) {
     doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
@@ -816,56 +789,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         doc["mqtt"]["subscribeTopics"].to<JsonArray>();
     }
     } // end: updateMqtt
-
-#if FASTBEE_ENABLE_HTTP
-    // HTTP
-    if (updateHttp) {
-    doc["http"]["enabled"] = GP("http_enabled", "false") == "true";
-    doc["http"]["url"] = GP("http_url", "https://api.example.com");
-    doc["http"]["port"] = GPI("http_port", "80");
-    doc["http"]["method"] = GP("http_method", "POST");
-    doc["http"]["timeout"] = GPI("http_timeout", "30");
-    doc["http"]["interval"] = GPI("http_interval", "60");
-    doc["http"]["retry"] = GPI("http_retry", "3");
-    // HTTP 认证配置
-    doc["http"]["authType"] = GP("http_authType", "none");
-    doc["http"]["authUser"] = GP("http_authUser", "");
-    doc["http"]["authToken"] = GP("http_authToken", "");
-    doc["http"]["contentType"] = GP("http_contentType", "application/json");
-    }
-#endif
-
-#if FASTBEE_ENABLE_COAP
-    // CoAP
-    if (updateCoap) {
-    doc["coap"]["enabled"] = GP("coap_enabled", "false") == "true";
-    doc["coap"]["server"] = GP("coap_server", "coap://example.com");
-    doc["coap"]["port"] = GPI("coap_port", "5683");
-    doc["coap"]["method"] = GP("coap_method", "POST");
-    doc["coap"]["path"] = GP("coap_path", "sensors/temperature");
-    doc["coap"]["msgType"] = GP("coap_msgType", "CON");
-    doc["coap"]["retransmit"] = GPI("coap_retransmit", "3");
-    doc["coap"]["timeout"] = GPI("coap_timeout", "5000");
-    }
-#endif
-
-#if FASTBEE_ENABLE_TCP
-    // TCP
-    if (updateTcp) {
-    doc["tcp"]["enabled"] = GP("tcp_enabled", "false") == "true";
-    doc["tcp"]["server"] = GP("tcp_server", "192.168.1.200");
-    doc["tcp"]["port"] = GPI("tcp_port", "5000");
-    doc["tcp"]["timeout"] = GPI("tcp_timeout", "5000");
-    doc["tcp"]["keepAlive"] = GPI("tcp_keepAlive", "60");
-    doc["tcp"]["maxRetry"] = GPI("tcp_maxRetry", "5");
-    doc["tcp"]["reconnectInterval"] = GPI("tcp_reconnectInterval", "10");
-    doc["tcp"]["mode"] = GP("tcp_mode", "client");
-    doc["tcp"]["heartbeatMsg"] = GP("tcp_heartbeatMsg", "\\n");
-    doc["tcp"]["maxClients"] = GPI("tcp_maxClients", "5");
-    doc["tcp"]["idleTimeout"] = GPI("tcp_idleTimeout", "120");
-    doc["tcp"]["localPort"] = GPI("tcp_localPort", "8080");
-    }
-#endif
 
     #undef GP
     #undef GPI

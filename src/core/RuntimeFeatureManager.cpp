@@ -1,0 +1,405 @@
+/**
+ * @file RuntimeFeatureManager.cpp
+ * @brief 运行时功能配置管理器实现
+ *
+ * 注册所有 B/C/D 类功能（compiled 字段反映当前编译宏取值），
+ * 用户配置持久化于 /config/features.json，驱动侧通过 shouldEnable() 门控。
+ */
+
+#include "core/RuntimeFeatureManager.h"
+
+#include <string.h>
+#include <time.h>
+
+#include <LittleFS.h>
+
+#include "core/FeatureBudget.h"
+#include "core/FeatureFlags.h"
+#include "systems/LoggerSystem.h"
+
+#if defined(ESP_PLATFORM)
+#include <esp_heap_caps.h>
+#endif
+
+namespace {
+constexpr const char* kConfigPath = "/config/features.json";
+constexpr const char* kConfigTmpPath = "/config/features.json.tmp";
+}  // namespace
+
+namespace FastBee {
+
+// ── 注册与查找 ─────────────────────────────────────────────────────────
+
+void RuntimeFeatureManager::registerFeature(const FeatureMeta& meta) {
+    if (count_ >= kMaxFeatures) return;
+    FeatureState& st = features_[count_++];
+    st.meta = meta;
+    st.userEnabled = meta.compiled && meta.defaultEnabled;
+    st.budgetPassed = true;
+}
+
+RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(const char* key) {
+    if (!key) return nullptr;
+    for (size_t i = 0; i < count_; ++i) {
+        if (strcmp(features_[i].meta.key, key) == 0) return &features_[i];
+    }
+    return nullptr;
+}
+
+const RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(const char* key) const {
+    if (!key) return nullptr;
+    for (size_t i = 0; i < count_; ++i) {
+        if (strcmp(features_[i].meta.key, key) == 0) return &features_[i];
+    }
+    return nullptr;
+}
+
+// ── 功能注册表（B/C/D 类全量注册，compiled 由编译宏决定）────────────────
+
+void RuntimeFeatureManager::generateDefaults() {
+    count_ = 0;
+
+    // ═══ B 类: 常用外设（编译启用时默认启用）═══
+    registerFeature({"lcd", "OLED/LCD Display", "peripheral", 20, 1200,
+                     FASTBEE_ENABLE_LCD != 0, true,
+                     "I2C SSD1306/SH1106", nullptr, 19});
+    registerFeature({"neopixel", "NeoPixel LED", "peripheral", 12, 212,
+                     FASTBEE_ENABLE_NEOPIXEL != 0, true,
+                     "GPIO (WS2812)", nullptr, 18});
+    registerFeature({"sevenSegment", "TM1637 Seven Segment", "peripheral", 3, 32,
+                     FASTBEE_ENABLE_SEVEN_SEGMENT != 0, true,
+                     "GPIO (2-wire)", nullptr, 0});
+    registerFeature({"ds18b20", "DS18B20 Temperature", "peripheral", 5, 100,
+                     (FASTBEE_ENABLE_SENSOR_DRIVER != 0 && FASTBEE_ENABLE_DS18B20 != 0), true,
+                     "OneWire (not on C3/C6)", nullptr, 0});
+    registerFeature({"modbus", "Modbus Protocol", "protocol", 20, 1024,
+                     FASTBEE_ENABLE_MODBUS != 0, true,
+                     "UART/RS485", nullptr, 20});
+    registerFeature({"ruleScript", "Rule Script Engine", "system", 8, 2048,
+                     FASTBEE_ENABLE_RULE_SCRIPT != 0, true,
+                     nullptr, nullptr, 22});
+
+    // ═══ C 类: 高级外设（编译启用时默认禁用）═══
+    registerFeature({"lcdGb2312", "GB2312 Chinese Font", "peripheral", 248, 0,
+                     FASTBEE_ENABLE_LCD_GB2312 != 0, false,
+                     nullptr, "lcd", 0});
+    registerFeature({"ledScreen", "LED Screen (RMT)", "peripheral", 10, 6144,
+                     FASTBEE_ENABLE_LED_SCREEN != 0, false,
+                     "ESP32 RMT", nullptr, 15});
+    registerFeature({"irRemote", "IR Remote Control", "peripheral", 8, 300,
+                     FASTBEE_ENABLE_IR_REMOTE != 0, false,
+                     "IR receiver + GPIO", nullptr, 25});
+    registerFeature({"rfid", "RFID MFRC522", "peripheral", 12, 200,
+                     FASTBEE_ENABLE_RFID != 0, false,
+                     "SPI MFRC522", nullptr, 24});
+    registerFeature({"i2cSensors", "I2C Advanced Sensors", "peripheral", 15, 500,
+                     FASTBEE_ENABLE_I2C_SENSORS != 0, false,
+                     "I2C BMP280/MPU6050", nullptr, 23});
+    registerFeature({"rfLearn", "433MHz RF Learn", "peripheral", 4, 300,
+                     FASTBEE_ENABLE_RF_LEARN != 0, false,
+                     "RF receiver + GPIO", nullptr, 0});
+    registerFeature({"ds1302", "DS1302 RTC", "peripheral", 2, 100,
+                     FASTBEE_ENABLE_DS1302 != 0, false,
+                     "3-wire (CE/IO/SCLK)", nullptr, 0});
+    registerFeature({"lcd1602", "LCD1602 Character LCD", "peripheral", 3, 100,
+                     FASTBEE_ENABLE_LCD1602 != 0, false,
+                     "I2C PCF8574", nullptr, 0});
+    registerFeature({"modbusSlave", "Modbus Slave", "protocol", 10, 440,
+                     (FASTBEE_ENABLE_MODBUS != 0 && FASTBEE_MODBUS_SLAVE_ENABLE != 0), false,
+                     nullptr, "modbus", 0});
+    registerFeature({"commandScript", "Command Script", "system", 3, 500,
+                     FASTBEE_ENABLE_COMMAND_SCRIPT != 0, false,
+                     nullptr, "ruleScript", 0});
+    registerFeature({"deviceControl", "Device Control Panel", "system", 27, 108544,
+                     FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
+                     "PSRAM required", nullptr, 110});
+    registerFeature({"ota", "OTA Update", "system", 10, 1024,
+                     FASTBEE_ENABLE_OTA != 0, false,
+                     "Dual partition (8MB+)", nullptr, 0});
+    registerFeature({"otaFs", "OTA Filesystem", "system", 3, 500,
+                     FASTBEE_ENABLE_OTA_FS != 0, false,
+                     nullptr, "ota", 0});
+    registerFeature({"fileManager", "File Manager", "system", 5, 1024,
+                     FASTBEE_ENABLE_FILE_MANAGER != 0, false,
+                     nullptr, nullptr, 0});
+    registerFeature({"logViewer", "Log Viewer", "system", 4, 500,
+                     FASTBEE_ENABLE_LOG_VIEWER != 0, false,
+                     nullptr, nullptr, 0});
+    registerFeature({"fileLogging", "File Logging", "system", 3, 500,
+                     FASTBEE_ENABLE_FILE_LOGGING != 0, false,
+                     nullptr, nullptr, 0});
+    registerFeature({"userAdmin", "User Admin", "system", 5, 500,
+                     FASTBEE_ENABLE_USER_ADMIN != 0, false,
+                     nullptr, nullptr, 0});
+    registerFeature({"i18n", "Internationalization", "system", 5, 0,
+                     FASTBEE_ENABLE_I18N != 0, false,
+                     nullptr, nullptr, 0});
+
+    // ═══ D 类: 网络扩展（编译启用时默认禁用）═══
+    registerFeature({"ble", "BLE Bluetooth", "network", 80, 10240,
+                     FASTBEE_ENABLE_BLE != 0, false,
+                     "NimBLE-Arduino", nullptr, 35});
+    registerFeature({"ethernet", "Ethernet W5500", "network", 8, 2048,
+                     FASTBEE_ENABLE_ETHERNET != 0, false,
+                     "SPI W5500", nullptr, 15});
+    registerFeature({"cellular", "4G Cellular", "network", 15, 4096,
+                     FASTBEE_ENABLE_CELLULAR != 0, false,
+                     "UART2 EC801E-CN", nullptr, 30});
+}
+
+void RuntimeFeatureManager::applyDependencyRules() {
+    // 依赖检查: 父功能未启用则子功能自动禁用
+    for (size_t i = 0; i < count_; ++i) {
+        if (features_[i].meta.dependsOn) {
+            const auto* parent = findFeature(features_[i].meta.dependsOn);
+            if (parent && !parent->userEnabled) {
+                features_[i].userEnabled = false;
+            }
+        }
+    }
+}
+
+void RuntimeFeatureManager::syncBudgetState() {
+    auto& budgetReg = FeatureBudgetRegistry::instance();
+    for (size_t i = 0; i < count_; ++i) {
+        features_[i].budgetPassed = !budgetReg.isDenied(features_[i].meta.key);
+    }
+}
+
+// ── 配置加载 / 保存 ────────────────────────────────────────────────────
+
+void RuntimeFeatureManager::buildConfigDoc(JsonDocument& doc) const {
+    doc["version"] = 1;
+    time_t now = time(nullptr);
+    if (now > 1577836800) {  // NTP 已同步时才写入时间戳
+        char ts[24];
+        struct tm tmv;
+#if defined(ESP_PLATFORM)
+        gmtime_r(&now, &tmv);
+#else
+        tmv = *gmtime(&now);
+#endif
+        strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+        doc["updatedAt"] = ts;
+    }
+    JsonObject features = doc["features"].to<JsonObject>();
+    for (size_t i = 0; i < count_; ++i) {
+        JsonObject entry = features[features_[i].meta.key].to<JsonObject>();
+        entry["enabled"] = features_[i].userEnabled;
+    }
+}
+
+bool RuntimeFeatureManager::saveConfig(const JsonDocument& doc) {
+    // 1. 写入临时文件
+    File tmpFile = LittleFS.open(kConfigTmpPath, "w");
+    if (!tmpFile) {
+        LOGGER.error("[FeatureCfg] Failed to open temp file for write");
+        return false;
+    }
+    serializeJson(doc, tmpFile);
+    tmpFile.close();
+
+    // 2. 验证临时文件可解析
+    File verifyFile = LittleFS.open(kConfigTmpPath, "r");
+    if (!verifyFile) {
+        LittleFS.remove(kConfigTmpPath);
+        LOGGER.error("[FeatureCfg] Failed to reopen temp file for verification");
+        return false;
+    }
+    JsonDocument verifyDoc;
+    DeserializationError err = deserializeJson(verifyDoc, verifyFile);
+    verifyFile.close();
+    if (err) {
+        LittleFS.remove(kConfigTmpPath);
+        LOGGER.error("[FeatureCfg] Written config verification failed");
+        return false;
+    }
+
+    // 3. 原子性替换 (删除旧文件 + 重命名新文件)
+    LittleFS.remove(kConfigPath);
+    if (!LittleFS.rename(kConfigTmpPath, kConfigPath)) {
+        LOGGER.error("[FeatureCfg] Failed to rename temp config file");
+        return false;
+    }
+
+    LOGGER.info("[FeatureCfg] Config saved successfully");
+    return true;
+}
+
+bool RuntimeFeatureManager::saveCurrentConfig() {
+    JsonDocument doc;
+    buildConfigDoc(doc);
+    if (saveConfig(doc)) return true;
+    // 写入失败: 重试一次（计划 5.7 文件保护机制）
+    LOGGER.warning("[FeatureCfg] Config save failed, retrying once");
+    return saveConfig(doc);
+}
+
+bool RuntimeFeatureManager::loadConfig() {
+    generateDefaults();
+
+    File file = LittleFS.open(kConfigPath, "r");
+    if (!file) {
+        // 首次运行: 生成默认配置并写入文件
+        LOGGER.info("[FeatureCfg] No config file, generating defaults");
+        loaded_ = true;
+        syncBudgetState();
+        applyDependencyRules();
+        saveCurrentConfig();
+        return true;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+
+    if (err) {
+        LOGGER.warning("[FeatureCfg] JSON parse failed, using defaults");
+        loaded_ = true;
+        syncBudgetState();
+        applyDependencyRules();
+        return false;
+    }
+
+    // 用文件中的值覆盖默认配置
+    JsonObjectConst features = doc["features"];
+    for (JsonPairConst kv : features) {
+        auto* f = findFeature(kv.key().c_str());
+        if (f && kv.value()["enabled"].is<bool>()) {
+            f->userEnabled = kv.value()["enabled"].as<bool>();
+        }
+    }
+
+    loaded_ = true;
+    syncBudgetState();
+    applyDependencyRules();
+    return true;
+}
+
+// ── 状态查询 ───────────────────────────────────────────────────────────
+
+bool RuntimeFeatureManager::shouldEnable(const char* key) const {
+    // 安全回退: 若尚未从文件加载（如早期调用），先在内存中注册默认状态，
+    // 避免 count_==0 导致所有功能被误禁用
+    if (!loaded_) {
+        auto* self = const_cast<RuntimeFeatureManager*>(this);
+        self->generateDefaults();
+        self->syncBudgetState();
+        self->applyDependencyRules();
+        self->loaded_ = true;
+    }
+    const auto* f = findFeature(key);
+    if (!f) return false;
+    if (!(f->meta.compiled && f->userEnabled && f->budgetPassed)) return false;
+    // 依赖链检查: 父功能必须同样处于激活状态
+    if (f->meta.dependsOn) {
+        const auto* parent = findFeature(f->meta.dependsOn);
+        if (parent && !(parent->meta.compiled && parent->userEnabled && parent->budgetPassed)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RuntimeFeatureManager::updateFromJson(const JsonDocument& doc) {
+    JsonObjectConst features = doc["features"];
+    if (features.isNull()) return false;
+    bool changed = false;
+    for (JsonPairConst kv : features) {
+        auto* f = findFeature(kv.key().c_str());
+        if (!f) continue;
+        // 编译未启用的功能不允许通过 API 开启
+        if (!f->meta.compiled) continue;
+        if (kv.value()["enabled"].is<bool>()) {
+            f->userEnabled = kv.value()["enabled"].as<bool>();
+            changed = true;
+        }
+    }
+    if (changed) applyDependencyRules();
+    return changed;
+}
+
+uint32_t RuntimeFeatureManager::estimateFlashKB() const {
+    uint32_t total = 0;
+    for (size_t i = 0; i < count_; ++i) {
+        if (features_[i].meta.compiled && features_[i].userEnabled) {
+            total += features_[i].meta.flashKB;
+        }
+    }
+    return total;
+}
+
+uint32_t RuntimeFeatureManager::estimateRamB() const {
+    uint32_t total = 0;
+    for (size_t i = 0; i < count_; ++i) {
+        if (features_[i].meta.compiled && features_[i].userEnabled) {
+            total += features_[i].meta.ramB;
+        }
+    }
+    return total;
+}
+
+void RuntimeFeatureManager::estimateFromJson(const JsonDocument& doc, uint32_t& flashKB,
+                                             uint32_t& ramB) const {
+    flashKB = 0;
+    ramB = 0;
+    JsonObjectConst features = doc["features"];
+    for (size_t i = 0; i < count_; ++i) {
+        const auto& st = features_[i];
+        if (!st.meta.compiled) continue;
+        bool enabled = st.userEnabled;
+        if (!features.isNull()) {
+            JsonObjectConst entry = features[st.meta.key];
+            if (!entry.isNull() && entry["enabled"].is<bool>()) {
+                enabled = entry["enabled"].as<bool>();
+            }
+        }
+        if (enabled) {
+            flashKB += st.meta.flashKB;
+            ramB += st.meta.ramB;
+        }
+    }
+}
+
+void RuntimeFeatureManager::getStatusJson(JsonVariant dst) const {
+    dst.to<JsonObject>();
+    JsonArray arr = dst["features"].to<JsonArray>();
+    uint32_t totalFlashKB = 0;
+    uint32_t activeFlashKB = 0;
+    uint32_t activeRamB = 0;
+
+    for (size_t i = 0; i < count_; ++i) {
+        const auto& st = features_[i];
+        if (st.meta.compiled) totalFlashKB += st.meta.flashKB;
+        JsonObject obj = arr.add<JsonObject>();
+        obj["key"] = st.meta.key;
+        obj["name"] = st.meta.displayName;
+        obj["group"] = st.meta.group;
+        obj["compiled"] = st.meta.compiled;
+        obj["userEnabled"] = st.userEnabled;
+        obj["active"] = shouldEnable(st.meta.key);
+        obj["flashKB"] = st.meta.flashKB;
+        obj["ramB"] = st.meta.ramB;
+        if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
+        if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
+        if (!st.meta.compiled) {
+            obj["locked"] = true;
+            obj["lockReason"] = "Not compiled into firmware";
+        }
+        if (st.meta.compiled && st.userEnabled) {
+            activeFlashKB += st.meta.flashKB;
+            activeRamB += st.meta.ramB;
+        }
+    }
+
+    JsonObject summary = dst["summary"].to<JsonObject>();
+    summary["totalFlashKB"] = totalFlashKB;
+    summary["activeFlashKB"] = activeFlashKB;
+    summary["activeRamB"] = activeRamB;
+#if defined(ESP_PLATFORM)
+    summary["free8KB"] = heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024;
+    summary["largest8KB"] = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024;
+#endif
+}
+
+}  // namespace FastBee

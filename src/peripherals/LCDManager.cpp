@@ -11,6 +11,8 @@
 #include "peripherals/LCDManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
+#include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include <WiFi.h>
 
 // 单例实现
@@ -24,6 +26,16 @@ LCDManager& LCDManager::getInstance()
 
 bool LCDManager::initialize(const PeripheralConfig& config)
 {
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("lcd")) {
+        LOG_INFO("LCD Manager: Compiled but runtime-disabled, skip init");
+        return false;
+    }
+
+    if (FastBee::FeatureBudgetRegistry::instance().isDenied("lcd")) {
+        LOG_WARNING("LCD Manager: Disabled by memory budget, skip init");
+        return false;
+    }
+
     LOG_INFO("LCD Manager: Initializing...");
     
     // 如果已初始化，先反初始化
@@ -74,6 +86,8 @@ bool LCDManager::initialize(const PeripheralConfig& config)
 #endif
             
             if (pinsValid) {
+                _sdaPin = sda;
+                _sclPin = scl;
                 Wire.begin(sda, scl);
                 LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
                           sda, scl, _i2cAddress);
@@ -99,7 +113,16 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     
     // 初始化显示屏
     _display->begin();
-    
+
+    // 应用配置对比度（0 视为未配置，按最大亮度处理）
+    uint8_t contrast = config.params.lcd.contrast;
+    if (contrast == 0) contrast = 255;
+    _contrast = contrast;
+    _display->setContrast(contrast);
+
+    // 确保退出省电模式（部分模块上电后处于 display off 状态）
+    _display->setPowerSave(0);
+
     // 设置默认字体
     setDefaultFont();
     
@@ -108,8 +131,10 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     
     _initialized = true;
     _lastUpdate = millis();
+    _initTime = _lastUpdate;
+    _lastReassert = _lastUpdate;
     
-    LOG_INFOF("LCD Manager: Initialized successfully (%dx%d)", _width, _height);
+    LOG_INFOF("LCD Manager: Initialized successfully (%dx%d, contrast=%d)", _width, _height, contrast);
     return true;
 }
 
@@ -160,10 +185,13 @@ bool LCDManager::createDisplay(const PeripheralConfig& config)
         }
         else if (_width == 64 && _height == 128)
         {
-            // SH1106 1.3寸 OLED
+            // SH1106 控制器 OLED（配置 width=64/height=128 作为选择开关）
+            // 实际面板为 128x64，归一化尺寸保证文本布局正确
             _display = new U8G2_SH1106_128X64_NONAME_F_HW_I2C(
                 U8G2_R0, _resetPin, config.pins[1], config.pins[0]
             );
+            _width = 128;
+            _height = 64;
             _controller = DisplayController::SH1106;
         }
         else
@@ -196,10 +224,22 @@ void LCDManager::setDefaultFont()
 {
     if (!_display) return;
     
-    // 默认使用 WQY 12 像素中文字体，同时支持 ASCII，配合 drawUTF8 可显示中英文混排
-    // 符号、单位（如 ℃）均包含在 GB2312 子集中
-    _display->setFont(u8g2_font_wqy12_t_gb2312a);
-    _currentFont = 1;
+#if FASTBEE_ENABLE_LCD_GB2312
+    // 运行时功能门控：lcdGb2312 被用户禁用时回退 ASCII 字体
+    if (FastBee::RuntimeFeatureManager::instance().shouldEnable("lcdGb2312")) {
+        // 默认使用 WQY 12 像素中文字体，同时支持 ASCII，配合 drawUTF8 可显示中英文混排
+        // 符号、单位（如 ℃）均包含在 GB2312 子集中
+        _display->setFont(u8g2_font_wqy12_t_gb2312a);
+        _currentFont = 1;
+    } else {
+        _display->setFont(u8g2_font_5x7_tf);
+        _currentFont = 0;
+    }
+#else
+    // 未启用 GB2312 中文字库（单个占 ~107KB Flash）时默认 ASCII 小字体
+    _display->setFont(u8g2_font_5x7_tf);
+    _currentFont = 0;
+#endif
 }
 
 // ========== 显示操作 ==========
@@ -611,12 +651,32 @@ bool LCDManager::setFont(uint8_t fontIndex)
             _currentFont = 0;
             break;
         case 1:  // 中字体（默认，WQY 12像素 GB2312 中文 + ASCII）
-            _display->setFont(u8g2_font_wqy12_t_gb2312a);
-            _currentFont = 1;
+#if FASTBEE_ENABLE_LCD_GB2312
+            if (FastBee::RuntimeFeatureManager::instance().shouldEnable("lcdGb2312")) {
+                _display->setFont(u8g2_font_wqy12_t_gb2312a);
+                _currentFont = 1;
+            } else {
+                _display->setFont(u8g2_font_5x7_tf);  // 运行时禁用中文字库时回退 ASCII
+                _currentFont = 0;
+            }
+#else
+            _display->setFont(u8g2_font_5x7_tf);  // 未启用中文字库时回退 ASCII
+            _currentFont = 0;
+#endif
             break;
         case 2:  // 大字体（WQY 15像素中英文）
-            _display->setFont(u8g2_font_wqy15_t_gb2312a);
-            _currentFont = 2;
+#if FASTBEE_ENABLE_LCD_GB2312
+            if (FastBee::RuntimeFeatureManager::instance().shouldEnable("lcdGb2312")) {
+                _display->setFont(u8g2_font_wqy15_t_gb2312a);
+                _currentFont = 2;
+            } else {
+                _display->setFont(u8g2_font_5x7_tf);  // 运行时禁用中文字库时回退 ASCII
+                _currentFont = 0;
+            }
+#else
+            _display->setFont(u8g2_font_5x7_tf);  // 未启用中文字库时回退 ASCII
+            _currentFont = 0;
+#endif
             break;
         default:
             return false;
@@ -672,6 +732,55 @@ bool LCDManager::refresh()
     _contentChanged = false;
     
     return true;
+}
+
+void LCDManager::performMaintenance()
+{
+    if (!_display || !_initialized) return;
+
+    unsigned long now = millis();
+
+    // === 阶段 1：开机初期快速重申（前 30 秒，每 3 秒一次） ===
+    // 上电、WiFi 启动等阶段的电压波动可能让面板丢失电荷泵/对比度配置而黑屏。
+    // 注意：不能用 begin()，它内部的 clearDisplay() 会清零画面缓冲区，
+    // 随后 sendBuffer() 就会把空白推上屏幕。initDisplay() 只发命令、不动缓冲区。
+    static constexpr unsigned long REASSERT_WINDOW_MS = 30000;
+    static constexpr unsigned long REASSERT_INTERVAL_MS = 3000;
+
+    if (now - _initTime <= REASSERT_WINDOW_MS) {
+        if (now - _lastReassert >= REASSERT_INTERVAL_MS) {
+            _display->initDisplay();
+            _display->setPowerSave(0);
+            _display->setContrast(_contrast);
+            _display->sendBuffer();
+            LOG_INFOF("[LCD] re-assert display (t=%lums, contrast=%d)",
+                      now - _initTime, _contrast);
+            _lastReassert = now;
+            _lastUpdate = now;
+        }
+        return;
+    }
+
+    // === 阶段 2：长期 I2C 总线恢复（每 5 分钟一次） ===
+    // 长时间运行中 I2C 总线可能因干扰、NACK 后状态机卡死等原因失效，
+    // U8G2 sendBuffer() 会静默失败。定期重置 I2C 外设 + 重发初始化命令可自愈。
+    static constexpr unsigned long FULL_RECOVERY_INTERVAL_MS = 300000;  // 5 分钟
+
+    if (_interface == DisplayInterface::I2C_MODE && _sdaPin >= 0 && _sclPin >= 0) {
+        if (now - _lastFullRecovery >= FULL_RECOVERY_INTERVAL_MS) {
+            // 完整 I2C 总线恢复：重置 Wire 外设 → 重发面板初始化 → 重推画面
+            Wire.end();
+            Wire.begin(_sdaPin, _sclPin);
+            _display->initDisplay();
+            _display->setPowerSave(0);
+            _display->setContrast(_contrast);
+            _display->sendBuffer();
+            _lastFullRecovery = now;
+            _lastUpdate = now;
+            LOG_INFOF("[LCD] periodic I2C recovery (SDA=%d SCL=%d, uptime=%lus)",
+                      _sdaPin, _sclPin, now / 1000);
+        }
+    }
 }
 
 // ========== 状态查询 ==========

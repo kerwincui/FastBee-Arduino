@@ -77,6 +77,24 @@
             else if (action === 'delete') this.deletePeripheral(id);
         },
 
+        // 懒加载红外遥控管理模块并初始化嵌入面板
+        _initIrManagePanel() {
+            var self = this;
+            if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') return;
+            ModuleLoader.loadModule('ir-remote', function() {
+                if (typeof self.initIrManage === 'function') self.initIrManage();
+            });
+        },
+
+        // 懒加载 RF 遥控管理模块并初始化嵌入面板
+        _initRfManagePanel() {
+            var self = this;
+            if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') return;
+            ModuleLoader.loadModule('rf-remote', function() {
+                if (typeof self.initRfManage === 'function') self.initRfManage();
+            });
+        },
+
         _renderPeripheralActionButton(action, id, label, className) {
             var locked = !this.isDeveloperModeEnabled();
             var attrs = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : '';
@@ -254,6 +272,10 @@
         },
 
         closePeripheralModal() {
+            // 关闭时销毁红外管理面板（停止学习轮询）
+            if (typeof this.teardownIrManage === 'function') this.teardownIrManage();
+            // 关闭时销毁 RF 管理面板
+            if (typeof this.teardownRfManage === 'function') this.teardownRfManage();
             this.hideModal('peripheral-modal');
             this.hideModal('gpio-modal');
         },
@@ -261,6 +283,10 @@
         onPeripheralTypeChange(typeValue) {
             const type = parseInt(typeValue);
             document.querySelectorAll('.peripheral-params-group').forEach(el => this.hideElement(el));
+            // 类型切离 53 时销毁红外管理面板（停止学习轮询）
+            if (type !== 53 && typeof this.teardownIrManage === 'function') this.teardownIrManage();
+            // 类型切离 48 时销毁 RF 管理面板
+            if (type !== 48 && typeof this.teardownRfManage === 'function') this.teardownRfManage();
             const pinHint = document.getElementById('uart-pin-direction-hint');
             this.hideElement(pinHint);
 
@@ -311,6 +337,22 @@
             } else if (type === 48) {
                 const rfParams = document.getElementById('rf-params');
                 if (rfParams) this.showElement(rfParams);
+                // RF 遥控管理区域
+                const rfSection = document.getElementById('rf-manage-section');
+                if (rfSection) {
+                    this.showElement(rfSection);
+                    const originalId = document.getElementById('peripheral-original-id')?.value || '';
+                    const hintNew = document.getElementById('rf-manage-hint-new');
+                    const content = document.getElementById('rf-manage-content');
+                    if (originalId) {
+                        if (hintNew) hintNew.style.display = 'none';
+                        if (content) content.style.display = '';
+                        this._initRfManagePanel();
+                    } else {
+                        if (hintNew) hintNew.style.display = '';
+                        if (content) content.style.display = 'none';
+                    }
+                }
             } else if (type === 49) {
                 const radarParams = document.getElementById('radar-params');
                 if (radarParams) this.showElement(radarParams);
@@ -321,6 +363,25 @@
                 // 编码器参数
                 const encoderParams = document.getElementById('encoder-params');
                 if (encoderParams) this.showElement(encoderParams);
+            } else if (type === 53) {
+                // 红外接收头：显示红外管理区域
+                const irSection = document.getElementById('ir-manage-section');
+                if (irSection) {
+                    this.showElement(irSection);
+                    const originalId = document.getElementById('peripheral-original-id')?.value || '';
+                    const hintNew = document.getElementById('ir-manage-hint-new');
+                    const content = document.getElementById('ir-manage-content');
+                    if (originalId) {
+                        // 编辑已有红外外设：显示管理内容并初始化
+                        if (hintNew) hintNew.style.display = 'none';
+                        if (content) content.style.display = '';
+                        this._initIrManagePanel();
+                    } else {
+                        // 新增：仅显示提示
+                        if (hintNew) hintNew.style.display = '';
+                        if (content) content.style.display = 'none';
+                    }
+                }
             } else if (type === 37) {
                 // SD卡参数
                 const sdcardParams = document.getElementById('sdcard-params');
@@ -432,6 +493,7 @@
                             if (data.params.width !== undefined) { const el = document.getElementById('lcd-width'); if (el) el.value = data.params.width; }
                             if (data.params.height !== undefined) { const el = document.getElementById('lcd-height'); if (el) el.value = data.params.height; }
                             if (data.params.interface !== undefined) { const el = document.getElementById('lcd-interface'); if (el) el.value = data.params.interface; }
+                            if (data.params.contrast !== undefined) { const el = document.getElementById('lcd-contrast'); if (el) el.value = data.params.contrast; }
                             // 编码器参数回填
                             if (data.params.resolution !== undefined) { const el = document.getElementById('encoder-resolution'); if (el) el.value = data.params.resolution; }
                             if (data.params.useInterrupt !== undefined) { const el = document.getElementById('encoder-use-interrupt'); if (el) el.checked = !!data.params.useInterrupt; }
@@ -466,7 +528,8 @@
                 45: '推荐: 27 (数据脚)',
                 47: '推荐: CLK+DIO, 如 21,22',
                 48: '推荐: 任意输出脚',
-                49: '推荐: 任意输入脚'
+                49: '推荐: 任意输入脚',
+                53: '推荐: 任意输入脚, 如 35/36/39'
             };
             return m[type] || '';
         },
@@ -538,7 +601,8 @@
                     data.defaultDuty = document.getElementById('gpio-default-duty')?.value || '0';
                 }
                 if (typeNum === 12 && (document.getElementById('gpio-action-mode')?.value === '2')) {
-                    data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
+                    data.passive = true;
+                    data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '2700';
                     data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
                 }
                 if (typeNum === 11 || typeNum === 13 || typeNum === 14) {
@@ -582,6 +646,7 @@
                 data.width = document.getElementById('lcd-width')?.value || '128';
                 data.height = document.getElementById('lcd-height')?.value || '64';
                 data.interface = document.getElementById('lcd-interface')?.value || '2';
+                data.contrast = document.getElementById('lcd-contrast')?.value || '255';
             } else if (typeNum === 43) {
                 // 编码器参数
                 data.resolution = document.getElementById('encoder-resolution')?.value || '1024';

@@ -9,18 +9,28 @@
 #include "core/AsyncExecTypes.h"
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
+#include "core/MemoryBudget.h"
+#include "core/FeatureBudget.h"
 #include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
 #include <driver/gpio.h>
+#include <esp_heap_caps.h>
 // WS2812 NeoPixel 支持：使用 Adafruit_NeoPixel 库（跨芯片兼容）
 #if FASTBEE_ENABLE_NEOPIXEL
 #include <Adafruit_NeoPixel.h>
+#include "core/RuntimeFeatureManager.h"
 #endif
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
 #include "peripherals/SevenSegmentDriver.h"
+#endif
+#if FASTBEE_ENABLE_IR_REMOTE
+#include "peripherals/drivers/IRRemoteDriver.h"
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+#include "peripherals/drivers/RFLearnDriver.h"
 #endif
 #include <Wire.h>
 #include <SPI.h>
@@ -30,6 +40,8 @@
 
 // 静态成员定义：ISR 中断事件队列
 QueueHandle_t PeripheralManager::_isrQueue = nullptr;
+// 静态成员定义：ISR 队列溢出计数（队列满时丢弃的事件数）
+volatile uint32_t PeripheralManager::_isrQueueOverruns = 0;
 
 namespace {
 constexpr uint16_t STEPPER_DEFAULT_STEPS_PER_REV = 2048;
@@ -404,6 +416,26 @@ Adafruit_NeoPixel* getNeoPixelInstance(uint8_t pin, uint16_t count) {
         g_neopixelInstance = nullptr;
     }
 
+    // 运行时功能门控（优先级最高）：用户可在 Web UI 禁用 neopixel
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("neopixel")) {
+        return nullptr;
+    }
+
+    // 内存预算门控：编译启用但启动时 DRAM 不足则不创建灯带实例
+    if (FastBee::FeatureBudgetRegistry::instance().isDenied("neopixel")) {
+        return nullptr;
+    }
+
+    // G3: 按灯珠数动态计算所需 DRAM（每颗 3B GRB + RMT 缓冲 2KB + 安全余量 512B）
+    size_t neededBytes = static_cast<size_t>(count) * 3 + 2048 + 512;
+    size_t neededKB = (neededBytes + 1023) / 1024;
+    uint32_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    if (free8 < neededKB * 1024) {
+        LOGGER.warningf("[NeoPixel] Insufficient DRAM: need %uKB, free %luKB",
+                        (unsigned)neededKB, (unsigned long)(free8 / 1024));
+        return nullptr;
+    }
+
     // 创建新实例
     g_neopixelInstance = new (std::nothrow) Adafruit_NeoPixel(count, pin, NEO_GRB + NEO_KHZ800);
     if (g_neopixelInstance) {
@@ -422,7 +454,7 @@ bool writeNeoPixelSolid(uint8_t pin, uint16_t count, NeoPixelRgb color) {
     count = clampNeoPixelCount(count);
 
     // 检查内存
-    if (ESP.getFreeHeap() < (count * 3 + 2048)) {
+    if (FastBee::MemoryBudget::dramFree() < (count * 3 + 2048)) {
         LOG_WARNINGF("Peripheral Manager: NeoPixel heap low (need=%u free=%u)",
                      static_cast<unsigned int>(count * 3),
                      static_cast<unsigned int>(ESP.getFreeHeap()));
@@ -468,6 +500,10 @@ bool PeripheralManager::initialize() {
 
     // 创建ISR中断事件队列（pin号从ISR传递到主循环处理）
     _isrQueue = xQueueCreate(ISR_QUEUE_SIZE, sizeof(uint8_t));
+
+    // 复位 ISR 诊断统计与去抖时间戳（initialize 可能被测试环境重复调用）
+    _isrQueueOverruns = 0;
+    memset(_lastIsrDispatch, 0, sizeof(_lastIsrDispatch));
 
     // 加载配置
     if (loadConfiguration()) {
@@ -987,19 +1023,25 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
 
     switch (config->type) {
         case PeripheralType::GPIO_DIGITAL_OUTPUT:
-            digitalWrite(pin, physicalState == GPIOState::STATE_HIGH ? HIGH : LOW);
+            if (config->params.gpio.passive) {
+                // 无源蜂鸣器：PWM 驱动，HIGH=50%占空比发声，LOW=0静音
+                uint32_t maxDuty = (1U << config->params.gpio.pwmResolution) - 1;
+                ledcWrite(pin, physicalState == GPIOState::STATE_HIGH ? (maxDuty / 2) : 0);
+            } else {
+                digitalWrite(pin, physicalState == GPIOState::STATE_HIGH ? HIGH : LOW);
+            }
             break;
 
         case PeripheralType::GPIO_PWM_OUTPUT:
             if (state == GPIOState::STATE_HIGH) {
-                ledcWrite(config->params.gpio.pwmChannel, (1 << config->params.gpio.pwmResolution) - 1);
+                ledcWrite(config->getPrimaryPin(), (1 << config->params.gpio.pwmResolution) - 1);
             } else {
-                ledcWrite(config->params.gpio.pwmChannel, 0);
+                ledcWrite(config->getPrimaryPin(), 0);
             }
             break;
 
         case PeripheralType::GPIO_ANALOG_OUTPUT:
-            ledcWrite(config->params.gpio.pwmChannel,
+            ledcWrite(config->getPrimaryPin(),
                 physicalState == GPIOState::STATE_HIGH
                     ? (uint32_t)((1U << config->params.gpio.pwmResolution) - 1) : 0U);
             break;
@@ -1047,14 +1089,22 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
         return writeModbusPWM(peripheralId, *config, dutyCycle);
     }
 
+    // 无源蜂鸣器（GPIO_DIGITAL_OUTPUT + passive）也支持 PWM 写入
+    bool isPassiveGPIO = (config->type == PeripheralType::GPIO_DIGITAL_OUTPUT && config->params.gpio.passive);
     if (config->type != PeripheralType::GPIO_PWM_OUTPUT &&
         config->type != PeripheralType::GPIO_ANALOG_OUTPUT &&
-        config->type != PeripheralType::PWM_SERVO) {
+        config->type != PeripheralType::PWM_SERVO &&
+        !isPassiveGPIO) {
         return false;
     }
 
     uint32_t maxVal = (1U << config->params.gpio.pwmResolution) - 1;
-    ledcWrite(config->params.gpio.pwmChannel, dutyCycle > maxVal ? maxVal : dutyCycle);
+    uint32_t duty = dutyCycle > maxVal ? maxVal : dutyCycle;
+    if (isPassiveGPIO) {
+        ledcWrite(config->getPrimaryPin(), duty);  // pin-based API
+    } else {
+        ledcWrite(config->params.gpio.pwmChannel, duty);
+    }
 
     return true;
 }
@@ -1131,6 +1181,7 @@ bool PeripheralManager::saveConfiguration() {
             params["pwmFrequency"] = config.params.gpio.pwmFrequency;
             params["pwmResolution"] = config.params.gpio.pwmResolution;
             params["defaultDuty"] = config.params.gpio.defaultDuty;
+            if (config.params.gpio.passive) params["passive"] = true;
         }
         else if (config.type == PeripheralType::ADC) {
             params["attenuation"] = config.params.adc.attenuation;
@@ -1148,6 +1199,7 @@ bool PeripheralManager::saveConfiguration() {
             params["width"]     = config.params.lcd.width;
             params["height"]    = config.params.lcd.height;
             params["interface"] = config.params.lcd.interface;
+            params["contrast"]  = config.params.lcd.contrast;
         }
         else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
             params["brightness"] = config.params.segment.brightness;
@@ -1303,6 +1355,7 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.gpio.pwmFrequency = params["pwmFrequency"] | 1000;
                 config.params.gpio.pwmResolution = params["pwmResolution"] | 8;
                 config.params.gpio.defaultDuty = params["defaultDuty"] | 0;
+                config.params.gpio.passive = params["passive"] | false;
             }
             else if (config.type == PeripheralType::ADC) {
                 config.params.adc.attenuation = params["attenuation"] | 0;
@@ -1321,9 +1374,11 @@ bool PeripheralManager::loadConfiguration() {
                 int w = params["width"]  | 128;
                 int h = params["height"] | 64;
                 int iface = params["interface"] | 2; // 0=Parallel, 1=SPI, 2=I2C
+                int contrast = params["contrast"] | 255; // 对比度，默认拉满
                 config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
                 config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
                 config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
+                config.params.lcd.contrast  = (uint8_t)(contrast > 255 ? 255 : (contrast < 0 ? 0 : contrast));
             }
             else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
                 int b = params["brightness"] | 2;
@@ -1661,6 +1716,18 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
             }
             break;
 
+        case PeripheralType::IR_RECEIVER:
+            if (config.pinCount < 1) {
+                errorMsg = "IR receiver requires 1 data pin";
+                return false;
+            }
+#if !FASTBEE_ENABLE_IR_REMOTE
+            errorMsg = "固件未启用红外接收支持 (FASTBEE_ENABLE_IR_REMOTE=0)";
+            return false;
+#else
+            break;
+#endif
+
         default:
             // 其他类型暂不需要特殊验证
             break;
@@ -1740,6 +1807,9 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         uint8_t pin = config.pins[0];
         if (config.params.rf.mode == RF_MODE_RX) {
             pinMode(pin, INPUT);
+#if FASTBEE_ENABLE_RF_LEARN
+            RFLearnDriver::getInstance().begin(pin);
+#endif
             LOG_INFOF("Peripheral Manager: RF RX '%s' initialized pin=%d activeHigh=%d",
                       config.id.c_str(), pin, config.params.rf.activeHigh ? 1 : 0);
         } else {
@@ -1771,6 +1841,27 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
                   config.params.radar.activeHigh ? 1 : 0,
                   (unsigned)config.params.radar.holdMs);
         return true;
+    }
+
+    if (config.type == PeripheralType::IR_RECEIVER) {
+        if (config.pinCount < 1) {
+            LOG_WARNINGF("Peripheral Manager: IR receiver '%s' requires 1 data pin", config.id.c_str());
+            return false;
+        }
+#if FASTBEE_ENABLE_IR_REMOTE
+        if (!IRRemoteDriver::getInstance().begin(config.pins[0])) {
+            LOG_ERRORF("Peripheral Manager: IR receiver '%s' init failed on GPIO%d",
+                       config.id.c_str(), config.pins[0]);
+            return false;
+        }
+        LOG_INFOF("Peripheral Manager: IR receiver '%s' initialized DATA=%d",
+                  config.id.c_str(), config.pins[0]);
+        return true;
+#else
+        LOG_WARNINGF("Peripheral Manager: IR receiver '%s' skipped - firmware built without FASTBEE_ENABLE_IR_REMOTE",
+                     config.id.c_str());
+        return false;
+#endif
     }
 
     // ========== 编码器初始化 ==========
@@ -2138,6 +2229,13 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         digitalWrite(config.pins[0], config.params.rf.activeHigh ? LOW : HIGH);
     }
 
+    // 红外接收头清理：停止解码并释放接收缓冲区
+#if FASTBEE_ENABLE_IR_REMOTE
+    if (config.type == PeripheralType::IR_RECEIVER) {
+        IRRemoteDriver::getInstance().stop();
+    }
+#endif
+
     // GPIO 输出清理：置低电平后释放为输入，防止外设继续带电或浮空
     if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
         if (config.pinCount >= 1 && !isReservedPin(config.pins[0]) && !isInputOnlyPin(config.pins[0])) {
@@ -2206,6 +2304,18 @@ bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
             break;
 
         case PeripheralType::GPIO_DIGITAL_OUTPUT:
+            if (config.params.gpio.passive) {
+                // 无源蜂鸣器：使用 PWM 驱动（默认 2700Hz / 8bit）
+                uint32_t freq = config.params.gpio.pwmFrequency >= 100
+                                    ? config.params.gpio.pwmFrequency : 2700;
+                uint8_t res = config.params.gpio.pwmResolution > 0
+                                    ? config.params.gpio.pwmResolution : 8;
+                ledcAttach(pin, freq, res);
+                ledcWrite(pin, 0);  // 初始静音
+                LOG_INFOF("Peripheral Manager: Passive buzzer '%s' pin=%d freq=%lu res=%d",
+                          config.id.c_str(), pin, (unsigned long)freq, res);
+                return true;
+            }
             pinMode(pin, OUTPUT);
             writePin(config.id, config.params.gpio.initialState);
             break;
@@ -2369,7 +2479,18 @@ void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, 
     if (!config) return;
 
     if (actionMode == 1) {  // BLINK
-        ActionTickerData* data = new ActionTickerData();
+        // 运行期分配三件套（审计 P2-7）：水位预检 + nothrow + 判空降级，
+        // 避免 MemGuard CRITICAL 边缘一次 BLINK 动作 OOM → abort 整机重启
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < FastBee::MemoryBudget::ACTION_TICKER_MIN_DRAM) {
+            LOG_WARNINGF("Peripheral Manager: skip blink ticker for '%s': DRAM below %u",
+                         id.c_str(), (unsigned)FastBee::MemoryBudget::ACTION_TICKER_MIN_DRAM);
+            return;
+        }
+        ActionTickerData* data = new (std::nothrow) ActionTickerData();
+        if (!data) {
+            LOG_WARNINGF("Peripheral Manager: blink ticker alloc failed for '%s'", id.c_str());
+            return;
+        }
         data->mgr = this;
         data->id = id;
         actionTickers[id] = data;
@@ -2380,7 +2501,17 @@ void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, 
                   id.c_str(), paramValue);
     }
     else if (actionMode == 2) {  // BREATHE
-        ActionTickerData* data = new ActionTickerData();
+        // 同 BLINK：水位预检 + nothrow，OOM 时跳过本次动作而非重启
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < FastBee::MemoryBudget::ACTION_TICKER_MIN_DRAM) {
+            LOG_WARNINGF("Peripheral Manager: skip breathe ticker for '%s': DRAM below %u",
+                         id.c_str(), (unsigned)FastBee::MemoryBudget::ACTION_TICKER_MIN_DRAM);
+            return;
+        }
+        ActionTickerData* data = new (std::nothrow) ActionTickerData();
+        if (!data) {
+            LOG_WARNINGF("Peripheral Manager: breathe ticker alloc failed for '%s'", id.c_str());
+            return;
+        }
         data->mgr = this;
         data->id = id;
         data->channel = config->params.gpio.pwmChannel;
@@ -2476,7 +2607,7 @@ bool PeripheralManager::controlStepper(const String& id, const String& action, i
     auto it = stepperTickers.find(id);
     StepperTickerData* data = (it != stepperTickers.end()) ? it->second : nullptr;
     if (!data) {
-        if (ESP.getFreeHeap() < 4096) {
+        if (FastBee::MemoryBudget::dramFree() < 4096) {
             LOG_WARNINGF("Peripheral Manager: Not enough heap to start stepper '%s'", id.c_str());
             return false;
         }
@@ -2794,8 +2925,13 @@ bool PeripheralManager::isValidPin(uint8_t pin) const {
             #if defined(CONFIG_IDF_TARGET_ESP32)
             if (pin >= 6 && pin <= 11) return false;
             #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-            // ESP32-S3: GPIO 26-32 是 Octal Flash/PSRAM
+            // ESP32-S3: GPIO 26-32 是 Flash SPI；Octal PSRAM (R8) 下 GPIO 33-37
+            // 被 PSRAM 总线独占，任何方向的使用都会导致内存损坏，绝对禁止
+            #if defined(CONFIG_SPIRAM_MODE_OCT)
+            if ((pin >= 19 && pin <= 20) || (pin >= 22 && pin <= 37)) return false;
+            #else
             if ((pin >= 19 && pin <= 20) || (pin >= 22 && pin <= 32)) return false;
+            #endif
             #elif defined(CONFIG_IDF_TARGET_ESP32C3)
             // ESP32-C3: GPIO 12-17 是 Flash SPI
             if (pin >= 12 && pin <= 17) return false;
@@ -2927,6 +3063,7 @@ bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, Str
                            type == PeripheralType::GPIO_INTERRUPT_FALLING ||
                            type == PeripheralType::GPIO_INTERRUPT_CHANGE ||
                            type == PeripheralType::RADAR_SENSOR ||
+                           type == PeripheralType::IR_RECEIVER ||
                            type == PeripheralType::RF_MODULE);
 
         if (!isInputType) {
@@ -3014,13 +3151,45 @@ void PeripheralManager::performMaintenance() {
     processInterruptQueue();
 }
 
+bool PeripheralManager::shouldDispatchIsrEvent(unsigned long nowMs, unsigned long lastDispatchMs,
+                                               uint16_t debounceMs) {
+    // 无符号减法天然处理 millis() 回绕（lastDispatch 初始为 0，启动初期前几 ms 内
+    // 的中断会被合并，可接受；之后每 debounceMs 窗口最多派发一次）
+    return (nowMs - lastDispatchMs) >= debounceMs;
+}
+
+uint16_t PeripheralManager::isrDebounceMsForType(PeripheralType type) {
+    switch (type) {
+        // 高速边沿外设：433MHz OOK/EV1527 与红外协议的脉冲宽度在百 us 级，
+        // 任何毫秒级合并都会破坏解码，必须逐边沿派发
+        case PeripheralType::RF_MODULE:
+        case PeripheralType::IR_RECEIVER:
+            return 0;
+        default:
+            // GPIO 中断/雷达等类型默认去抖窗口，抑制机械按键抖动与中断风暴
+            return ISR_DEBOUNCE_MS;
+    }
+}
+
+size_t PeripheralManager::getIsrQueueWaiting() const {
+    if (!_isrQueue) return 0;
+    return static_cast<size_t>(uxQueueMessagesWaiting(_isrQueue));
+}
+
+void PeripheralManager::resetIsrQueueStats() {
+    _isrQueueOverruns = 0;
+}
+
 // 中断处理
 void IRAM_ATTR PeripheralManager::isrHandler(void* arg) {
     // 中断上下文：仅记录触发的引脚号，通过队列传递到主循环
     uint8_t pin = (uint8_t)(uintptr_t)arg;
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (_isrQueue) {
-        xQueueSendFromISR(_isrQueue, &pin, &xHigherPriorityTaskWoken);
+        if (xQueueSendFromISR(_isrQueue, &pin, &xHigherPriorityTaskWoken) != pdTRUE) {
+            // 队列满：计入溢出统计（旧实现静默丢事件，风暴场景无法诊断）
+            _isrQueueOverruns++;
+        }
     }
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
@@ -3035,15 +3204,36 @@ void PeripheralManager::processInterruptQueue() {
 }
 
 void PeripheralManager::handleInterrupt(uint8_t pin) {
-    String id = getPinPeripheralId(pin);
-    if (id.isEmpty()) return;
+    GPIOInterruptCallback callback = nullptr;
+    String id;
+    {
+        // 查找与去抖在锁内完成，防止并发 removePeripheral 导致迭代器/引用失效
+        RecursiveMutexGuard lock(_mutex);
+        id = getPinPeripheralId(pin);
+        if (id.isEmpty()) return;
 
-    auto config = getPeripheral(id);
-    if (!config) return;
+        auto it = peripherals.find(id);
+        if (it == peripherals.end()) return;
+        PeripheralConfig& config = it->second;
 
-    if (config->params.gpio.interruptCallback) {
+        // 按类型差异化去抖：高速边沿外设（RF/IR）窗口为 0，逐边沿派发；
+        // GPIO 中断类在窗口内合并，避免重复的状态读取与回调触发
+        uint16_t window = isrDebounceMsForType(config.type);
+        if (window > 0 && pin < ISR_TRACKED_PIN_COUNT) {
+            unsigned long now = millis();
+            if (!shouldDispatchIsrEvent(now, _lastIsrDispatch[pin], window)) {
+                return;
+            }
+            _lastIsrDispatch[pin] = now;
+        }
+
+        // 快照回调后再释放锁：避免用户回调长时间持锁阻塞 Web/worker 任务
+        callback = config.params.gpio.interruptCallback;
+    }
+
+    if (callback) {
         GPIOState state = readPin(id);
-        config->params.gpio.interruptCallback(pin, state);
+        callback(pin, state);
     }
 }
 
@@ -3390,22 +3580,28 @@ bool PeripheralManager::attachInterrupt(uint8_t pin, GPIOInterruptCallback callb
 }
 
 bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterruptCallback callback) {
-    auto config = getPeripheral(peripheralId);
-    if (!config || !config->isGPIOPeripheral()) return false;
+    // 线程安全（T4 修复）：旧实现在 getPeripheral 释放锁后继续解引用返回的裸指针，
+    // 并发 removePeripheral 会使指针悬垂；改为持锁内直接访问容器
+    RecursiveMutexGuard lock(_mutex);
+    auto it = peripherals.find(peripheralId);
+    if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
+    PeripheralConfig& config = it->second;
 
-    uint8_t pin = config->getPrimaryPin();
-    if (pin == 255) return false;
+    uint8_t pin = config.getPrimaryPin();
+    // 引脚验证（T3）：attach 前验证引脚合法性，避免向非法 GPIO 注册中断
+    if (pin == 255 || !isValidPin(pin)) return false;
 
-    config->params.gpio.interruptCallback = callback;
+    config.params.gpio.interruptCallback = callback;
 
     uint8_t mode = CHANGE;
-    if (config->type == PeripheralType::GPIO_INTERRUPT_RISING) mode = RISING;
-    else if (config->type == PeripheralType::GPIO_INTERRUPT_FALLING) mode = FALLING;
+    if (config.type == PeripheralType::GPIO_INTERRUPT_RISING) mode = RISING;
+    else if (config.type == PeripheralType::GPIO_INTERRUPT_FALLING) mode = FALLING;
 
     ::attachInterruptArg(digitalPinToInterrupt(pin), isrHandler, (void*)(uintptr_t)pin, mode);
 
-    if (runtimeStates.find(peripheralId) != runtimeStates.end()) {
-        runtimeStates[peripheralId].state.gpio.interruptAttached = true;
+    auto rs = runtimeStates.find(peripheralId);
+    if (rs != runtimeStates.end()) {
+        rs->second.state.gpio.interruptAttached = true;
     }
 
     return true;
@@ -3418,17 +3614,21 @@ bool PeripheralManager::detachInterrupt(uint8_t pin) {
 }
 
 bool PeripheralManager::detachInterrupt(const String& peripheralId) {
-    auto config = getPeripheral(peripheralId);
-    if (!config || !config->isGPIOPeripheral()) return false;
+    // 同 attachInterrupt：持锁内直接访问容器，避免锁外解引用裸指针
+    RecursiveMutexGuard lock(_mutex);
+    auto it = peripherals.find(peripheralId);
+    if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
+    PeripheralConfig& config = it->second;
 
-    uint8_t pin = config->getPrimaryPin();
-    if (pin == 255) return false;
+    uint8_t pin = config.getPrimaryPin();
+    if (pin == 255 || !isValidPin(pin)) return false;
 
     ::detachInterrupt(digitalPinToInterrupt(pin));
-    config->params.gpio.interruptCallback = nullptr;
+    config.params.gpio.interruptCallback = nullptr;
 
-    if (runtimeStates.find(peripheralId) != runtimeStates.end()) {
-        runtimeStates[peripheralId].state.gpio.interruptAttached = false;
+    auto rs = runtimeStates.find(peripheralId);
+    if (rs != runtimeStates.end()) {
+        rs->second.state.gpio.interruptAttached = false;
     }
 
     return true;

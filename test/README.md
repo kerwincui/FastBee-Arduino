@@ -27,6 +27,8 @@
 | `test_security_auth.cpp` | 安全认证、用户、角色和权限测试 |
 | `test_system_services.cpp` | 系统服务（日志、配置存储、健康监控）测试 |
 | `test_pagination_fixes.cpp` | 分页和边界修复测试 |
+| `test_stability_fixes.cpp` | 稳定性审计修复守护：阻塞操作、内存闸门、原子配置和残余盲区回归测试 |
+| `test_static_concurrency.cpp` | 静态文件并发限流、登录页加载提速和 503 自动重试页回归测试 |
 | `test_performance_bench.cpp` | 性能基准测试 |
 
 ## 常用命令

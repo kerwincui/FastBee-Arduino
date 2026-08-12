@@ -54,34 +54,6 @@
 #define FASTBEE_MODBUS_SLAVE_ENABLE 0
 #endif
 
-/**
- * @brief TCP 协议支持
- * 默认：启用
- * 占用：约 10KB Flash
- */
-#ifndef FASTBEE_ENABLE_TCP
-#define FASTBEE_ENABLE_TCP 0
-#endif
-
-/**
- * @brief HTTP 客户端支持
- * 默认：启用
- * 占用：约 8KB Flash
- */
-#ifndef FASTBEE_ENABLE_HTTP
-#define FASTBEE_ENABLE_HTTP 0
-#endif
-
-/**
- * @brief CoAP 协议支持
- * 默认：启用
- * 占用：约 12KB Flash
- * 建议：如不使用可禁用以节省空间
- */
-#ifndef FASTBEE_ENABLE_COAP
-#define FASTBEE_ENABLE_COAP 0
-#endif
-
 // ============================================================================
 // 网络功能开关
 // ============================================================================
@@ -350,6 +322,29 @@
 #endif
 
 /**
+ * @brief 设备大屏可视化控制面板
+ * 默认：禁用（需要 PSRAM 支持，解压需 ~106KB DRAM）
+ * 占用：Web JS 21.5KB gz + CSS ~5.7KB gz
+ * DRAM：加载时约 106KB（3 个 JS bundle 解压 + DOM 节点）
+ * 需要：PSRAM 或大容量 DRAM（ESP32-S3 等）
+ * 说明：启用后 Web 前端显示"设备大屏"菜单，支持可视化设备控制面板
+ */
+#ifndef FASTBEE_ENABLE_DEVICE_CONTROL
+    #define FASTBEE_ENABLE_DEVICE_CONTROL 0
+#endif
+
+/**
+ * @brief OLED GB2312 中文字体（U8g2 WQY 字库）
+ * 默认：禁用（wqy12/wqy15 两个字库分别占 ~107KB/~141KB Flash）
+ * 说明：禁用后 OLED 仅使用 ASCII 字体，中文/大字体档位回退为 ASCII 小字体；
+ *      Lite/Standard 默认关闭以控制 Flash 占用，Full 保留中文显示，
+ *      需要中文显示的设备可通过 env 覆盖 -DFASTBEE_ENABLE_LCD_GB2312=1
+ */
+#ifndef FASTBEE_ENABLE_LCD_GB2312
+    #define FASTBEE_ENABLE_LCD_GB2312 0
+#endif
+
+/**
  * @brief LCD/OLED 显示屏支持（SSD1306/SH1106 等）
  * 默认：禁用（需硬件支持）
  * 占用：约 20KB Flash（U8g2 库 ~15KB + 管理器 ~5KB）
@@ -438,6 +433,18 @@
  */
 #ifndef FASTBEE_ENABLE_IR_REMOTE
     #define FASTBEE_ENABLE_IR_REMOTE 0
+#endif
+
+/**
+ * @brief 433MHz RF OOK 遥控学习支持
+ * 默认：禁用（Standard 及以上构建启用）
+ * 占用：约 4KB Flash
+ * RAM：约 300B（脉冲缓冲区）
+ * 需要：无外部库（纯 GPIO 中断解码）
+ * 说明：支持 EV1527/PT2262 风格 OOK 编码的学习、存储和事件触发
+ */
+#ifndef FASTBEE_ENABLE_RF_LEARN
+    #define FASTBEE_ENABLE_RF_LEARN 0
 #endif
 
 /**

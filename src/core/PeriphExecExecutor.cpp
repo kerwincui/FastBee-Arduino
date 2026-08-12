@@ -32,6 +32,7 @@
 #include "peripherals/SensorDriver.h"
 #endif
 #include "core/DriverRegistry.h"
+#include "network/WebConfigManager.h"
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
@@ -133,6 +134,7 @@ bool isReportableOutputAction(uint8_t actionType) {
         case ExecActionType::ACTION_LOW:
         case ExecActionType::ACTION_HIGH_INVERTED:
         case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
         case ExecActionType::ACTION_SET_PWM:
         case ExecActionType::ACTION_SET_DAC:
             return true;
@@ -171,6 +173,16 @@ String buildActionReportValue(const ExecAction& action,
         case ExecActionType::ACTION_LOW_INVERTED:
             return normalizeBinaryReportValue(effectiveValue, receivedValue, false);
 
+        case ExecActionType::ACTION_GPIO_TOGGLE: {
+            // 翻转结果取决于执行前电平，执行后回读实际引脚状态作为上报值；
+            // 极性按非反转语义翻译（与 CALL_PERIPHERAL "toggle" 上报行为一致）
+            GPIOState physical = PeripheralManager::getInstance().readPin(action.targetPeriphId);
+            if (physical != GPIOState::STATE_UNDEFINED) {
+                return String(physicalStateToLogicalValue(physical, action.actionType));
+            }
+            return normalizeBinaryReportValue(effectiveValue, receivedValue, false);
+        }
+
         case ExecActionType::ACTION_SET_PWM:
         case ExecActionType::ACTION_SET_DAC:
             return normalizeScalarReportValue(effectiveValue, receivedValue, "0");
@@ -201,8 +213,15 @@ String buildActionReportValue(const ExecAction& action,
             return rawValue;
         }
 
-        default:
-            return normalizeScalarReportValue(effectiveValue, receivedValue, "");
+        default: {
+            // 模板类动作（如 OLED 显示 actionValue="$value"）：上报值必须是替换后的实际内容，
+            // 否则平台会收到字面量 "$value"（显示正确但上报错误的历史缺陷根因）
+            String reportValue = effectiveValue;
+            if (!receivedValue.isEmpty() && reportValue.indexOf("$value") >= 0) {
+                reportValue.replace("$value", receivedValue);
+            }
+            return normalizeScalarReportValue(reportValue, receivedValue, "");
+        }
     }
 }
 
@@ -217,6 +236,29 @@ void appendActionResult(std::vector<ActionExecResult>& results,
     result.success = success;
     result.remark = remark;
     results.push_back(result);
+}
+
+/** 判断字符串是否全为数字（非空），用于识别平台直接下发的数值指令（如占空比 125）。 */
+bool isAllDigits(const String& s) {
+    if (s.isEmpty()) return false;
+    for (size_t i = 0; i < s.length(); ++i) {
+        char c = s.charAt(i);
+        if (c < '0' || c > '9') return false;
+    }
+    return true;
+}
+
+/** 判断 CALL_PERIPHERAL 动作的目标外设是否为“物理输出”类（GPIO 电平/PWM/模拟输出）。
+ *  此类调用语义上等同 GPIO 控制动作，执行结果同样应作为设备属性上报平台，
+ *  否则平台下发 LED/蜂鸣器控制后状态永远不同步。 */
+bool isCallPeripheralOutputAction(const ExecAction& action) {
+    if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) return false;
+    if (action.targetPeriphId.isEmpty()) return false;
+    const PeripheralConfig* cfg = PeripheralManager::getInstance().getPeripheral(action.targetPeriphId);
+    if (!cfg) return false;
+    return cfg->type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+           cfg->type == PeripheralType::GPIO_PWM_OUTPUT ||
+           cfg->type == PeripheralType::GPIO_ANALOG_OUTPUT;
 }
 
 bool looksLikeHexPayload(const String& rawValue) {
@@ -305,10 +347,13 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
-        // MemGuard 堆守卫：使用 DRAM（MALLOC_CAP_INTERNAL）而非总堆，避免 PSRAM 干扰判断
+        // MemGuard 堆守卫：使用 DRAM（MALLOC_CAP_INTERNAL）而非总堆，避免 PSRAM 干扰判断；
+        // 2026-08-05 fix: 另加 8BIT 口径（INTERNAL 含 IRAM/RTC 虚高 ~28KB，
+        // 崩溃现场 INTERNAL 29KB 时 8BIT 仅剩 <1KB，传感器 JSON 解析小分配直接 abort）
         auto* fw = FastBeeFramework::getInstance();
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
         uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        uint32_t dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
         if (monitor) {
             if (monitor->isMemoryCritical()) {
                 LOGGER.warning("[PeriphExec] Heap CRITICAL, skipping remaining actions");
@@ -322,6 +367,13 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         } else if (dramFree < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM) {
             LOGGER.warningf("[PeriphExec] DRAM too low (%lu), skipping remaining actions",
                             (unsigned long)dramFree);
+            break;
+        }
+        // 4096：每次动作前刷新水位；MQTT 连接稳态 8BIT ~7KB 时允许规则
+        // 正常执行，跌破 4KB 才中止剩余动作（再低 MQTT 强制断开兜底）
+        if (dram8Free < 4096) {
+            LOGGER.warningf("[PeriphExec] DRAM(8bit) too low (%lu), skipping remaining actions",
+                            (unsigned long)dram8Free);
             break;
         }
 
@@ -388,6 +440,10 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             // 物理输出控制动作（GPIO 电平/PWM/DAC）的结果也作为设备属性上报：
             // 用户勾选“上报数据”后，LED/继电器等控制状态可同步到物联网平台
             if (isReportableOutputAction(action.actionType)) {
+                isReportableAction = true;
+            } else if (ok && isCallPeripheralOutputAction(action)) {
+                // CALL_PERIPHERAL 调用 GPIO 输出外设（如 exec_015 平台控制 LED）：
+                // 与直接 GPIO 动作等价，结果同样上报，保证平台状态与设备实际一致
                 isReportableAction = true;
             }
         }
@@ -467,8 +523,16 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
             appendActionResult(reportableResults, action.targetPeriphId,
                                physicalStateToLogicalValue(st, action.actionType),
                                true, "boot_state");
+        } else if (isCallPeripheralOutputAction(action)) {
+            // CALL_PERIPHERAL 指向 GPIO 数字输出外设：只读当前电平上报启动状态。
+            // 极性按非反转语义翻译（CALL_PERIPHERAL 无独立反转配置），与运行时上报一致。
+            GPIOState st = pm.readPin(action.targetPeriphId);
+            if (st == GPIOState::STATE_UNDEFINED) continue;
+            appendActionResult(reportableResults, action.targetPeriphId,
+                               physicalStateToLogicalValue(st, static_cast<uint8_t>(ExecActionType::ACTION_HIGH)),
+                               true, "boot_state");
         }
-        // 其它动作类型（系统/脚本/事件/显示/调用）不代表可上报的物模型状态，跳过
+        // 其它动作类型（系统/脚本/事件/显示/其它调用）不代表可上报的物模型状态，跳过
     }
 
     if (reportableResults.empty()) return 0;
@@ -556,6 +620,16 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             LOGGER.infof("[PeriphExec] Execute LOW(inverted) on %s", action.targetPeriphId.c_str());
             pm.stopActionTicker(action.targetPeriphId);
             return pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH);
+        }
+
+        case ExecActionType::ACTION_GPIO_TOGGLE: {
+            // 电平翻转：读当前电平取反写入，与 executeCallPeripheralAction 的 "toggle" 命令语义一致
+            GPIOState current = pm.readPin(action.targetPeriphId);
+            GPIOState next = (current == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
+            LOGGER.infof("[PeriphExec] Execute TOGGLE on %s (%d -> %d)", action.targetPeriphId.c_str(),
+                         (int)current, (int)next);
+            pm.stopActionTicker(action.targetPeriphId);
+            return pm.writePin(action.targetPeriphId, next);
         }
 
         // Modbus 线圈写入 (FC05) — 支持 "channel:state" 或 "state" 格式
@@ -799,7 +873,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 {
                     auto* fwInner = FastBeeFramework::getInstance();
                     HealthMonitor* monInner = fwInner ? fwInner->getHealthMonitor() : nullptr;
-                    if ((monInner && monInner->isMemoryCritical()) || ESP.getFreeHeap() < 15000) {
+                    if ((monInner && monInner->isMemoryCritical()) || FastBee::MemoryBudget::dramFree() < 15000) {
                         Serial.printf("[PeriphExec] Heap dropped to %d during poll, stopping early\n",
                                       (int)ESP.getFreeHeap());
                         break;
@@ -854,7 +928,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 {
                     auto* fwCtrl = FastBeeFramework::getInstance();
                     HealthMonitor* monCtrl = fwCtrl ? fwCtrl->getHealthMonitor() : nullptr;
-                    if ((monCtrl && monCtrl->isMemoryCritical()) || ESP.getFreeHeap() < 15000) {
+                    if ((monCtrl && monCtrl->isMemoryCritical()) || FastBee::MemoryBudget::dramFree() < 15000) {
                         Serial.printf("[PeriphExec] Heap dropped to %d during ctrl, stopping early\n",
                                       (int)ESP.getFreeHeap());
                         break;
@@ -1092,6 +1166,48 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
 #endif // FASTBEE_ENABLE_MODBUS
 }
 
+// 按传感器类别推断默认数据通道名：仅多字段传感器（DHT/SHT3x/BMP280/MPU6050 等
+// 需选择温度/湿度/轴等通道）使用，供读取通道选择与 LCD 条目等内部用途。
+// 推断值绝不作为上报 ID：上报 ID 的通用规则是"显式 dataField 优先，否则回退
+// 外设配置 id"，避免写死的默认字段与平台物模型标识符不匹配。
+String PeriphExecExecutor::guessSensorDataField(const String& category) {
+    if (category == "dht11" || category == "dht22" || category == "ds18b20") {
+        return "temperature";
+    } else if (category == "sht31" || category == "SHT31" ||
+               category == "aht20" || category == "AHT20" ||
+               category == "bmp280" || category == "BMP280") {
+        return "temperature";
+    } else if (category == "mpu6050" || category == "MPU6050") {
+        return "accelX";
+    } else if (category == "ultrasonic") {
+        return "distance";
+    } else if (category == "current") {
+        return "current";
+    } else if (category == "voltage") {
+        return "voltage";
+    } else if (category == "radar") {
+        return "presence";
+    }
+    return "value"; // 其它类别的内部通道名兜底
+}
+
+// 内部通道字段统一解析：显式 dataField 优先；多字段类别按类别推断默认通道
+// （需选择温/湿/轴等读取通道）；单值传感器直接用外设配置 id，
+// 使缓存键/模板变量与平台物模型标识符自然对齐
+String PeriphExecExecutor::resolveChannelField(const String& category, const String& periphId, const String& explicitField) {
+    if (!explicitField.isEmpty()) {
+        return explicitField;
+    }
+    if (category == "dht11" || category == "dht22" ||
+        category == "sht31" || category == "SHT31" ||
+        category == "aht20" || category == "AHT20" ||
+        category == "bmp280" || category == "BMP280" ||
+        category == "mpu6050" || category == "MPU6050") {
+        return guessSensorDataField(category);
+    }
+    return periphId;
+}
+
 bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result) {
     String actionVal = action.actionValue;
     if (actionVal.isEmpty() || actionVal.charAt(0) != '{') {
@@ -1113,34 +1229,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     uint8_t decimals = doc["decimalPlaces"] | 2;
     const char* label = doc["sensorLabel"] | "";
     const char* unit = doc["unit"] | "";
-    String dataFieldStr = doc["dataField"] | "";
-    if (dataFieldStr.isEmpty()) {
-        if (strcmp(category, "dht11") == 0 || strcmp(category, "dht22") == 0 ||
-            strcmp(category, "ds18b20") == 0) {
-            dataFieldStr = "temperature";
-        } else if (strcmp(category, "ultrasonic") == 0) {
-            dataFieldStr = "distance";
-        } else if (strcmp(category, "current") == 0) {
-            dataFieldStr = "current";
-        } else if (strcmp(category, "voltage") == 0) {
-            dataFieldStr = "voltage";
-        } else if (strcmp(category, "radar") == 0) {
-            dataFieldStr = "presence";
-        } else if (strcmp(category, "rf") == 0 || strcmp(category, "rfLevel") == 0) {
-            dataFieldStr = "value";
-        } else if (strcmp(category, "sht31") == 0 || strcmp(category, "SHT31") == 0 ||
-                   strcmp(category, "aht20") == 0 || strcmp(category, "AHT20") == 0 ||
-                   strcmp(category, "bmp280") == 0 || strcmp(category, "BMP280") == 0) {
-            dataFieldStr = "temperature";
-        } else if (strcmp(category, "mpu6050") == 0 || strcmp(category, "MPU6050") == 0) {
-            dataFieldStr = "accelX";
-        } else if (strcmp(category, "bh1750") == 0 || strcmp(category, "BH1750") == 0) {
-            dataFieldStr = "illuminance";
-        } else {
-            dataFieldStr = "value";
-        }
-    }
-    const char* dataField = dataFieldStr.c_str();
+    // 显式配置的 dataField：唯一可用作上报 ID 的来源（多字段外设如 DHT11 温/湿）
+    String explicitFieldStr = doc["dataField"] | "";
+    // 内部通道字段（缓存键/LCD 条目/通道选择）：与 Web 数据源 sourceId 同规则，
+    // 推断值不进入 result.dataField，不会顶替外设配置 id 成为上报 ID
+    String channelFieldStr = resolveChannelField(String(category), String(periphId), explicitFieldStr);
+    const char* dataField = channelFieldStr.c_str();
     uint8_t deviceIndex = doc["deviceIndex"] | 0;
 
     if (strlen(periphId) == 0) {
@@ -1176,6 +1270,22 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 #if FASTBEE_ENABLE_SENSOR_DRIVER
     } else if (strcmp(category, "dht11") == 0 || strcmp(category, "dht22") == 0) {
         // DHT11/DHT22 温湿度传感器
+        // Web 忙让位：DHT 位时序读取需关中断忙等（InterruptLock），
+        // WiFi 高负载下时序被拉伸会触发 "Interrupt wdt timeout on CPU1"
+        // panic（2026-08-10 现场：Web 响应期间 worker 读 DHT → 整机复位）。
+        // 前台窗口/静态传输在途时跳过物理读取，等下个轮询周期再读。
+        {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
+            if (wcm && wcm->isWebBusy()) {
+                static unsigned long s_lastSkipLog = 0;
+                if (millis() - s_lastSkipLog > 30000UL) {
+                    LOGGER.info("[PeriphExec] Sensor read deferred: web busy (DHT timing-sensitive)");
+                    s_lastSkipLog = millis();
+                }
+                return false;
+            }
+        }
         const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
         if (!cfg) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
@@ -1199,7 +1309,14 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             return false;
         }
     } else if (strcmp(category, "ds18b20") == 0) {
-        // DS18B20 数字温度传感器
+        // DS18B20 数字温度传感器（同为单总线时序敏感，Web 忙时同样让位）
+        {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
+            if (wcm && wcm->isWebBusy()) {
+                return false;
+            }
+        }
         const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
         if (!cfg) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
@@ -1331,9 +1448,10 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 
     result.targetPeriphId = String(periphId);
     result.actualValue = String(processed, (unsigned int)decimals);
-    // 携带数据字段（temperature/humidity 等）：上报时作为物模型标识符，
-    // 使平台能区分同一外设的不同数据字段（如 DHT11 的温度与湿度）
-    result.dataField = String(dataField);
+    // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时携带；
+    // 未显式配置时留空，上报路径将回退用外设配置 id 作为物模型标识符，
+    // 使平台物模型 ID 始终与设备外设配置 id 动态匹配，而非写死的默认字段
+    result.dataField = explicitFieldStr;
 
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
         periphId, category, rawValue, result.actualValue.c_str(), unit, label);
@@ -1347,10 +1465,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
 #endif
 
-    // 更新传感器读取值缓存（供 controls API 和 SSE 使用）
+    // 更新传感器读取值缓存（供 controls API、SSE 和实时监测使用）：
+    // 键用内部通道字段保证 DHT 温/湿双条目唯一；dataField 仅存显式配置值，
+    // 并携带外设配置 id 供实时监测上报回退（与平台物模型标识符对应）
     {
         String cacheKey = String(periphId) + "_" + String(dataField);
-        PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit));
+        PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit), explicitFieldStr, String(periphId));
     }
 
     return true;
@@ -1375,26 +1495,20 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                 "/config/users.json",
 #endif
                 "/config/system.json",
-#if FASTBEE_ENABLE_HTTP
-                "/config/http.json",
-#endif
 #if FASTBEE_ENABLE_MQTT
                 "/config/mqtt.json",
 #endif
-#if FASTBEE_ENABLE_TCP
-                "/config/tcp.json",
-#endif
 #if FASTBEE_ENABLE_MODBUS
                 "/config/modbus.json",
-#endif
-#if FASTBEE_ENABLE_COAP
-                "/config/coap.json",
 #endif
                 PERIPH_EXEC_CONFIG_FILE,
 #if FASTBEE_ENABLE_RULE_SCRIPT
                 RULE_SCRIPT_CONFIG_FILE,
 #endif
                 "/config/peripherals.json",
+#if FASTBEE_ENABLE_IR_REMOTE
+                "/config/ir_keys.json",
+#endif
             };
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
                 if (LittleFS.exists(configFiles[i])) {
@@ -1610,6 +1724,22 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (speed == 0) speed = 2000;
         pm.startActionTicker(targetId, 2, speed);
         return true;
+    } else if (isAllDigits(actionCmdStr)) {
+        // 纯数字直出：平台直接下发数值（如蜂鸣器占空比 0/125/250）。
+        // PWM/模拟输出外设 → 按占空比 writePWM；数字输出外设 → 非零视为高电平。
+        pm.stopActionTicker(targetId);
+        if (targetCfg->type == PeripheralType::GPIO_PWM_OUTPUT ||
+            targetCfg->type == PeripheralType::GPIO_ANALOG_OUTPUT) {
+            uint32_t duty = (uint32_t)actionCmdStr.toInt();
+            return pm.writePWM(targetId, duty);
+        }
+        if (targetCfg->type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
+            bool state = actionCmdStr.toInt() != 0;
+            return pm.writePin(targetId, state ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW);
+        }
+        LOGGER.warningf("[PeriphExec] Call peripheral: numeric value '%s' unsupported for '%s' (type=%d)",
+                        actionCmdStr.c_str(), targetId.c_str(), (int)targetCfg->type);
+        return false;
     } else {
         LOGGER.warningf("[PeriphExec] Call peripheral: unknown action '%s'", actionCmdStr.c_str());
         return false;
@@ -1711,13 +1841,13 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
                             ar.targetPeriphId.c_str());
         }
 
-        // 确定上报 ID 和 value
+        // 确定上报 ID 和 value：通用规则为外设配置 id（与平台物模型标识符对应）
         String reportId = ar.targetPeriphId;
         String reportValue = ar.actualValue;
 
-        // 传感器读取结果：使用 dataField 作为上报 ID（物模型标识符，如 temperature/humidity）。
-        // 若继续用 periphId（如 dht11）上报，平台无法区分同一外设的温度与湿度字段，
-        // 且不匹配产品物模型标识符，导致温湿度数据不在平台显示。
+        // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时才覆盖为 dataField：
+        // 平台需据此区分同一外设的不同数据字段；未显式配置时 result.dataField 为空，
+        // 保持外设配置 id 作为上报 ID，类别推断的默认字段不会顶替物模型标识符
         if (!ar.dataField.isEmpty()) {
             reportId = ar.dataField;
         }
@@ -1851,7 +1981,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 // 考虑 TM1637 只有 4 位数码管，一般只会用到 ${id.field}。
 String PeriphExecExecutor::resolveSensorTemplate(const String& input) {
     if (input.indexOf("${") < 0) return input;
-    const auto cache = PeriphExecManager::getInstance().getSensorReadCacheCopy();
+    // 审计 P2-3：逐键持锁查询，避免每次解析全量深拷贝整表
     String out;
     out.reserve(input.length() + 8);
     int i = 0;
@@ -1879,11 +2009,11 @@ String PeriphExecExecutor::resolveSensorTemplate(const String& input) {
                     attr = "value";
                 }
                 String key = periphId + "_" + field;
-                auto it = cache.find(key);
-                if (it != cache.end()) {
-                    if (attr == "unit") out += it->second.unit;
-                    else if (attr == "label") out += it->second.label;
-                    else out += it->second.value;
+                PeriphExecManager::SensorReadCache entry;
+                if (PeriphExecManager::getInstance().lookupSensorCache(key, entry)) {
+                    if (attr == "unit") out += entry.unit;
+                    else if (attr == "label") out += entry.label;
+                    else out += entry.value;
                 } else {
                     // 未命中缓存：保留原占位符便于调试
                     out += input.substring(i, end + 1);

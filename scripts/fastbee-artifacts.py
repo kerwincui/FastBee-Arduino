@@ -45,6 +45,23 @@ def profile_for_env():
     return ENV_TO_PROFILE.get(pio_env_name(), "full")
 
 
+def get_build_flag_value(flag_name, default="0"):
+    """从当前 env 的 build_flags 中解析宏值（后出现的 -D 优先，与 GCC 语义一致）"""
+    prefix = "-D{}=".format(flag_name)
+    try:
+        flags = env.get("BUILD_FLAGS") or []
+    except Exception:
+        return default
+    if isinstance(flags, str):
+        flags = flags.split()
+    value = default
+    for flag in flags:
+        flag = str(flag).strip()
+        if flag.startswith(prefix):
+            value = flag[len(prefix):]
+    return value
+
+
 def has_target(*names):
     active = set(COMMAND_LINE_TARGETS)
     return any(name in active for name in names)
@@ -148,6 +165,9 @@ def prepare_filesystem_staging():
         "--web-profile={}".format(profile),
         "--stage-dir={}".format(stage_dir),
     ]
+    # 设备大屏随 FASTBEE_ENABLE_DEVICE_CONTROL 编译开关门控（standard 默认不含）
+    if get_build_flag_value("FASTBEE_ENABLE_DEVICE_CONTROL", "0") == "1":
+        cmd.append("--device-control")
 
     print("[FastBee] Preparing {} filesystem staging for {}...".format(profile, pio_env_name()))
     subprocess.check_call(cmd, cwd=project_dir())

@@ -135,7 +135,8 @@ enum class ActionType {
     DISPLAY_NUMBER = 24,       // 数码管显示数字
     DISPLAY_TEXT = 25,         // 数码管显示文本
     DISPLAY_CLEAR = 26,        // 数码管清屏
-    OLED_DISPLAY = 27          // OLED自定义多行显示
+    OLED_DISPLAY = 27,         // OLED自定义多行显示
+    GPIO_TOGGLE = 30           // 电平翻转（读当前电平取反写入）
 };
 
 // 外设配置结构（简化版，测试用）
@@ -154,13 +155,13 @@ struct PeripheralConfig {
     // SPI参数
     struct { uint32_t frequency = 1000000; uint8_t mode = 0; bool msbFirst = true; } spi;
     // GPIO参数
-    struct { uint8_t initialState = 0; uint8_t pwmChannel = 0; uint32_t pwmFrequency = 1000; uint8_t pwmResolution = 8; uint16_t defaultDuty = 0; } gpio;
+    struct { uint8_t initialState = 0; uint8_t pwmChannel = 0; uint32_t pwmFrequency = 1000; uint8_t pwmResolution = 8; uint16_t defaultDuty = 0; bool passive = false; } gpio;
     // ADC参数
     struct { uint8_t attenuation = 0; uint8_t resolution = 12; uint16_t sampleRate = 1000; } adc;
     // DAC参数
     struct { uint8_t channel = 1; uint8_t defaultValue = 0; } dac;
     // LCD 参数
-    struct { uint8_t width = 128; uint8_t height = 64; uint8_t interface = 2; } lcd;
+    struct { uint8_t width = 128; uint8_t height = 64; uint8_t interface = 2; uint8_t contrast = 255; } lcd;
     // 数码管参数
     struct { uint8_t brightness = 2; } segment;
     // NeoPixel 参数
@@ -502,6 +503,12 @@ public:
                 pm.writePin(rule.targetPeriphId, LOW);
                 break;
             case ActionType::BLINK: {
+                int current = pm.readPin(rule.targetPeriphId);
+                pm.writePin(rule.targetPeriphId, current == HIGH ? LOW : HIGH);
+                break;
+            }
+            case ActionType::GPIO_TOGGLE: {
+                // 电平翻转：读当前电平取反写入（镜像生产执行器 ACTION_GPIO_TOGGLE 语义）
                 int current = pm.readPin(rule.targetPeriphId);
                 pm.writePin(rule.targetPeriphId, current == HIGH ? LOW : HIGH);
                 break;

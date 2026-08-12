@@ -24,8 +24,26 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 void test_pagination_fixes_group();
+
+// 源码回归辅助：从项目根读取源码文件
+static std::string readPaginationSrcFile(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::string fullPath = std::string(root) + "/" + relativePath;
+        std::ifstream file(fullPath);
+        if (file.is_open()) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            return ss.str();
+        }
+    }
+    return "";
+}
 
 // ==============================================================
 // 模拟分页逻辑（复现 PeripheralRouteHandler 修复）
@@ -821,6 +839,60 @@ void test_smoke_periph_exec_pagination() {
 }
 
 // ==============================================================
+// Test: 单条查询路径 MutexGuard 超时源码回归
+// 回归：handleGetRules 的 ?id= 路径曾用默认 portMAX_DELAY 无限等待规则锁，
+// 规则执行长时间占锁时会永久阻塞 async_tcp 任务，冻结所有 HTTP 请求
+// （编辑页 AbortError 故障根因之一）
+// ==============================================================
+
+void test_source_rule_by_id_mutex_timeout() {
+    TestLog::testStart("Source: Rule-by-id query uses bounded MutexGuard wait");
+
+    std::string content = readPaginationSrcFile("src/network/handlers/PeriphExecRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read PeriphExecRouteHandler.cpp");
+    TestLog::step("File loaded");
+
+    // 定位单条查询路径：从 hasParam("id") 到列表查询分段注释
+    size_t idPos = content.find("request->hasParam(\"id\")");
+    TEST_ASSERT_TRUE_MESSAGE(idPos != std::string::npos,
+        "handleGetRules must have a single-rule query path via ?id=");
+    size_t idEnd = content.find("列表查询", idPos);
+    TEST_ASSERT_TRUE(idEnd != std::string::npos);
+    std::string idBlock = content.substr(idPos, idEnd - idPos);
+
+    // 必须使用 2000ms 有界等待，禁止默认 portMAX_DELAY 无限等待
+    TEST_ASSERT_TRUE_MESSAGE(
+        idBlock.find("MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(2000))") != std::string::npos,
+        "Rule-by-id path must lock with 2000ms timeout (never portMAX_DELAY)");
+    TestLog::step("Rule-by-id path uses bounded 2000ms mutex wait");
+
+    // 超时后必须返回 503 + Retry-After 提示，与列表路径行为一致
+    TEST_ASSERT_TRUE_MESSAGE(
+        idBlock.find("!lock.isLocked()") != std::string::npos &&
+        idBlock.find("Service busy (rules locked)") != std::string::npos,
+        "Rule-by-id path must return 503 with retry hint when lock times out");
+    TestLog::step("Lock timeout returns 503 with retry hint");
+
+    // 全文件中 getRulesMutex 的所有 MutexGuard 使用都必须带显式超时参数
+    size_t pos = 0;
+    int guardCount = 0;
+    while ((pos = content.find("MutexGuard lock(mgr.getRulesMutex()", pos)) != std::string::npos) {
+        guardCount++;
+        std::string snippet = content.substr(pos, 80);
+        TEST_ASSERT_TRUE_MESSAGE(
+            snippet.find("pdMS_TO_TICKS(") != std::string::npos,
+            "Every getRulesMutex() MutexGuard must pass an explicit timeout (never portMAX_DELAY)");
+        pos += 30;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(guardCount >= 2,
+        "Expected at least 2 getRulesMutex guards (rule-by-id + list path)");
+    TestLog::step("All rules mutex guards carry explicit timeouts");
+
+    TestLog::testEnd(true);
+}
+
+// ==============================================================
 // Test group entry point
 // ==============================================================
 
@@ -839,6 +911,7 @@ void test_pagination_fixes_group() {
     // MutexGuard 超时修复
     RUN_TEST(test_mutex_guard_timeout_behavior);
     RUN_TEST(test_mutex_guard_503_response);
+    RUN_TEST(test_source_rule_by_id_mutex_timeout);
 
     // 缓冲区边界保护
     RUN_TEST(test_buffer_boundary_protection);

@@ -27,6 +27,7 @@ const REQUIRED_GZIP_ASSETS = [
     'js/modules/periph-exec-form.js.gz',
     'js/modules/periph-exec-modbus.js.gz',
     'js/modules/network.js.gz',
+    'js/modules/feature-config.js.gz',
     'js/modules/admin-bundle.js.gz',
     'js/modules/peripherals.js.gz',
     'pages/dashboard.html.gz',
@@ -34,6 +35,7 @@ const REQUIRED_GZIP_ASSETS = [
     'pages/network.html.gz',
     'pages/peripheral.html.gz',
     'pages/protocol.html.gz',
+    'pages/features.html.gz',
     'pages/modals.html.gz'
 ];
 const STANDARD_GZIP_ASSETS = [
@@ -58,10 +60,7 @@ const FULL_GZIP_ASSETS = [
     'pages/logs.html.gz',
     'pages/rule-script.html.gz',
     'pages/fullscreen.html.gz',
-    'pages/fragments/device-ota.html.gz',
-    'pages/fragments/protocol-coap.html.gz',
-    'pages/fragments/protocol-http.html.gz',
-    'pages/fragments/protocol-tcp.html.gz'
+    'pages/fragments/device-ota.html.gz'
 ];
 
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js']);
@@ -79,7 +78,8 @@ const WEB_ASSET_BUDGETS = {
         pageBundleGzip: 13 * 1024
     },
     full: {
-        totalGzip: 280 * 1024,
+        // 285KB: 含运行时功能配置页 (feature-config.js + features.html, ~3KB gz)
+        totalGzip: 285 * 1024,
         bootGzip: 64 * 1024,
         singleAssetGzip: 32 * 1024,
         pageBundleGzip: 14 * 1024
@@ -393,10 +393,11 @@ function checkModuleLoaderResilience() {
 
 function checkBootTimingRegressionGuards() {
     // 2025-06 修复: 首次访问卡顿 - 请求加载应充分错开，避免压垂ESP32
+    // 后续提速优化: chunk 间隔 80ms -> 30ms（由 native test_frontend_loader_timings_locked 锁定）
     const indexHtml = read('web-src/index.html');
-    // chunk加载间隔应为80ms而非30ms
-    assert(indexHtml.includes('delayMs || 80'), 'chunk loading delay should be 80ms (not 30ms)');
-    assert(indexHtml.includes("loadSequence(bootChunks, 80)"), 'boot chunk sequence should use 80ms interval');
+    // chunk加载间隔应为30ms（提速后的锁定值）
+    assert(indexHtml.includes('delayMs || 30'), 'chunk loading delay should be 30ms (speedup locked)');
+    assert(indexHtml.includes("loadSequence(bootChunks, 30)"), 'boot chunk sequence should use 30ms interval');
     // SW注册应延迟5秒
     assert(indexHtml.includes('setTimeout') && indexHtml.includes('5000'), 'SW registration should be delayed 5000ms');
     // SW注册不应使用 window.addEventListener('load') 模式

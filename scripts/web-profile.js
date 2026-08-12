@@ -67,6 +67,15 @@ function isFullWebProfile() {
     return getWebProfile() === 'full';
 }
 
+// 设备大屏（FASTBEE_ENABLE_DEVICE_CONTROL）：解压需 ~106KB DRAM，
+// 仅 PSRAM 设备（full）承载；lite 永远不含；standard 由 CLI/环境变量显式开启
+function hasDeviceControl() {
+    if (isLiteWebProfile()) return false;
+    if (isFullWebProfile()) return true;
+    return process.argv.includes('--device-control')
+        || (process.env.FASTBEE_DEVICE_CONTROL === '1');
+}
+
 module.exports = {
     getWebProfile,
     normalizeWebProfile,
@@ -74,5 +83,6 @@ module.exports = {
     isStandardWebProfile,
     isCompactWebProfile,
     isProdWebProfile,
-    isFullWebProfile
+    isFullWebProfile,
+    hasDeviceControl
 };

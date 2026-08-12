@@ -11,7 +11,9 @@
 
 #include "protocols/ModbusHandler.h"
 #include "core/ChipConfig.h"
+#include "core/MemoryBudget.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 
 #if FASTBEE_ENABLE_MODBUS
 
@@ -269,15 +271,18 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         LOG_WARNING("Modbus: Config file not found");
         return false;
     }
-    
-    String jsonContent = FileUtils::readFile(actualPath);
-    if (jsonContent.isEmpty()) {
-        LOG_WARNING("Modbus: Config file is empty");
+
+    // 审计 P2-2：流式反序列化（ConfigStorage 同款正确示范），
+    // 消除 文件→String→JsonDocument 双份峰值与 readString churn
+    File configFile = LittleFS.open(actualPath, "r");
+    if (!configFile) {
+        LOG_WARNING("Modbus: Failed to open config file");
         return false;
     }
-    
-    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，替代固定 8192 容量
-    DeserializationError error = deserializeJson(doc, jsonContent);
+
+    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，流式输入可零拷贝复用
+    DeserializationError error = deserializeJson(doc, configFile);
+    configFile.close();
     if (error) {
         LOG_ERRORF("Modbus: JSON parse error: %s", error.c_str());
         return false;
@@ -1532,7 +1537,7 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
     uint8_t maxRetries = config.master.maxRetries;
 
     // 捕获 TX 帧 hex（用于调试面板显示）—— 低堆时跳过以减少分配压力
-    bool heapSafe = ESP.getFreeHeap() > 15000;
+    bool heapSafe = FastBee::MemoryBudget::dramFree() > 15000;
     if (heapSafe) {
         _lastTxHex = "";
         _lastRxHex = "";
@@ -2131,7 +2136,7 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     if (!task.enabled) return "[]";
 
     // 检查堆内存是否充足
-    if (ESP.getFreeHeap() < 10000) {
+    if (FastBee::MemoryBudget::dramFree() < 10000) {
         LOG_WARNINGF("[Modbus] Insufficient heap for JSON: %d bytes", ESP.getFreeHeap());
         return "[]";
     }
@@ -2211,7 +2216,7 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         cache.valid = false;
         cache.count = 0;
         // 低堆时跳过状态通知（避免 JsonDocument 分配导致 abort）
-        if (ESP.getFreeHeap() > 15000) {
+        if (FastBee::MemoryBudget::dramFree() > 15000) {
             _notifyStatusChange();
         }
         return "[]";

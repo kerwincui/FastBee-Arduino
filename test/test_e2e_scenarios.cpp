@@ -567,45 +567,6 @@ void test_e2e_ntp_paths_by_network_type() {
 }
 
 /**
- * @brief 验证 HTTPClientWrapper HTTPS 支持逻辑
- * baseURL 为 https:// 时使用 WiFiClientSecure，http:// 时使用 WiFiClient
- */
-void test_e2e_http_client_wrapper_https_selection() {
-    TestLog::testStart("E2E: HTTPClientWrapper HTTPS Selection");
-
-    // 测试 isBaseUrlHttps() 判断逻辑
-    String httpsBase = "https://iot.fastbee.cn/prod-api";
-    bool isHttps1 = httpsBase.startsWith("https://");
-    TEST_ASSERT_TRUE(isHttps1);
-    TestLog::step("https://... → isBaseUrlHttps() = true → WiFiClientSecure");
-
-    String httpBase = "http://iot.fastbee.cn:8080/api";
-    bool isHttps2 = httpBase.startsWith("https://");
-    TEST_ASSERT_FALSE(isHttps2);
-    TestLog::step("http://... → isBaseUrlHttps() = false → WiFiClient");
-
-    // 验证 buildURL 不会改变协议
-    // HTTPClientWrapper::buildURL() 只拼接 endpoint，不修改 baseURL
-    // https://iot.fastbee.cn/prod-api + /iot/data → https://iot.fastbee.cn/prod-api/iot/data
-    String url1 = httpsBase;
-    String endpoint1 = "/iot/data";
-    if (!url1.endsWith("/") && !endpoint1.startsWith("/")) url1 += "/";
-    url1 += endpoint1;
-    TEST_ASSERT_TRUE(url1.startsWith("https://"));
-    TestLog::step("buildURL preserves https:// protocol");
-
-    String url2 = httpBase;
-    String endpoint2 = "iot/data";
-    if (!url2.endsWith("/") && !endpoint2.startsWith("/")) url2 += "/";
-    url2 += endpoint2;
-    TEST_ASSERT_TRUE(url2.startsWith("http://"));
-    TEST_ASSERT_FALSE(url2.startsWith("https://"));
-    TestLog::step("buildURL preserves http:// protocol (no downgrade)");
-
-    TestLog::testEnd(true);
-}
-
-/**
  * @brief 验证 MQTT 连接后全链路交互：NTP → MQTT → 数据上报 → NTP订阅
  * 连接成功后：订阅主题 → 发布设备信息 → 发起NTP订阅同步
  */
@@ -2063,7 +2024,6 @@ void test_e2e_scenarios_group() {
     RUN_TEST(test_e2e_sta_disconnect_reconnect_recovery);
     RUN_TEST(test_e2e_mqtt_encrypted_auth_depends_on_ntp_https);
     RUN_TEST(test_e2e_ntp_paths_by_network_type);
-    RUN_TEST(test_e2e_http_client_wrapper_https_selection);
     RUN_TEST(test_e2e_mqtt_full_chain_interaction);
 
     // 以太网 Web 多接口访问 & NTP/MQTT 自动启动回归

@@ -2434,19 +2434,18 @@ void test_mqtts_reconnect_stack_size() {
     // 模拟 MQTTClient::begin() 中的栈分配逻辑
     constexpr uint32_t SIMPLE_TASK_STACK_C6 = 4096;   // ESP32-C6 平台值
     constexpr uint32_t SIMPLE_TASK_STACK_S3 = 6144;   // ESP32-S3 平台值
-    constexpr uint32_t MQTTS_STACK = 6144;             // MQTTS 专用栈
+    constexpr uint32_t MQTTS_STACK = 8192;             // MQTTS 专用栈（审计 P1-3）
 
     // mqtt 使用默认栈
     uint32_t mqttStack = SIMPLE_TASK_STACK_C6;
     TEST_ASSERT_TRUE(mqttStack >= SIMPLE_TASK_STACK_C6);
     TestLog::step("mqtt uses default stack (4096 on C6)");
 
-    // mqtts 使用 6KB 栈，避免先消耗 mbedTLS 需要的内部 DRAM
+    // mqtts 使用 8KB 栈，为 TLS 握手峰值预留余量
     uint32_t mqttsStack = MQTTS_STACK;
     TEST_ASSERT_TRUE(mqttsStack >= SIMPLE_TASK_STACK_S3);
-    TEST_ASSERT_TRUE(mqttsStack <= SIMPLE_TASK_STACK_S3);
     TEST_ASSERT_TRUE(mqttsStack > SIMPLE_TASK_STACK_C6);
-    TestLog::step("mqtts uses 6KB stack (> 4KB C6 default, <= S3 default)");
+    TestLog::step("mqtts uses 8KB stack (> 4KB C6 / 6KB S3 default, TLS headroom)");
 
     // S3 上 mqtt 默认栈也足够
     uint32_t mqttStackS3 = SIMPLE_TASK_STACK_S3;
@@ -4108,6 +4107,18 @@ void test_web_server_watchdog_mechanisms() {
         "Header must define NO_REQUEST_WATCHDOG_MS = 120000UL (2min stale-PCB cleanup)");
     TestLog::step("NO_REQUEST_WATCHDOG_MS defined");
 
+    // TIME_WAIT 修剪参数：短连接密集场景需快速释放 PCB 槽位（MEMP_NUM_TCP_PCB=16）
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("CHECK_INTERVAL_MS = 5000UL") != std::string::npos,
+        "Header must define CHECK_INTERVAL_MS = 5000UL (5s TCP health check interval)");
+    TestLog::step("CHECK_INTERVAL_MS defined");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("TIME_WAIT_PRUNE_THRESHOLD = 6") != std::string::npos &&
+        header.find("TIME_WAIT_PRUNE_KEEP = 2") != std::string::npos,
+        "Header must define TIME_WAIT_PRUNE_THRESHOLD = 6 and TIME_WAIT_PRUNE_KEEP = 2");
+    TestLog::step("TIME_WAIT prune thresholds defined");
+
     // 2. 看门狗状态字段
     TEST_ASSERT_TRUE_MESSAGE(
         header.find("lastRequestSeenMs") != std::string::npos &&
@@ -4163,6 +4174,30 @@ void test_web_server_watchdog_mechanisms() {
         maintBlock.find("\"no_request_watchdog\"") != std::string::npos,
         "No-request watchdog must reap stale pcbs in place (no risky soft-restart)");
     TestLog::step("No-request watchdog reaps stale pcbs without restarting listener");
+
+    // 4.1 SSE 客户端在线时必须跳过回收：SSE 不计入 HTTP 请求，其长连接被误杀会
+    // 切断浏览器进行中的请求链（编辑页 AbortError 故障根因之一）
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("sseRouteHandler->clientCount() > 0") != std::string::npos,
+        "No-request watchdog must check SSE client count before reaping");
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("SSE clients active") != std::string::npos,
+        "Watchdog must reset timer and skip reap when SSE clients are active");
+    TestLog::step("No-request watchdog skips reap while SSE clients active");
+
+    // 4.2 requireAuth 必须记录请求活动：HandlerUtils 的 chunked/stream 发送路径
+    // 不更新 lastRequestSeenMs，缺失会导致看门狗误判“120s 无人访问”（编辑页 4 个接口全走这些路径）
+    std::string ctxSrc = readProjectFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!ctxSrc.empty(), "WebHandlerContext.cpp must be readable");
+    size_t authPos = ctxSrc.find("bool WebHandlerContext::requireAuth(");
+    TEST_ASSERT_TRUE_MESSAGE(authPos != std::string::npos, "requireAuth() must exist");
+    size_t authEnd = ctxSrc.find("\nbool WebHandlerContext::isDeveloperModeEnabled()", authPos);
+    TEST_ASSERT_TRUE(authEnd != std::string::npos);
+    std::string authBlock = ctxSrc.substr(authPos, authEnd - authPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        authBlock.find("noteWebRequestActivity()") != std::string::npos,
+        "requireAuth() must call noteWebRequestActivity() so chunked/stream paths keep watchdog alive");
+    TestLog::step("requireAuth records request activity for watchdog");
 
     // 5. trackWebRequest 必须更新 lastRequestSeenMs
     size_t trackPos = web.find("void WebConfigManager::trackWebRequest()");
@@ -6505,6 +6540,212 @@ void test_mqtt_reconnect_task_entry_clears_flags_on_exit() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// 实时监测传感器缓存合并测试
+// 模拟 ProtocolManager::collectLocalSensorData() 中传感器读取缓存
+// （DHT11/DHT22、DS18B20、SHT31/AHT20/BH1750/BMP280/MPU6050 等
+//  ACTION_SENSOR_READ 统一写入）并入 /monitor/post payload 的规则
+// ============================================================
+
+#include <map>
+#include <cstring>
+
+// 模拟 PeriphExecManager::SensorReadCache 条目（key = periphId_内部通道字段）
+struct MonitorSensorCacheEntry {
+    String label;
+    String value;
+    String unit;
+    String dataField;        // 显式配置的多字段名，实时监测上报时优先作为 id
+    String periphId;         // 外设配置 id：dataField 未显式配置时的上报 id 回退来源
+    unsigned long timestamp; // 更新时间 millis()
+};
+
+// 与 PeriphExecManager::SENSOR_CACHE_TTL_MS 保持一致
+static constexpr unsigned long MONITOR_SENSOR_CACHE_TTL_MS = 120000;
+
+// 复刻 collectLocalSensorData() 的缓存合并规则：
+// 空值跳过 → TTL 过滤 → 显式 dataField 优先/否则外设配置 id/最后完整 key 兜底 → remark 固定 "sensor"
+static String mergeMonitorSensorCache(const std::map<String, MonitorSensorCacheEntry>& cache,
+                                      unsigned long now, String json, bool first) {
+    for (const auto& entry : cache) {
+        const auto& c = entry.second;
+        if (c.value.isEmpty()) continue;
+        // 防御性 TTL 检查：周期性淘汰之外再拦截一次过期数据
+        if (now - c.timestamp > MONITOR_SENSOR_CACHE_TTL_MS) continue;
+        // 旧缓存条目无 periphId 时回退用完整 key（periphId_内部通道字段）
+        String reportId = c.dataField;
+        if (reportId.isEmpty()) {
+            reportId = c.periphId.isEmpty() ? entry.first : c.periphId;
+        }
+        if (!first) json += ",";
+        json += "{\"id\":\"";
+        json += reportId;
+        json += "\",\"value\":\"";
+        json += c.value;
+        json += "\",\"remark\":\"sensor\"}";
+        first = false;
+    }
+    json += "]";
+    return json;
+}
+
+// Test: dataField 作为上报 id（DHT11 温湿度场景，与真机日志一致）
+void test_monitor_merge_datafield_as_id() {
+    TestLog::testStart("Monitor Merge: dataField used as report id");
+
+    std::map<String, MonitorSensorCacheEntry> cache;
+    cache[String("dht11_temperature")] = {String("temperature"), String("26.0"), String("C"), String("temperature"), String("dht11"), 1000};
+    cache[String("dht11_humidity")]    = {String("humidity"), String("61.0"), String("%RH"), String("humidity"), String("dht11"), 1000};
+
+    String payload = mergeMonitorSensorCache(cache, 2000, String("["), true);
+
+    // std::map 按 key 字典序遍历：humidity 在前（与真机 /monitor/post 日志一致）
+    TEST_ASSERT_EQUAL_STRING(
+        "[{\"id\":\"humidity\",\"value\":\"61.0\",\"remark\":\"sensor\"},"
+        "{\"id\":\"temperature\",\"value\":\"26.0\",\"remark\":\"sensor\"}]",
+        payload.c_str());
+    TestLog::step("id uses dataField (temperature/humidity), not cache key");
+
+    // 平台格式校验：合法 JSON 数组，每项含 id/value/remark
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload.c_str()));
+    JsonArray arr = parsed.as<JsonArray>();
+    TEST_ASSERT_EQUAL(2, arr.size());
+    for (JsonVariant v : arr) {
+        TEST_ASSERT_TRUE(v.containsKey("id"));
+        TEST_ASSERT_TRUE(v.containsKey("value"));
+        TEST_ASSERT_EQUAL_STRING("sensor", v["remark"].as<const char*>());
+    }
+    TestLog::step("payload format valid for /monitor/post");
+
+    TestLog::testEnd(true);
+}
+
+// Test: 单总线 + I2C 多传感器类别全部并入实时监测
+void test_monitor_merge_multi_sensor_types() {
+    TestLog::testStart("Monitor Merge: DS18B20 + I2C sensors all included");
+
+    std::map<String, MonitorSensorCacheEntry> cache;
+    cache[String("ds18b20_temperature")] = {String("temperature"), String("24.5"), String("C"), String("temperature"), String("ds18b20"), 5000};
+    cache[String("sht31_humidity")]      = {String("humidity"), String("55.3"), String("%RH"), String("humidity"), String("sht31"), 5000};
+    cache[String("bh1750_illuminance")]  = {String("illuminance"), String("350.0"), String("lx"), String("illuminance"), String("bh1750"), 5000};
+    cache[String("bmp280_pressure")]     = {String("pressure"), String("1013.2"), String("hPa"), String("pressure"), String("bmp280"), 5000};
+    cache[String("mpu6050_accelX")]      = {String("accelX"), String("0.98"), String("g"), String("accelX"), String("mpu6050"), 5000};
+
+    String payload = mergeMonitorSensorCache(cache, 6000, String("["), true);
+
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload.c_str()));
+    JsonArray arr = parsed.as<JsonArray>();
+    TEST_ASSERT_EQUAL(5, arr.size());
+
+    // 每个已配置传感器的 dataField 都必须出现在上报 id 中
+    const char* expectedIds[] = {"temperature", "humidity", "illuminance", "pressure", "accelX"};
+    for (const char* id : expectedIds) {
+        bool found = false;
+        for (JsonVariant v : arr) {
+            if (strcmp(v["id"].as<const char*>(), id) == 0) { found = true; break; }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(found, id);
+    }
+    TestLog::step("all 5 sensor categories reported (1-wire + I2C drivers)");
+
+    TestLog::testEnd(true);
+}
+
+// Test: dataField 回退 + TTL 边界 + 空值过滤
+void test_monitor_merge_fallback_ttl_empty_filters() {
+    TestLog::testStart("Monitor Merge: key fallback + TTL boundary + empty filter");
+
+    const unsigned long now = 200000;
+    std::map<String, MonitorSensorCacheEntry> cache;
+    // 旧条目无 dataField 也无 periphId，年龄恰好 = TTL（条件为 > TTL，应保留），id 回退用完整 key
+    cache[String("dht22_temperature")] = {String("temperature"), String("22.8"), String("C"), String(""), String(""), now - MONITOR_SENSOR_CACHE_TTL_MS};
+    // 过期条目（年龄 = TTL + 1ms）应被跳过
+    cache[String("sht31_temperature")] = {String("temperature"), String("23.1"), String("C"), String("temperature"), String("sht31"), now - MONITOR_SENSOR_CACHE_TTL_MS - 1};
+    // 空值条目应被跳过
+    cache[String("aht20_humidity")] = {String("humidity"), String(""), String("%RH"), String("humidity"), String("aht20"), now};
+
+    String payload = mergeMonitorSensorCache(cache, now, String("["), true);
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[{\"id\":\"dht22_temperature\",\"value\":\"22.8\",\"remark\":\"sensor\"}]",
+        payload.c_str());
+    TestLog::step("legacy entry kept at TTL boundary, id falls back to cache key");
+    TestLog::step("expired entry (TTL+1) and empty value both filtered");
+
+    TestLog::testEnd(true);
+}
+
+// Test: 通用规则——单值传感器未显式配置 dataField 时，上报 id 回退为外设配置 id
+// （与平台物模型标识符对应，如 adc_pot），而非写死的类别默认字段（如旧逻辑的 value）
+void test_monitor_merge_periph_id_fallback_as_id() {
+    TestLog::testStart("Monitor Merge: periphId fallback as report id (generic rule)");
+
+    std::map<String, MonitorSensorCacheEntry> cache;
+    // 单值传感器：dataField 未显式配置（空），携带 periphId；缓存键用外设配置 id
+    cache[String("adc_pot_adc_pot")] = {String("adc"), String("1984"), String(""), String(""), String("adc_pot"), 3000};
+
+    String payload = mergeMonitorSensorCache(cache, 4000, String("["), true);
+
+    TEST_ASSERT_EQUAL_STRING(
+        "[{\"id\":\"adc_pot\",\"value\":\"1984\",\"remark\":\"sensor\"}]",
+        payload.c_str());
+    TestLog::step("id = peripheral config id (adc_pot), not inferred field or cache key");
+
+    TestLog::testEnd(true);
+}
+
+// Test: 故障路径回归——web-reserve 暂停后台定时规则后，传感器缓存不再更新，
+// TTL 过期后实时监测丢失温湿度（ADC 走现场读数路径不受影响）。
+// 真机事故（2026-08）：恢复阈值误设 60KB > 设备基线 51KB → 暂停不可逆 →
+// 实时监测只剩 adc_pot。因此暂停/恢复阈值必须围绕实测基线设计。
+void test_monitor_merge_stalled_rule_drops_cached_sensors() {
+    TestLog::testStart("Monitor Merge: stalled background rule drops cached sensors after TTL");
+
+    const unsigned long cacheWriteTime = 100000;
+    std::map<String, MonitorSensorCacheEntry> cache;
+    cache[String("dht11_temperature")] = {String("temperature"), String("26.2"), String("C"), String("temperature"), String("dht11"), cacheWriteTime};
+    cache[String("dht11_humidity")]    = {String("humidity"), String("51.0"), String("%RH"), String("humidity"), String("dht11"), cacheWriteTime};
+
+    // TTL 内（30s 后）：温湿度正常上报
+    String fresh = mergeMonitorSensorCache(cache, cacheWriteTime + 30000, String("["), true);
+    TEST_ASSERT_TRUE(strstr(fresh.c_str(), "\"id\":\"temperature\"") != nullptr);
+    TEST_ASSERT_TRUE(strstr(fresh.c_str(), "\"id\":\"humidity\"") != nullptr);
+    TestLog::step("within TTL: temperature & humidity reported");
+
+    // TTL 过期（121s 后，后台规则被暂停未重写缓存）：温湿度全部丢失
+    String stale = mergeMonitorSensorCache(cache, cacheWriteTime + MONITOR_SENSOR_CACHE_TTL_MS + 1000, String("["), true);
+    TEST_ASSERT_EQUAL_STRING("[]", stale.c_str());
+    TestLog::step("after TTL without rule refresh: cached sensors dropped (ADC live-read path unaffected)");
+    TestLog::step("=> suspend/resume thresholds must be designed around real device baseline");
+
+    TestLog::testEnd(true);
+}
+
+// Test: 追加在 GPIO 本地数据之后时逗号分隔正确（first=false 路径）
+void test_monitor_merge_appends_after_local_gpio() {
+    TestLog::testStart("Monitor Merge: appends after local GPIO entries");
+
+    // 模拟 collectLocalSensorData 前半段已写入一条 GPIO 本地数据
+    String json = "[{\"id\":\"gpio_input1\",\"value\":\"1\",\"remark\":\"local\"}";
+
+    std::map<String, MonitorSensorCacheEntry> cache;
+    cache[String("dht11_temperature")] = {String("temperature"), String("26.0"), String("C"), String("temperature"), String("dht11"), 1000};
+
+    String payload = mergeMonitorSensorCache(cache, 2000, json, false);
+
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE_MESSAGE(deserializeJson(parsed, payload.c_str()), "comma separation must keep JSON valid");
+    JsonArray arr = parsed.as<JsonArray>();
+    TEST_ASSERT_EQUAL(2, arr.size());
+    TEST_ASSERT_EQUAL_STRING("local", arr[0]["remark"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("sensor", arr[1]["remark"].as<const char*>());
+    TestLog::step("local + sensor entries merged into one valid array");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -6755,6 +6996,14 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtt_reconnect_watchdog_long_running_stability);
     RUN_TEST(test_mqtt_reconnect_watchdog_constant_sync);
     RUN_TEST(test_mqtt_reconnect_task_entry_clears_flags_on_exit);
+
+    // 实时监测传感器缓存合并测试（collectLocalSensorData 扩展：DHT/单总线/I2C 传感器）
+    RUN_TEST(test_monitor_merge_datafield_as_id);
+    RUN_TEST(test_monitor_merge_multi_sensor_types);
+    RUN_TEST(test_monitor_merge_fallback_ttl_empty_filters);
+    RUN_TEST(test_monitor_merge_periph_id_fallback_as_id);
+    RUN_TEST(test_monitor_merge_stalled_rule_drops_cached_sensors);
+    RUN_TEST(test_monitor_merge_appends_after_local_gpio);
 
     TestLog::groupEnd();
 }

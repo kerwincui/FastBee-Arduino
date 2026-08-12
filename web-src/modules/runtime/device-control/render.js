@@ -83,6 +83,10 @@
         _renderMonitorDataCard: function(data) {
             var monitorGroups = this._buildMonitorGroupsFromModbus();
             var sensorCards = [];
+            // 按传感器唯一键(periphId_dataField)去重：多条规则可能读取同一传感器（如“数据采集上报”
+            // 与“数码管轮显温湿度”都读 dht11 温湿度），不去重会导致监测卡片重复显示。
+            // SSE 实时更新(modbus-ops.js _handleSSESensorData)按 data-id 定位唯一卡片，去重后更新才正确。
+            var seenSensorKeys = {};
             // 从 sensor 规则的 sensors[] 数组构建监测卡片
             var sensorRules = this._filterByActionType(data.sensor, [19]);
             for (var i = 0; i < sensorRules.length; i++) {
@@ -90,12 +94,23 @@
                 if (rule.sensors && rule.sensors.length > 0) {
                     for (var j = 0; j < rule.sensors.length; j++) {
                         var s = rule.sensors[j];
-                        sensorCards.push({
+                        var cardKey = s.key;
+                        if (seenSensorKeys[cardKey]) {
+                            // 同键卡片已存在：若新条目带有真实值而旧条目仍为占位 '--'，则刷新数值
+                            var existingCard = seenSensorKeys[cardKey];
+                            if ((!existingCard.value || existingCard.value === '--') && s.value && s.value !== '--') {
+                                existingCard.value = s.value;
+                            }
+                            continue;
+                        }
+                        var card = {
                             id: s.key,
                             name: s.label || s.key,
                             value: s.value || '--',
                             unit: s.unit || this._getMonitorUnit(s.label || '')
-                        });
+                        };
+                        seenSensorKeys[cardKey] = card;
+                        sensorCards.push(card);
                     }
                 }
             }

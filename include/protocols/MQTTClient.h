@@ -169,6 +169,12 @@ public:
     // 重置 consecutiveTimeouts、reconnectInterval、reconnectCount、lastErrorCode
     void resetErrorCounters();
 
+    // Web 前台请求到达时同步让位：MQTT publish 会把 free8 压到 3-5KB 并
+    // 占满 WiFi TX 通道，handle() 的让位要等下一个 protocol_handle tick，
+    // 此时响应已入队卡死（soak 首请求 1/40 挂起根因）。请求分发路径
+    // （WebHandlerContext::noteWebRequestActivity）直接调用本方法立即断开。
+    void yieldToWeb();
+
     // 设置消息回调（topic, message, topicType）
     void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
 
@@ -227,6 +233,9 @@ private:
     // 导致 handle() 永不再调度自动重连（表现为必须手动打开协议界面刷新才能恢复）。
     unsigned long _reconnectScheduledMs = 0;
     static constexpr uint32_t RECONNECT_WATCHDOG_TIMEOUT_MS = 90000;  // 重连执行最大允许时长（ms）
+    // 8BIT 卡滞救援：MQTT 断开后 free8 <8KB 的起始时间 + 上次 WiFi 救援时间
+    unsigned long _low8SinceMs = 0;
+    unsigned long _lastWifiRescueMs = 0;
     bool _lastMqttsTlsMemoryFailure = false;
     bool _mqttsMemoryBackoffActive = false;
     static void reconnectTaskEntry(void* param);

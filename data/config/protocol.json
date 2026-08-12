@@ -141,42 +141,5 @@
         "topicType": 6
       }
     ]
-  },
-  "http": {
-    "enabled": false,
-    "url": "",
-    "port": 80,
-    "method": "POST",
-    "timeout": 30,
-    "interval": 60,
-    "retry": 3,
-    "authType": "none",
-    "authUser": "",
-    "authToken": "",
-    "contentType": "application/json"
-  },
-  "coap": {
-    "enabled": false,
-    "server": "",
-    "port": 5683,
-    "method": "POST",
-    "path": "sensors/temperature",
-    "msgType": "CON",
-    "retransmit": 3,
-    "timeout": 5000
-  },
-  "tcp": {
-    "enabled": false,
-    "server": "",
-    "port": 5000,
-    "timeout": 5000,
-    "keepAlive": 60,
-    "maxRetry": 5,
-    "reconnectInterval": 10,
-    "mode": "client",
-    "heartbeatMsg": "\\n",
-    "maxClients": 5,
-    "idleTimeout": 120,
-    "localPort": 8080
   }
 }

@@ -111,6 +111,9 @@ public:
     void   loadCacheDuration();
     void   noteWebRequestActivity(unsigned long holdMs = 3500UL);
     void   maintainWebForegroundTaskBudget();
+    // 是否有静态文件响应正在传输中（MQTT publish 门控用：
+    // TLS publish 与在途响应竞争 lwIP/WiFi TX 会把响应卡死）
+    bool   isStaticTransferActive() const;
 };
 
 #endif // WEB_HANDLER_CONTEXT_H

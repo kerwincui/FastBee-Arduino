@@ -17,9 +17,6 @@ const EventDef STATIC_EVENTS[] = {
     // 协议事件
     {EventType::EVENT_MODBUS_RTU_ENABLED, "modbus_rtu_enabled", "Modbus RTU启用", "协议"},
     {EventType::EVENT_MODBUS_TCP_ENABLED, "modbus_tcp_enabled", "Modbus TCP启用", "协议"},
-    {EventType::EVENT_TCP_ENABLED, "tcp_enabled", "TCP协议启用", "协议"},
-    {EventType::EVENT_HTTP_ENABLED, "http_enabled", "HTTP协议启用", "协议"},
-    {EventType::EVENT_COAP_ENABLED, "coap_enabled", "CoAP协议启用", "协议"},
     // 系统服务事件
     {EventType::EVENT_NTP_SYNCED, "ntp_synced", "NTP时间同步完成", "系统"},
     {EventType::EVENT_OTA_START, "ota_start", "OTA升级开始", "系统"},
@@ -56,6 +53,8 @@ const EventDef STATIC_EVENTS[] = {
     {EventType::EVENT_RFID_CARD_REMOVED, "rfid_card_removed", "RFID卡片移开", "RFID"},
     // 红外遥控事件
     {EventType::EVENT_IR_CODE_RECEIVED, "ir_code_received", "红外编码接收", "红外"},
+    // RF 遥控事件
+    {EventType::EVENT_RF_CODE_RECEIVED, "rf_code_received", "RF编码接收", "RF"},
     // 终止标记
     {EventType::NONE, nullptr, nullptr, nullptr}
 };

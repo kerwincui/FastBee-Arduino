@@ -15,6 +15,9 @@
 #include "helpers/TestLogger.h"
 #include <cmath>
 #include <climits>
+#include <string>
+#include <fstream>
+#include <sstream>
 
 void test_sensor_driver_group();
 
@@ -401,6 +404,145 @@ static void test_adc_calibration_custom_acs712_30a() {
 }
 
 // ============================================================
+// 单总线并发互斥回归守护（2026-08-10 Interrupt WDT 崩溃修复）
+// 现场：两条定时规则同秒触发并发读同一 DHT11，总线时序被互相破坏，
+// DHT 库时序临界段（关全 CPU 中断）累计超时 → Interrupt wdt panic 复位。
+// 修复：SensorDriver 用全局总线互斥锁串行化物理读取。
+// ============================================================
+
+static std::string readSensorDriverSource() {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::string fullPath = std::string(root) + "/src/peripherals/SensorDriver.cpp";
+        std::ifstream file(fullPath);
+        if (file.is_open()) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            return ss.str();
+        }
+    }
+    return "";
+}
+
+/**
+ * @brief 源码锁定：总线互斥锁结构不得回退
+ */
+void test_sensor_bus_mutex_source_lock() {
+    TestLog::testStart("Sensor Bus Mutex: Source Lock");
+
+    std::string src = readSensorDriverSource();
+    TEST_ASSERT_TRUE_MESSAGE(!src.empty(),
+        "Failed to read SensorDriver.cpp - ensure test runs from project root");
+
+    // 1) 互斥锁创建与 RAII 锁结构存在
+    TEST_ASSERT_TRUE(src.find("xSemaphoreCreateMutex") != std::string::npos);
+    TEST_ASSERT_TRUE(src.find("struct SensorBusLock") != std::string::npos);
+    TestLog::step("Mutex + RAII lock structure found");
+
+    // 2) 拿锁超时上限存在（避免无限阻塞 worker）
+    TEST_ASSERT_TRUE(src.find("SENSOR_BUS_LOCK_TIMEOUT_MS = 3000") != std::string::npos);
+    TestLog::step("Lock timeout 3000ms locked");
+
+    // 3) DHT 与 DS18B20 两条读取路径都必须持锁（至少 2 处）
+    size_t lockUses = 0;
+    size_t pos = 0;
+    while ((pos = src.find("SensorBusLock busLock", pos)) != std::string::npos) {
+        lockUses++;
+        pos += 21;
+    }
+    TEST_ASSERT_GREATER_OR_EQUAL(2, (int)lockUses);
+    TestLog::step("Both DHT and DS18B20 read paths hold the bus lock");
+
+    // 4) 拿锁超时必须降级（返回缓存/NAN）而不是无锁强读
+    TEST_ASSERT_TRUE(src.find("bus lock timeout") != std::string::npos);
+    TestLog::step("Lock-timeout degradation path present");
+
+    TestLog::testEnd(true);
+}
+
+// 镜像 readDHT 的锁内/锁外缓存双检与串行化语义
+struct SensorBusMirror {
+    bool busBusy = false;        // 物理读进行中（检测并发侵入）
+    int physicalReads = 0;
+    bool cacheValid = false;
+    float cachedValue = 0.0f;
+    unsigned long cacheTs = 0;
+
+    // outsideCacheStale：锁外缓存检查时已过期（两个任务同时通过预检的竞态）
+    float readValue(unsigned long now, bool lockAvailable, bool outsideCacheStale,
+                    bool& overlapped) {
+        if (!outsideCacheStale && cacheValid && now - cacheTs < 2000) {
+            return cachedValue;  // 锁外缓存命中（快速路径）
+        }
+        if (!lockAvailable) {
+            // 拿锁超时：不强读，返回旧缓存或 NAN
+            return cacheValid ? cachedValue : NAN;
+        }
+        // 锁内双检：前一个持锁者可能已完成读取
+        if (cacheValid && now - cacheTs < 2000) {
+            return cachedValue;
+        }
+        overlapped = busBusy;  // 若已有物理读在飞 → 串行化被破坏
+        busBusy = true;
+        physicalReads++;
+        busBusy = false;
+        cacheValid = true;
+        cachedValue = 22.6f;
+        cacheTs = now;
+        return cachedValue;
+    }
+};
+
+/**
+ * @brief 并发规则竞态：两任务同时通过锁外预检，串行化后仅 1 次物理读
+ */
+void test_concurrent_reads_serialized_single_physical() {
+    TestLog::testStart("Sensor Bus: Concurrent Reads Serialized");
+
+    SensorBusMirror m;
+    bool overlapped = false;
+
+    // 任务 A 与 B 都在 t=1000 通过了锁外缓存预检（缓存尚无效）
+    float a = m.readValue(1000, true, true, overlapped);
+    float b = m.readValue(1026, true, true, overlapped);  // B 拿锁后双检命中缓存
+
+    TEST_ASSERT_FALSE_MESSAGE(overlapped, "Physical reads must never overlap");
+    TEST_ASSERT_EQUAL(1, m.physicalReads);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 22.6f, a);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 22.6f, b);
+    TestLog::step("Two racing tasks -> exactly one physical read");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 拿锁超时降级：不无锁强读，返回旧缓存或 NAN
+ */
+void test_bus_lock_timeout_degrades() {
+    TestLog::testStart("Sensor Bus: Lock Timeout Degrades Safely");
+
+    SensorBusMirror m;
+    bool overlapped = false;
+
+    // 先建立一次有效缓存
+    float first = m.readValue(1000, true, true, overlapped);
+    TEST_ASSERT_EQUAL(1, m.physicalReads);
+
+    // 缓存已过期且拿锁失败 → 返回旧缓存，不产生新的物理读（避免回到危险路径）
+    float v = m.readValue(4000, false, true, overlapped);
+    TEST_ASSERT_EQUAL(1, m.physicalReads);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 22.6f, v);
+    TestLog::step("No physical read without the bus lock");
+
+    // 锁外缓存未过期时仍可快速返回（无锁路径不受影响）
+    float cached = m.readValue(1500, false, false, overlapped);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 22.6f, cached);
+    (void)first;
+
+    TestLog::testEnd(true);
+}
+
+// ============================================================
 // 主入口
 // ============================================================
 
@@ -462,6 +604,11 @@ void test_sensor_driver_group() {
     RUN_TEST(test_dht_field_temperature);
     RUN_TEST(test_dht_field_humidity);
     RUN_TEST(test_dht_field_unknown_returns_temperature);
+
+    // 单总线并发互斥（Interrupt WDT 崩溃回归守护）
+    RUN_TEST(test_sensor_bus_mutex_source_lock);
+    RUN_TEST(test_concurrent_reads_serialized_single_physical);
+    RUN_TEST(test_bus_lock_timeout_degrades);
 
     TestLog::groupEnd();
 }

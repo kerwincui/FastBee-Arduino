@@ -135,6 +135,7 @@ private:
     uint32_t _currentCheckPeriodMs = CHECK_PERIOD_NORMAL_MS;   // 当前检查周期（动态调整）
     MemoryGuardLevel _lastMemGuardLevel = MemoryGuardLevel::NORMAL;  // 上次 MemGuard 级别（用于变化检测）
     bool _webReserveSuspended = false;  // 后台轮询是否因 Web 内存预留而暂停
+unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心跳放行计时基准）
     bool _memoryPressurePaused = false; // 内存保护暂停（由 HealthMonitor 设置）
 
     // 按键状态

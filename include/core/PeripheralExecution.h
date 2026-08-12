@@ -49,7 +49,8 @@ enum class ExecActionType : uint8_t {
     ACTION_DISPLAY_CLEAR = 26,      // 数码管/显示屏清屏
     ACTION_OLED_DISPLAY = 27,       // OLED 自定义多行显示（actionValue: 多行文本 + ${id.field} + $value 模板，首行 # 开头为居中标题）
     ACTION_RF_SEND = 28,            // 射频发送（RF模块，actionValue: 编码字符串）
-    ACTION_UART_SEND = 29           // 串口发送（UART，actionValue: 文本/数据）
+    ACTION_UART_SEND = 29,          // 串口发送（UART，actionValue: 文本/数据）
+    ACTION_GPIO_TOGGLE = 30         // 电平翻转（读当前电平取反写入：HIGH↔LOW，等价于 CALL_PERIPHERAL "toggle" 命令，无需 actionValue）
 };
 
 // 传感器类别枚举
@@ -94,9 +95,6 @@ enum class EventType : uint8_t {
     // 协议事件 (30-39)
     EVENT_MODBUS_RTU_ENABLED = 30,       // Modbus RTU启用
     EVENT_MODBUS_TCP_ENABLED = 31,       // Modbus TCP启用
-    EVENT_TCP_ENABLED = 32,              // TCP协议启用
-    EVENT_HTTP_ENABLED = 33,             // HTTP协议启用
-    EVENT_COAP_ENABLED = 34,             // CoAP协议启用
     // 系统服务事件 (40-49)
     EVENT_NTP_SYNCED = 40,               // NTP时间同步完成
     EVENT_OTA_START = 41,                // OTA升级开始
@@ -138,7 +136,10 @@ enum class EventType : uint8_t {
     EVENT_RFID_CARD_REMOVED = 121,       // RFID 卡片移开
 
     // 红外遥控事件 (125-129) - IR 信号接收事件
-    EVENT_IR_CODE_RECEIVED = 125         // 红外编码接收（data 包含协议+编码值）
+    EVENT_IR_CODE_RECEIVED = 125,        // 红外编码接收（data 包含协议+编码值）
+
+    // RF 遥控事件 (130-134) - 433MHz OOK 信号接收事件
+    EVENT_RF_CODE_RECEIVED = 130         // RF编码接收（data 包含编码+位长+脉宽）
 };
 
 // 触发事件定义结构体
@@ -223,8 +224,9 @@ struct ActionExecResult {
     String actualValue;             // 执行后的实际值
     bool success = false;           // 是否成功
     String remark;                  // 执行备注（成功/失败原因）
-    String dataField;               // 传感器数据字段（如 temperature/humidity）：上报时作为物模型标识符，
-                                    // 避免同一外设的多个数据字段（如 DHT11 温/湿）都用 periphId 上报而冲突
+    String dataField;               // 显式配置的传感器数据字段（如 temperature/humidity）：仅当动作配置
+                                    // 显式指定时填充，上报时作为物模型标识符区分同一外设的多个数据字段；
+                                    // 未显式配置时为空，上报 ID 回退为外设配置 id（与平台物模型标识符对应）
 };
 
 // 外设执行规则结构体

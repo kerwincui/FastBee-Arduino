@@ -29,7 +29,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         'logs-page': 'logs',
         'data-page': 'admin',
         'users-page': 'admin',
-        'rule-script-page': 'rule-script'
+        'rule-script-page': 'rule-script',
+        'features-page': 'features'
     },
 
     // ============ 委托给 PageLoader ============
@@ -371,7 +372,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             logs: 'logs',
             data: 'files',
             users: 'users',
-            'rule-script': 'rule-script'
+            'rule-script': 'rule-script',
+            features: 'feature-config'
         };
     },
 
@@ -397,6 +399,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             data: () => { this.loadFileSystemInfo({ noCache: true }); this.loadFileTree('/', { noCache: true }); },
             users: () => { this.loadUsers({ noCache: true }); },
             'rule-script': () => { this.loadRuleScriptPage({ noCache: true }); },
+            features: () => { this.loadFeaturesPage(); },
             'device-control': () => {
                 if (typeof this.loadDeviceControlPage === 'function') {
                     this.loadDeviceControlPage();
@@ -563,7 +566,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-peripheral': '外设配置',
             'page-title-periph-exec': '外设执行',
             'page-title-users': '用户管理',
-            'page-title-device-control': '设备大屏'
+            'page-title-device-control': '设备大屏',
+            'page-title-features': '功能配置'
         };
         if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;
 

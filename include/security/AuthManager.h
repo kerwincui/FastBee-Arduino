@@ -77,6 +77,8 @@ private:
     unsigned long lastSessionCleanup;
     static constexpr size_t MAX_ACTIVE_SESSIONS = 6;
     static constexpr size_t MAX_SESSIONS_PER_USER = 3;
+    // 审计 P1-2：锁定账户表上限兜底，满时驱逐最早锁定的一条
+    static constexpr size_t MAX_LOCKED_ACCOUNTS = 16;
 
     // 事件回调
     AuthEventCallback authEventCallback;

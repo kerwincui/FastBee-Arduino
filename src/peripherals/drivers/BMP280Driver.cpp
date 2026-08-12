@@ -3,6 +3,8 @@
 
 #include "core/interfaces/ISensorDriver.h"
 #include "core/DriverRegistry.h"
+#include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
 
 #include <Wire.h>
@@ -50,6 +52,12 @@ public:
 
     bool init(uint8_t pin, const char* params = nullptr) override {
         if (_initialized) return true;
+
+        // 运行时功能门控：用户可在 Web UI 禁用 i2cSensors
+        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors")) return false;
+
+        // 内存预算门控：编译启用但启动时 DRAM 不足则自动降级
+        if (FastBee::FeatureBudgetRegistry::instance().isDenied("i2cSensors")) return false;
 
         _addr = 0x76;  // 默认地址
 

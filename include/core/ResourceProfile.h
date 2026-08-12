@@ -15,7 +15,7 @@ static constexpr size_t MAX_PERIPH_EXEC_RULES = 12;       // 推荐值（软性�
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 16;
 #elif defined(CONFIG_IDF_TARGET_ESP32C6)
 static constexpr const char* NAME = "esp32c6-mid";
-static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限（C6有30个GPIO）
+static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限（C6可用GPIO为0-23）
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
 #elif FASTBEE_PROFILE_FULL

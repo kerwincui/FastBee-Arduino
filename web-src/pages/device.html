@@ -234,11 +234,11 @@
                     <!-- 开发环境功能 -->
                     <div class="fb-panel u-flex-1-min-280 dev-developer-panel">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                            <h4 class="dev-mode-section-title">
                                 <span data-i18n="dev-mode-title">开发环境功能</span>
                                 <strong id="dev-mode-status" style="margin-left:8px;font-size:13px">--</strong>
                             </h4>
-                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
+                            <p class="dev-mode-section-desc" data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
                                 <input type="password" id="dev-mode-password" class="u-input-w-100"
                                     data-i18n-placeholder="password-placeholder" placeholder="请输入密码">
@@ -252,10 +252,10 @@
                     <!-- 设备重启 -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                            <h4 class="dev-mode-section-title">
                                 <span data-i18n="dev-sys-restart-title">重启设备</span>
                             </h4>
-                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                            <p class="dev-mode-section-desc" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
                                 <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-restart-delay">延迟：</label>
                                 <select id="dev-restart-delay">
@@ -277,10 +277,10 @@
                     <!-- 缓存管理 -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                            <h4 class="dev-mode-section-title">
                                 <span data-i18n="dev-cache-title">缓存管理</span>
                             </h4>
-                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
+                            <p class="dev-mode-section-desc" data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
                                 <label style="font-size:12px;white-space:nowrap">有效期：</label>
                                 <select id="dev-cache-duration">
@@ -304,7 +304,7 @@
                     <!-- 配置导入/导出 -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                            <h4 class="dev-mode-section-title">
                                 <span data-i18n="dev-config-transfer-title">配置导入/导出</span>
                             </h4>
                             <p style="margin:0 0 6px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-config-transfer-hint">选择需要导入或导出的配置文件。</p>
@@ -331,7 +331,7 @@
                     <!-- 安全策略（左侧） -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                            <h4 class="dev-mode-section-title">
                                 <span data-i18n="dev-sec-title">安全策略</span>
                             </h4>
                             <form id="device-security-form" class="fb-form" style="margin:0">

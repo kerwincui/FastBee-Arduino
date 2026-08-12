@@ -24,6 +24,12 @@
 #include "./network/handlers/ProvisionRouteHandler.h"
 #include "./network/handlers/OTARouteHandler.h"
 #include "./network/handlers/PeripheralRouteHandler.h"
+#if FASTBEE_ENABLE_IR_REMOTE
+#include "./network/handlers/IrRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+#include "./network/handlers/RfRouteHandler.h"
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "./network/handlers/PeriphExecRouteHandler.h"
 #include "core/PeriphExecManager.h"
@@ -32,6 +38,7 @@
 #include "./network/handlers/RuleScriptRouteHandler.h"
 #endif
 #include "./network/handlers/ProtocolRouteHandler.h"
+#include "./network/handlers/FeatureRouteHandler.h"
 #include "./network/handlers/SSERouteHandler.h"
 #include "systems/LoggerSystem.h"
 
@@ -75,15 +82,22 @@ bool WebConfigManager::initialize() {
     otaHandler         = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
 #endif
     peripheralHandler  = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_IR_REMOTE
+    irHandler          = std::unique_ptr<IrRouteHandler>(new IrRouteHandler(ctx.get()));
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+    rfHandler          = std::unique_ptr<RfRouteHandler>(new RfRouteHandler(ctx.get()));
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
 #endif
 #if FASTBEE_ENABLE_RULE_SCRIPT
     ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
 #endif
-#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
 #endif
+    featureHandler     = std::unique_ptr<FeatureRouteHandler>(new FeatureRouteHandler(ctx.get()));
     sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
     // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
@@ -487,6 +501,11 @@ void WebConfigManager::performMaintenance() {
                 // WiFi 未连接，无人访问是正常的，重置计时器跳过
                 lastRequestSeenMs = millis();
                 LOG_DEBUG("[WebConfig] No-request watchdog skipped: WiFi not connected");
+            } else if (sseRouteHandler && sseRouteHandler->clientCount() > 0) {
+                // SSE 客户端在线：SSE 不计入 HTTP 请求，长时间无 HTTP 请求属正常现象，
+                // 活跃连接是合法长连接，绝不能 abort（否则会切断用户浏览器进行中的请求）
+                lastRequestSeenMs = millis();
+                LOG_DEBUG("[WebConfig] No-request watchdog skipped: SSE clients active");
             } else {
                 // WiFi 已连接，进一步检查是否有僵死连接
                 uint8_t timeWaitCount = 0;
@@ -521,14 +540,19 @@ void WebConfigManager::performMaintenance() {
         }
     }
 
-    const uint32_t maintenanceFreeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    // 8BIT 口径：INTERNAL 含 IRAM/RTC 不可 malloc 内存，虚高 ~28KB，
+    // 导致 isSevereWebPressure 在 8BIT DRAM 已耗尽时仍报"健康"，
+    // 自动恢复（30s 软重启 / 120s 设备重启）永不触发（实测 AP 模式 1.5h
+    // free8=7.7KB/blk8=1.4KB 但 INTERNAL 显示 36KB/29KB → 误判正常）。
+    // 响应发送缓冲 / lwIP pbuf / AsyncTCP 都从 8BIT DRAM 分配，必须用它测量。
+    const uint32_t maintenanceFreeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     const uint32_t maintenanceLargestBlock =
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     const uint8_t maintenanceFrag = calculateHeapFragmentationPercent(
         maintenanceFreeHeap,
         maintenanceLargestBlock);
 
-    const bool severeWebPressure = FastBee::MemoryBudget::isSevereWebPressure(
+    const bool severeWebPressure = FastBee::MemoryBudget::isSevereWebPressure8(
         maintenanceFreeHeap,
         maintenanceLargestBlock,
         maintenanceFrag);
@@ -976,6 +1000,13 @@ bool WebConfigManager::isForegroundRequestActive() const {
     return (int32_t)(ctx->webForegroundUntilMs - millis()) > 0;
 }
 
+bool WebConfigManager::isWebBusy() const {
+    if (!ctx) return false;
+    if (ctx->webForegroundModeActive) return true;
+    if ((int32_t)(ctx->webForegroundUntilMs - millis()) > 0) return true;
+    return ctx->isStaticTransferActive();
+}
+
 void WebConfigManager::setupAllRoutes() {
     // 注册顺序严格遵循 ESPAsyncWebServer 前缀匹配规则：
     // 子路径必须在父路径之前注册
@@ -1035,6 +1066,16 @@ void WebConfigManager::setupAllRoutes() {
     // 7. 外设路由（/api/peripherals/*）
     peripheralHandler->setupRoutes(server);                  ROUTE_PROBE("Peripheral");
 
+    // 7b. 红外遥控路由（/api/ir/*）
+#if FASTBEE_ENABLE_IR_REMOTE
+    irHandler->setupRoutes(server);                          ROUTE_PROBE("Ir");
+#endif
+
+    // 7c. RF 遥控学习路由（/api/rf/*）
+#if FASTBEE_ENABLE_RF_LEARN
+    rfHandler->setupRoutes(server);                          ROUTE_PROBE("Rf");
+#endif
+
     // 8. 外设执行路由（/api/periph-exec/*）
 #if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler->setupRoutes(server);                  ROUTE_PROBE("PeriphExec");
@@ -1046,9 +1087,12 @@ void WebConfigManager::setupAllRoutes() {
 #endif
 
     // 10. 协议路由（/api/protocol/*）
-#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS
     protocolHandler->setupRoutes(server);                    ROUTE_PROBE("Protocol");
 #endif
+
+    // 10b. 功能配置路由（/api/features/*）
+    featureHandler->setupRoutes(server);                     ROUTE_PROBE("Feature");
 
     // 11. SSE 事件推送路由（/api/events）
     sseRouteHandler->setupRoutes(server);                    ROUTE_PROBE("SSE");

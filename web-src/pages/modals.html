@@ -120,6 +120,7 @@
                                         <option value="49" data-i18n="periph-opt-radar-sensor">雷达感应模块</option>
 <option value="50" data-i18n="periph-opt-ds1302">DS1302 实时时钟</option>
 <option value="52" data-i18n="periph-opt-lcd1602">LCD1602 字符液晶</option>
+<option value="53" data-i18n="periph-opt-ir-receiver">红外接收头</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -137,9 +138,9 @@
                         <!-- 右列：引脚和参数 -->
                         <div class="config-form-column">
                             <!-- 设备事件提示信息 -->
-                            <div id="device-event-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#e6f7ff;border:1px solid #91d5ff;border-radius:4px;color:#0050b3;">
-                                <div style="margin-bottom:6px;font-weight:500;" data-i18n="device-event-hint-title">📡 设备事件外设说明</div>
-                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+                            <div id="device-event-hint" class="u-hint-bar u-hint-bar-info" style="display:none">
+                                <div class="u-hint-bar-title" data-i18n="device-event-hint-title">📡 设备事件外设说明</div>
+                                <ul>
                                     <li data-i18n="device-event-hint-1">无GPIO引脚，纯逻辑虚拟外设</li>
                                     <li data-i18n="device-event-hint-2">用于触发系统事件（启动/重启/恢复出厂等）</li>
                                     <li data-i18n="device-event-hint-3">可在"外设执行"中配置规则触发MQTT广播</li>
@@ -148,9 +149,9 @@
                             </div>
                                                     
                             <!-- 通用传感器提示信息 -->
-                            <div id="generic-sensor-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#f0f5ff;border:1px solid #adc6ff;border-radius:4px;color:#003a8c;">
-                                <div style="margin-bottom:6px;font-weight:500;" data-i18n="generic-sensor-hint-title">🔌 通用传感器容器说明</div>
-                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+                            <div id="generic-sensor-hint" class="u-hint-bar u-hint-bar-info-alt" style="display:none">
+                                <div class="u-hint-bar-title" data-i18n="generic-sensor-hint-title">🔌 通用传感器容器说明</div>
+                                <ul>
                                     <li data-i18n="generic-sensor-hint-1">逻辑数据源，用于外部传感器或虚拟传感器</li>
                                     <li data-i18n="generic-sensor-hint-2">不代表具体物理传感器驱动</li>
                                     <li data-i18n="generic-sensor-hint-3">具体传感器请使用专用类型（DHT11/DS18B20/SHT31等）</li>
@@ -159,9 +160,9 @@
                             </div>
 
                             <!-- DS1302 实时时钟提示信息 -->
-<div id="ds1302-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#fff7e6;border:1px solid #ffd591;border-radius:4px;color:#613400;">
-<div style="margin-bottom:6px;font-weight:500;" data-i18n="ds1302-hint-title">⏰ DS1302 实时时钟说明</div>
-                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+<div id="ds1302-hint" class="u-hint-bar u-hint-bar-warning" style="display:none">
+<div class="u-hint-bar-title" data-i18n="ds1302-hint-title">⏰ DS1302 实时时钟说明</div>
+                                <ul>
 <li data-i18n="ds1302-hint-1">3线接口（CE/IO/SCLK），非标准SPI</li>
 <li data-i18n="ds1302-hint-2">支持时间读取/设置，断电后由纽扣电池维持计时</li>
 <li data-i18n="ds1302-hint-3">支持涓流充电（可给超级电容充电）</li>
@@ -170,9 +171,9 @@
                             </div>
 
                             <!-- LCD1602 字符液晶提示信息 -->
-<div id="lcd1602-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#f6ffed;border:1px solid #b7eb8f;border-radius:4px;color:#135200;">
-<div style="margin-bottom:6px;font-weight:500;" data-i18n="lcd1602-hint-title">📺 LCD1602 字符液晶说明</div>
-                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+<div id="lcd1602-hint" class="u-hint-bar u-hint-bar-success" style="display:none">
+<div class="u-hint-bar-title" data-i18n="lcd1602-hint-title">📺 LCD1602 字符液晶说明</div>
+                                <ul>
 <li data-i18n="lcd1602-hint-1">I2C接口（通过PCF8574/PCF8574A扩展板）</li>
 <li data-i18n="lcd1602-hint-2">支持16x2和20x4字符液晶</li>
 <li data-i18n="lcd1602-hint-3">仅支持ASCII字符，不支持中文</li>
@@ -444,7 +445,7 @@
                                         <label for="rf-mode" data-i18n="rf-mode-label">模式</label>
                                         <select id="rf-mode" class="">
                                             <option value="0" selected data-i18n="rf-mode-tx">发射</option>
-                                            <option value="1" data-i18n="rf-mode-rx">接收电平</option>
+                                            <option value="1" data-i18n="rf-mode-rx">接收(学习)</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
@@ -520,9 +521,143 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
+                                        <label for="lcd-contrast" data-i18n="lcd-contrast-label">对比度 (1-255)</label>
+                                        <input type="number" id="lcd-contrast" class="" value="255" min="0" max="255">
+                                        <small data-i18n="lcd-contrast-help">默认 255（最亮）。屏幕出现上亮下暗时可降到 180-200 试试；填 0 等同于 255</small>
+                                    </div>
+                                    <div class="fb-form-group">
                                         <small data-i18n="lcd-pin-hint-i2c">I2C 引脚顺序：SDA, SCL。ESP32-C3 示例：5, 6</small>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 红外遥控管理（仅 type=53 时显示） -->
+                    <div id="ir-manage-section" class="peripheral-params-group is-hidden">
+                        <h4 class="u-mb-10" data-i18n="ir-manage-title">红外遥控管理</h4>
+                        <!-- 新增外设提示 -->
+                        <div id="ir-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none"
+                            data-i18n="ir-manage-hint-new">保存外设后，即可在此进行对码学习和按键管理。</div>
+                        <!-- 管理内容（编辑已有外设时显示） -->
+                        <div id="ir-manage-content" style="display:none">
+                            <div id="ir-remote-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none"
+                                data-i18n="ir-remote-not-ready">红外接收头尚未初始化，请先启用该外设。</div>
+                            <!-- 对码行 -->
+                            <div class="config-form-grid ir-compact-row">
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="ir-learn-timeout" data-i18n="ir-learn-timeout">学习超时(秒)</label>
+                                    <input type="number" id="ir-learn-timeout" value="10" min="3" max="60" style="width:64px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="ir-learn-start-btn" type="button"
+                                        data-i18n="ir-learn-start">开始学习</button>
+                                    <button class="fb-btn fb-btn-sm" id="ir-learn-stop-btn" type="button" style="display:none"
+                                        data-i18n="ir-learn-stop">取消学习</button>
+                                </div>
+                            </div>
+                            <div id="ir-learn-status" class="pe-help-text" style="min-height:1.2em;margin:2px 0"></div>
+                            <!-- 捕获行 -->
+                            <div id="ir-learn-captured" class="config-form-grid ir-compact-row" style="display:none">
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="ir-key-name-input" data-i18n="ir-key-name">按键名称</label>
+                                    <input type="text" id="ir-key-name-input" maxlength="32" placeholder="power / vol_up"
+                                        style="width:120px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="ir-key-code-input" data-i18n="ir-key-code">编码</label>
+                                    <input type="text" id="ir-key-code-input" readonly style="width:130px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="ir-key-save-btn" type="button"
+                                        data-i18n="ir-key-save">保存按键</button>
+                                </div>
+                            </div>
+                            <!-- 按键库 -->
+                            <div class="u-table-wrap u-table-compact" style="margin-top:6px">
+                                <table class="fb-table fb-table-bordered u-table-fill">
+                                    <thead>
+                                        <tr>
+                                            <th data-i18n="ir-key-name">按键名称</th>
+                                            <th data-i18n="ir-key-code">编码</th>
+                                            <th data-i18n="ir-key-protocol">协议</th>
+                                            <th style="width:64px" data-i18n="action">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="ir-keys-table-body"></tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top:6px;text-align:right">
+                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="ir-keys-clear-btn" type="button"
+                                    data-i18n="ir-keys-clear">清除全部</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 433MHz RF 遥控管理（仅 type=48 且 mode=RX 时显示） -->
+                    <div id="rf-manage-section" class="peripheral-params-group is-hidden">
+                        <h4 class="u-mb-10" data-i18n="rf-manage-title">RF 遥控管理</h4>
+                        <div id="rf-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none"
+                            data-i18n="rf-manage-hint-new">保存外设后，即可在此进行对码学习和按键管理。</div>
+                        <div id="rf-manage-content" style="display:none">
+                            <div id="rf-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none"
+                                data-i18n="rf-not-ready">RF接收器尚未初始化，请先将模式设为 RX 并启用该外设。</div>
+                            <!-- 对码行 -->
+                            <div class="config-form-grid ir-compact-row">
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="rf-learn-timeout" data-i18n="rf-learn-timeout">学习超时(秒)</label>
+                                    <input type="number" id="rf-learn-timeout" value="10" min="3" max="60" style="width:64px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="rf-learn-start-btn" type="button"
+                                        data-i18n="rf-learn-start">开始学习</button>
+                                    <button class="fb-btn fb-btn-sm" id="rf-learn-stop-btn" type="button" style="display:none"
+                                        data-i18n="rf-learn-stop">取消学习</button>
+                                </div>
+                            </div>
+                            <div id="rf-learn-status" class="pe-help-text" style="min-height:1.2em;margin:2px 0"></div>
+                            <!-- 捕获行 -->
+                            <div id="rf-learn-captured" class="config-form-grid ir-compact-row" style="display:none">
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="rf-key-name-input" data-i18n="rf-key-name">按键名称</label>
+                                    <input type="text" id="rf-key-name-input" maxlength="32" placeholder="btn_a / gate"
+                                        style="width:110px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <label for="rf-key-code-input" data-i18n="rf-key-code">编码</label>
+                                    <input type="text" id="rf-key-code-input" readonly style="width:100px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <label data-i18n="rf-key-bits">位长</label>
+                                    <input type="text" id="rf-key-bits-input" readonly style="width:40px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <label data-i18n="rf-key-pulse">脉宽</label>
+                                    <input type="text" id="rf-key-pulse-input" readonly style="width:56px">
+                                </div>
+                                <div class="fb-form-group fb-inline-group">
+                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="rf-key-save-btn" type="button"
+                                        data-i18n="rf-key-save">保存按键</button>
+                                </div>
+                            </div>
+                            <!-- 按键库 -->
+                            <div class="u-table-wrap u-table-compact" style="margin-top:6px">
+                                <table class="fb-table fb-table-bordered u-table-fill">
+                                    <thead>
+                                        <tr>
+                                            <th data-i18n="rf-key-name">按键名称</th>
+                                            <th data-i18n="rf-key-code">编码</th>
+                                            <th data-i18n="rf-key-bits">位长</th>
+                                            <th data-i18n="rf-key-pulse">脉宽</th>
+                                            <th style="width:64px" data-i18n="action">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="rf-keys-table-body"></tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top:6px;text-align:right">
+                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="rf-keys-clear-btn" type="button"
+                                    data-i18n="rf-keys-clear">清除全部</button>
                             </div>
                         </div>
                     </div>

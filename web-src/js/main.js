@@ -15,7 +15,7 @@ function _loadScript(src, onSuccess, onFail) {
     script.src = resolveAssetUrl(src);
     script.onload = onSuccess;
     script.onerror = function() {
-        // 首次失败，1.5秒后重试
+        // 首次失败，600ms 后重试（旧 1.5s；配合服务端限流槽位短等待，失败已罕见）
         setTimeout(function() {
             var retry = document.createElement('script');
             retry.src = resolveAssetUrl(src);
@@ -25,7 +25,7 @@ function _loadScript(src, onSuccess, onFail) {
                 if (onFail) onFail();
             };
             document.head.appendChild(retry);
-        }, 1500);
+        }, 600);
     };
     document.head.appendChild(script);
 }
@@ -52,21 +52,34 @@ function _ensureMainStylesheet(onReady) {
             finish();
         }, { once: true });
         existing.addEventListener('error', finish, { once: true });
-        setTimeout(finish, 2500);
+        setTimeout(finish, 10000);
         return;
     }
 
     var link = document.createElement('link');
     link.id = 'fb-main-stylesheet';
     link.rel = 'stylesheet';
-    link.href = resolveAssetUrl('./css/main.css');
+    // 弱网/退化链路下 CSS 单次加载失败率高，失败后递增退避重试（最多 4 次）
+    var cssAttempts = 0;
+    var CSS_MAX_RETRY = 4;
+    function applyCssHref() {
+        link.href = resolveAssetUrl('./css/main.css') + (cssAttempts > 0 ? '&r=' + cssAttempts : '');
+    }
     link.onload = function() {
         link.dataset.ready = '1';
         finish();
     };
-    link.onerror = finish;
+    link.onerror = function() {
+        cssAttempts++;
+        if (cssAttempts < CSS_MAX_RETRY) {
+            setTimeout(applyCssHref, 600 * cssAttempts);
+        } else {
+            finish();
+        }
+    };
+    applyCssHref();
     document.head.appendChild(link);
-    setTimeout(finish, 2500);
+    setTimeout(finish, 10000);
 }
 
 function _bootApp() {

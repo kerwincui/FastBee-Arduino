@@ -72,7 +72,7 @@ export default defineConfig({
     // P2 - 功能测试：外设/Modbus/规则/性能
     {
       name: 'features',
-      testMatch: /05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf/,
+      testMatch: /05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf|19-ir-remote|20-rf-remote/,
       use: { ...devices['Desktop Chrome'] },
     },
     // P3 - 辅助功能：大屏/日志/文件/用户/联动
@@ -81,10 +81,10 @@ export default defineConfig({
       testMatch: /09-fullscreen|11-logs|12-files|13-users|18-linkage/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // P4 - 回归测试：集成/UI
+    // P4 - 回归测试：集成/UI/资源加载重试
     {
       name: 'regression',
-      testMatch: /14-integration|15-ui-regression/,
+      testMatch: /14-integration|15-ui-regression|21-asset-retry/,
       use: { ...devices['Desktop Chrome'] },
     },
 

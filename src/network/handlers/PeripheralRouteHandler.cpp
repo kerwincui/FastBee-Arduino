@@ -1,4 +1,5 @@
 #include "./network/handlers/PeripheralRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/FeatureFlags.h"
@@ -11,11 +12,11 @@
 
 namespace {
 bool isListMemoryCriticallyLow() {
-    return ESP.getFreeHeap() < 4096 || ESP.getMaxAllocHeap() < 1536;
+    return FastBee::MemoryBudget::dramFree() < 4096 || FastBee::MemoryBudget::dramLargest() < 1536;
 }
 
 bool shouldForceCompactList() {
-    return ESP.getFreeHeap() < 16384 || ESP.getMaxAllocHeap() < 8192;
+    return FastBee::MemoryBudget::dramFree() < 16384 || FastBee::MemoryBudget::dramLargest() < 8192;
 }
 
 String escapePeriphJsonString(const String& value) {
@@ -33,6 +34,16 @@ String escapePeriphJsonString(const String& value) {
         }
     }
     return out;
+}
+
+// 无源蜂鸣器标识序列化：GPIO数字输出 + passive 时写入 passive=true。
+// 前端据此将动作类型映射为“设置PWM”（无源蜂鸣器由 PWM 占空比驱动）。
+// 提取为唯一辅助函数，避免多个序列化点（列表/单条/详情）逻辑重复与不一致。
+template <typename TJson>
+void addPassiveBuzzerFlag(TJson& doc, const PeripheralConfig& config) {
+    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT && config.params.gpio.passive) {
+        doc["passive"] = true;
+    }
 }
 }
 
@@ -104,6 +115,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         doc["typeName"] = getPeripheralTypeName(config->type);
         doc["category"] = getCategoryName(getPeripheralCategory(config->type));
         doc["enabled"] = config->enabled;
+        addPassiveBuzzerFlag(doc, *config);
 
         JsonArray pins = doc["pins"].to<JsonArray>();
         for (int i = 0; i < config->pinCount && i < 8; i++) {
@@ -229,6 +241,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         itemDoc["typeName"] = getPeripheralTypeName(config.type);
         itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
         itemDoc["enabled"] = config.enabled;
+        addPassiveBuzzerFlag(itemDoc, config);
 
         if (!compact) {
             JsonArray pins = itemDoc["pins"].to<JsonArray>();
@@ -401,6 +414,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     data["type"] = static_cast<int>(config->type);
     data["typeName"] = getPeripheralTypeName(config->type);
     data["enabled"] = config->enabled;
+    addPassiveBuzzerFlag(data, *config);
 
     JsonArray pins = data["pins"].to<JsonArray>();
     for (int i = 0; i < config->pinCount && i < 8; i++) {
@@ -530,9 +544,11 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         int w = ctx->getParamInt(request, "width", 128);
         int h = ctx->getParamInt(request, "height", 64);
         int iface = ctx->getParamInt(request, "interface", 2);
+        int contrast = ctx->getParamInt(request, "contrast", 255);
         config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
         config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
         config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
+        config.params.lcd.contrast  = (uint8_t)(contrast > 255 ? 255 : (contrast < 0 ? 0 : contrast));
     } else if (config.type == PeripheralType::NEO_PIXEL) {
         int count = ctx->getParamInt(request, "count", 1);
         int brightness = ctx->getParamInt(request, "brightness", 64);
@@ -677,9 +693,11 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         int w = ctx->getParamInt(request, "width", config.params.lcd.width ? config.params.lcd.width : 128);
         int h = ctx->getParamInt(request, "height", config.params.lcd.height ? config.params.lcd.height : 64);
         int iface = ctx->getParamInt(request, "interface", config.params.lcd.interface);
+        int contrast = ctx->getParamInt(request, "contrast", config.params.lcd.contrast ? config.params.lcd.contrast : 255);
         config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
         config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
         config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
+        config.params.lcd.contrast  = (uint8_t)(contrast > 255 ? 255 : (contrast < 0 ? 0 : contrast));
     } else if (config.type == PeripheralType::NEO_PIXEL) {
         int count = ctx->getParamInt(request, "count", config.params.neopixel.count ? config.params.neopixel.count : 1);
         int brightness = ctx->getParamInt(request, "brightness", config.params.neopixel.brightness);

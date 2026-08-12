@@ -9,6 +9,7 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "core/PeriphExecScheduler.h"
+#include "core/MemoryBudget.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/FastBeeFramework.h"
@@ -22,6 +23,7 @@
 #include "systems/LoggerSystem.h"
 #include "utils/HeapFragmentation.h"
 #include "core/PeripheralManager.h"
+#include <cstring>
 #include <esp_heap_caps.h>
 #include <WiFi.h>
 
@@ -32,18 +34,39 @@
 // 协议连接状态标志位
 #define PROTOCOL_MQTT_CONNECTED    (1 << 0)
 #define PROTOCOL_MODBUS_CONNECTED  (1 << 1)
-#if FASTBEE_ENABLE_TCP
-#define PROTOCOL_TCP_CONNECTED     (1 << 2)
-#endif
-#if FASTBEE_ENABLE_HTTP
-#define PROTOCOL_HTTP_CONNECTED    (1 << 3)
-#endif
-#if FASTBEE_ENABLE_COAP
-#define PROTOCOL_COAP_CONNECTED    (1 << 4)
-#endif
 
 namespace {
-constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 18432U;
+// web-reserve 阈值（滞回设计，防边界振荡）—— 8BIT DRAM 口径，与静态资源门控一致：
+// 各芯片 DRAM 总量不同，开机基线差异大，统一阈值会导致：
+//   - S3(512KB DRAM, 基线~44KB)：阈值 12KB 太接近基线，频繁触发振荡
+//   - C3(272KB DRAM, 基线~20KB)：阈值 12KB 太宽松，余量不足时规则切片导致 503
+// 因此按 CONFIG_IDF_TARGET 编译期派生：
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
+// C3/C6: 基线 free8≈18-22KB，留 ~8KB 余量
+constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 10240U;    // free8 < 10KB 暂停
+constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 6144U; // blk8 < 6KB 暂停
+constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 14336U;     // free8 ≥ 14KB 恢复
+constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 10240U; // 且 blk8 ≥ 10KB
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+// S3: 基线 free8≈40-50KB，阈值宽松，避免小波动触发振荡
+constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 16384U;    // free8 < 16KB 暂停
+constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 12288U; // blk8 < 12KB 暂停
+constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 20480U;     // free8 ≥ 20KB 恢复
+constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 16384U; // 且 blk8 ≥ 16KB
+#else
+// ESP32 经典: 基线 free8≈25-28KB
+constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 12288U;    // free8 < 12KB 暂停
+constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 8192U; // blk8 < 8KB 暂停
+constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 16384U;     // free8 ≥ 16KB 恢复
+constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 12288U; // 且 blk8 ≥ 12KB
+#endif
+// 心跳放行：持续暂停期间每 90s 放行一次检查，让后台采集规则跑一轮刷新
+// 传感器缓存（TTL 120s），保证实时监测不丢失温湿度等缓存型数据；
+// 单次执行的内存跌落是瞬时的，与 Web 请求碰撞概率极低。
+// 真机事故（2026-08）：只靠阈值二选一——规则跑则 heap 跌至 29KB 导致 Web 断流，
+// 规则停则缓存过期丢失温湿度。心跳放行是两者兼顾的解。
+constexpr unsigned long WEB_RESERVE_HEARTBEAT_ALLOW_MS = 90000UL;
+constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 8192U;      // 极端底线 free8 < 8KB（低于主暂停 12KB）
 constexpr uint32_t WEB_RESERVE_LARGEST_BLOCK_BYTES = 6144U;
 constexpr uint32_t WEB_RESERVE_FRAGMENTED_BLOCK_BYTES = 12288U;
 constexpr uint8_t WEB_RESERVE_FRAGMENTATION_PERCENT = 65U;
@@ -55,16 +78,29 @@ constexpr size_t SERIAL_FRAME_MAX_BYTES = 160;
 bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
                                     uint32_t freeHeap,
                                     uint32_t largestBlock,
-                                    uint8_t fragmentation) {
+                                    uint8_t fragmentation,
+                                    bool currentlySuspended) {
     if (level >= MemoryGuardLevel::SEVERE) {
         return true;
     }
 
-    if (freeHeap < WEB_RESERVE_FREE_HEAP_BYTES) {
+    // 滞回：已暂停时用更宽松的恢复条件，未暂停时用更敏感的暂停条件
+    if (currentlySuspended) {
+        // 恢复需同时满足：空闲堆与最大块都回到安全区
+        return !(freeHeap >= WEB_RESERVE_RESUME_FREE_HEAP_BYTES &&
+                 largestBlock >= WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES);
+    }
+
+    if (freeHeap < WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES) {
         return true;
     }
 
-    if (largestBlock < WEB_RESERVE_LARGEST_BLOCK_BYTES) {
+    if (largestBlock < WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES) {
+        return true;
+    }
+
+    // 兼容旧底线：极端碎片化仍直接暂停
+    if (freeHeap < WEB_RESERVE_FREE_HEAP_BYTES || largestBlock < WEB_RESERVE_LARGEST_BLOCK_BYTES) {
         return true;
     }
 
@@ -186,27 +222,43 @@ void PeriphExecScheduler::checkTimers() {
         }
     }
 
-    const uint32_t freeHeap = ESP.getFreeHeap();
-    const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    // 8BIT DRAM 口径，与静态资源门控(WebHandlerContext)、STATUS 日志一致：
+    // INTERNAL 含 IRAM/RTC 不可 malloc 内存，虚高约 28KB（INTERNAL=36KB 但 8BIT 仅 8KB），
+    // 用 INTERNAL 判暂停会触发太晚——8BIT 早已被定时器切碎，登录页资源被静态门控全拒。
+    const uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     const uint8_t fragmentation = calculateHeapFragmentationPercent(freeHeap, largestBlock);
 
-    if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation)) {
+    if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation,
+                                       _webReserveSuspended)) {
         if (!_webReserveSuspended) {
             // 仅在进入暂停状态时输出一次日志，避免周期性刷屏
+            _webReserveSuspendedSince = now;
             LOGGER.warningf("[PeriphExec] Background timer/poll suspended for web reserve "
                             "(guard=%d heap=%lu largest=%lu frag=%u%%)",
                             static_cast<int>(currentLevel),
                             static_cast<unsigned long>(freeHeap),
                             static_cast<unsigned long>(largestBlock),
                             static_cast<unsigned int>(fragmentation));
+            _webReserveSuspended = true;
         }
-        _webReserveSuspended = true;
-        _lastMemGuardLevel = currentLevel;
-        _currentCheckPeriodMs = CHECK_PERIOD_SEVERE_MS;
-        return;
+        // 心跳放行：持续暂停满 90s 后放行一次（CRITICAL 极端缺内存时不放行）
+        bool heartbeatAllow = (currentLevel < MemoryGuardLevel::CRITICAL) &&
+                              (now - _webReserveSuspendedSince >= WEB_RESERVE_HEARTBEAT_ALLOW_MS);
+        if (heartbeatAllow) {
+            _webReserveSuspendedSince = now;  // 重置，为下次放行重新计时
+            LOGGER.info("[PeriphExec] Heartbeat allow: background rules run once to refresh sensor cache");
+            // 不 return：本次检查放行，保持 _webReserveSuspended=true，下次检查继续暂停
+        } else {
+            _lastMemGuardLevel = currentLevel;
+            _currentCheckPeriodMs = CHECK_PERIOD_SEVERE_MS;
+            return;
+        }
     }
 
-    if (_webReserveSuspended) {
+    if (_webReserveSuspended && currentLevel < MemoryGuardLevel::SEVERE &&
+        !shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation,
+                                        _webReserveSuspended)) {
         LOGGER.infof("[PeriphExec] Background timer/poll resumed "
                      "(guard=%d heap=%lu largest=%lu frag=%u%%)",
                      static_cast<int>(currentLevel),
@@ -214,6 +266,7 @@ void PeriphExecScheduler::checkTimers() {
                      static_cast<unsigned long>(largestBlock),
                      static_cast<unsigned int>(fragmentation));
         _webReserveSuspended = false;
+        _webReserveSuspendedSince = 0;
     }
 
     // CRITICAL: 暂停非关键轮询，直接返回
@@ -433,7 +486,7 @@ void PeriphExecScheduler::checkSerialEvents() {
     if (_lastSerialCheck > 0 && (now - _lastSerialCheck) < SERIAL_CHECK_INTERVAL_MS) return;
     _lastSerialCheck = now;
 
-    if (ESP.getFreeHeap() < 16000) return;
+    if (FastBee::MemoryBudget::dramFree() < 16000) return;
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -533,60 +586,6 @@ bool PeriphExecScheduler::tryReportDeviceData() {
             }
         }
     }
-
-    // 备选：通过 TCP 上报
-#if FASTBEE_ENABLE_TCP
-    if (connectedProtocols & PROTOCOL_TCP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::TCP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via TCP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 备选：通过 HTTP POST 上报
-#endif
-
-#if FASTBEE_ENABLE_HTTP
-    if (connectedProtocols & PROTOCOL_HTTP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::HTTP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via HTTP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-
-    // 备选：通过 CoAP 上报
-#endif
-
-#if FASTBEE_ENABLE_COAP
-    if (connectedProtocols & PROTOCOL_COAP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::COAP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via CoAP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-
-#endif
 
     LOGGER.warning("[PeriphExec] Data report failed, no available protocol");
     return false;
@@ -799,30 +798,53 @@ String PeriphExecScheduler::getValidTriggerTypes() {
     return result;
 }
 
+// 事件分类描述映射（用于 getEventCategoriesJson 生成分类说明）
+static const char* eventCategoryDescription(const char* cat) {
+    if (strcmp(cat, "WiFi") == 0) return "WiFi连接状态变化事件";
+    if (strcmp(cat, "MQTT") == 0) return "MQTT连接状态变化事件";
+    if (strcmp(cat, "网络") == 0) return "网络模式切换事件";
+    if (strcmp(cat, "协议") == 0) return "协议启用事件";
+    if (strcmp(cat, "系统") == 0) return "系统服务与状态事件";
+    if (strcmp(cat, "规则") == 0) return "规则引擎事件";
+    if (strcmp(cat, "按键") == 0) return "按键输入事件";
+    if (strcmp(cat, "数据") == 0) return "协议数据收发事件";
+    if (strcmp(cat, "外设执行") == 0) return "外设执行规则事件";
+    if (strcmp(cat, "RFID") == 0) return "RFID射频卡识别事件";
+    if (strcmp(cat, "红外") == 0) return "红外遥控编码接收事件";
+    if (strcmp(cat, "RF") == 0) return "433MHz RF遥控编码接收事件";
+    return "设备事件";
+}
+
 String PeriphExecScheduler::getEventCategoriesJson() {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
-    // 定义事件分类
-    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "规则", "按键", "数据", "Modbus子设备", "外设执行"};
-    const char* descriptions[] = {
-        "WiFi连接状态变化事件",
-        "MQTT连接状态变化事件",
-        "网络模式切换事件",
-        "协议启用事件",
-        "系统服务事件",
-        "规则引擎事件",
-        "按键输入事件",
-        "协议数据收发事件",
-        "Modbus采集与控制子设备触发事件",
-        "外设执行规则事件"
-    };
-
-    for (size_t i = 0; i < sizeof(categories) / sizeof(categories[0]); i++) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["name"] = categories[i];
-        obj["description"] = descriptions[i];
+    // 从静态事件表(STATIC_EVENTS)推导事件分类，保证分类与事件定义始终同步，
+    // 避免硬编码列表遗漏新增分类（如 红外/RF/RFID 编码接收事件）。
+    // 按首次出现顺序去重收集。
+    const size_t MAX_CATS = 24;
+    const char* seen[MAX_CATS];
+    size_t seenCount = 0;
+    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
+        const char* cat = STATIC_EVENTS[i].category;
+        if (!cat) continue;
+        bool dup = false;
+        for (size_t k = 0; k < seenCount; k++) {
+            if (strcmp(seen[k], cat) == 0) { dup = true; break; }
+        }
+        if (!dup && seenCount < MAX_CATS) seen[seenCount++] = cat;
     }
+
+    for (size_t i = 0; i < seenCount; i++) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["name"] = seen[i];
+        obj["description"] = eventCategoryDescription(seen[i]);
+    }
+
+    // 追加静态事件表中不存在的分类（Modbus子设备为动态事件分类）
+    JsonObject modbusObj = arr.add<JsonObject>();
+    modbusObj["name"] = "Modbus子设备";
+    modbusObj["description"] = "Modbus采集与控制子设备触发事件";
 
     String result;
     serializeJson(doc, result);
@@ -910,43 +932,13 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
         hasConnectedProtocol = true;
     }
 
-    // 检查 TCP 连接状态（通过状态字符串判断）
-#if FASTBEE_ENABLE_TCP
-    String tcpStatus = protocolMgr->getProtocolStatus(ProtocolType::TCP);
-    if (tcpStatus.indexOf("connected") >= 0 || tcpStatus.indexOf("listening") >= 0) {
-        connectedProtocols |= PROTOCOL_TCP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-
     // 检查 Modbus 状态（使用 bool 方法替代字符串分配）
-#endif
-
 #if FASTBEE_ENABLE_MODBUS
     ModbusHandler* modbus = protocolMgr->getModbusHandler();
     if (modbus && modbus->isRunning()) {
         connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
         hasConnectedProtocol = true;
     }
-#endif
-
-    // 检查 HTTP 状态（通过状态字符串判断）
-#if FASTBEE_ENABLE_HTTP
-    String httpStatus = protocolMgr->getProtocolStatus(ProtocolType::HTTP);
-    if (httpStatus.indexOf("initialized") >= 0 || httpStatus.indexOf("ready") >= 0) {
-        connectedProtocols |= PROTOCOL_HTTP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-
-    // 检查 CoAP 状态
-#endif
-
-#if FASTBEE_ENABLE_COAP
-    String coapStatus = protocolMgr->getProtocolStatus(ProtocolType::COAP);
-    if (coapStatus.indexOf("initialized") >= 0 || coapStatus.indexOf("ready") >= 0) {
-        connectedProtocols |= PROTOCOL_COAP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-
 #endif
 
     return hasConnectedProtocol;

@@ -24,6 +24,7 @@
 // ets_printf 是 ROM 函数，不走 newlib / 不加锁 / 不分配内存，OOM 路径下绝对安全。
 
 #include <cstdlib>
+#include <esp_heap_caps.h>
 #include <new>
 
 extern "C" int ets_printf(const char* fmt, ...);
@@ -34,7 +35,12 @@ void* operator new(size_t size) {
     void* p = malloc(size);
     if (!p) {
         // OOM：用 ROM 的 ets_printf，不依赖堆和锁
-        ets_printf("[NewOverride] operator new(%u) FATAL, abort\n", (unsigned)size);
+        ets_printf("[NewOverride] operator new(%u) FATAL free8=%lu int=%lu blk8=%lu blkint=%lu, abort\n",
+                   (unsigned)size,
+                   (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                   (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                   (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                   (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         abort();  // 触发 panic handler → esp_restart，避免在 nullptr 上构造
     }
     return p;

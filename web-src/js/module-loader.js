@@ -149,8 +149,10 @@ var ModuleLoader = {
                     loadNext(index + 1, 0);
                 },
                 function() {
-                    // 指数退避重试: 2s → 4s → 8s，给ESP32 mDNS和服务器初始化留出时间
-                    var retryDelay = Math.min(2000 * Math.pow(2, retries), 8000);
+                    // 指数退避重试: 800ms → 1.6s → 3.2s（服务端限流为立即 503 +
+                    // Retry-After，快速退避把 503 风暴消化在客户端；旧 2s 起步
+                    // 退避把偶发失败放大成感知卡顿）
+                    var retryDelay = Math.min(800 * Math.pow(2, retries), 8000);
                     console.warn('[Module] Failed to load sequence file: ' + fileName + ' (attempt ' + (retries + 1) + '/4, retry in ' + retryDelay + 'ms)');
                     if (retries < 3) {
                         setTimeout(function() {
@@ -224,7 +226,8 @@ var ModuleLoader = {
                 setTimeout(function() { self._processQueue(); }, 10);
             },
             function() {
-                var retryDelay = Math.min(2000 * Math.pow(2, item.retries), 8000);
+                // 指数退避重试: 800ms → 1.6s → 3.2s（同 sequence 加载，配合服务端立即 503）
+                var retryDelay = Math.min(800 * Math.pow(2, item.retries), 8000);
                 console.warn('[Module] Failed to load: ' + fileName + ' (attempt ' + (item.retries + 1) + '/4, retry in ' + retryDelay + 'ms)');
                 item.loading = false;
 

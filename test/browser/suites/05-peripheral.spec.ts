@@ -151,7 +151,7 @@ test.describe('Suite-05: 外设配置', () => {
       await authPage.waitForTimeout(500);
     });
 
-    await test.step('专用外设: 编码器(43), WS2812B(45), TM1637(47), RF(48), 雷达(49), 设备事件(60)', async () => {
+    await test.step('专用外设: 编码器(43), WS2812B(45), TM1637(47), RF(48), 雷达(49), 红外接收头(53), 设备事件(60)', async () => {
       await openAddModal(authPage);
       const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
       expect(options).toContain('43');
@@ -159,6 +159,7 @@ test.describe('Suite-05: 外设配置', () => {
       expect(options).toContain('47');
       expect(options).toContain('48');
       expect(options).toContain('49');
+      expect(options).toContain('53');
       expect(options).toContain('60');
       await authPage.locator('#cancel-peripheral-btn').click();
       await authPage.waitForTimeout(500);
@@ -740,5 +741,67 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#i2c-params')).toBeVisible();
     await expect(authPage.locator('#uart-params')).not.toBeVisible();
     await expect(authPage.locator('#gpio-params')).not.toBeVisible();
+  });
+
+  // ========== 场景M: 红外接收头 (type=53) ==========
+
+  test('PER-080: 红外接收头类型切换显示嵌入式管理区域', async ({ authPage }) => {
+    await openAddModal(authPage);
+    await selectPeriphType(authPage, '53'); // 红外接收头
+    // 红外接收头无传统参数区域
+    await expect(authPage.locator('#gpio-params')).not.toBeVisible();
+    await expect(authPage.locator('#uart-params')).not.toBeVisible();
+    await expect(authPage.locator('#i2c-params')).not.toBeVisible();
+    // 引脚输入应可见
+    await expect(authPage.locator('#peripheral-pins-input')).toBeVisible();
+    // 红外管理区域应可见（新增模式：显示提示）
+    await expect(authPage.locator('#ir-manage-section')).toBeVisible();
+    await expect(authPage.locator('#ir-manage-hint-new')).toBeVisible();
+    await expect(authPage.locator('#ir-manage-content')).not.toBeVisible();
+    await authPage.locator('#cancel-peripheral-btn').click();
+    await authPage.waitForTimeout(500);
+  });
+  
+  test('PER-081: 编辑红外外设时弹窗内显示管理面板', async ({ authPage }) => {
+    // 先创建一个红外接收头外设
+    await openAddModal(authPage);
+    await selectPeriphType(authPage, '53');
+    await fillPeriphForm(authPage, 'test-ir-recv', '15');
+    await savePeriphModal(authPage);
+    // 验证列表出现
+    const tableBody = authPage.locator('#peripheral-table-body');
+    await expect(tableBody).toContainText('test-ir-recv', { timeout: 10000 });
+    // 列表中不应有独立的红外管理按钮（功能已整合到编辑页）
+    expect(await tableBody.locator('button[data-peripheral-action="ir"]').count()).toBe(0);
+    // 点击编辑，验证弹窗内管理面板可见
+    const editBtn = tableBody.locator('tr', { hasText: 'test-ir-recv' }).locator('button[data-peripheral-action="edit"]').first();
+    await editBtn.click();
+    await expect(authPage.locator('#peripheral-modal')).toBeVisible({ timeout: 8000 });
+    await authPage.waitForTimeout(1500);
+    await expect(authPage.locator('#ir-manage-section')).toBeVisible();
+    await expect(authPage.locator('#ir-manage-content')).toBeVisible();
+    await expect(authPage.locator('#ir-manage-hint-new')).not.toBeVisible();
+    await authPage.locator('#cancel-peripheral-btn').click();
+    await authPage.waitForTimeout(500);
+    // 清理：删除测试外设
+    await authPage.evaluate(() => { (window as any).confirm = () => true; });
+    const deleteBtn = tableBody.locator('tr', { hasText: 'test-ir-recv' }).locator('button[data-peripheral-action="delete"]').first();
+    if (await deleteBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await deleteBtn.click();
+      await waitForDevice(authPage, 5000);
+    }
+    await authPage.evaluate(() => { delete (window as any).confirm; });
+  });
+  
+  test('PER-082: 非红外类型外设不显示红外管理区域', async ({ authPage }) => {
+    await openAddModal(authPage);
+    // 数字输出(12)
+    await selectPeriphType(authPage, '12');
+    await expect(authPage.locator('#ir-manage-section')).not.toBeVisible();
+    // DHT11(38)
+    await selectPeriphType(authPage, '38');
+    await expect(authPage.locator('#ir-manage-section')).not.toBeVisible();
+    await authPage.locator('#cancel-peripheral-btn').click();
+    await authPage.waitForTimeout(500);
   });
 });

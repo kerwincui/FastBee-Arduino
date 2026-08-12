@@ -14,6 +14,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "./core/ChipConfig.h"
+#include "./core/SystemConstants.h"
 
 // 统一使用 device.json 存储配网配置
 static const char* DEVICE_CONFIG_FILE = "/config/device.json";
@@ -49,6 +50,13 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/wifi/connect", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleWiFiConnect(request); });
+
+    // AP 配网公开接口（无需身份认证，供手机端 App 直接调用）
+    server->on("/api/wifi/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleWiFiStatus(request); });
+
+    server->on("/api/wifi/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleWiFiConfig(request); });
 
     // 启动时预热扫描缓存：确保首次 /api/wifi/scan 命中缓存。
     // STA 模式下冷扫描会让射频离开当前信道数秒，HTTP 连接因 ACK 超时被
@@ -207,6 +215,9 @@ void ProvisionRouteHandler::_wifiScanTask(void* arg) {
 
     String json;
     if (n < 0) {
+        // 审计 P2-5：失败/超时路径也必须释放驱动内残留的扫描结果，
+        // 否则残留缓存随多次失败扫描累积，且下次 scanNetworks 行为不可预期
+        WiFi.scanDelete();
         json = F("{\"success\":false,\"error\":\"scan_failed\","
                  "\"message\":\"WiFi scan failed, please try again\"}");
     } else {
@@ -365,4 +376,149 @@ void ProvisionRouteHandler::_updateDeviceConfig(const String& userId,
             LOG_ERROR("[Provision] Failed to write device.json");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/wifi/status — 检测设备状态（公开接口，无需认证）
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::handleWiFiStatus(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+
+    // ---- 设备基本信息（从 device.json 读取） ----
+    String deviceName = "FastBee Device";
+    String deviceId;
+    String userId;
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument dDoc;
+            DeserializationError err = deserializeJson(dDoc, f);
+            f.close();
+            if (!err) {
+                if (dDoc["deviceName"].is<const char*>() &&
+                    strlen(dDoc["deviceName"].as<const char*>()) > 0) {
+                    deviceName = dDoc["deviceName"].as<String>();
+                }
+                if (dDoc["deviceId"].is<const char*>())
+                    deviceId = dDoc["deviceId"].as<String>();
+                if (dDoc["userId"].is<const char*>())
+                    userId = dDoc["userId"].as<String>();
+            }
+        }
+    }
+    data["deviceName"] = deviceName;
+    data["deviceId"] = deviceId;
+    data["userId"] = userId;
+    data["firmwareVersion"] = SystemInfo::VERSION;
+
+    // ---- 网络状态 ----
+    wifi_mode_t mode = WiFi.getMode();
+    const char* modeStr = "unknown";
+    switch (mode) {
+        case WIFI_MODE_AP:    modeStr = "ap";    break;
+        case WIFI_MODE_STA:   modeStr = "sta";   break;
+        case WIFI_MODE_APSTA: modeStr = "apsta"; break;
+        default: break;
+    }
+    data["networkMode"] = modeStr;
+
+    bool connected = (WiFi.status() == WL_CONNECTED);
+    data["connected"] = connected;
+
+    if (connected) {
+        data["ipAddress"] = WiFi.localIP().toString();
+        data["ssid"] = WiFi.SSID();
+        data["rssi"] = WiFi.RSSI();
+    } else {
+        data["ipAddress"] = (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA)
+                            ? WiFi.softAPIP().toString() : String("");
+    }
+
+    data["apSSID"] = WiFi.softAPSSID();
+    data["apIP"] = WiFi.softAPIP().toString();
+    data["macAddress"] = WiFi.macAddress();
+
+    // ---- 芯片 / 内存信息 ----
+    data["chipModel"] = ESP.getChipModel();
+    data["chipRevision"] = ESP.getChipRevision();
+    data["freeHeap"] = ESP.getFreeHeap();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/wifi/config — 配网下发配置（公开接口，无需认证）
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::handleWiFiConfig(AsyncWebServerRequest* request) {
+    // 必须参数：SSID/ssid, password, userId
+    // 可选参数：deviceNum, extra
+    String ssid     = ctx->getParamValue(request, "SSID", "");
+    String password = ctx->getParamValue(request, "password", "");
+    String userId   = ctx->getParamValue(request, "userId", "");
+
+    // 兼容小写 ssid 和 pwd 别名
+    if (ssid.isEmpty())     ssid     = ctx->getParamValue(request, "ssid", "");
+    if (password.isEmpty()) password = ctx->getParamValue(request, "pwd", "");
+
+    if (ssid.isEmpty() || password.isEmpty() || userId.isEmpty()) {
+        JsonDocument errDoc;
+        errDoc["success"] = false;
+        errDoc["message"] = "配网必须传递 SSID、WiFi密码和用户编号(userId)";
+        String errOutput;
+        serializeJson(errDoc, errOutput);
+        request->send(400, "application/json", errOutput);
+        return;
+    }
+
+    LOG_INFOF("[Provision] WiFi config: SSID=%s userId=%s", ssid.c_str(), userId.c_str());
+
+    // 解析可选参数
+    String deviceNum = ctx->getParamValue(request, "deviceNum", "");
+    String extra     = ctx->getParamValue(request, "extra", "");
+
+    bool hasExtParam = !userId.isEmpty() || !deviceNum.isEmpty() || !extra.isEmpty();
+    if (hasExtParam) {
+        LOG_INFOF("[Provision] Extended params: userId=%s deviceNum=%s extra=%s",
+                  userId.c_str(), deviceNum.c_str(), extra.c_str());
+    }
+
+    // 1. 保存设备信息到 device.json
+    _updateDeviceConfig(userId, deviceNum, extra);
+
+    // 2. 保存 WiFi 配置到 network.json 并切换到 STA 模式
+    if (ctx->networkManager) {
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+        WiFiConfig cfg = netMgr->getConfig();
+
+        cfg.staSSID = ssid;
+        cfg.staPassword = password;
+        cfg.mode = NetworkMode::NETWORK_STA;
+
+        if (netMgr->updateConfig(cfg, true)) {
+            LOG_INFO("[Provision] WiFi config saved, network will restart to STA");
+            JsonDocument doc;
+            doc["success"] = true;
+            doc["message"] = "设备已更新WiFi配置，正在连接...";
+            doc["data"]["ssid"] = ssid;
+            doc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
+            String output;
+            serializeJson(doc, output);
+            request->send(200, "application/json", output);
+            return;
+        } else {
+            LOG_ERROR("[Provision] Failed to save WiFi configuration");
+            ctx->sendError(request, 500, "Failed to save WiFi configuration");
+            return;
+        }
+    }
+
+    // 回退：无 NetworkManager 时直接连接（不保存配置）
+    LOG_WARNING("[Provision] No NetworkManager, falling back to direct WiFi.begin");
+    ctx->sendSuccess(request, "Connecting to WiFi...");
+    delay(100);
+    WiFi.begin(ssid.c_str(), password.c_str());
 }

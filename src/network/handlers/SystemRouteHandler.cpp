@@ -1,4 +1,6 @@
 #include "./network/handlers/SystemRouteHandler.h"
+#include "core/MemoryBudget.h"
+#include "core/FeatureBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
@@ -30,7 +32,7 @@ constexpr size_t kMaxConfigInlineImportBytes = 24 * 1024;
 // ~8-10 KB after URL-encoding.  The handler already requires 24 KB free
 // heap before writing, so 16 KB decoded chunk is safe.
 constexpr size_t kMaxConfigTransferChunkBytes = 16 * 1024;
-constexpr int kMaxConfigTransferChunks = 32;
+constexpr int kMaxConfigTransferChunks = 128;  // 前端分片已缩至 1.5KB（弱网适配），需更多分片数承载 128KB 上限
 
 bool isSafeConfigFileName(const String& name) {
     if (name.isEmpty() || name.length() > 48) return false;
@@ -70,9 +72,13 @@ static const char* const kAllowedImportConfigFiles[] = {
     "protocol.json",
     "users.json",
     "auth.json",
-    "rule_scripts.json"
+    "rule_scripts.json",
+#if FASTBEE_ENABLE_IR_REMOTE
+    "ir_keys.json",
+#endif
 };
-constexpr int kAllowedImportConfigFilesCount = 8;
+constexpr int kAllowedImportConfigFilesCount =
+    (int)(sizeof(kAllowedImportConfigFiles) / sizeof(kAllowedImportConfigFiles[0]));
 
 bool isAllowedConfigImportFileName(const String& name) {
     for (int i = 0; i < kAllowedImportConfigFilesCount; ++i) {
@@ -131,7 +137,7 @@ bool isValidJsonContent(const String& content) {
 }
 
 bool shouldUseCompactSystemInfo(bool explicitBrief) {
-    return explicitBrief || ESP.getFreeHeap() < 12288 || ESP.getMaxAllocHeap() < 6144;
+    return explicitBrief || FastBee::MemoryBudget::dramFree() < 12288 || FastBee::MemoryBudget::dramLargest() < 6144;
 }
 
 void fillMemorySummary(JsonObject memory) {
@@ -636,7 +642,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             ctx->sendError(request, 400, "分片索引无效");
             return;
         }
-        if (chunk.isEmpty() || chunk.length() > kMaxConfigTransferChunkBytes) {
+        if (chunk.isEmpty()) {
+            // 空分片几乎都是退化链路下跨包 body 丢失所致（而非客户端真发空值），给出可行动的提示
+            ctx->sendError(request, 400, "分片内容接收为空，可能是网络传输失败，请重试导入");
+            return;
+        }
+        if (chunk.length() > kMaxConfigTransferChunkBytes) {
             ctx->sendError(request, 413,
                 ("分片过大（" + String(chunk.length()) + " 字节），最大 " + String(kMaxConfigTransferChunkBytes / 1024) + " KB").c_str());
             return;
@@ -657,7 +668,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         File out = LittleFS.open(path, index == 0 ? "w" : "a");
         if (!out) { ctx->sendError(request, 500, "Failed to open config file for chunk write"); return; }
         size_t written = out.print(chunk);
-        size_t fileSize = out.size();
         out.close();
 
         if (written != chunk.length()) {
@@ -665,6 +675,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             ctx->sendError(request, 500, "分片写入不完整");
             return;
         }
+        // 重新打开统计真实文件大小（"w"/"a" 句柄在 close 前 size() 可能返回 0）
+        size_t fileSize = written;
+        File chk = LittleFS.open(path, "r");
+        if (chk) { fileSize = chk.size(); chk.close(); }
         if (fileSize > kMaxConfigTransferBytes) {
             LittleFS.remove(path);
             ctx->sendError(request, 413,
@@ -935,7 +949,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/filesystem", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
-        if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
+        if (FastBee::MemoryBudget::dramFree() < 2048 || FastBee::MemoryBudget::dramLargest() < 1024) {
             HandlerUtils::sendJsonError(request, 503, "Critical memory - filesystem info unavailable", 5);
             return;
         }
@@ -1175,7 +1189,7 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     if (fw && fw->getHealthMonitor()) {
         MemoryGuardLevel level = fw->getHealthMonitor()->getMemoryGuardLevel();
         if (level >= MemoryGuardLevel::CRITICAL) {
-            if (!FastBee::psramAvailableForJson(32768) && ESP.getFreeHeap() < 4096) {
+            if (!FastBee::psramAvailableForJson(32768) && FastBee::MemoryBudget::dramFree() < 4096) {
                 HandlerUtils::sendJsonError(request, 503, "Critical memory - system info unavailable");
                 return;
             }
@@ -1293,6 +1307,24 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     doc["timestamp"] = millis();
     doc["freeHeap"]  = ESP.getFreeHeap();
     doc["uptime"]    = millis();
+
+    // 功能运行时状态：disabled=编译禁用 / no-memory=预算拒绝自动降级 / active=正常启用
+    {
+        auto& budgetReg = FastBee::FeatureBudgetRegistry::instance();
+        auto featureState = [&budgetReg](bool compiled, const char* key) -> const char* {
+            if (!compiled) return "disabled";
+            return budgetReg.isDenied(key) ? "no-memory" : "active";
+        };
+        JsonObject features = doc["features"].to<JsonObject>();
+        features["modbus"]        = featureState(FASTBEE_ENABLE_MODBUS, "modbus");
+        features["ruleScript"]    = featureState(FASTBEE_ENABLE_RULE_SCRIPT, "ruleScript");
+        features["irRemote"]      = featureState(FASTBEE_ENABLE_IR_REMOTE, "irRemote");
+        features["rfid"]          = featureState(FASTBEE_ENABLE_RFID, "rfid");
+        features["i2cSensors"]    = featureState(FASTBEE_ENABLE_I2C_SENSORS, "i2cSensors");
+        features["lcd"]           = featureState(FASTBEE_ENABLE_LCD, "lcd");
+        features["neopixel"]      = featureState(FASTBEE_ENABLE_NEOPIXEL, "neopixel");
+        features["deviceControl"] = featureState(FASTBEE_ENABLE_DEVICE_CONTROL, "deviceControl");
+    }
 
     if (ctx->networkManager) {
         FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
@@ -1460,7 +1492,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
             return;
         }
         if (HandlerUtils::checkLowMemory(request, 4096)) return;
-    } else if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
+    } else if (FastBee::MemoryBudget::dramFree() < 2048 || FastBee::MemoryBudget::dramLargest() < 1024) {
         HandlerUtils::sendJsonError(request, 503, "Critical memory - file list unavailable", 5);
         return;
     }
@@ -1718,9 +1750,6 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
 
     doc["data"]["mqtt"]   = (bool)FASTBEE_ENABLE_MQTT;
     doc["data"]["modbus"] = (bool)FASTBEE_ENABLE_MODBUS;
-    doc["data"]["tcp"]    = (bool)FASTBEE_ENABLE_TCP;
-    doc["data"]["http"]   = (bool)FASTBEE_ENABLE_HTTP;
-    doc["data"]["coap"]   = (bool)FASTBEE_ENABLE_COAP;
 
     doc["data"]["periphExec"]  = (bool)FASTBEE_ENABLE_PERIPH_EXEC;
     doc["data"]["ruleScript"]  = (bool)FASTBEE_ENABLE_RULE_SCRIPT;

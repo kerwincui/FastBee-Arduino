@@ -2,6 +2,7 @@
 #if FASTBEE_ENABLE_DS1302
 
 #include "peripherals/drivers/DS1302Driver.h"
+#include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
 
 // 单例实现
@@ -20,6 +21,12 @@ DS1302Driver::~DS1302Driver()
 
 bool DS1302Driver::begin(uint8_t cePin, uint8_t ioPin, uint8_t sclkPin)
 {
+    // 运行时功能门控：用户可在 Web UI 禁用 ds1302
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("ds1302")) {
+        LOG_INFO("DS1302: Compiled but runtime-disabled, skip init");
+        return false;
+    }
+
     LOG_INFO("DS1302: Initializing...");
     
     // 如果已初始化，先停止

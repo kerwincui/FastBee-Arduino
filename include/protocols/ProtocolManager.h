@@ -11,9 +11,6 @@
 #if FASTBEE_ENABLE_MODBUS
 #include "ModbusHandler.h"
 #endif
-#include "TCPHandler.h"
-#include "CoAPHandler.h"
-#include "HTTPClientWrapper.h"
 #include "core/PeripheralManager.h"
 
 // 前向声明 — 用于条件编译禁用时的 stub getter 返回类型
@@ -27,10 +24,7 @@ class MQTTClient;
 // 协议类型枚举
 enum class ProtocolType {
     MQTT,
-    MODBUS,
-    TCP,
-    HTTP,
-    COAP
+    MODBUS
 };
 
 // 协议配置结构体
@@ -122,6 +116,12 @@ public:
      * @brief 停止MQTT连接
      */
     void stopMQTT();
+
+    /**
+     * @brief 标记 MQTT 已被配置禁用（供调试打印可观测区分）
+     * HealthMonitor 因内存危急通过配置永久禁用 MQTT 时调用以同步状态
+     */
+    void markMqttDisabledByConfig() { mqttDisabledByConfig = true; }
 #endif
 
 #if FASTBEE_ENABLE_MODBUS
@@ -172,15 +172,6 @@ private:
 #if FASTBEE_ENABLE_MODBUS
     std::unique_ptr<ModbusHandler> modbusHandler;
 #endif
-#if FASTBEE_ENABLE_TCP
-    std::unique_ptr<TCPHandler> tcpHandler;
-#endif
-#if FASTBEE_ENABLE_HTTP
-    std::unique_ptr<HTTPClientWrapper> httpClientWrapper;
-#endif
-#if FASTBEE_ENABLE_COAP
-    std::unique_ptr<CoAPHandler> coapHandler;
-#endif
     
     std::vector<ProtocolConfig> protocols;
     MessageCallback messageCallback;
@@ -196,6 +187,7 @@ private:
 #endif
 #if FASTBEE_ENABLE_MQTT
     volatile bool mqttRestartPending = false;  // MQTT 热重建标志，由 handle() 在 loopTask 中消费
+    bool mqttDisabledByConfig = false;         // 配置 mqtt.enabled=false，由统一守卫置位，调试打印区分“禁用”与“启动失败”
 #endif
     
     // 网络类型追踪：用于在 handle() 中检测网络类型变更并立即重启 MQTT
@@ -209,15 +201,6 @@ private:
 #endif
 #if FASTBEE_ENABLE_MODBUS
     bool initModbus(void* config);
-#endif
-#if FASTBEE_ENABLE_TCP
-    bool initTCP(void* config);
-#endif
-#if FASTBEE_ENABLE_HTTP
-    bool initHTTP(void* config);
-#endif
-#if FASTBEE_ENABLE_COAP
-    bool initCoAP(void* config);
 #endif
     
     // 内部消息处理

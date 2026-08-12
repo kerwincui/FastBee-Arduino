@@ -1,4 +1,5 @@
 #include "network/handlers/LogRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "network/handlers/HandlerUtils.h"
 #include "network/WebHandlerContext.h"
 #include "core/FeatureFlags.h"
@@ -121,7 +122,7 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     if (!psramBacked &&
         ((monitor && monitor->getMemoryGuardLevel() >= MemoryGuardLevel::SEVERE) ||
-         ESP.getFreeHeap() < 24576 || ESP.getMaxAllocHeap() < 6144)) {
+         FastBee::MemoryBudget::dramFree() < 24576 || FastBee::MemoryBudget::dramLargest() < 6144)) {
         sendLowMemoryLogPlaceholder(request);
         return;
     }
@@ -148,7 +149,7 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     }
 
     const size_t fileSize = file.size();
-    size_t maxSize = ESP.getFreeHeap() < 61440 ? 1536 : 4096;
+    size_t maxSize = FastBee::MemoryBudget::dramFree() < 61440 ? 1536 : 4096;
     if (psramBacked && ESP.getMaxAllocHeap() < 4096) {
         maxSize = 1024;
     }

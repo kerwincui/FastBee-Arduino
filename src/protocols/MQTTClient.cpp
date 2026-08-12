@@ -19,6 +19,7 @@
 #include "core/FeatureFlags.h"
 #include "core/MemoryBudget.h"
 #include "core/FastBeeFramework.h"
+#include "network/WebConfigManager.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
 #endif
@@ -628,6 +629,21 @@ bool MQTTClient::publish(const String& topic, const String& message) {
         return false;
     }
 
+    // 2026-08-05 fix: 8BIT 低水位时拒发。重连后 publish 突发（info/ntp/
+    // event/pending）会把 lwIP 发送缓冲塞满（broker ACK 慢，errno 11 反复
+    // 重试），8BIT 被压到 1-3KB。拒发后 property 走 pending 队列重试，
+    // 其余上报下周期补发，避免发送缓冲积压挤爆 DRAM。
+    if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < 5120U) {
+        static unsigned long lastPubGateWarn = 0;
+        if (millis() - lastPubGateWarn > 10000) {
+            lastPubGateWarn = millis();
+            ets_printf("[MQTT] Publish gated: 8BIT DRAM low (%lu), topic=%s\n",
+                       (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                       topic.c_str());
+        }
+        return false;
+    }
+
     // 查找对应的主题配置，使用其 QoS、Retain 和 autoPrefix 设置
     uint8_t qos = 0;
     bool retain = false;
@@ -664,7 +680,24 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     if (!isConnected || topicIndex >= config.publishTopics.size()) {
         return false;
     }
-    
+
+    // Web 忙碌门控（实测 2026-08-05）：TLS publish 与在途 Web 响应竞争
+    // lwIP/WiFi TX 通道，会把浏览器响应卡死 12s+（free8=20KB 内存充足
+    // 也复现，非内存问题）。前台窗口/静态传输在途时拒绝 publish，
+    // 调用方（上报队列/规则引擎）走失败回退路径暂缓重发。
+    {
+        FastBeeFramework* fwPub = FastBeeFramework::getInstance();
+        WebConfigManager* webPub = fwPub ? fwPub->getWebConfigManager() : nullptr;
+        if (webPub && webPub->isWebBusy()) {
+            static unsigned long _pubGateWarn = 0;
+            if (millis() - _pubGateWarn > 10000) {
+                _pubGateWarn = millis();
+                ets_printf("[MQTT] Publish deferred: web busy (foreground/static transfer active)\n");
+            }
+            return false;
+        }
+    }
+
     const MqttPublishTopic& pt = config.publishTopics[topicIndex];
     if (!pt.enabled) {
         return false;
@@ -1087,6 +1120,26 @@ bool MQTTClient::subscribeAll() {
     return allOk;
 }
 
+void MQTTClient::yieldToWeb() {
+    if (stopped || !isConnected) {
+        return;
+    }
+    // 仅在内存确实被挤压时让位：free8 <12KB 时 Web 响应必然与
+    // MQTT 套接字缓冲竞争；高于此水位时保持连接（避免无谓 churn）。
+    uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    if (dram8Free >= 12288U) {
+        return;
+    }
+    ets_printf("[MQTT] yieldToWeb: foreground request arrived, free8=%lu < 12KB, sync disconnect\n",
+               (unsigned long)dram8Free);
+    isConnected = false;  // 先置位，避免 protocol_handle 并发继续 publish
+    wifiClient.stop();
+    if (_wifiClientSecure) _wifiClientSecure->stop();
+    reconnectInterval = 30000;  // 30s 冷却，重连由前台推迟门控接管
+    lastReconnectAttempt = millis();
+    _notifyStatusChange();
+}
+
 void MQTTClient::handle() {
     if (stopped) {
         static unsigned long _hStopWarn = 0;
@@ -1095,6 +1148,39 @@ void MQTTClient::handle() {
     }
 
     bool activeNetworkIsWifi = (getActiveMqttNetworkType() == NetworkType::NET_WIFI);
+
+    // 2026-08-05 fix: 8BIT DRAM 枯竭紧急断开。INTERNAL 口径（含 IRAM/RTC）
+    // 仍显示 ~29KB 空闲时，可 malloc 的 8BIT DRAM 可能已 <1KB（lwIP 套接字
+    // 发送缓冲滞留等），任何小分配都会 new OOM → abort 整机重启。
+    // 此时强制断开 MQTT 释放套接字收发缓冲，走正常重连流程恢复。
+    if (isConnected) {
+        // 前台让位策略（实测 2026-08-05）：MQTT 连接后其 TLS publish 与
+        // Web 响应竞争 WiFi TX 通道和 lwIP 缓冲——前台活跃时即使 free8
+        // 健康（20KB）也会阻塞 loopTask 8s+ 导致浏览器请求超时
+        // （soak 7/40 挂起，挂起时内存充足，非内存问题）。
+        // 因此 Web 前台活跃时无条件断开 MQTT 让出通道，重连由
+        // 前台推迟门控在用户离开后恢复。
+        // 无前台时 3KB 为危急线（连接后 free8 稳态约 3-5KB，
+        // 10KB/5KB 均误判连接稳态造成 churn）。
+        bool webForegroundActive = false;
+        {
+            FastBeeFramework* fwFg = FastBeeFramework::getInstance();
+            WebConfigManager* webFg = fwFg ? fwFg->getWebConfigManager() : nullptr;
+            webForegroundActive = webFg && webFg->isForegroundRequestActive();
+        }
+        uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        if (webForegroundActive || dram8Free < 3072U) {
+            ets_printf("[MQTT] Yield to web (foreground=%d free8=%lu), force disconnect to reclaim TX channel\n",
+                       webForegroundActive ? 1 : 0, (unsigned long)dram8Free);
+            wifiClient.stop();
+            if (_wifiClientSecure) _wifiClientSecure->stop();
+            isConnected = false;
+            reconnectInterval = 30000;  // 30s 冷却（15s 实测 churn）
+            lastReconnectAttempt = millis();
+            _notifyStatusChange();
+            return;
+        }
+    }
 
     // 检查网络连接状态：若使用外部 Client 则跳过 WiFi 状态检查
     if (!_externalClient && activeNetworkIsWifi && WiFi.status() != WL_CONNECTED) {
@@ -1163,6 +1249,33 @@ void MQTTClient::handle() {
 
         unsigned long now = millis();
 
+        // 8BIT 卡滞救援（实测结论）：MQTT 断开后套接字缓冲通常在 30-60s
+        // 内回收；若 free8 <8KB 持续 45s 说明 lwIP 发送缓冲卡死在 WiFi
+        // 层（wifiClient.stop() 无法释放），只有 WiFi 重连能回收
+        // （2026-08-05 实测：zombie 重连后 free8 5KB→21KB 立即恢复）。
+        // 不做前台门控（11:04 实测教训）：free8 卡滞 6.3KB 时 Web 请求
+        // 已全部挂起，前台窗口又被重试请求持续续期，门控导致 64s 长挂
+        // 直到 TCP PCB 超时才自愈；此时救援是唯一的快速恢复手段。
+        // 5 分钟冷却防震荡。
+        {
+            uint32_t const rescue8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            if (rescue8Free < 8192U) {
+                if (_low8SinceMs == 0) {
+                    _low8SinceMs = now;
+                }
+            } else {
+                _low8SinceMs = 0;
+            }
+            if (_low8SinceMs != 0 && now - _low8SinceMs > 45000UL &&
+                (_lastWifiRescueMs == 0 || now - _lastWifiRescueMs > 300000UL)) {
+                ets_printf("[MQTT] 8BIT stuck at %luB for 45s+, forcing WiFi reconnect to reclaim lwIP buffers\n",
+                           (unsigned long)rescue8Free);
+                _lastWifiRescueMs = now;
+                _low8SinceMs = 0;
+                WiFi.disconnect(false);  // NetworkManager update() 接管非阻塞重连
+            }
+        }
+
         // 自愈看门狗：一次性重连任务若异常终止（如栈溢出）可能遗留
         // _reconnectPending/_reconnectRunning 卡死，使调度门控永远不满足、自动重连永久停摆。
         // 若标志持续超过最大执行窗口（正常 doReconnect < 40s），强制重置并回收僵死任务。
@@ -1174,6 +1287,21 @@ void MQTTClient::handle() {
 
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
+            // Web 前台窗口内推迟重连：重连成功后的突发 publish 会把 8BIT
+            // 从 ~21KB 压到 1-3KB（lwIP 发送缓冲塞满），正好撞上浏览器
+            // 加载登录页资源就会挂起。前台保护窗口结束后再重连。
+            {
+                FastBeeFramework* fwForWebGate = FastBeeFramework::getInstance();
+                WebConfigManager* webGate = fwForWebGate ? fwForWebGate->getWebConfigManager() : nullptr;
+                if (webGate && webGate->isForegroundRequestActive()) {
+                    static unsigned long _wfWarn = 0;
+                    if (now - _wfWarn > 10000) {
+                        _wfWarn = now;
+                        ets_printf("[MQTT] Reconnect deferred: web foreground request active\n");
+                    }
+                    return;
+                }
+            }
             // WiFi 未连接时跳过重连（仅当未使用外部 Client 时检查）
             if (!_externalClient && activeNetworkIsWifi && WiFi.status() != WL_CONNECTED) {
                 Serial.printf("[MQTT-DBG] WiFi not connected (status=%d), skipping reconnect\n", WiFi.status());
@@ -1201,6 +1329,7 @@ void MQTTClient::handle() {
         if (!isConnected) {
             isConnected = true;
             lastConnectedTime = millis();
+            _low8SinceMs = 0;  // 连接态的短暂低水位由 5KB 强制断开处理，不计入卡滞
         }
         // reconnectCount 老化：连接稳定 5 分钟后清零，避免历史累计次数
         // 让下一次偶发断开直接落入 5 分钟慢模式（MAX_FAST_RETRIES 误判）
@@ -1265,6 +1394,24 @@ void MQTTClient::processQueuedReports() {
     // 内存保护：publishReportData 构造 String + MQTT publish
     // 使用 DRAM 内部内存检测（排除 PSRAM），与 mqttHasInternalDram() 保持一致
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 20000) return;
+
+    // 前台让位（实测 2026-08-05）：publish 突发与页面资源竞争 WiFi TX
+    // 通道（内存充足时也会阻塞 loopTask），前台窗口内推迟上报。
+    {
+        FastBeeFramework* fwFgR = FastBeeFramework::getInstance();
+        WebConfigManager* webFgR = fwFgR ? fwFgR->getWebConfigManager() : nullptr;
+        if (webFgR && webFgR->isForegroundRequestActive()) return;
+    }
+
+    // 限速（实测 2026-08-05）：重连后积压上报一次性 flush 会突发塞满
+    // lwIP 发送缓冲，8BIT 数秒内跌 5-10KB → 强制断开 → churn。
+    // 限制每秒最多 flush 一批，让 broker ACK 逐步释放发送缓冲。
+    {
+        static unsigned long _lastReportFlushMs = 0;
+        unsigned long const nowFlush = millis();
+        if (nowFlush - _lastReportFlushMs < 1000UL) return;
+        _lastReportFlushMs = nowFlush;
+    }
 
     // 背压机制：队列深度 >= HIGH_WATERMARK 时加速排空（处理更多批次）
     portENTER_CRITICAL(&_slotMux);
@@ -1520,11 +1667,11 @@ String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     ets_printf("[MQTT] CALLBACK ENTERED topic=%s len=%u\n", topic, length);
     // DRAM 内存保护：低于阈值时丢弃入站消息，防止低内存时 JSON 解析/外设执行崩溃
-    uint32_t rxDramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    if (rxDramFree < FastBee::MemoryBudget::MQTT_RECEIVE_MIN_DRAM) {
-        ets_printf("[MQTT] RX dropped: DRAM too low (%lu < %u) topic=%s\n",
+    // 2026-08-05：改用 8BIT 口径（INTERNAL 虚高 ~28KB，旧守卫从不生效）
+    uint32_t rxDramFree = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    if (rxDramFree < 6144U) {
+        ets_printf("[MQTT] RX dropped: DRAM(8bit) too low (%lu < 6144) topic=%s\n",
                       (unsigned long)rxDramFree,
-                      (unsigned)FastBee::MemoryBudget::MQTT_RECEIVE_MIN_DRAM,
                       topic);
         return;
     }
@@ -2097,6 +2244,62 @@ void MQTTClient::doReconnect() {
                      (unsigned long)reconnectCount, (unsigned long)MAX_FAST_RETRIES,
                      (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
             LOG_WARNING(buf);
+        }
+    }
+
+    // Plain-MQTT reconnect DRAM gate (aligned with web-reserve policy).
+    // MQTT connect consumes ~19KB lwIP TCP buffers; during the 2026-08
+    // reconnect storm largest dropped to 6KB and HTTP chunked responses broke
+    // at 2872 bytes. Defer reconnect when DRAM is low to keep Web usable.
+    {
+        // 2026-08-05 fix: 增加 8BIT 口径门控。INTERNAL 含 IRAM/RTC 不可 malloc
+        // 内存，实测虚高 ~28KB；exec 规则窗口内 INTERNAL 仍有 42KB 但 8BIT
+        // 只剩 ~6KB，重连（lwIP 套接字缓冲 ~15KB）直接把 8BIT 打穿至 <1KB
+        // 触发强制断开，形成 连接→挤出→断开→重连 死循环。
+        // INTERNAL 含 IRAM 虚高 ~28KB，系统稳态 INTERNAL 仅 42-44KB；
+        // 旧门限 36864 在现固件下永不满足导致 MQTT 永久离线，降至 28672。
+        constexpr uint32_t MQTT_RECONNECT_MIN_FREE = 28672U;    // 28KB (INTERNAL 口径)
+        constexpr uint32_t MQTT_RECONNECT_MIN_LARGEST = 12288U; // 12KB
+        // 14KB：free8 断开稳态仅 15.3-16.5KB，20KB/18KB 门限实测永不满足
+        // 导致 MQTT 永久离线；14KB 门限允许从稳态起步连接。连接耗
+        // 12-15KB 会把 free8 压到 1-4KB，但前台让位策略（前台活跃时
+        // 12KB 阈值主动断开）保证浏览器访问时 MQTT 让出内存。
+        constexpr uint32_t MQTT_RECONNECT_MIN_8BIT = 14336U;
+        // 采样窗口：free8 在忙/闲时段波动 ±6KB（exec 规则、WiFi TX），
+        // 单次采样易撞上低谷导致重连永远饿死；每 250ms 采一次最多 4s，
+        // 命中闲时窗口立即连接（重连任务内 delay 不阻塞 loopTask）。
+        uint32_t gateFree = 0, gateLargest = 0, gate8Free = 0;
+        bool gatePass = false;
+        for (int gi = 0; gi < 16 && !gatePass; gi++) {
+            // 等待期间出现 Web 前台请求则立即放弃：连接握手/突发 publish
+            // 会与页面加载竞争 WiFi TX 通道（实测内存充足时也会挂起）
+            {
+                FastBeeFramework* fwGateW = FastBeeFramework::getInstance();
+                WebConfigManager* webGateW = fwGateW ? fwGateW->getWebConfigManager() : nullptr;
+                if (webGateW && webGateW->isForegroundRequestActive()) {
+                    ets_printf("[MQTT] Reconnect aborted: web foreground active during gate wait\n");
+                    _reconnectRunning = false;
+                    return;
+                }
+            }
+            gateFree    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            gateLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            gate8Free   = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            if (gateFree >= MQTT_RECONNECT_MIN_FREE &&
+                gateLargest >= MQTT_RECONNECT_MIN_LARGEST &&
+                gate8Free >= MQTT_RECONNECT_MIN_8BIT) {
+                gatePass = true;
+            } else {
+                delay(250);
+            }
+        }
+        if (!gatePass) {
+            ets_printf("[MQTT] Reconnect deferred: DRAM low (free=%lu largest=%lu free8=%lu need=%lu/%lu/%lu)\n",
+                       (unsigned long)gateFree, (unsigned long)gateLargest, (unsigned long)gate8Free,
+                       (unsigned long)MQTT_RECONNECT_MIN_FREE, (unsigned long)MQTT_RECONNECT_MIN_LARGEST,
+                       (unsigned long)MQTT_RECONNECT_MIN_8BIT);
+            _reconnectRunning = false;
+            return;
         }
     }
 

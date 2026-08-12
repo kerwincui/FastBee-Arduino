@@ -1,0 +1,19 @@
+<!-- 功能配置页面 -->
+<div id="features-page" class="page">
+    <div class="fb-card">
+        <div class="fb-card-header u-header-between">
+            <h2 class="fb-card-title">功能配置</h2>
+            <div class="u-toolbar-sm">
+                <button class="fb-btn fb-btn-refresh" id="features-refresh-btn">刷新</button>
+                <button class="fb-btn fb-btn-primary" id="features-save-btn" disabled>保存并重启</button>
+            </div>
+        </div>
+        <div class="fb-card-body">
+            <div id="features-summary" class="u-fs-13 u-text-secondary" style="margin-bottom:12px;">加载中...</div>
+            <div id="features-list"></div>
+            <p class="u-fs-12 u-text-secondary" style="margin-top:12px;">
+                灰显项表示未编译入当前固件，需重新编译烧录后才可启用。修改后点击"保存并重启"，设备约 3 秒后重启生效。
+            </p>
+        </div>
+    </div>
+</div>

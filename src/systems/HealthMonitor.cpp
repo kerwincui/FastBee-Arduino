@@ -24,6 +24,9 @@
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecScheduler.h"
 #include "network/handlers/HandlerUtils.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+#include "core/PeripheralManager.h"
+#endif
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
@@ -94,9 +97,11 @@ void HealthMonitor::performHealthCheck() {
     currentHealth.dramFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     currentHealth.dramLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
-    // ── 内存状态（含 PSRAM 的全局视图）───────────────────────
-    currentHealth.freeHeap    = esp_get_free_heap_size();
-    currentHealth.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+    // ── 内存状态（DRAM 口径，与 ESP.getFreeHeap/getMinFreeHeap 一致）─────────
+    // 注意：不能用 MALLOC_CAP_DEFAULT —— 它含 IRAM/RTC 区域且跨堆取最小，
+    // 会被极小的 IRAM 堆拉低（曾出现 heap=24676/min=1864 与 dram=53576 矛盾，误导诊断）
+    currentHealth.freeHeap    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    currentHealth.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
 
     if (currentHealth.freeHeap < heapWatermark) {
         heapWatermark = currentHealth.freeHeap;
@@ -444,6 +449,9 @@ void HealthMonitor::updateMemoryGuardLevel() {
         applyDegradation(oldLevel, newLevel);
     }
 
+    // G4: 主动碎片预检（NORMAL/WARN 级别下定期轻量整理，避免碎片累积到被动阈值）
+    proactiveCompactCheck();
+
     // 碎片率检查：超过阈值时触发紧凑化策略
     if (currentHealth.heapFragmentation > FRAG_THRESHOLD_COMPACT) {
         if (!_compactionTriggered) {
@@ -575,6 +583,30 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             Serial.println("[MEMGUARD] CRITICAL: log level -> ERROR");
         }
     }
+}
+
+// G4: 主动碎片预检：每 30 分钟检查一次，NORMAL/WARN 级别下碎片率 >= 50% 时
+// 执行轻量整理（清日志缓存 + ConfigStorage 缓存），不触发完整 compactMemory()
+void HealthMonitor::proactiveCompactCheck() {
+    uint32_t now = millis();
+    if (now - lastProactiveCompactTime < PROACTIVE_COMPACT_INTERVAL) return;
+    lastProactiveCompactTime = now;
+
+    // 仅在 NORMAL 或 WARN 级别下执行主动整理 (SEVERE+ 已有被动机制)
+    if (_currentLevel > MemoryGuardLevel::WARN) return;
+
+    uint8_t frag = currentHealth.heapFragmentation;
+    if (frag < PROACTIVE_COMPACT_THRESHOLD) return;
+
+    Serial.printf("[MEMGUARD] Proactive defrag: frag=%d%% (threshold=%d%%)\n",
+                  frag, PROACTIVE_COMPACT_THRESHOLD);
+
+    // 轻量整理: 仅清日志缓存 + ConfigStorage 缓存 (不关闭 SSE 连接)
+    LoggerSystem::getInstance().flushBuffer();
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    ConfigStorage::getInstance().clearCache();
+#endif
+    // 不触发完整的 compactMemory()，避免中断正常服务
 }
 
 void HealthMonitor::compactMemory() {
@@ -769,6 +801,12 @@ String HealthMonitor::getMetricsJson() {
     doc["stability"]["leak_suspect"] = (_dramHistoryCount >= 6) ? detectMemoryLeak() : false;
     doc["stability"]["uptime_hours"] = (unsigned long)(currentHealth.uptime / 3600000UL);
 
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    // ISR 事件队列诊断（中断风暴可观测：队列满丢事件计数 + 当前积压）
+    doc["isr"]["queue_overruns"] = (unsigned long)PeripheralManager::getInstance().getIsrQueueOverrunCount();
+    doc["isr"]["queue_waiting"]  = (unsigned long)PeripheralManager::getInstance().getIsrQueueWaiting();
+#endif
+
     // PSRAM 信息（用于前端判断 MQTTS 支持）
     doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
     doc["heap"]["psram_free"]  = (unsigned long)(ESP.getFreePsram() / 1024);
@@ -790,11 +828,13 @@ String HealthMonitor::getMetricsJson() {
 
 // ── 定期串口输出关键指标摘要 ─────────────────────────────────────────
 void HealthMonitor::logMetricsSummary() {
-    // 同时输出 DRAM 内部内存 vs 全局内存，方便诊断 PSRAM 干扰问题
-    Serial.printf("[METRICS] heap=%lu min=%lu dram=%lu dram_blk=%lu total_blk=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
+    // heap/min 与 dram 均为 DRAM（INTERNAL）口径；PSRAM 单独在 metrics JSON 中上报
+    // free8 = MALLOC_CAP_8BIT 真实可 malloc DRAM（INTERNAL 含 IRAM/RTC 虚高 ~28KB）
+    Serial.printf("[METRICS] heap=%lu min=%lu dram=%lu free8=%lu dram_blk=%lu total_blk=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
         (unsigned long)currentHealth.freeHeap,
         (unsigned long)currentHealth.minFreeHeap,
         (unsigned long)currentHealth.dramFreeHeap,
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
         (unsigned long)currentHealth.dramLargestBlock,
         (unsigned long)currentHealth.largestFreeBlock,
         (int)currentHealth.heapFragmentation,
@@ -979,6 +1019,7 @@ void HealthMonitor::disableMqttForMemory() {
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
     if (pm) {
         pm->stopMQTT();
+        pm->markMqttDisabledByConfig();
         Serial.println("[MEMRECOVER]   MQTT stopped (will NOT reconnect after reboot)");
     }
 }

@@ -91,9 +91,6 @@ const FLAG_SECTION_REQUIREMENTS = {
     lite_flags: [
         '-DFASTBEE_PROFILE_LITE=1',
         '-DFASTBEE_USE_PSRAM=0',
-        '-DFASTBEE_ENABLE_TCP=0',
-        '-DFASTBEE_ENABLE_HTTP=0',
-        '-DFASTBEE_ENABLE_COAP=0',
         '-DFASTBEE_ENABLE_MODBUS=0',
         '-DFASTBEE_ENABLE_OTA=0',
         '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
@@ -118,9 +115,6 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_PROFILE_FULL=1',
         '-DFASTBEE_USE_PSRAM=1',
         '-DBOARD_HAS_PSRAM',
-        '-DFASTBEE_ENABLE_TCP=1',
-        '-DFASTBEE_ENABLE_HTTP=1',
-        '-DFASTBEE_ENABLE_COAP=1',
         '-DFASTBEE_ENABLE_MODBUS=1',
         '-DFASTBEE_MODBUS_SLAVE_ENABLE=1',
         '-DFASTBEE_ENABLE_OTA=1',
@@ -161,9 +155,6 @@ const FLAG_SECTION_REQUIREMENTS = {
 const FEATURE_FLAG_TO_SOURCES = {
     FASTBEE_ENABLE_RULE_SCRIPT: ['core/RuleScriptManager.cpp', 'network/handlers/RuleScriptRouteHandler.cpp'],
     FASTBEE_ENABLE_OTA: ['network/OTAManager.cpp', 'network/handlers/OTARouteHandler.cpp'],
-    FASTBEE_ENABLE_TCP: ['protocols/TCPHandler.cpp'],
-    FASTBEE_ENABLE_HTTP: ['protocols/HTTPClientWrapper.cpp'],
-    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp'],
     FASTBEE_ENABLE_CELLULAR: ['network/CellularAdapter.cpp'],
     FASTBEE_ENABLE_ETHERNET: ['network/EthernetAdapter.cpp']
     // NOTE: FASTBEE_ENABLE_USER_ADMIN / FASTBEE_ENABLE_ROLE_ADMIN removed —

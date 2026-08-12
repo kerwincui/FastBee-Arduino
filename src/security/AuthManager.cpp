@@ -198,6 +198,15 @@ bool AuthManager::isAccountLocked(const String& username) {
 }
 
 void AuthManager::lockAccount(const String& username) {
+    // 审计 P1-2：上限兜底，满时驱逐锁定时间最早的一条（按时间戳找最小）
+    if (lockedAccounts.find(username) == lockedAccounts.end() &&
+        lockedAccounts.size() >= MAX_LOCKED_ACCOUNTS) {
+        auto oldest = lockedAccounts.begin();
+        for (auto e = lockedAccounts.begin(); e != lockedAccounts.end(); ++e) {
+            if (e->second < oldest->second) oldest = e;
+        }
+        lockedAccounts.erase(oldest);
+    }
     lockedAccounts[username] = millis();
     logAuthEvent("account_locked", username, "Too many failed login attempts", false);
 }

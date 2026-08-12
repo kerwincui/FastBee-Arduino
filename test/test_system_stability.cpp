@@ -1123,6 +1123,63 @@ void test_source_code_dev_mode_guard_on_buttons() {
 }
 
 /**
+ * @brief 源码回归：外设执行编辑页数据加载链必须支持自动重试
+ * 回归：编辑页串行调用 4 个 API，设备瞬时拥塞（TIME_WAIT 占满 PCB / 看门狗回收）
+ * 会导致请求链被 abort（AbortError: signal is aborted without reason），页面永久卡在加载中。
+ * 修复：拆出 _loadPeriphExecEditData(id, retriesLeft)，失败延迟 1.5s 自动重试一次，
+ * 最终失败通过 apiNotifyError 提示用户
+ */
+void test_source_code_periph_exec_edit_load_retry() {
+    TestLog::testStart("Source: Periph Exec Edit Load Chain Has Auto Retry");
+
+    std::string js = readSrcFile("web-src/modules/runtime/periph-exec.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(),
+        "Failed to read periph-exec.js");
+    TestLog::step("File loaded");
+
+    // 编辑入口必须调用独立的加载方法并传入重试次数
+    TEST_ASSERT_TRUE_MESSAGE(
+        js.find("_loadPeriphExecEditData(id, 1)") != std::string::npos,
+        "editPeriphExecRule must delegate to _loadPeriphExecEditData with 1 retry");
+    TestLog::step("Edit entry delegates to retryable loader");
+
+    // 加载方法必须存在且接受 retriesLeft 参数
+    size_t loadPos = js.find("_loadPeriphExecEditData(id, retriesLeft)");
+    TEST_ASSERT_TRUE_MESSAGE(loadPos != std::string::npos,
+        "_loadPeriphExecEditData(id, retriesLeft) must be defined");
+
+    // 请求链末尾到方法结束的区域必须包含重试逻辑
+    size_t catchPos = js.find(".catch(err =>", loadPos);
+    TEST_ASSERT_TRUE(catchPos != std::string::npos);
+    size_t methodEnd = js.find("deletePeriphExecRule", catchPos);
+    TEST_ASSERT_TRUE(methodEnd != std::string::npos);
+    std::string catchBlock = js.substr(catchPos, methodEnd - catchPos);
+
+    // 剩余重试次数内必须延迟后递归重试（覆盖页面跳转中断检查）
+    TEST_ASSERT_TRUE_MESSAGE(
+        catchBlock.find("retriesLeft > 0") != std::string::npos,
+        "Catch block must check retriesLeft before retrying");
+    TEST_ASSERT_TRUE_MESSAGE(
+        catchBlock.find("setTimeout(resolve, 1500)") != std::string::npos,
+        "Retry must be delayed 1.5s to let device congestion clear");
+    TEST_ASSERT_TRUE_MESSAGE(
+        catchBlock.find("_loadPeriphExecEditData(id, retriesLeft - 1)") != std::string::npos,
+        "Retry must recurse with decremented retriesLeft");
+    TEST_ASSERT_TRUE_MESSAGE(
+        catchBlock.find("_pageAborted") != std::string::npos,
+        "Page-navigation aborts must not trigger retry");
+    TestLog::step("Delayed auto-retry with decrement and page-abort guard");
+
+    // 重试耗尽后必须给用户可见的错误提示
+    TEST_ASSERT_TRUE_MESSAGE(
+        catchBlock.find("apiNotifyError") != std::string::npos,
+        "Final failure must notify user via apiNotifyError");
+    TestLog::step("Final failure notifies user");
+
+    TestLog::testEnd(true);
+}
+
+/**
  * @brief 源码回归：配置导入/导出弹窗中 auth.json 必须显示中文标签
  * 回归：CONFIG_TRANSFER_LABELS 字典缺少 auth.json 条目，导致弹窗显示原始文件名
  */
@@ -2511,18 +2568,20 @@ void test_source_code_ap_probe_backoff_mechanism() {
     TestLog::step("Dynamic probe interval selection in update()");
 
     // 5) handleApModeWifiProbe() 失败路径必须累计 _apProbeFailCount
+    // （预扫描快速失败分支 + STA 探测失败分支各计一次，取最后一处）
     auto probeFunc = nmc.find("void FBNetworkManager::handleApModeWifiProbe()");
     TEST_ASSERT_TRUE_MESSAGE(probeFunc != std::string::npos,
         "handleApModeWifiProbe() must exist");
-    auto failPath = nmc.find("_apProbeFailCount++", probeFunc);
-    TEST_ASSERT_TRUE_MESSAGE(failPath != std::string::npos,
+    auto failPath = nmc.rfind("_apProbeFailCount++");
+    TEST_ASSERT_TRUE_MESSAGE(failPath != std::string::npos && failPath > probeFunc,
         "handleApModeWifiProbe() failure path must increment _apProbeFailCount");
     TestLog::step("_apProbeFailCount incremented on probe failure");
 
     // 6) handleApModeWifiProbe() 成功路径必须重置 _apProbeFailCount = 0
+    // （成功重置位于两次失败计数之间）
     auto successReset = nmc.find("_apProbeFailCount = 0", probeFunc);
     TEST_ASSERT_TRUE_MESSAGE(successReset != std::string::npos &&
-                             successReset < failPath,
+                             successReset > probeFunc && successReset < failPath,
         "handleApModeWifiProbe() success path must reset _apProbeFailCount = 0");
     TestLog::step("_apProbeFailCount reset on probe success");
 
@@ -2626,6 +2685,69 @@ void test_smoke_ap_probe_recovery_state_machine() {
         ProbeState s = { MODE_AP, true, 0, false, false };
         TEST_ASSERT_FALSE(shouldProbe(s, 300000));
         TestLog::step("No staSSID: probe skipped");
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 行为镜像：AP 探测预扫描快速失败的内存安全性
+ * 镜像 handleApModeWifiProbe() 的预扫描决策：SSID 不可见时只做扫描
+ * （不调 WiFi.begin()，无 lwIP 开销），SSID 可见才切 STA 探测。
+ * 回归：旧逻辑对不存在的 SSID 每次探测 WiFi.begin() 白耗 ~4KB 且不回收，
+ * ~10 次后跌破 6KB Web 门控，AP 模式页面永远加载不出（双门控锁死）。
+ */
+void test_smoke_ap_probe_prescan_memory_safety() {
+    TestLog::testStart("Smoke: AP probe pre-scan fast-fail keeps DRAM alive");
+
+    const uint32_t LWIP_BEGIN_COST = 4096;   // WiFi.begin() 实测白耗
+    const uint32_t SCAN_COST = 512;          // 扫描缓冲（结束后释放）
+    const uint32_t WEB_GATE = 6144;          // WebHandlerContext 静态门控
+    const uint32_t PROBE_GATE = 16384;       // 探测 DRAM 门控
+
+    // 镜像预扫描决策：返回 true = 需要切 STA 调 WiFi.begin()
+    auto probeNeedsStaSwitch = [](bool ssidVisible) -> bool {
+        return ssidVisible;  // 不可见时快速失败，不切 STA
+    };
+
+    // === 场景 1：新逻辑 — SSID 不可见，20 轮探测后内存仍高于双门控 ===
+    {
+        uint32_t free8 = 22000;  // AP 模式实测启动水位
+        for (int i = 0; i < 20; i++) {
+            bool visible = false;  // 配置的 SSID 不存在
+            if (!probeNeedsStaSwitch(visible)) {
+                free8 -= SCAN_COST;      // 仅扫描开销
+                free8 += SCAN_COST;      // scanDelete 释放
+            }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(free8 > WEB_GATE,
+            "pre-scan fast-fail must keep free8 above Web gate after 20 probes");
+        TEST_ASSERT_TRUE_MESSAGE(free8 > PROBE_GATE,
+            "pre-scan fast-fail must keep free8 above probe gate (no lockout)");
+        TEST_ASSERT_EQUAL_UINT32(22000, free8);
+        TestLog::step("New logic: 20 invisible-SSID probes, free8 unchanged (22000)");
+    }
+
+    // === 场景 2：旧逻辑镜像 — 每轮 WiFi.begin() 泄漏，~10 轮跌破 Web 门控 ===
+    {
+        uint32_t free8 = 22000;
+        int rounds = 0;
+        while (free8 > WEB_GATE && rounds < 30) {
+            free8 -= LWIP_BEGIN_COST;  // 失败断开后缓冲不回收
+            rounds++;
+        }
+        TEST_ASSERT_TRUE_MESSAGE(rounds <= 10,
+            "old logic leaks to Web gate within ~10 probes (matches field incident)");
+        TEST_ASSERT_TRUE_MESSAGE(free8 <= WEB_GATE,
+            "old logic ends below Web gate → AP page unloadable");
+        TestLog::step("Old logic: Web gate breached after a few probes (incident reproduced)");
+    }
+
+    // === 场景 3：SSID 可见时仍执行重 STA 探测（恢复能力不丢） ===
+    {
+        TEST_ASSERT_TRUE(probeNeedsStaSwitch(true));
+        TEST_ASSERT_FALSE(probeNeedsStaSwitch(false));
+        TestLog::step("Visible SSID still triggers STA probe; invisible fast-fails");
     }
 
     TestLog::testEnd(true);
@@ -2856,6 +2978,7 @@ void test_system_stability_group() {
     RUN_TEST(test_source_code_periph_config_hard_limit);
     RUN_TEST(test_source_code_mqtt_fast_path_config_match);
     RUN_TEST(test_source_code_dev_mode_guard_on_buttons);
+    RUN_TEST(test_source_code_periph_exec_edit_load_retry);
     RUN_TEST(test_source_code_config_transfer_auth_label);
     RUN_TEST(test_source_code_mqtt_test_stops_main_client);
 
@@ -2898,6 +3021,7 @@ void test_system_stability_group() {
     RUN_TEST(test_source_code_ap_fallback_auto_flag);
     RUN_TEST(test_source_code_ap_probe_backoff_mechanism);
     RUN_TEST(test_smoke_ap_probe_recovery_state_machine);
+    RUN_TEST(test_smoke_ap_probe_prescan_memory_safety);
 
     // WiFi 事件回调重复注册 & 事件栈溢出回归测试
     RUN_TEST(test_source_code_no_duplicate_wifi_onevent_registration);

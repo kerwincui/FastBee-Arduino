@@ -241,6 +241,25 @@ public:
     // 线程安全：获取互斥量句柄（供 Ticker 回调非阻塞尝试加锁）
     SemaphoreHandle_t getMutex() const { return _mutex; }
 
+    // ========== ISR 队列诊断（T4：事件丢失可观测） ==========
+
+    // 队列溢出计数：队列满时 ISR 事件被丢弃的次数（旧实现静默丢事件，无法诊断）
+    uint32_t getIsrQueueOverrunCount() const { return _isrQueueOverruns; }
+    // 当前队列中待处理的事件数
+    size_t getIsrQueueWaiting() const;
+    // 复位溢出计数（诊断采集周期开始时调用）
+    void resetIsrQueueStats();
+
+    // 中断去抖决策（纯函数，便于单元测试）：
+    // 同一引脚两次派发间隔 < debounceMs 时合并，抑制机械按键/CHANGE 中断风暴
+    static bool shouldDispatchIsrEvent(unsigned long nowMs, unsigned long lastDispatchMs,
+                                       uint16_t debounceMs);
+
+    // 按外设类型返回去抖窗口（纯函数，便于单元测试）：
+    // - RF_MODULE/IR_RECEIVER 等高速边沿外设的脉冲时序敏感（OOK/NEC 解码），返回 0 禁用去抖
+    // - GPIO 中断/雷达等类型默认 5ms 去抖抑制机械抖动
+    static uint16_t isrDebounceMsForType(PeripheralType type);
+
 private:
     PeripheralManager() = default;
 
@@ -318,6 +337,13 @@ private:
     // 中断事件队列
     static constexpr uint8_t ISR_QUEUE_SIZE = 8;
     static QueueHandle_t _isrQueue;
+    // 队列溢出计数（静态：isrHandler 为静态 ISR 上下文，不能依赖实例指针）
+    static volatile uint32_t _isrQueueOverruns;
+
+    // 中断去抖：任务上下文按引脚记录上次派发时刻（handleInterrupt 仅在 loop 任务调用）
+    static constexpr uint16_t ISR_DEBOUNCE_MS = 5;
+    static constexpr uint8_t ISR_TRACKED_PIN_COUNT = 64;
+    unsigned long _lastIsrDispatch[ISR_TRACKED_PIN_COUNT] = {0};
 
     // 中断处理
     static void IRAM_ATTR isrHandler(void* arg);

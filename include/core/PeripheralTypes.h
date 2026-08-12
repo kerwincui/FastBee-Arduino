@@ -52,6 +52,7 @@ enum class PeripheralType {
     RADAR_SENSOR = 49,  // RCWL-0516 / 5.8GHz radar digital presence sensor
     DS1302_RTC = 50,    // DS1302 实时时钟模块（3线接口：CE/IO/SCLK）
     LCD1602 = 52,       // LCD1602 I2C 字符液晶（通过 PCF8574 扩展板）
+    IR_RECEIVER = 53,   // 红外接收头（VS1838B/HS0038 等，1个数据引脚，IRremoteESP8266 解码）
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -152,6 +153,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::RADAR_SENSOR: return "Radar Sensor";
         case PeripheralType::DS1302_RTC: return "DS1302 RTC";
         case PeripheralType::LCD1602: return "LCD1602";
+        case PeripheralType::IR_RECEIVER: return "IR Receiver";
 
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
@@ -184,6 +186,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::NEO_PIXEL:
         case PeripheralType::RF_MODULE:
         case PeripheralType::RADAR_SENSOR:
+        case PeripheralType::IR_RECEIVER:
             return 1;
             
         // 双引脚

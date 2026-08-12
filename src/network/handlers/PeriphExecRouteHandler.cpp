@@ -2,9 +2,11 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "./network/handlers/PeriphExecRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
+#include "core/PeriphExecExecutor.h"  // guessSensorDataField（数据源字段推断与执行器同规则）
 #include "core/PeripheralManager.h"
 #include "core/ResourceProfile.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
@@ -45,7 +47,23 @@ String escapePeriphExecJsonString(const String& value) {
 }
 
 bool shouldDegradeControlsResponse() {
-    return ESP.getFreeHeap() < 16384 || ESP.getMaxAllocHeap() < 8192;
+    return FastBee::MemoryBudget::dramFree() < 16384 || FastBee::MemoryBudget::dramLargest() < 8192;
+}
+
+// 生成 Flash 保存失败的详细错误消息（包含文件系统与堆状态，便于定位内存不足/碎片问题）
+String buildFlashSaveErrorMessage(const char* operation) {
+    size_t fsTotal = LittleFS.totalBytes();
+    size_t fsUsed  = LittleFS.usedBytes();
+    size_t fsFree  = fsTotal > fsUsed ? fsTotal - fsUsed : 0;
+    char buf[240];
+    snprintf(buf, sizeof(buf),
+             "%s failed (flash free=%uKB/%uKB, heap free=%uKB maxBlock=%uKB, check serial log)",
+             operation,
+             (unsigned)(fsFree / 1024),
+             (unsigned)(fsTotal / 1024),
+             (unsigned)(ESP.getFreeHeap() / 1024),
+             (unsigned)(ESP.getMaxAllocHeap() / 1024));
+    return String(buf);
 }
 
 void sendDegradedControlsResponse(AsyncWebServerRequest* request) {
@@ -61,7 +79,7 @@ PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
 
 void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     // 注意：更具体的路由必须先注册，否则会被 /api/periph-exec 拦截
-    
+
     // 设备控制API（按动作类型分组）
     server->on("/api/periph-exec/controls", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetControls(request); });
@@ -142,9 +160,11 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     if (request->hasParam("id")) {
         String ruleId = request->getParam("id")->value();
         // getRule() 内部不持锁，但返回指向 map 内的指针；这里短暂持锁，序列化后立即释放
-        MutexGuard lock(mgr.getRulesMutex());
+        // 超时 2000ms：规则执行长时间占锁时快速返回 503，避免永久阻塞 async_tcp 任务
+        // （处理器运行在 async_tcp 任务上，无限等待会冻结所有 HTTP 请求）
+        MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(2000));
         if (!lock.isLocked()) {
-            HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+            HandlerUtils::sendJsonError(request, 503, "Service busy (rules locked), retry in 2s", 2);
             return;
         }
         const PeriphExecRule* rule = mgr.getRule(ruleId);
@@ -214,8 +234,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             if (periphId.isEmpty()) periphId = action.targetPeriphId;
             if (periphId.isEmpty()) return;
 
-            String dataField = sDoc["dataField"].as<String>();
-            if (dataField.isEmpty()) dataField = "temperature";
+            // 内部通道字段与执行器缓存键同规则（显式 dataField 优先；多字段类别推断；
+            // 单值传感器用外设配置 id），保证 sourceId=${periphId.field} 模板变量能命中传感器缓存
+            String dataField = PeriphExecExecutor::resolveChannelField(
+                sDoc["sensorCategory"] | "analog", periphId, sDoc["dataField"] | "");
             String sourceId = periphId + "_" + dataField;
             for (const auto& existingId : sensorSourceIds) {
                 if (existingId == sourceId) return;
@@ -399,7 +421,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     header += F(",\"pageSize\":");
     header += String(effectivePageSize);
     // 保留 compact 标志，前端可据此判断是否缺少详细字段
-    const bool compact = (ESP.getFreeHeap() < 16384) || (ESP.getMaxAllocHeap() < 8192);
+    const bool compact = (FastBee::MemoryBudget::dramFree() < 16384) || (FastBee::MemoryBudget::dramLargest() < 8192);
     if (compact) {
         header += F(",\"compact\":true");
     }
@@ -471,7 +493,7 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule added");
         } else {
-            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
@@ -541,7 +563,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule updated");
         } else {
-            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
@@ -565,7 +587,7 @@ void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule deleted");
         } else {
-            ctx->sendError(request, 500, "Rule deleted in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 404, "Rule not found");
@@ -589,7 +611,7 @@ void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule enabled");
         } else {
-            ctx->sendError(request, 500, "Rule enabled in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 404, "Rule not found");
@@ -613,7 +635,7 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule disabled");
         } else {
-            ctx->sendError(request, 500, "Rule disabled in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 404, "Rule not found");
@@ -852,7 +874,7 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule added");
         } else {
-            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
@@ -1056,7 +1078,7 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
         if (mgr.saveConfiguration()) {
             ctx->sendSuccess(request, "Rule updated");
         } else {
-            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
+            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
         }
     } else {
         ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);

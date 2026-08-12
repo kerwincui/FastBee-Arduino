@@ -141,6 +141,12 @@ private:
     void applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);  // 降级/恢复措施
     void compactMemory();           // 碎片率过高时触发紧凑化策略
 
+    // G4: 主动碎片预检定时器（NORMAL/WARN 级别下定期轻量整理）
+    uint32_t lastProactiveCompactTime = 0;
+    static constexpr uint32_t PROACTIVE_COMPACT_INTERVAL = 1800000;  // 30 分钟
+    static constexpr uint8_t  PROACTIVE_COMPACT_THRESHOLD = 50;       // 碎片率 50% 即触发轻量整理
+    void proactiveCompactCheck();
+
     // 降级前保存的原始日志设置（用于恢复）
     LogLevel _savedLogLevel = LOG_INFO;
     bool     _savedFileLogging = true;

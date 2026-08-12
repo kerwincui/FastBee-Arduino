@@ -2867,6 +2867,647 @@ void test_regression_boot_report_gated_and_throttled_in_source() {
     TestLog::testEnd(true);
 }
 
+// ========== Scheduler web-reserve 堆口径源码回归保护 ==========
+// checkTimers 的暂停/恢复检查必须使用 8BIT DRAM 口径，与静态资源门控
+// （WebHandlerContext）、STATUS 日志一致。不得使用 MALLOC_CAP_INTERNAL：
+// INTERNAL 含 IRAM/RTC 不可 malloc 内存，虚高约 28KB（实测 INTERNAL=36KB
+// 但 8BIT 仅 8KB/blk8 仅 1.7KB），用 INTERNAL 判暂停会触发太晚——8BIT 早已
+// 被定时器规则切碎，静态门控(2KB)把登录页资源全拒，AP 配网页面加载不全。
+// 也不得用 MALLOC_CAP_DEFAULT（跨堆取最小，被极小 IRAM 堆拉低造成永久误暂停）。
+void test_regression_scheduler_web_reserve_uses_8bit_heap_in_source() {
+    TestLog::testStart("Scheduler web-reserve heap basis (8BIT source guard)");
+
+    std::string sched = readRegressionSrcFile("src/core/PeriphExecScheduler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sched.empty(), "cannot read PeriphExecScheduler.cpp");
+
+    size_t fnPos = sched.find("void PeriphExecScheduler::checkTimers");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos, "checkTimers must exist");
+    std::string body = sched.substr(fnPos);
+
+    // 暂停判定必须用 8BIT（DRAM）口径，与静态资源门控一致
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)") != std::string::npos,
+        "web-reserve check must measure largest block with MALLOC_CAP_8BIT");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("heap_caps_get_free_size(MALLOC_CAP_8BIT)") != std::string::npos,
+        "web-reserve check must measure free heap with MALLOC_CAP_8BIT");
+    TestLog::step("largest block + free heap measured with 8BIT basis");
+
+    // 不得回退到 INTERNAL 口径（虚高约 28KB，暂停触发太晚）
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)") == std::string::npos,
+        "checkTimers must not measure largest block with MALLOC_CAP_INTERNAL (inflated ~28KB)");
+    // 也不得用 DEFAULT（被 IRAM 小堆拉低造成永久误暂停）
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)") == std::string::npos,
+        "checkTimers must not measure largest block with MALLOC_CAP_DEFAULT");
+    TestLog::step("no INTERNAL/DEFAULT largest-block measurement");
+
+    // web-reserve 判定不得使用 ESP.getFreeHeap()（口径混杂、与 8BIT 门控不一致）
+    size_t suspendCheckPos = body.find("shouldSuspendBackgroundPolling(currentLevel");
+    TEST_ASSERT_TRUE_MESSAGE(suspendCheckPos != std::string::npos,
+        "checkTimers must call shouldSuspendBackgroundPolling");
+    std::string preCheck = body.substr(0, suspendCheckPos);
+    TEST_ASSERT_TRUE_MESSAGE(preCheck.find("ESP.getFreeHeap()") == std::string::npos,
+        "web-reserve metrics must not use ESP.getFreeHeap()");
+    TestLog::step("no ESP.getFreeHeap() in web-reserve metric path");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Scheduler web-reserve 滞回阈值源码回归保护 ==========
+// 背景：实测开机基线 free≈50KB/largest≈27KB（ESP32 无 PSRAM），旧阈值
+// （free<18KB/largest<6KB）太宽松，内存紧张时后台轮询不暂停，Web 大响应
+// （lwIP pbuf/AsyncFileResponse）分配不到缓冲导致静态页面断流、Web 不可访问。
+// 新设计：暂停阈值上调 + 更严的恢复阈值（滞回）防边界振荡。
+void test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source() {
+    TestLog::testStart("Scheduler web-reserve hysteresis thresholds (source guard)");
+
+    std::string sched = readRegressionSrcFile("src/core/PeriphExecScheduler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sched.empty(), "cannot read PeriphExecScheduler.cpp");
+
+    // 1. 暂停/恢复双阈值常量必须存在
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES") != std::string::npos,
+        "must define suspend threshold for free heap");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES") != std::string::npos,
+        "must define suspend threshold for largest block");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("WEB_RESERVE_RESUME_FREE_HEAP_BYTES") != std::string::npos,
+        "must define resume threshold for free heap");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES") != std::string::npos,
+        "must define resume threshold for largest block");
+    TestLog::step("suspend/resume threshold constants all present");
+
+    // 2. 滞回设计：恢复阈值必须高于暂停阈值（否则边界振荡）
+    size_t suspendFreePos = sched.find("WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = ");
+    size_t resumeFreePos = sched.find("WEB_RESERVE_RESUME_FREE_HEAP_BYTES = ");
+    TEST_ASSERT_TRUE_MESSAGE(suspendFreePos != std::string::npos &&
+                             resumeFreePos != std::string::npos,
+        "suspend/resume free-heap thresholds must be defined with values");
+    unsigned long suspendFree = strtoul(sched.c_str() + suspendFreePos +
+        strlen("WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = "), nullptr, 10);
+    unsigned long resumeFree = strtoul(sched.c_str() + resumeFreePos +
+        strlen("WEB_RESERVE_RESUME_FREE_HEAP_BYTES = "), nullptr, 10);
+    TEST_ASSERT_TRUE_MESSAGE(resumeFree > suspendFree,
+        "resume free-heap threshold must exceed suspend threshold (hysteresis)");
+    // 暂停阈值必须高于静态资源门控(6KB)且低于 8BIT 开机基线(25KB)，
+    // 否则要么保护不到 Web，要么开机就误暂停。8BIT 合理区间 8-20KB。
+    TEST_ASSERT_TRUE_MESSAGE(suspendFree >= 8192UL && suspendFree < 24576UL,
+        "suspend free8 threshold must be in 8-24KB range (above static gate 6KB, below 8BIT boot baseline 25KB)");
+    // 恢复阈值必须不高于 8BIT 基线（无 PSRAM ESP32 AP 稳态 free8≈25KB）：
+    // 曾用 INTERNAL 51KB 超过 8BIT 基线导致暂停不可逆，传感器缓存过期。
+    TEST_ASSERT_TRUE_MESSAGE(resumeFree <= 24576UL,
+        "resume free8 threshold must be reachable at 8BIT device baseline (~25KB), "
+        "otherwise suspension becomes permanent and sensor cache expires");
+    TestLog::step("free-heap hysteresis ordering verified");
+
+    size_t suspendBlkPos = sched.find("WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = ");
+    size_t resumeBlkPos = sched.find("WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = ");
+    TEST_ASSERT_TRUE_MESSAGE(suspendBlkPos != std::string::npos &&
+                             resumeBlkPos != std::string::npos,
+        "suspend/resume largest-block thresholds must be defined with values");
+    unsigned long suspendBlk = strtoul(sched.c_str() + suspendBlkPos +
+        strlen("WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = "), nullptr, 10);
+    unsigned long resumeBlk = strtoul(sched.c_str() + resumeBlkPos +
+        strlen("WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = "), nullptr, 10);
+    TEST_ASSERT_TRUE_MESSAGE(resumeBlk > suspendBlk,
+        "resume largest-block threshold must exceed suspend threshold (hysteresis)");
+    TestLog::step("largest-block hysteresis ordering verified");
+
+    // 3. 判定函数必须接收当前暂停状态（滞回分支的输入）
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("bool currentlySuspended") != std::string::npos,
+        "shouldSuspendBackgroundPolling must take currentlySuspended for hysteresis");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, "
+                   "fragmentation,\n                                       _webReserveSuspended)")
+            != std::string::npos ||
+        sched.find("fragmentation,\n                                       _webReserveSuspended)")
+            != std::string::npos,
+        "checkTimers must pass _webReserveSuspended into suspend decision");
+    TestLog::step("checkTimers feeds suspended state back into decision (hysteresis loop)");
+
+    // 4. 恢复条件必须同时要求 free 与 largest 双达标（单一指标恢复不可靠）
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("freeHeap >= WEB_RESERVE_RESUME_FREE_HEAP_BYTES &&") != std::string::npos,
+        "resume must require free heap above resume threshold");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("largestBlock >= WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES") != std::string::npos,
+        "resume must require largest block above resume threshold");
+    TestLog::step("resume requires both free heap and largest block");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Web 前端资源加载重试源码回归保护 ==========
+// 背景：WiFi 链路退化（高延迟/重传）时大包静态资源单次加载失败率高，
+// chunk/CSS 加载器必须失败重试（而非跳过），否则登录页白屏。
+void test_regression_web_loader_retry_in_source() {
+    TestLog::testStart("Web asset loader retry logic (source guard)");
+
+    // 1. index.html 的 chunk 串行加载器：失败必须重试同一文件（不得直接跳过）
+    std::string indexHtml = readRegressionSrcFile("web-src/index.html");
+    TEST_ASSERT_FALSE_MESSAGE(indexHtml.empty(), "cannot read web-src/index.html");
+    TEST_ASSERT_TRUE_MESSAGE(indexHtml.find("CHUNK_MAX_RETRY") != std::string::npos,
+        "index.html chunk loader must define CHUNK_MAX_RETRY");
+    TEST_ASSERT_TRUE_MESSAGE(indexHtml.find("tryLoad") != std::string::npos,
+        "index.html chunk loader must retry via tryLoad on error");
+    // 重试 URL 需带退缓存参数，避免浏览器复用失败响应
+    TEST_ASSERT_TRUE_MESSAGE(indexHtml.find("'&r=' + attempt") != std::string::npos,
+        "chunk retry must append cache-busting '&r=' attempt suffix");
+    TestLog::step("index.html chunk loader retries with cache-busting");
+
+    // 2. main.js 的 CSS 加载器：失败必须递增退避重试
+    std::string mainJs = readRegressionSrcFile("web-src/js/main.js");
+    TEST_ASSERT_FALSE_MESSAGE(mainJs.empty(), "cannot read web-src/js/main.js");
+    TEST_ASSERT_TRUE_MESSAGE(mainJs.find("CSS_MAX_RETRY") != std::string::npos,
+        "main.js stylesheet loader must define CSS_MAX_RETRY");
+    TEST_ASSERT_TRUE_MESSAGE(mainJs.find("applyCssHref") != std::string::npos,
+        "main.js stylesheet loader must re-apply href on error (retry)");
+    // CSS 等待窗口必须足够容纳重试（不得提前 finish 放弃）
+    TEST_ASSERT_TRUE_MESSAGE(mainJs.find("setTimeout(finish, 2500)") == std::string::npos,
+        "stylesheet wait window must not be the old 2500ms (too short for retries)");
+    TestLog::step("main.js CSS loader retries with backoff");
+
+    TestLog::testEnd(true);
+}
+
+// ========== 实时监测传感器缓存合并链路源码回归保护 ==========
+// 保护链路：executeSensorReadAction 写入显式 dataField + 外设配置 id → SensorReadCache 携带两者
+// → collectLocalSensorData 合并缓存：显式 dataField 优先，否则外设配置 id（物模型标识符）
+void test_regression_monitor_sensor_cache_wiring_in_source() {
+    TestLog::testStart("Regression: monitor sensor cache wiring in source");
+
+    // 1. SensorReadCache 结构含 dataField/periphId 字段，updateSensorReadCache 签名带默认参数
+    std::string header = readRegressionSrcFile("include/core/PeriphExecManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "cannot read PeriphExecManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("String dataField;") != std::string::npos,
+        "SensorReadCache must carry dataField for monitor report id");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("String periphId;") != std::string::npos,
+        "SensorReadCache must carry periphId as generic report id fallback");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("const String& dataField = \"\"") != std::string::npos,
+        "updateSensorReadCache must accept dataField with default value");
+    TestLog::step("SensorReadCache.dataField/periphId + signature present");
+
+    // 2. Manager 实现将 dataField/periphId 写入缓存
+    std::string mgr = readRegressionSrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(mgr.empty(), "cannot read PeriphExecManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(mgr.find("cache.dataField = dataField") != std::string::npos,
+        "updateSensorReadCache must store dataField into cache entry");
+    TEST_ASSERT_TRUE_MESSAGE(mgr.find("cache.periphId = periphId") != std::string::npos,
+        "updateSensorReadCache must store periphId into cache entry");
+    TestLog::step("manager stores dataField + periphId");
+
+    // 3. Executor 调用时传入显式 dataField 与外设配置 id（所有 ACTION_SENSOR_READ 类别的统一入口）；
+    //    回归：类别推断的默认字段不得进入缓存 dataField，避免顶替物模型标识符
+    std::string exec = readRegressionSrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(exec.empty(), "cannot read PeriphExecExecutor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        exec.find("updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit), explicitFieldStr, String(periphId))") != std::string::npos,
+        "executeSensorReadAction must pass explicit dataField and periphId to sensor cache");
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("result.dataField = explicitFieldStr") != std::string::npos,
+        "result.dataField must only carry explicitly configured dataField (generic report id rule)");
+    TestLog::step("executor passes explicit dataField + periphId");
+
+    // 4. collectLocalSensorData 合并缓存：拷贝访问 + TTL 防御 + 外设配置 id 回退 + remark sensor
+    std::string proto = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(proto.empty(), "cannot read ProtocolManager.cpp");
+    size_t fnPos = proto.find("ProtocolManager::collectLocalSensorData");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos, "collectLocalSensorData must exist");
+    std::string body = proto.substr(fnPos);
+    TEST_ASSERT_TRUE_MESSAGE(body.find("getSensorReadCacheCopy()") != std::string::npos,
+        "must merge sensor cache via thread-safe copy");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("SENSOR_CACHE_TTL_MS") != std::string::npos,
+        "must apply defensive TTL filter on cache entries");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("cache.periphId.isEmpty() ? entry.first : cache.periphId") != std::string::npos,
+        "report id must fall back to peripheral config id (thing-model identifier)");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("remark\\\":\\\"sensor") != std::string::npos,
+        "sensor cache entries must be tagged remark=sensor");
+    // 合并块必须受 FASTBEE_ENABLE_PERIPH_EXEC 特性宏保护（lite 环境兼容）
+    size_t guardPos = proto.rfind("#if FASTBEE_ENABLE_PERIPH_EXEC", proto.find("getSensorReadCacheCopy()", fnPos));
+    TEST_ASSERT_TRUE_MESSAGE(guardPos != std::string::npos && guardPos > fnPos,
+        "sensor cache merge must be guarded by FASTBEE_ENABLE_PERIPH_EXEC");
+    TestLog::step("collectLocalSensorData merges cache with TTL/periphId-fallback/remark/guard");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 IrRouteHandler.cpp 中 /api/ir/keys 子路径先于父路径注册
+ * 回归：ESPAsyncWebServer 对普通字符串 URI 采用 BackwardCompatible 匹配
+ *      （(uri == path) || path.startsWith(uri + "/")），且按注册顺序取首个命中者。
+ *      原代码先注册 POST /api/ir/keys，导致 /keys/delete 与 /keys/clear
+ *      全部被 handleSaveKey 吞掉，真机上清码/删除单键完全失效
+ *      （返回 400 "缺少参数 name 或 code"）。
+ * 修复：将 /keys/delete、/keys/clear 提到 /api/ir/keys 之前注册。
+ */
+void test_regression_ir_keys_subroutes_before_parent() {
+    TestLog::testStart("Regression: IR Keys Subroutes Registered Before Parent");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/IrRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read IrRouteHandler.cpp");
+    TestLog::step("Loaded IrRouteHandler.cpp");
+
+    // 使用精确模式匹配实际注册调用，避免匹配注释里的路径文本
+    size_t deletePos = src.find("server->on(\"/api/ir/keys/delete\"");
+    size_t clearPos = src.find("server->on(\"/api/ir/keys/clear\"");
+    TEST_ASSERT_TRUE_MESSAGE(deletePos != std::string::npos, "/api/ir/keys/delete must be registered");
+    TEST_ASSERT_TRUE_MESSAGE(clearPos != std::string::npos, "/api/ir/keys/clear must be registered");
+    TestLog::step("Both subroutes present");
+
+    // 父路径：精确匹配注册调用，引号紧跟在 keys 后，自然避开 /keys/delete、/keys/clear
+    size_t parentPos = src.find("server->on(\"/api/ir/keys\"");
+    TEST_ASSERT_TRUE_MESSAGE(parentPos != std::string::npos, "/api/ir/keys must be registered");
+    TestLog::step("Parent route present");
+
+    // 关键断言：两个子路径必须先于父路径首次出现的位置
+    // Unity: TEST_ASSERT_LESS_THAN(upper, actual) 断言 actual < upper
+    TEST_ASSERT_LESS_THAN((int)parentPos, (int)deletePos);
+    TestLog::step("/api/ir/keys/delete registered before /api/ir/keys");
+    TEST_ASSERT_LESS_THAN((int)parentPos, (int)clearPos);
+    TestLog::step("/api/ir/keys/clear registered before /api/ir/keys");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 回归保护：S3 Octal PSRAM (R8) 的 GPIO 33-37 必须被引脚校验拦截
+ *
+ * 真机事故：esp32s3-F16R8 上外设配置使用 GPIO 33/34/35（未被保留列表
+ * 覆盖）通过校验后驱动直接 pinMode/analogRead，踩坏 Octal PSRAM 总线
+ * 导致随机位置 Guru Meditation 崩溃循环（设备变砖）。
+ * 修复：CONFIG_SPIRAM_MODE_OCT 下 GPIO 33-37 列为保留引脚 + isValidPin 绝对禁止。
+ */
+void test_regression_s3_octal_psram_pins_reserved() {
+    TestLog::testStart("Regression: S3 Octal PSRAM Pins 33-37 Reserved");
+
+    std::string chipCfg = readRegressionSrcFile("include/core/ChipConfig.h");
+    TEST_ASSERT_FALSE_MESSAGE(chipCfg.empty(), "Cannot read ChipConfig.h");
+
+    // ChipConfig.h 必须 include sdkconfig.h，否则 CONFIG_SPIRAM_MODE_OCT 不可见，
+    // OCT 分支会静默失效（回退到不含 33-37 的非 OCT 列表）
+    TEST_ASSERT_TRUE_MESSAGE(chipCfg.find("#include \"sdkconfig.h\"") != std::string::npos,
+        "ChipConfig.h must include sdkconfig.h for CONFIG_SPIRAM_MODE_OCT visibility");
+
+    // ChipConfig.h 必须存在 OCT 分支，且保留表包含 33-37
+    size_t octPos = chipCfg.find("#if defined(CONFIG_SPIRAM_MODE_OCT)");
+    TEST_ASSERT_TRUE_MESSAGE(octPos != std::string::npos,
+        "ChipConfig.h must branch on CONFIG_SPIRAM_MODE_OCT for S3");
+    size_t octListPos = chipCfg.find("33, 34, 35, 36, 37", octPos);
+    TEST_ASSERT_TRUE_MESSAGE(octListPos != std::string::npos,
+        "Octal PSRAM branch must reserve GPIO 33-37");
+    TestLog::step("ChipConfig.h reserves 33-37 under CONFIG_SPIRAM_MODE_OCT");
+
+    // isValidPin 必须在 OCT 下绝对禁止 22-37（含 PSRAM 总线）
+    std::string periphMgr = readRegressionSrcFile("src/core/PeripheralManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(periphMgr.empty(), "Cannot read PeripheralManager.cpp");
+    size_t validPinPos = periphMgr.find("bool PeripheralManager::isValidPin");
+    TEST_ASSERT_TRUE_MESSAGE(validPinPos != std::string::npos, "isValidPin must exist");
+    size_t octGuardPos = periphMgr.find("#if defined(CONFIG_SPIRAM_MODE_OCT)", validPinPos);
+    TEST_ASSERT_TRUE_MESSAGE(octGuardPos != std::string::npos,
+        "isValidPin must branch on CONFIG_SPIRAM_MODE_OCT");
+    size_t rejectPos = periphMgr.find("(pin >= 22 && pin <= 37)", octGuardPos);
+    TEST_ASSERT_TRUE_MESSAGE(rejectPos != std::string::npos,
+        "isValidPin must absolutely reject GPIO 22-37 under octal PSRAM");
+    TestLog::step("isValidPin absolutely rejects 22-37 under octal PSRAM");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 回归保护：C6 CHIP_MAX_GPIO=23 且 UART0 控制台引脚 16/17 必须保留
+ *
+ * 真机事故一：esp32c6-F4R0 旧值 CHIP_MAX_GPIO=30，外设配置中的
+ * GPIO25-27 通过校验后对其寄存器操作直接触发 panic。
+ * 真机事故二：C6 UART0 控制台 TX=GPIO16 / RX=GPIO17（CDC_ON_BOOT=0），
+ * 外设 led_d2 配置 GPIO16 输出，pinMode(16, OUTPUT) 切断串口 TX，
+ * 后续日志全部丢失，设备看似确定性挂死（实际仍在运行）。
+ * 修复：CHIP_MAX_GPIO=23；保留引脚加入 15/16/17（共 13 个）。
+ */
+void test_regression_c6_max_gpio_and_uart0_console_reserved() {
+    TestLog::testStart("Regression: C6 MAX_GPIO=23 + UART0 Console Pins Reserved");
+
+    std::string chipCfg = readRegressionSrcFile("include/core/ChipConfig.h");
+    TEST_ASSERT_FALSE_MESSAGE(chipCfg.empty(), "Cannot read ChipConfig.h");
+
+    // 1. C6 能力分支的 CHIP_MAX_GPIO 必须为 23（24-30 为封装内 Flash/PSRAM SPI）
+    size_t capBranchPos = chipCfg.find("#elif defined(CONFIG_IDF_TARGET_ESP32C6)");
+    TEST_ASSERT_TRUE_MESSAGE(capBranchPos != std::string::npos,
+        "ChipConfig.h must have ESP32-C6 capability branch");
+    size_t maxGpioPos = chipCfg.find("#define CHIP_MAX_GPIO", capBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(maxGpioPos != std::string::npos,
+        "C6 branch must define CHIP_MAX_GPIO");
+    // 提取该行并断言以 23 结尾（不依赖定义处的空白排版）
+    size_t lineEnd = chipCfg.find('\n', maxGpioPos);
+    TEST_ASSERT_TRUE_MESSAGE(lineEnd != std::string::npos, "CHIP_MAX_GPIO line must end with newline");
+    std::string maxGpioLine = chipCfg.substr(maxGpioPos, lineEnd - maxGpioPos);
+    TEST_ASSERT_TRUE_MESSAGE(maxGpioLine.size() >= 2 &&
+        maxGpioLine.compare(maxGpioLine.size() - 2, 2, "23") == 0,
+        "C6 CHIP_MAX_GPIO must be 23 (GPIO24-30 are package Flash/PSRAM SPI)");
+    TestLog::step("C6 CHIP_MAX_GPIO == 23");
+
+    // 2. C6 保留列表必须含 UART0 控制台 16/17（TX/RX）与 USB 12/13
+    size_t rsvBranchPos = chipCfg.find("#elif defined(CONFIG_IDF_TARGET_ESP32C6)", capBranchPos + 1);
+    TEST_ASSERT_TRUE_MESSAGE(rsvBranchPos != std::string::npos,
+        "ChipConfig.h must have ESP32-C6 reserved-pin branch");
+    size_t rsvListPos = chipCfg.find("12, 13, 14, 15, 16, 17, 24, 25, 26, 27, 28, 29, 30", rsvBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(rsvListPos != std::string::npos,
+        "C6 reserved list must include UART0 console 15/16/17 and USB 12/13");
+    TestLog::step("C6 reserved list includes 12-17 and 24-30");
+
+    // 3. 保留引脚计数必须与列表一致（13 个）
+    size_t countPos = chipCfg.find("CHIP_RESERVED_PIN_COUNT = 13", rsvBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(countPos != std::string::npos,
+        "C6 CHIP_RESERVED_PIN_COUNT must be 13");
+    TestLog::step("C6 CHIP_RESERVED_PIN_COUNT == 13");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Heartbeat pass-through + MQTT reconnect DRAM gate guards ==========
+// Incident (2026-08): with background rules suspended, MQTT reconnect storms still
+// fragmented DRAM (largest dropped to 6KB) and HTTP chunked responses broke at 2872
+// bytes. Two coordinated protections were added:
+//   1. Scheduler heartbeat pass-through (every 90s < sensor cache TTL 120s) so
+//      cached sensor data (DHT etc.) stays fresh while suspended.
+//   2. Plain-MQTT reconnect DRAM gate: defer reconnect when DRAM is low.
+void test_regression_web_reserve_heartbeat_and_mqtt_gate_in_source() {
+    TestLog::testStart("Heartbeat pass-through + MQTT reconnect gate (source guard)");
+
+    std::string sched = readRegressionSrcFile("src/core/PeriphExecScheduler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sched.empty(), "cannot read PeriphExecScheduler.cpp");
+
+    // 1. Heartbeat allow constant must exist and stay below sensor cache TTL (120s),
+    //    otherwise cached sensor data expires while suspended
+    size_t hbPos = sched.find("WEB_RESERVE_HEARTBEAT_ALLOW_MS = ");
+    TEST_ASSERT_TRUE_MESSAGE(hbPos != std::string::npos,
+        "scheduler must define WEB_RESERVE_HEARTBEAT_ALLOW_MS");
+    unsigned long hbMs = strtoul(sched.c_str() + hbPos +
+        strlen("WEB_RESERVE_HEARTBEAT_ALLOW_MS = "), nullptr, 10);
+    TEST_ASSERT_TRUE_MESSAGE(hbMs > 0 && hbMs < 120000UL,
+        "heartbeat interval must be < sensor cache TTL (120s) to keep cache fresh");
+    TEST_ASSERT_TRUE_MESSAGE(
+        sched.find("_webReserveSuspendedSince") != std::string::npos,
+        "suspended timestamp must be tracked for heartbeat timing");
+    TestLog::step("heartbeat pass-through present and within cache TTL");
+
+    // 2. MQTT reconnect must be gated by INTERNAL (DRAM) free/largest checks
+    std::string mqtt = readRegressionSrcFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(mqtt.empty(), "cannot read MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("MQTT_RECONNECT_MIN_FREE") != std::string::npos,
+        "MQTT reconnect must define DRAM free-heap gate");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("MQTT_RECONNECT_MIN_LARGEST") != std::string::npos,
+        "MQTT reconnect must define DRAM largest-block gate");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("Reconnect deferred: DRAM low") != std::string::npos,
+        "MQTT reconnect must defer (not fail) when DRAM is low");
+    // Gate must sit before the plain reconnect() call inside doReconnect
+    size_t gatePos = mqtt.find("MQTT_RECONNECT_MIN_FREE");
+    size_t doReconnectPos = mqtt.find("void MQTTClient::doReconnect()");
+    TEST_ASSERT_TRUE_MESSAGE(doReconnectPos != std::string::npos && gatePos > doReconnectPos,
+        "DRAM gate must live inside doReconnect()");
+    TestLog::step("MQTT reconnect DRAM gate present inside doReconnect");
+
+    TestLog::testEnd(true);
+}
+
+
+/**
+ * @brief 源码回归：STATIC_MAX_INFLIGHT 必须 >= 3，确保登录页并发资源请求
+ * 不被过度串行化。旧值 2 导致 ~12 个压缩资源中大部分被 503 拒绝后重试，
+ * 页面加载延迟严重（实测 >5s）。3 路并发每路 ~4.5KB，稳态 free8=24KB
+ * 下仍留 10KB+ 余量。
+ */
+void test_regression_static_max_inflight_at_least_3() {
+    TestLog::testStart("Source: STATIC_MAX_INFLIGHT >= 3 (AP mode page load latency fix)");
+
+    std::string ctx = readRegressionSrcFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(ctx.empty(),
+        "cannot read WebHandlerContext.cpp");
+
+    // 找到 STATIC_MAX_INFLIGHT 常量定义
+    size_t pos = ctx.find("STATIC_MAX_INFLIGHT");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "STATIC_MAX_INFLIGHT constant not found in WebHandlerContext.cpp");
+
+    // 提取行内容（从 STATIC_MAX_INFLIGHT 往前找行首）
+    size_t lineStart = ctx.rfind('\n', pos);
+    if (lineStart == std::string::npos) lineStart = 0;
+    size_t lineEnd = ctx.find('\n', pos);
+    std::string line = ctx.substr(lineStart, lineEnd - lineStart);
+
+    // 提取数值
+    size_t eqPos = line.find('=');
+    TEST_ASSERT_TRUE_MESSAGE(eqPos != std::string::npos,
+        "STATIC_MAX_INFLIGHT must be assigned a value");
+    unsigned long val = strtoul(line.c_str() + eqPos + 1, nullptr, 10);
+    TEST_ASSERT_TRUE_MESSAGE(val >= 3,
+        "STATIC_MAX_INFLIGHT must be >= 3 (old value 2 caused severe page load latency in AP mode)");
+
+    // 同时验证看门狗超时常量存在（防止计数器卡死导致永久 503）
+    TEST_ASSERT_TRUE_MESSAGE(
+        ctx.find("STATIC_INFLIGHT_WATCHDOG_MS") != std::string::npos,
+        "STATIC_INFLIGHT_WATCHDOG_MS must be defined to prevent stuck counter blocking all static requests");
+}
+
+// ========== 规则脚本 feature flag + 构建一致性回归 ==========
+
+/**
+ * @brief 源码回归：platformio.ini 中 FASTBEE_ENABLE_RULE_SCRIPT 宏值一致性
+ * lite_flags=0（禁用）、standard_flags=1、full_flags=1。
+ * 根因：esp32-F4R0 使用 lite_flags 编译，如果宏值被误改为 1，固件会编译
+ * RuleScript 模块但 lite 文件系统不含菜单/页面，导致功能错位。
+ */
+void test_regression_rule_script_feature_flag_consistency() {
+    TestLog::testStart("Source: FASTBEE_ENABLE_RULE_SCRIPT flag consistency across profiles");
+
+    std::string ini = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(ini.empty(), "cannot read platformio.ini");
+
+    // lite_flags 区块
+    size_t litePos = ini.find("[lite_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(litePos != std::string::npos,
+        "[lite_flags] section not found in platformio.ini");
+    size_t liteEnd = ini.find("\n[", litePos + 1);
+    std::string liteBlock = ini.substr(litePos,
+        liteEnd == std::string::npos ? std::string::npos : liteEnd - litePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        liteBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=0") != std::string::npos,
+        "lite_flags must set FASTBEE_ENABLE_RULE_SCRIPT=0 (rule-script disabled in lite)");
+    TestLog::step("lite_flags: FASTBEE_ENABLE_RULE_SCRIPT=0");
+
+    // standard_flags 区块
+    size_t stdPos = ini.find("[standard_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(stdPos != std::string::npos,
+        "[standard_flags] section not found");
+    size_t stdEnd = ini.find("\n[", stdPos + 1);
+    std::string stdBlock = ini.substr(stdPos,
+        stdEnd == std::string::npos ? std::string::npos : stdEnd - stdPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        stdBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
+        "standard_flags must set FASTBEE_ENABLE_RULE_SCRIPT=1");
+    TestLog::step("standard_flags: FASTBEE_ENABLE_RULE_SCRIPT=1");
+
+    // full_flags 区块
+    size_t fullPos = ini.find("[full_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(fullPos != std::string::npos,
+        "[full_flags] section not found");
+    size_t fullEnd = ini.find("\n[", fullPos + 1);
+    std::string fullBlock = ini.substr(fullPos,
+        fullEnd == std::string::npos ? std::string::npos : fullEnd - fullPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        fullBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
+        "full_flags must set FASTBEE_ENABLE_RULE_SCRIPT=1");
+    TestLog::step("full_flags: FASTBEE_ENABLE_RULE_SCRIPT=1");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：lite_src_filter 必须排除 RuleScriptManager.cpp 和
+ * RuleScriptRouteHandler.cpp，否则 lite 固件会编译进 rule-script 代码，
+ * 增加 ~15KB flash 占用并可能暴露无前端对应的 API 端点。
+ */
+void test_regression_lite_src_filter_excludes_rule_script() {
+    TestLog::testStart("Source: lite_src_filter excludes rule-script source files");
+
+    std::string ini = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(ini.empty(), "cannot read platformio.ini");
+
+    size_t filterPos = ini.find("[lite_src_filter]");
+    TEST_ASSERT_TRUE_MESSAGE(filterPos != std::string::npos,
+        "[lite_src_filter] section not found");
+    size_t filterEnd = ini.find("\n[", filterPos + 1);
+    std::string filterBlock = ini.substr(filterPos,
+        filterEnd == std::string::npos ? std::string::npos : filterEnd - filterPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        filterBlock.find("-<core/RuleScriptManager.cpp>") != std::string::npos,
+        "lite_src_filter must exclude core/RuleScriptManager.cpp");
+    TestLog::step("RuleScriptManager.cpp excluded from lite build");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        filterBlock.find("-<network/handlers/RuleScriptRouteHandler.cpp>") != std::string::npos,
+        "lite_src_filter must exclude network/handlers/RuleScriptRouteHandler.cpp");
+    TestLog::step("RuleScriptRouteHandler.cpp excluded from lite build");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：WebConfigManager 和 FastBeeFramework 中 rule-script
+ * 代码必须被 #if FASTBEE_ENABLE_RULE_SCRIPT 守护，防止 lite 固件链接错误。
+ */
+void test_regression_rule_script_gated_in_firmware() {
+    TestLog::testStart("Source: rule-script code gated by FASTBEE_ENABLE_RULE_SCRIPT");
+
+    // WebConfigManager.cpp: include + handler 创建 + 路由注册
+    std::string webCfg = readRegressionSrcFile("src/network/WebConfigManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(webCfg.empty(), "cannot read WebConfigManager.cpp");
+
+    // include 守护
+    size_t includeGuard = webCfg.find("#if FASTBEE_ENABLE_RULE_SCRIPT");
+    TEST_ASSERT_TRUE_MESSAGE(includeGuard != std::string::npos,
+        "WebConfigManager must guard RuleScriptRouteHandler include with #if FASTBEE_ENABLE_RULE_SCRIPT");
+    size_t includeLine = webCfg.find("RuleScriptRouteHandler.h", includeGuard);
+    TEST_ASSERT_TRUE_MESSAGE(includeLine != std::string::npos,
+        "RuleScriptRouteHandler.h include not found after feature guard");
+    TestLog::step("WebConfigManager: include guarded");
+
+    // handler 创建守护
+    size_t createGuard = webCfg.find("#if FASTBEE_ENABLE_RULE_SCRIPT", includeGuard + 1);
+    TEST_ASSERT_TRUE_MESSAGE(createGuard != std::string::npos,
+        "handler creation must be gated by #if FASTBEE_ENABLE_RULE_SCRIPT");
+    size_t createLine = webCfg.find("RuleScriptRouteHandler", createGuard + 1);
+    TEST_ASSERT_TRUE_MESSAGE(createLine != std::string::npos,
+        "RuleScriptRouteHandler instantiation not found after second feature guard");
+    TestLog::step("WebConfigManager: handler creation guarded");
+
+    // 路由注册守护
+    size_t routeGuard = webCfg.find("#if FASTBEE_ENABLE_RULE_SCRIPT", createGuard + 1);
+    TEST_ASSERT_TRUE_MESSAGE(routeGuard != std::string::npos,
+        "route registration must be gated by #if FASTBEE_ENABLE_RULE_SCRIPT");
+    size_t routeLine = webCfg.find("setupRoutes", routeGuard);
+    TEST_ASSERT_TRUE_MESSAGE(routeLine != std::string::npos,
+        "setupRoutes call not found after third feature guard");
+    TestLog::step("WebConfigManager: route registration guarded");
+
+    // FastBeeFramework.cpp: RuleScriptManager 初始化
+    std::string fw = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(fw.empty(), "cannot read FastBeeFramework.cpp");
+
+    size_t fwGuard = fw.find("#if FASTBEE_ENABLE_RULE_SCRIPT");
+    TEST_ASSERT_TRUE_MESSAGE(fwGuard != std::string::npos,
+        "FastBeeFramework must guard RuleScriptManager include with #if FASTBEE_ENABLE_RULE_SCRIPT");
+    size_t fwInit = fw.find("RuleScriptManager", fwGuard);
+    TEST_ASSERT_TRUE_MESSAGE(fwInit != std::string::npos,
+        "RuleScriptManager usage not found after feature guard in FastBeeFramework");
+    TestLog::step("FastBeeFramework: RuleScriptManager initialization guarded");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：构建脚本在 lite profile 下裁剪 rule-script 前端资源
+ * （菜单项、HTML 页面、JS 模块），防止固件/文件系统不匹配导致菜单点击无响应。
+ */
+void test_regression_lite_web_strips_rule_script() {
+    TestLog::testStart("Source: lite web profile strips rule-script frontend resources");
+
+    // build-web-modules.js: LITE_STATIC_SKIP 包含 rule-script.html，
+    // stripMenuItemByPage('rule-script') 在 lite profile 下被调用
+    std::string webMod = readRegressionSrcFile("scripts/build-web-modules.js");
+    TEST_ASSERT_FALSE_MESSAGE(webMod.empty(), "cannot read build-web-modules.js");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        webMod.find("pages/rule-script.html") != std::string::npos,
+        "build-web-modules.js must reference rule-script.html in LITE_STATIC_SKIP");
+    TestLog::step("rule-script.html listed in LITE_STATIC_SKIP");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        webMod.find("stripMenuItemByPage") != std::string::npos &&
+        webMod.find("'rule-script'") != std::string::npos,
+        "build-web-modules.js must call stripMenuItemByPage('rule-script') for lite profile");
+    TestLog::step("stripMenuItemByPage('rule-script') present for lite profile");
+
+    // build-admin-bundle.js: PROD_SOURCE_FILES 为空（lite 不构建 rule-script.js），
+    // STANDARD_SOURCE_FILES 仅含 rule-script.js
+    std::string adminB = readRegressionSrcFile("scripts/build-admin-bundle.js");
+    TEST_ASSERT_FALSE_MESSAGE(adminB.empty(), "cannot read build-admin-bundle.js");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        adminB.find("PROD_SOURCE_FILES") != std::string::npos,
+        "build-admin-bundle.js must define PROD_SOURCE_FILES");
+    // PROD_SOURCE_FILES = [] 表示 lite 不构建任何 admin 模块
+    size_t prodPos = adminB.find("PROD_SOURCE_FILES");
+    size_t prodLineEnd = adminB.find('\n', prodPos);
+    std::string prodLine = adminB.substr(prodPos, prodLineEnd - prodPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        prodLine.find("[]") != std::string::npos,
+        "PROD_SOURCE_FILES must be empty array (lite builds no admin modules)");
+    TestLog::step("PROD_SOURCE_FILES = [] (lite: no admin modules)");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        adminB.find("STANDARD_SOURCE_FILES") != std::string::npos &&
+        adminB.find("'rule-script.js'") != std::string::npos,
+        "STANDARD_SOURCE_FILES must include rule-script.js for standard builds");
+    TestLog::step("STANDARD_SOURCE_FILES includes rule-script.js");
+
+    // 验证 CSS 裁剪：lite profile 移除 .rule-script-* 选择器
+    TEST_ASSERT_TRUE_MESSAGE(
+        webMod.find(".rule-script-") != std::string::npos,
+        "build-web-modules.js must strip .rule-script-* CSS selectors for lite profile");
+    TestLog::step("rule-script CSS selectors stripped in lite");
+
+    TestLog::testEnd(true);
+}
+
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
 
@@ -2898,6 +3539,9 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_ethernet_mdns_after_ap_in_source);
     RUN_TEST(test_regression_boot_report_includes_ethernet);
     RUN_TEST(test_regression_periodic_status_includes_ethernet);
+    RUN_TEST(test_regression_ir_keys_subroutes_before_parent);
+    RUN_TEST(test_regression_s3_octal_psram_pins_reserved);
+    RUN_TEST(test_regression_c6_max_gpio_and_uart0_console_reserved);
 
     // Bug Fix 回归：MQTT保存不清空主题
     RUN_TEST(test_regression_mqtt_save_preserves_topics_snapshot);
@@ -2991,6 +3635,25 @@ void test_regression_guard_group() {
     // 启动后一次性物模型状态上报：只读采集 + 门控与节流
     RUN_TEST(test_regression_boot_report_read_only_in_source);
     RUN_TEST(test_regression_boot_report_gated_and_throttled_in_source);
+    RUN_TEST(test_regression_scheduler_web_reserve_uses_8bit_heap_in_source);
+    
+RUN_TEST(test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source);
+    RUN_TEST(test_regression_web_reserve_heartbeat_and_mqtt_gate_in_source);
+
+    // Web 前端资源加载重试（弱网/退化链路下登录页白屏防护）
+    RUN_TEST(test_regression_web_loader_retry_in_source);
+
+    // 实时监测传感器缓存合并链路（dataField 透传 → monitor/post id）
+    RUN_TEST(test_regression_monitor_sensor_cache_wiring_in_source);
+
+    // 静态文件并发限制回归保护（AP 模式页面加载延迟修复）
+    RUN_TEST(test_regression_static_max_inflight_at_least_3);
+
+    // 规则脚本 feature flag + 构建一致性回归保护
+    RUN_TEST(test_regression_rule_script_feature_flag_consistency);
+    RUN_TEST(test_regression_lite_src_filter_excludes_rule_script);
+    RUN_TEST(test_regression_rule_script_gated_in_firmware);
+    RUN_TEST(test_regression_lite_web_strips_rule_script);
 
     TestLog::groupEnd();
 }

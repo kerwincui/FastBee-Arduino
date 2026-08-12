@@ -5,6 +5,8 @@
 #include "core/PeripheralExecution.h"
 #include "core/PeriphExecManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 
 #include <SPI.h>
 #include <MFRC522.h>
@@ -20,6 +22,16 @@ RFIDDriver::~RFIDDriver() {
 
 bool RFIDDriver::begin(uint8_t ssPin, uint8_t rstPin) {
     if (_initialized) return true;
+
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("rfid")) {
+        LOGGER.info("[RFID] Compiled but runtime-disabled, skip init");
+        return false;
+    }
+
+    if (FastBee::FeatureBudgetRegistry::instance().isDenied("rfid")) {
+        LOGGER.warning("[RFID] Disabled by memory budget, skip init");
+        return false;
+    }
 
     SPI.begin();
     MFRC522* rfid = new MFRC522(ssPin, rstPin);

@@ -55,7 +55,7 @@ struct DS1302DateTime {
  * @brief 涓流充电控制参数
  */
 enum class DS1302TrickleCharge : uint8_t {
-    DISABLED = 0x00,           // 禁用涓流充电
+    TRICKLE_DISABLED = 0x00,   // 禁用涓流充电（避免与 esp32-hal-gpio.h 的 DISABLED 宏冲突）
     DIODE_1_2K = 0xA5,         // 1二极管 + 2K电阻
     DIODE_1_4K = 0xA6,         // 1二极管 + 4K电阻
     DIODE_1_8K = 0xA7,         // 1二极管 + 8K电阻

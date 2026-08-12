@@ -8,6 +8,7 @@
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
 
 #include "systems/LoggerSystem.h"
+#include "core/RuntimeFeatureManager.h"
 
 // TM1637 指令
 #define TM1637_CMD_DATA     0x40  // 数据命令：写入显示寄存器，地址自增
@@ -157,6 +158,11 @@ uint8_t SevenSegmentDriver::charToSeg(char c) {
 // ========== 公共接口 ==========
 
 bool SevenSegmentDriver::begin(const String& id, uint8_t clkPin, uint8_t dioPin, uint8_t brightness) {
+    // 运行时功能门控：用户可在 Web UI 禁用 sevenSegment
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("sevenSegment")) {
+        LOG_INFO("SevenSegment: Compiled but runtime-disabled, skip init");
+        return false;
+    }
     if (id.isEmpty()) return false;
     if (brightness > 7) brightness = 7;
 

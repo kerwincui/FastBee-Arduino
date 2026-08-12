@@ -1,10 +1,13 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "systems/TaskManager.h"
 #include "core/FastBeeFramework.h"
+#include "protocols/ProtocolManager.h"
+#include "protocols/MQTTClient.h"
 #include "utils/PsramJsonDocument.h"
 #include "./network/WebConfigManager.h"
 #include <esp_heap_caps.h>
@@ -124,6 +127,11 @@ bool WebHandlerContext::requireAuth(AsyncWebServerRequest* request) {
         return false;
     }
 
+    // 记录请求活动：大量处理器经由 HandlerUtils 的 chunked/stream 路径发送响应，
+    // 那些路径不会更新 lastRequestSeenMs。统一在此记录，避免无请求看门狗误判
+    // “120s 无人访问”而 abort 端口 80 上的存活连接（会切断浏览器进行中的请求链）。
+    noteWebRequestActivity();
+
     return true;
 }
 
@@ -195,7 +203,7 @@ static bool canAllocateResponse(size_t requiredSize) {
     size_t safeSize = requiredSize + 512;
     if (health.largestFreeBlock < safeSize) {
         if (FastBee::psramAvailableForJson(safeSize + 4096) &&
-            ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024) {
+            FastBee::MemoryBudget::dramFree() >= 2048 && FastBee::MemoryBudget::dramLargest() >= 1024) {
             return true;
         }
         Serial.printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
@@ -215,6 +223,84 @@ static void sendServiceUnavailable(AsyncWebServerRequest* request) {
     request->send(response);
 }
 
+// ============ static file concurrency limiter ============
+// 2026-08 field test: 4 concurrent streams of a 128KB CSS exhausted DRAM
+// (largest block dropped to 220B) and operator new(40) abort() put the
+// device into a crash loop (login page never finishes loading).
+// Cap in-flight static file responses; excess gets fast 503 + Retry-After
+// (front-end loader already retries), serialising large transfers.
+//
+// 2026-08-04: raised 1 -> 2. Login page diagnosis showed the strict cap of 1
+// plus Connection: close turned the initial ~12-resource burst into a long
+// serial chain, and a 503 on the document request itself left the browser on
+// a blank JSON page. Two concurrent gz streams (each <=22KB gz) stay within
+// the DRAM gates above; small uncompressed assets bypass the cap entirely.
+static volatile uint8_t s_staticInFlight = 0;
+static unsigned long s_staticInFlightTouchMs = 0;
+static constexpr uint8_t STATIC_MAX_INFLIGHT = 3;
+// 2026-08-10: 2→3。登录页首屏 ~12 个压缩资源，旧 cap=2 导致大部分请求被
+// 503 拒绝后重试，串行化延迟严重（实测页面加载 >5s）。3 路并发每路
+// send_buffer ≤2872B（含降级分配）+ lwIP PCB ≈ 4.5KB/路 × 3 ≈ 13.5KB，
+// 稳态 free8=24KB 下仍留 10KB+ 余量给 AsyncTCP/其他任务。
+// Shortened from 20s: a stuck counter blocked every static request (incl. the
+// login page document) until the watchdog fired; 12s bounds the worst case
+// while still covering any legitimate single-file transfer.
+static constexpr unsigned long STATIC_INFLIGHT_WATCHDOG_MS = 12000UL;
+// 2026-08-10 慢速修复复盘：槽位满时的短等待（delay 轮询 300ms）运行在
+// AsyncTCP 服务任务上下文，会阻塞在途响应的发送与 onDisconnect 事件
+// 处理——等待期间槽位永远等不到释放，实际退化为“先卡死全部连接
+// 300ms 再拒绝”，比立即拒绝更糟（实测 conc>=2 出现 13s 慢请求）。
+// 改回立即判定：单文件 gz ≤ 22KB 传输 <100ms，前端已有 300/800ms 快速
+// 退避重试（index.html boot loader + module-loader），503 风暴不会放大。
+static bool staticInFlightAllowed() {
+    unsigned long now = millis();
+    // watchdog: force-reset a stuck counter to avoid permanent 503
+    if (s_staticInFlight > 0 &&
+        (now - s_staticInFlightTouchMs) > STATIC_INFLIGHT_WATCHDOG_MS) {
+        Serial.printf("[MemGuard] Static in-flight counter stuck (%u), resetting\n",
+                      (unsigned)s_staticInFlight);
+        s_staticInFlight = 0;
+    }
+    if (s_staticInFlight < STATIC_MAX_INFLIGHT) {
+        s_staticInFlight++;
+        s_staticInFlightTouchMs = now;
+        return true;
+    }
+    return false;
+}
+
+static void registerStaticInFlightRelease(AsyncWebServerRequest* request) {
+    // Connection: close guarantees _onDisconnect on finish/timeout/abort
+    request->onDisconnect([]() {
+        if (s_staticInFlight > 0) s_staticInFlight--;
+    });
+}
+
+bool WebHandlerContext::isStaticTransferActive() const {
+    return s_staticInFlight > 0;
+}
+
+// 浏览器导航请求（登录页文档）被限流/内存门控拒绝时，返回带自动刷新的轻量
+// HTML 页而不是 JSON：避免用户看到 503 JSON 白屏，页面每秒自动重试直至恢复。
+static void sendStaticBusyRetryPage(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse(
+        503,
+        "text/html",
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta http-equiv=\"refresh\" content=\"1\">"
+        "<title>FastBee</title></head>"
+        "<body style=\"margin:0;min-height:100vh;display:flex;align-items:center;"
+        "justify-content:center;font-family:system-ui,sans-serif;background:#f5f5f5\">"
+        "<div style=\"text-align:center\">"
+        "<h2 style=\"color:#1677ff\">\xe8\xae\xbe\xe5\xa4\x87\xe7\xb9\x81\xe5\xbf\x99\xef\xbc\x8c\xe6\xad\xa3\xe5\x9c\xa8\xe8\x87\xaa\xe5\x8a\xa8\xe9\x87\x8d\xe8\xaf\x95\xe2\x80\xa6</h2>"
+        "<p>\xe5\xa6\x82\xe9\x95\xbf\xe6\x97\xb6\xe9\x97\xb4\xe6\x9c\xaa\xe8\xb7\xb3\xe8\xbd\xac\xef\xbc\x8c\xe8\xaf\xb7<a href=\"/\">\xe7\x82\xb9\xe5\x87\xbb\xe9\x87\x8d\xe8\xaf\x95</a></p>"
+        "</div></body></html>");
+    response->addHeader("Retry-After", "1");
+    response->addHeader("Connection", "close");
+    request->send(response);
+}
+
 // ============ 响应辅助方法 ============
 
 void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int code,
@@ -229,7 +315,7 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     if (monitor && monitor->isMemoryCritical() && docSize > 1024 &&
         !(FastBee::psramAvailableForJson(docSize + 4096) &&
-          ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024)) {
+          FastBee::MemoryBudget::dramFree() >= 2048 && FastBee::MemoryBudget::dramLargest() >= 1024)) {
         sendServiceUnavailable(request);
         return;
     }
@@ -240,8 +326,11 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     }
     AsyncWebServerResponse* response;
 
-    if (docSize < 512) {
-        char jsonBuffer[512];
+    // 栈缓冲阈值 2048B：覆盖大多数小 JSON 响应（登录/状态/设备控制 < 2KB），
+    // AsyncTCP 任务栈最小 12KB(C3/C6)，2048B 留 10KB 给调用链；
+    // 超过阈值的响应走堆分配（String::reserve），避免碎片化。
+    if (docSize < 2048) {
+        char jsonBuffer[2048];
         serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
         response = request->beginResponse(code, "application/json", jsonBuffer);
     } else {
@@ -265,7 +354,7 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
     size_t estimatedSize = measureJson(data);
     if (monitor && monitor->isMemoryCritical() && estimatedSize > 1024 &&
         !(FastBee::psramAvailableForJson(estimatedSize + 4096) &&
-          ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024)) {
+          FastBee::MemoryBudget::dramFree() >= 2048 && FastBee::MemoryBudget::dramLargest() >= 1024)) {
         sendServiceUnavailable(request);
         return;
     }
@@ -362,68 +451,93 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         auto* fw = FastBeeFramework::getInstance();
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
         if (monitor) {
-            SystemHealth h = monitor->getHealthStatus();
-            uint32_t liveLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
             size_t minLargestBlock = 2048;
             if (isCompressible && !isCoreEntry) {
                 minLargestBlock = 3072;
             }
-            uint32_t largestBlock = h.largestFreeBlock;
-            if (liveLargestBlock > 0 && liveLargestBlock < largestBlock) {
-                largestBlock = liveLargestBlock;
+            // DRAM free gate (8BIT caliber): INTERNAL 口径含 IRAM/RTC 不可
+            // malloc 内存，实测比真实可用 DRAM 虚高 ~28KB；而响应发送缓冲/
+            // lwIP pbuf 都从 8BIT DRAM 分配。门限校准（实测）：MQTT 连接
+            // 稳态 8BIT 常态 ~7KB，门限取 6KB 保证连接态下登录页资源仍可
+            // 服务；已有 nothrow 降级缓冲（2872->256B）+ _fillBuffer 同步
+            // 重试，6KB 余量足以推进响应（pbuf 随 ACK 滚动释放）。
+            uint32_t freeDram = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            if (freeDram < 6144U) {
+                Serial.printf("[MemGuard] Reject static %s: DRAM(8bit) free=%lu < 6KB\n",
+                              path.c_str(), (unsigned long)freeDram);
+                if (isCoreEntry) { sendStaticBusyRetryPage(request); }
+                else { sendServiceUnavailable(request); }
+                return true;
             }
+            // largest gate 也用 8BIT 口径（INTERNAL largest 虚高，崩溃现场
+            // blkint=27636 但 blk8 仅 116，旧门控完全失效）
+            uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
             if (largestBlock < minLargestBlock) {
-                Serial.printf("[MemGuard] Reject static %s: largestBlock=%lu < %uB\n",
+                Serial.printf("[MemGuard] Reject static %s: largest8=%lu < %uB\n",
                               path.c_str(), (unsigned long)largestBlock,
                               static_cast<unsigned>(minLargestBlock));
-                sendServiceUnavailable(request);
+                if (isCoreEntry) { sendStaticBusyRetryPage(request); }
+                else { sendServiceUnavailable(request); }
                 return true;
             }
         }
     }
 
-    // Prefer a single-open gzip path for html/js/css.
+    // Concurrency limit: cap in-flight static responses (crash-loop fix);
+    // serialise large transfers instead of letting parallel streams drain DRAM.
+    // 小尺寸未压缩资源（favicon/logo 等图片）不占限流槽：登录页首屏必须
+    // 立即拿到它们，且单文件仅几 KB，不构成历史崩溃场景（大文件并发流）。
+    const bool bypassInFlightCap = !isCompressible;
+
+    // 2026-08-04 fix: acquire the in-flight slot AFTER a successful open.
+    // Previously the slot was taken before probing the filesystem, so a
+    // missing file (gz miss + raw miss -> 404 fallback) leaked the slot and
+    // every later compressible request got 503 until the 12s watchdog reset.
+    // Open the file first (gz preferred for html/js/css), then take the slot.
+    File openFile;
     if (isCompressible) {
-        String gzPath = path + ".gz";
-        File gzFile = LittleFS.open(gzPath, "r");
-        if (gzFile) {
-            AsyncWebServerResponse *response = new AsyncFileResponse(gzFile, path, contentType, false);
-
-            // Keep the service worker uncached so clients can recover.
-            if (isServiceWorker) {
-                response->addHeader("Service-Worker-Allowed", "/");
-                response->addHeader("Cache-Control", "no-cache");
-            } else if (isCacheableStatic && cacheDuration > 0) {
-                response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
-            } else {
-                response->addHeader("Cache-Control", "no-cache");
-            }
-            response->addHeader("Connection", "close");
-
-            request->send(response);
-            return true;
-        }
+        openFile = LittleFS.open(path + ".gz", "r");
+    }
+    if (!openFile) {
+        openFile = LittleFS.open(path, "r");
+    }
+    if (!openFile) {
+        return false;  // 404 fallback; no slot was taken
     }
 
-    // Fall back to a single-open raw file response.
-    File file = LittleFS.open(path, "r");
-    if (file) {
-        AsyncWebServerResponse *response = new AsyncFileResponse(file, path, contentType, false);
-        if (isServiceWorker) {
-            response->addHeader("Service-Worker-Allowed", "/");
-            response->addHeader("Cache-Control", "no-cache");
-        } else if (isCacheableStatic && cacheDuration > 0) {
-            response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
-        } else {
-            response->addHeader("Cache-Control", "no-cache");
+    if (!bypassInFlightCap && !staticInFlightAllowed()) {
+        openFile.close();
+        if (isCoreEntry) {
+            // 浏览器主文档被限流：返回自动重试页，避免 503 JSON 白屏
+            sendStaticBusyRetryPage(request);
+            return true;
         }
-        response->addHeader("Connection", "close");
-
-        request->send(response);
+        AsyncWebServerResponse* busy = request->beginResponse(
+            503,
+            "application/json",
+            "{\"success\":false,\"message\":\"Static file busy, retry soon\",\"code\":503,\"retryAfter\":1}");
+        busy->addHeader("Retry-After", "1");
+        busy->addHeader("Connection", "close");
+        request->send(busy);
         return true;
     }
 
-    return false;
+    AsyncWebServerResponse *response = new AsyncFileResponse(openFile, path, contentType, false);
+
+    // Keep the service worker uncached so clients can recover.
+    if (isServiceWorker) {
+        response->addHeader("Service-Worker-Allowed", "/");
+        response->addHeader("Cache-Control", "no-cache");
+    } else if (isCacheableStatic && cacheDuration > 0) {
+        response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
+    } else {
+        response->addHeader("Cache-Control", "no-cache");
+    }
+    response->addHeader("Connection", "close");
+
+    if (!bypassInFlightCap) registerStaticInFlightRelease(request);
+    request->send(response);
+    return true;
 }
 
 void WebHandlerContext::serveGzippedFile(AsyncWebServerRequest* request, const String& path) {
@@ -460,7 +574,26 @@ String WebHandlerContext::readFile(const String& path) {
         return "";
     }
 
-    String content = file.readString();
+    // 审计 P2-1：同 FileUtils::readFile 的文件读取闸门（超限/低 DRAM/reserve）
+    size_t fileSize = file.size();
+    if (fileSize > FastBee::MemoryBudget::FILE_READ_MAX_SIZE) {
+        Serial.printf("[WebCtx] readFile rejects %s: size %u exceeds cap\n",
+                      path.c_str(), (unsigned)fileSize);
+        file.close();
+        return "";
+    }
+    if (FastBee::MemoryBudget::dramFree() < fileSize + 8192U) {
+        Serial.printf("[WebCtx] readFile rejects %s: DRAM too low\n", path.c_str());
+        file.close();
+        return "";
+    }
+
+    String content;
+    if (!content.reserve(fileSize + 64)) {
+        file.close();
+        return "";
+    }
+    content = file.readString();
     file.close();
     return content;
 }
@@ -513,6 +646,18 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
     }
 
     FastBeeFramework* framework = FastBeeFramework::getInstance();
+
+    // MQTT 同步让位：首个前台请求到达时若 free8 已被 MQTT 挤压（<12KB），
+    // 立即断开 MQTT 再服务响应——handle() 的让位要等下一个 tick，
+    // 届时响应已入队卡在拥塞的 TX 通道（soak 首请求 1/40 挂起根因）。
+    {
+        ProtocolManager* pm = framework ? framework->getProtocolManager() : nullptr;
+        MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+        if (mqtt) {
+            mqtt->yieldToWeb();
+        }
+    }
+
     TaskManager* taskManager = framework ? framework->getTaskManager() : nullptr;
     if (!taskManager || webForegroundModeActive) {
         return;
@@ -520,7 +665,9 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
 
     bool changed = false;
     changed = taskManager->disableTask("periph_exec_timer") || changed;
-    changed = taskManager->disableTask("protocol_handle") || changed;
+    // 注意：protocol_handle 不再禁用——MQTT 前台让位逻辑在 MQTTClient::handle()
+    // 内，禁用它会让让位永远无法触发（实测死锁：前台时 MQTT 保持连接
+    // 挤压 Web，free8=21KB 仍发生响应截断）。
     changed = taskManager->disableTask("network_update") || changed;
 
     if (changed) {
@@ -547,7 +694,6 @@ void WebHandlerContext::maintainWebForegroundTaskBudget() {
     }
 
     taskManager->enableTask("network_update");
-    taskManager->enableTask("protocol_handle");
     taskManager->enableTask("periph_exec_timer");
     webForegroundModeActive = false;
     LOG_INFO("[WebConfig] Foreground request protection cleared");

@@ -2,6 +2,7 @@
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 
 #include "peripherals/SensorDriver.h"
+#include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
 #include <DHT.h>
 #if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
@@ -9,6 +10,8 @@
 #include <DallasTemperature.h>
 #endif
 #include <soc/gpio_periph.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DHT 导致内存泄漏
 static inline bool sensor_pin_valid(uint8_t pin) {
@@ -16,6 +19,42 @@ static inline bool sensor_pin_valid(uint8_t pin) {
     if (pin > GPIO_NUM_MAX - 1) return false;
     return GPIO_IS_VALID_GPIO(pin);
 }
+
+// ============ 单总线传感器并发互斥 ============
+// 2026-08-10 崩溃根因修复：DHT/DS18B20 均为单总线时序敏感协议，DHT 库的
+// 时序临界段（InterruptLock）会关全 CPU 中断。两个 PeriphExec worker 任务
+// 同时读取同一传感器时：各自的起始信号互相破坏总线时序，expectPulse 一直
+// 等到 _maxcycles 超时（单次约数十 ms，80+ 次调用累计数秒关中断），超过
+// 中断看门狗阈值后触发 "Interrupt wdt timeout" panic 整机复位
+// （现场：两条定时规则同秒触发并发读 dht11 → Guru Meditation）。
+// 用全局总线互斥锁串行化所有物理读取；持锁期间读缓存/读硬件，第二个任务
+// 拿锁后双检缓存通常直接命中。拿锁超时则不做强读（避免回到危险路径），
+// 返回旧缓存或 NAN。
+static constexpr uint32_t SENSOR_BUS_LOCK_TIMEOUT_MS = 3000;
+
+static SemaphoreHandle_t sensor_bus_mutex() {
+    static SemaphoreHandle_t busMutex = nullptr;
+    if (!busMutex) {
+        busMutex = xSemaphoreCreateMutex();
+    }
+    return busMutex;
+}
+
+// RAII 总线锁：acquired==false 时调用方必须放弃物理读取
+struct SensorBusLock {
+    bool acquired;
+    SensorBusLock() : acquired(false) {
+        SemaphoreHandle_t m = sensor_bus_mutex();
+        if (m && xSemaphoreTake(m, pdMS_TO_TICKS(SENSOR_BUS_LOCK_TIMEOUT_MS)) == pdTRUE) {
+            acquired = true;
+        }
+    }
+    ~SensorBusLock() {
+        if (acquired) {
+            xSemaphoreGive(sensor_bus_mutex());
+        }
+    }
+};
 
 SensorDriver& SensorDriver::getInstance() {
     static SensorDriver instance;
@@ -34,6 +73,19 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
         if (now - s_lastWarn > 60000) {
             LOGGER.errorf("[SensorDriver] DHT invalid pin %u, refuse to init (suppressed for 60s)", (unsigned)pin);
             s_lastWarn = now;
+        }
+        return NAN;
+    }
+
+    // 总线互斥：实例 map 访问、缓存检查与物理读取全部在锁内，
+    // 防止并发读破坏单总线时序触发中断看门狗复位（见文件头注释）
+    SensorBusLock busLock;
+    if (!busLock.acquired) {
+        LOGGER.warningf("[SensorDriver] DHT bus lock timeout on pin %d, skip physical read", pin);
+        auto jt = _dhtInstances.find(pin);
+        if (jt != _dhtInstances.end() && jt->second.lastRead.success) {
+            return (field == "humidity") ? jt->second.lastRead.humidity
+                                         : jt->second.lastRead.temperature;
         }
         return NAN;
     }
@@ -100,6 +152,11 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 
 float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
 #if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
+    // 运行时功能门控：用户可在 Web UI 禁用 ds18b20
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("ds18b20")) {
+        return NAN;
+    }
+
     // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DallasTemperature 导致内存泄漏
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
@@ -112,6 +169,16 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
     }
 
     // 查找或创建 DS18B20 实例
+    // 总线互斥：OneWire 位读写同样关中断，并发访问会破坏时序（同 DHT 修复）
+    SensorBusLock busLock;
+    if (!busLock.acquired) {
+        LOGGER.warningf("[SensorDriver] DS18B20 bus lock timeout on pin %d, skip physical read", pin);
+        auto jt = _ds18b20Instances.find(pin);
+        if (jt != _ds18b20Instances.end() && jt->second.lastRead.success) {
+            return jt->second.lastRead.temperature;
+        }
+        return NAN;
+    }
     auto it = _ds18b20Instances.find(pin);
     if (it == _ds18b20Instances.end()) {
         // 惰性初始化

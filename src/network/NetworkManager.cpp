@@ -24,6 +24,7 @@
 #endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include "network/WiFiModeGuard.h"  // RAII 模式守卫（防 scanNetworks 副作用导致 APSTA 残留）
 #if FASTBEE_ENABLE_MDNS
 #include <ESPmDNS.h>
 #endif
@@ -826,10 +827,22 @@ void FBNetworkManager::update() {
         unsigned long probeInterval = (_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD)
             ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS;
         if (currentTime - _lastApProbeTime >= probeInterval) {
-            _apProbeInProgress = true;
-            _lastApProbeTime = currentTime;
-            handleApModeWifiProbe();
-            _apProbeInProgress = false;
+            // 客户端门控：探测需临时停掉 AP 切 STA，若有客户端已连上 AP
+            // （用户正在配网/访问 Web），停 AP 会切断进行中的 TCP 连接——
+            // 这是 "AP 模式 Web 加载慢/不完整" 反复出现的直接原因，且传输
+            // 期间的模式切换还可能触发 Interrupt Watchdog 死锁复位。
+            // 有客户端时不计探测失败，顺延 AP_PROBE_DEFER_MS 后重试。
+            uint8_t apStations = WiFi.softAPgetStationNum();
+            if (apStations > 0) {
+                _lastApProbeTime = currentTime - probeInterval + AP_PROBE_DEFER_MS;
+                LOGGER.infof("[WiFi-AP] Probe deferred: %d client(s) connected to AP",
+                             (int)apStations);
+            } else {
+                _apProbeInProgress = true;
+                _lastApProbeTime = currentTime;
+                handleApModeWifiProbe();
+                _apProbeInProgress = false;
+            }
         }
     }
     
@@ -1386,13 +1399,59 @@ bool FBNetworkManager::connectToWiFiBlocking() {
 
     // 发起连接（最多重试 4 次）：应对首次扫描超时，并给弱/边缘信号（reason=6
     // NOT_AUTHED、扫描偶发 0 网络）更多完成关联+认证的机会，尽量优先 STA 再回退 AP。
-    const int MAX_WIFI_RETRIES = 4;
+    // ── 2026-08-10 快速失败：先扫描一次，SSID 不可见时用短超时+少重试 ──
+    // 旧逻辑对不可见 SSID 仍阻塞 connectTimeout(20s)×4 次 ≈ 90s 才回退 AP，
+    // 上电后 Web 配置页长时间不可用（"访问慢"的直接来源之一）。
+    bool ssidVisible = false;
+    {
+        int16_t scanCount = WiFi.scanNetworks(false, true);  // 含隐藏 SSID
+        for (int16_t i = 0; i < scanCount; i++) {
+            if (WiFi.SSID(i) == wifiConfig.staSSID) {
+                ssidVisible = true;
+                break;
+            }
+        }
+        WiFi.scanDelete();
+        Serial.printf("[NET] Pre-scan: %d networks, SSID '%s' %s\n",
+                      (int)scanCount, wifiConfig.staSSID.c_str(),
+                      ssidVisible ? "visible" : "NOT visible (fast-fail mode)");
+    }
+    const int MAX_WIFI_RETRIES = ssidVisible ? 4 : 2;
+    const uint32_t perAttemptTimeoutMs = ssidVisible ? (uint32_t)wifiConfig.connectTimeout : 6000UL;
     bool wifiConnected = false;
     char buf[80];
 
+    // ── 诊断：打印实际使用的凭据信息（掩码密码，仅显示长度和首尾字符）────
+    {
+        const String& pwd = wifiConfig.staPassword;
+        int pwdLen = pwd.length();
+        char masked[32] = {0};
+        if (pwdLen > 0) {
+            masked[0] = pwd[0];
+            for (int i = 1; i < pwdLen - 1 && i < 28; i++) masked[i] = '*';
+            if (pwdLen > 1) masked[pwdLen - 1 < 29 ? pwdLen - 1 : 29] = pwd[pwdLen - 1];
+        }
+        Serial.printf("[NET] Credentials: SSID='%s' (len=%d) PWD='%s' (len=%d)\n",
+                      wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length(),
+                      masked, pwdLen);
+    }
+
     for (int attempt = 1; attempt <= MAX_WIFI_RETRIES; attempt++) {
-        WiFi.disconnect(false);
-        delay(200);
+        // 每次重试前完整重置 WiFi 驱动，避免 reason=6 后驱动状态残留
+        if (attempt > 1) {
+            WiFi.disconnect(true);
+            delay(100);
+            WiFi.mode(WIFI_MODE_NULL);
+            delay(300);
+            WiFi.mode(WIFI_MODE_STA);
+            delay(500);
+            WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+            WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+            WiFi.setSleep(false);
+        } else {
+            WiFi.disconnect(false);
+            delay(200);
+        }
         WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
         statusInfo.status = NetworkStatus::CONNECTING;
 
@@ -1410,7 +1469,7 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         // 阻塞等待，每 500ms 打印一个点，超时后退出（减法写法兼容 millis 回绕）
         uint32_t waitStart = millis();
         uint32_t dotTime  = 0;
-        while (WiFi.status() != WL_CONNECTED && millis() - waitStart < wifiConfig.connectTimeout) {
+        while (WiFi.status() != WL_CONNECTED && millis() - waitStart < perAttemptTimeoutMs) {
             if (millis() - dotTime >= 500) {
                 dotTime = millis();
                 Serial.print('.');
@@ -1649,14 +1708,56 @@ void FBNetworkManager::handleApModeWifiProbe() {
     // 成功 → 自动切回 STA 模式；失败 → 恢复 AP 模式，等待下次探测
 
     // ── DRAM 内存门控：探测需要 WiFi.begin() 驱动初始化，检查 DRAM 是否充足 ──
+    // 必须用 MALLOC_CAP_8BIT 口径：INTERNAL 口径恒定虚高约 28KB（含不可
+    // malloc 的 IRAM/RTC），会把真实 DRAM 已饿死的状态误判为充足。
     {
-        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_8BIT);
         if (dramFree < WIFI_CONNECT_MIN_DRAM) {
-            Serial.printf("[WiFi-AP] Probe skipped: DRAM too low (dram=%lu < %lu)\n",
+            Serial.printf("[WiFi-AP] Probe skipped: DRAM too low (free8=%lu < %lu)\n",
                           (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
             // 不累加 _apProbeFailCount：内存不足不等于网络不可达，不影响退避策略
             return;
         }
+    }
+
+    // ── 停 AP 前二次确认：门控决策到此处之间若有客户端连入，放弃本次探测 ──
+    // （调用方已在 _lastApProbeTime 记录本次时间，顺延到下个探测周期，
+    // 不计失败次数）
+    if (WiFi.softAPgetStationNum() > 0) {
+        Serial.printf("[WiFi-AP] Probe aborted: client connected during prep\n");
+        return;
+    }
+
+    // ── 预扫描快速失败：SSID 不可见时不切 STA/不 WiFi.begin() ──
+    // WiFi.begin() 每次白耗 ~4KB lwIP 缓冲，失败断开后缓冲不回收（仅下次
+    // 重连复用）。配置了不存在的 SSID 时旧逻辑每 2min 探测泄漏一次，
+    // ~10 次后 free8 跌破 6KB Web 门控 → AP 模式下页面永远加载不出、
+    // 探测也被 16KB 门控锁死，只能重启逃生。AP 模式下扫描本身就能判断
+    // WiFi 是否恢复，扫描可见再做重 STA 探测。
+    bool ssidVisible = false;
+    {
+        // scanNetworks 内部会 enableSTA(true) 把纯 AP 切成 APSTA（与
+        // ProvisionRouteHandler::_wifiScanTask 同一副作用）。用 WiFiModeGuard
+        // 在作用域结束（含 return）时自动恢复纯 AP，避免 STA 接口残留
+        // 持续抽干 DRAM（实测 22KB→16KB→7KB），跌破 AsyncTCP tcp_accept
+        // 8KB 门控后 AP 模式 Web 新连接全被 abort。
+        WiFiModeGuard modeGuard("AP-probe-scan");
+        int16_t scanCount = WiFi.scanNetworks(false, true);  // 含隐藏 SSID
+        for (int16_t i = 0; i < scanCount; i++) {
+            if (WiFi.SSID(i) == wifiConfig.staSSID) {
+                ssidVisible = true;
+                break;
+            }
+        }
+        WiFi.scanDelete();
+        Serial.printf("[WiFi-AP] Pre-scan: %d networks, SSID '%s' %s\n",
+                      (int)scanCount, wifiConfig.staSSID.c_str(),
+                      ssidVisible ? "visible" : "NOT visible (fast-fail, keep AP)");
+    }  // WiFiModeGuard 析构自动恢复纯 AP
+    if (!ssidVisible) {
+        // SSID 不可见：AP 保持运行不中断，无 lwIP 开销，顺延到下个探测周期
+        _apProbeFailCount++;  // 网络不可达，计入退避
+        return;
     }
 
     LOGGER.infof("[WiFi-AP] Probing WiFi [%s] (brief STA switch)...",
@@ -1722,7 +1823,11 @@ void FBNetworkManager::handleApModeWifiProbe() {
 #endif
     } else {
         // 3b. 探测失败，WiFi 仍不可用，恢复 AP 模式
-        WiFi.disconnect(false);
+        // disconnect(true, true): 断开 + 关闭 STA 接口。
+        // WiFi.begin() 每次分配 ~4KB lwIP 缓冲，仅 disconnect(false) 不断
+        // STA 则缓冲驻留不回收；true 关闭 STA 接口强制释放 lwIP PCB/pbuf，
+        // 避免每次探测泄漏 ~4KB（实测 1.5h 探测累积 ~18KB → free8 跌破 6KB）。
+        WiFi.disconnect(true, true);
         delay(200);
 
         if (startAPMode()) {
@@ -1831,8 +1936,8 @@ String FBNetworkManager::scanNetworks() {
     }
     WiFi.scanDelete();  // 释放扫描结果内存
     
-    // 序列化到静态缓冲区
-    size_t len = serializeJson(doc, buffer, sizeof(buffer));
+    // 序列化到静态缓冲区（审计 P2-6：预留 '\0' 位，截断时不越界写）
+    size_t len = serializeJson(doc, buffer, sizeof(buffer) - 1);
     buffer[len] = '\0';
     return String(buffer);
 }

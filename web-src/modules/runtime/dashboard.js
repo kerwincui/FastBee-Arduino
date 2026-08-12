@@ -29,8 +29,12 @@
                     if (!res || !res.success) return;
                     const d = res.data || {};
                     const freeHeap = d.freeHeap || 0;
-                    const heapTotal = 327680; // ESP32典型 320KB
-                    const memPct = Math.round((1 - freeHeap / heapTotal) * 100);
+                    // 使用 API 返回的实际堆大小，兜底 327680(ESP32 经典 320KB)；
+                    // C3/C6/S3 等芯片堆大小不同，硬编码会导致内存百分比显示错误。
+                    const heapTotal = d.heapTotal || 327680;
+                    const memPct = d.memoryPercent !== undefined
+                        ? d.memoryPercent
+                        : Math.round((1 - freeHeap / heapTotal) * 100);
 
                     const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
                     set('memory-usage', memPct + '%');

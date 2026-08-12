@@ -10,12 +10,23 @@
 #include "core/SystemConstants.h"
 #include "core/FeatureFlags.h"
 #include "core/MemoryBudget.h"
+#include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include "core/PeripheralManager.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
 #if FASTBEE_ENABLE_RULE_SCRIPT
 #include "core/RuleScriptManager.h"
+#endif
+#if FASTBEE_ENABLE_IR_REMOTE
+#include "peripherals/drivers/IRRemoteDriver.h"
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+#include "peripherals/drivers/RFLearnDriver.h"
+#endif
+#if FASTBEE_ENABLE_LCD
+#include "peripherals/LCDManager.h"
 #endif
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
@@ -46,6 +57,78 @@
 // tag 仅作日志标记，与上一行 LOGGER.infof("[Boot] xxx: ms") 配合使用
 #define LOG_BOOT_HEAP(tag) LOGGER.infof("[BootHeap] %s heap=%u maxBlock=%u", \
     (tag), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap())
+
+// ============================================================================
+// 启动时功能内存预算校验（计划二.5）
+// 用户 env 覆盖启用重型功能后，编译期无法感知运行时 DRAM 水位；
+// 启动时按 DRAM 需求从大到小校验，内存不足的功能自动降级为 disabled。
+// ============================================================================
+namespace {
+
+// 检查顺序按 DRAM 需求从大到小，确保重型功能优先获得内存
+const FastBee::FeatureBudget kFeatureBudgets[] = {
+#if FASTBEE_ENABLE_DEVICE_CONTROL
+    {"deviceControl", 110},  // 设备大屏 JS 解压（需 PSRAM/大 DRAM）
+#endif
+#if FASTBEE_ENABLE_BLE
+    {"ble", 35},             // NimBLE 初始化
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+    {"cellular", 30},        // TinyGSM + SSL
+#endif
+#if FASTBEE_ENABLE_IR_REMOTE
+    {"irRemote", 25},      // IRremote 缓冲 + Web 路由
+#endif
+#if FASTBEE_ENABLE_RFID
+    {"rfid", 24},          // SPI 缓冲 + 事件处理
+#endif
+#if FASTBEE_ENABLE_I2C_SENSORS
+    {"i2cSensors", 23},    // I2C 缓冲 + 传感器轮询
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
+    {"ruleScript", 22},    // 脚本引擎 + 模板解析
+#endif
+#if FASTBEE_ENABLE_MODBUS
+    {"modbus", 20},        // Modbus 缓冲 + JSON 解析
+#endif
+#if FASTBEE_ENABLE_LCD
+    {"lcd", 19},           // U8g2 帧缓冲 + 渲染
+#endif
+#if FASTBEE_ENABLE_NEOPIXEL
+    {"neopixel", 18},      // RMT 缓冲 + 灯珠数据
+#endif
+#if FASTBEE_ENABLE_ETHERNET
+    {"ethernet", 15},      // W5500 SPI 缓冲
+#endif
+#if FASTBEE_ENABLE_LED_SCREEN
+    {"ledScreen", 15},     // RMT 缓冲
+#endif
+    {nullptr, 0}
+};
+
+}  // namespace
+
+void FastBee::FeatureBudgetRegistry::runChecks() {
+    if (checked_) return;
+    FastBee::FeatureBudgetRegistryAccess::markChecked();
+    for (const auto& budget : kFeatureBudgets) {
+        if (budget.name == nullptr) break;
+#if defined(ESP_PLATFORM)
+        const uint32_t free8Kb =
+            FastBee::MemoryBudget::dram8Free() / 1024U;  // MALLOC_CAP_8BIT 真实 DRAM 口径
+        if (free8Kb < budget.minFree8Kb) {
+            FastBee::FeatureBudgetRegistryAccess::deny(budget.name);
+            Serial.printf("[BUDGET] %s disabled: free8=%luKB < need=%uKB\n",
+                          budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
+        } else {
+            Serial.printf("[BUDGET] %s ok: free8=%luKB >= need=%uKB\n",
+                          budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
+        }
+#else
+        (void)budget;  // native 测试环境无 heap_caps，仅锁定常量
+#endif
+    }
+}
 
 // 构造函数
 FastBeeFramework::FastBeeFramework()
@@ -144,6 +227,16 @@ bool FastBeeFramework::initialize() {
     LOGGER.infof("[Boot] Logger: %lu ms", loggerMs);
     LOG_INFO("Logger system initialized and file logging enabled");
 
+    // 步骤2.2: 功能内存预算校验（PeripheralManager/WiFi/MQTT 之前，尽早确定功能降级集合）
+    Serial.println("[STEP2.2] Checking feature memory budgets...");
+    FastBee::FeatureBudgetRegistry::instance().runChecks();
+
+    // 步骤2.3: 加载运行时功能配置（依赖 FeatureBudget 校验结果）
+    stepStart = millis();
+    Serial.println("[STEP2.3] Loading runtime feature config...");
+    FastBee::RuntimeFeatureManager::instance().loadConfig();
+    Serial.printf("[Boot] RuntimeFeatureManager: %lu ms\n", millis() - stepStart);
+
     // 步骤2.5: 初始化外设管理器（尽早初始化，确保GPIO输出引脚在WiFi连接前就位）
     // 依赖：LittleFS（STEP1）、Logger（STEP2），无需网络
     stepStart = millis();
@@ -165,6 +258,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] AsyncWebServer: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("AsyncWebServer");
 
 #if FASTBEE_WEB_START_EARLY
     // ---- 提前启动模式：Web服务器在WiFi连接前启动（AP模式直接可用）----
@@ -279,6 +373,7 @@ bool FastBeeFramework::initialize() {
         ets_printf("[STEP4] WARN: Network not connected\n");
     }
     ets_printf("[Boot] NetworkManager: %lu ms\n", networkMs);
+    LOG_BOOT_HEAP("NetworkManager");
 
     // 步骤5: 初始化用户管理器
     stepStart = millis();
@@ -299,6 +394,7 @@ bool FastBeeFramework::initialize() {
     }
     Serial.println("[STEP6] Auth manager OK");
     Serial.printf("[Boot] User/AuthManager: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("User/AuthManager");
 
     // 步骤 7: 初始化 Web配置管理器
     stepStart = millis();
@@ -315,6 +411,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] WebConfigManager: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("WebConfigManager");
 
 #endif  // FASTBEE_WEB_START_EARLY
 
@@ -341,6 +438,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] TaskManager: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("TaskManager");
 
     // 步骤10: 初始化健康监控器
     stepStart = millis();
@@ -351,6 +449,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] HealthMonitor: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("HealthMonitor");
 
     // 步骤10.5: 确保设备身份标识（deviceId / MQTT clientId 空值自动生成并写回 JSON 配置）
     // 依赖：LittleFS（STEP1）、Logger（STEP2）、WiFi 栏已起（STEP4/STEP7-E 后 MAC 可读）
@@ -369,6 +468,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] ProtocolManager: %lu ms\n", millis() - stepStart);
+    LOG_BOOT_HEAP("ProtocolManager");
 
     // 步骤11.1: 启动协议客户端（MQTT、Modbus 等）
     // ProtocolManager::initialize() 只设置标志位，不创建协议客户端
@@ -379,6 +479,7 @@ bool FastBeeFramework::initialize() {
         ets_printf("[STEP11.1] Starting MQTT client...\n");
         if (protocolManager->restartMQTTDeferred()) {
             ets_printf("[Boot] MQTT client created: %lu ms\n", millis() - mqttStart);
+            LOG_BOOT_HEAP("MQTTClient");
         } else {
             ets_printf("[STEP11.1] WARN: MQTT deferred restart failed (will retry on API query)\n");
         }
@@ -642,7 +743,11 @@ bool FastBeeFramework::initialize() {
 #if FASTBEE_ENABLE_RULE_SCRIPT
     stepStart = millis();
     Serial.println("[STEP11.6] Initializing RuleScriptManager...");
-    if (!RuleScriptManager::getInstance().initialize()) {
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript")) {
+        Serial.println("[STEP11.6] RuleScriptManager disabled by runtime feature config");
+    } else if (FastBee::FeatureBudgetRegistry::instance().isDenied("ruleScript")) {
+        Serial.println("[STEP11.6] RuleScriptManager disabled by memory budget");
+    } else if (!RuleScriptManager::getInstance().initialize()) {
         Serial.println("[STEP11.6] WARN: Rule script manager init failed");
     } else {
         Serial.println("[STEP11.6] Rule script manager OK");
@@ -707,6 +812,12 @@ bool FastBeeFramework::initialize() {
     ets_printf("========================================\n");
     ets_printf("  FastBee IoT Platform Ready!\n");
     ets_printf("========================================\n");
+
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    // 派发系统就绪事件（system_ready），触发以该事件为触发源的规则（如 OLED 默认显示）
+    PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYSTEM_READY,
+        "{\"bootTimeMs\":" + String(bootTime) + "}");
+#endif
 
 #if FASTBEE_ENABLE_ETHERNET
     if (network && network->getNetworkType() == NetworkType::NET_ETHERNET && network->getEthernetAdapter()) {
@@ -872,11 +983,14 @@ bool FastBeeFramework::addSystemTasks() {
                     framework->modbusAutoStarted = true;
                     LOG_INFO("[Protocol] Network stable, auto-starting protocols...");
 
-                    // 堆保护：内部堆低于安全阈值时跳过协议启动，防止 new/malloc 失败触发 abort()
-                    uint32_t protoStartHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-                    uint32_t protoStartMaxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-                    if (protoStartHeap < 30000 || protoStartMaxBlock < 8192) {
-                        LOG_WARNINGF("[Protocol] Heap too low for protocol start, deferring (heap=%lu maxBlock=%lu)",
+                    // 堆保护：8BIT DRAM 口径（与 PeriphExecScheduler/WebHandlerContext 一致）
+                    // INTERNAL 口径含 IRAM/RTC 不可 malloc 内存虚高 ~28KB，旧 INTERNAL=30KB
+                    // 时 8BIT 仅 ~2KB，协议启动 TLS 握手 new 失败 abort() 进重启循环。
+                    // 实测开机基线 free8≈25KB/blk8≈12KB(AP)，阈值 16KB/8KB 留足 TLS 缓冲余量。
+                    uint32_t protoStartHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+                    uint32_t protoStartMaxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+                    if (protoStartHeap < 16384 || protoStartMaxBlock < 8192) {
+                        LOG_WARNINGF("[Protocol] 8BIT DRAM too low for protocol start, deferring (free8=%lu blk8=%lu)",
                                      (unsigned long)protoStartHeap, (unsigned long)protoStartMaxBlock);
                         // 允许下次重试
                         framework->mqttAutoStarted = !shouldStartMqtt;
@@ -989,16 +1103,16 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add NTP sync task");
     }
 
-    // 内存监控任务（每60秒）
+    // 内存监控任务（每60秒）—— 8BIT DRAM 口径，与 [STATUS] 输出一致
     if (!taskManager->addTask("memory_monitor", [](void* param) {
         static uint32_t lastHeap = 0;
-        uint32_t currentHeap = ESP.getFreeHeap();
+        uint32_t currentHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
 
         if (lastHeap > 0) {
             int32_t diff = currentHeap - lastHeap;
             if (abs(diff) > 1024) { // 变化超过1KB时记录
                 static char buffer[100];
-                snprintf(buffer, sizeof(buffer), "Memory: %luKB free (%+ld bytes)",
+                snprintf(buffer, sizeof(buffer), "Memory(8BIT): %luKB free (%+ld bytes)",
                          currentHeap / 1024, diff);
                 LOG_DEBUG(buffer);
             }
@@ -1016,6 +1130,15 @@ bool FastBeeFramework::addSystemTasks() {
         framework->webConfig->performMaintenance();
     }, this, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add web maintenance task");
+    }
+#endif
+
+#if FASTBEE_ENABLE_LCD
+    // OLED/LCD 维护任务（每1秒）：开机初期重申显示参数，防上电瞬间电压波动导致黑屏
+    if (!taskManager->addTask("lcd_maintenance", [](void* param) {
+        LCDManager::getInstance().performMaintenance();
+    }, nullptr, 1000)) {
+        LOG_WARNING("Failed to add lcd maintenance task");
     }
 #endif
 
@@ -1040,6 +1163,24 @@ bool FastBeeFramework::addSystemTasks() {
         PeriphExecManager::getInstance().checkButtonEvents();
     }, nullptr, 100, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add button event check task");
+    }
+#endif
+
+#if FASTBEE_ENABLE_IR_REMOTE
+    // 红外接收解码检查任务（每100ms）- 未配置红外外设时 check() 内部直接返回
+    if (!taskManager->addTask("ir_remote_check", [](void* param) {
+        IRRemoteDriver::getInstance().check();
+    }, nullptr, 100)) {
+        LOG_WARNING("Failed to add IR remote check task");
+    }
+#endif
+
+#if FASTBEE_ENABLE_RF_LEARN
+    // RF接收解码检查任务（每50ms）- 未配置RF外设时 check() 内部直接返回
+    if (!taskManager->addTask("rf_learn_check", [](void* param) {
+        RFLearnDriver::getInstance().check();
+    }, nullptr, 50)) {
+        LOG_WARNING("Failed to add RF learn check task");
     }
 #endif
 
@@ -1095,10 +1236,11 @@ void FastBeeFramework::run() {
         unsigned long mins = (uptimeSec % 3600) / 60;
         unsigned long secs = uptimeSec % 60;
 
-        // 内存状态
-        uint32_t freeHeap = ESP.getFreeHeap();
-        uint32_t maxBlock = ESP.getMaxAllocHeap();
-        ets_printf("[STATUS] uptime=%luh%lum%lus heap=%lu/%lu",
+        // 内存状态：统一 MALLOC_CAP_8BIT 真实 DRAM 口径（与 METRICS free8 一致）；
+        // ESP.getFreeHeap() 为 INTERNAL 口径含 IRAM/RTC 虚高约 28KB，旧 heap=a/b 格式易被误读为 空闲/总量
+        uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        uint32_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        ets_printf("[STATUS] uptime=%luh%lum%lus free8=%lu blk8=%lu",
                       hours, mins, secs, (unsigned long)freeHeap, (unsigned long)maxBlock);
 #ifdef BOARD_HAS_PSRAM
         ets_printf(" psram=%lu", (unsigned long)ESP.getFreePsram());

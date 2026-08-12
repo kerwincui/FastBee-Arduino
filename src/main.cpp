@@ -182,6 +182,18 @@ void loop() {
         }
     }
     
+    // Heap integrity forensics: concurrent HTTP load crashes with DRAM
+    // exhaustion signature; validate heap headers every 2s to catch the
+    // corruption window (aborts with panic + backtrace when corrupted).
+    {
+        static unsigned long _heapCheckAt = 0;
+        unsigned long nowMs = millis();
+        if (nowMs - _heapCheckAt >= 2000UL) {
+            _heapCheckAt = nowMs;
+            heap_caps_check_integrity(MALLOC_CAP_8BIT, true);
+        }
+    }
+
     // 启动稳定后（120s），将 TWDT 升级为 trigger_panic=true
     // 启动阶段允许 WDT 超时仅告警（库初始化可能耗时），稳定后死锁必须触发重启
     static bool _wdtPanicUpgraded = false;
@@ -207,7 +219,8 @@ void loop() {
     static unsigned long _loopDbg = 0;
     if (millis() - _loopDbg > 15000) {
         _loopDbg = millis();
-        ets_printf("[LOOP-ALIVE] heap=%lu\n", (unsigned long)ESP.getFreeHeap());
+        // 与 METRICS free8 同口径：MALLOC_CAP_8BIT 真实可 malloc DRAM（ESP.getFreeHeap() 为 INTERNAL 口径，虚高约 28KB）
+        ets_printf("[LOOP-ALIVE] heap=%lu\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
     }
     
     // 让出 CPU 时间，平衡响应和功耗，提升稳定性

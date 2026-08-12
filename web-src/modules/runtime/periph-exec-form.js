@@ -21,6 +21,8 @@
             const isDataSourceEvent = showEvent && data.eventId && String(data.eventId).indexOf('ds:') === 0;
             const isModbusCtrlEvent = showEvent && data.eventId && String(data.eventId).indexOf('mc:') === 0;
             const isButtonEvent = showEvent && data.eventId && String(data.eventId).indexOf('button_') === 0;
+            const isIrEvent = showEvent && String(data.eventId) === 'ir_code_received';
+            const isRfEvent = showEvent && String(data.eventId) === 'rf_code_received';
             const showPoll = triggerType === '5';
             const timerMode = String(data.timerMode ?? 0);
             const showInterval = timerMode === '0';
@@ -92,6 +94,12 @@
                     '</select></div>' +
                     '<div class="fb-form-group pe-event-compare-group' + this._hiddenClass(isDataSourceEvent) + '"><label>' + '比较值' + '</label>' +
                     '<input type="text" class="pe-event-compare" value="' + escapeHtml(data.compareValue || '') + '" placeholder="' + escapeHtml('如: 25.5') + '"></div>' +
+                    '<div class="fb-form-group pe-ir-key-group' + this._hiddenClass(isIrEvent) + '"><label>' + '红外按键' + '</label>' +
+                    '<select class="pe-ir-key"><option value="">' + '-- 任意红外按键 --' + '</option></select>' +
+                    '<small class="pe-help-text">' + '选择已学习的红外按键；留空表示任意红外编码均可触发' + '</small></div>' +
+                    '<div class="fb-form-group pe-rf-key-group' + this._hiddenClass(isRfEvent) + '"><label>' + 'RF按键' + '</label>' +
+                    '<select class="pe-rf-key"><option value="">' + '-- 任意RF按键 --' + '</option></select>' +
+                    '<small class="pe-help-text">' + '选择已学习的RF按键；留空表示任意RF编码均可触发' + '</small></div>' +
                     '</div>' +
                     '<div class="pe-event-modbus-ctrl-panel' + this._hiddenClass(isModbusCtrlEvent) + '"></div>' +
                     '</div>';
@@ -104,6 +112,8 @@
                 this._populateButtonPeriphSelect(periphSel, data.triggerPeriphId || '');
             }
             if (showEvent) this._populateEventCategoriesInBlock(div, data.eventId, data.compareValue || '');
+            if (isIrEvent) this._populateIrKeySelect(div, data.compareValue || '');
+            if (isRfEvent) this._populateRfKeySelect(div, data.compareValue || '');
             this._updatePeriphExecAddButtons();
         },
 
@@ -202,7 +212,8 @@
                         '<option value="2" ' + sel(2) + '>' + '闪烁' + '</option>' +
                         '<option value="3" ' + sel(3) + '>' + '呼吸灯' + '</option>' +
                         '<option value="13" ' + sel(13) + '>' + '高电平反转' + '</option>' +
-                        '<option value="14" ' + sel(14) + '>' + '低电平反转' + '</option></optgroup>' +
+                        '<option value="14" ' + sel(14) + '>' + '低电平反转' + '</option>' +
+                        '<option value="30" ' + sel(30) + '>' + '电平翻转' + '</option></optgroup>' +
                         '<optgroup label="' + '模拟输出' + '">' +
                         '<option value="4" ' + sel(4) + '>' + '设置PWM' + '</option>' +
                         '<option value="5" ' + sel(5) + '>' + '设置DAC' + '</option></optgroup>' +
@@ -300,10 +311,11 @@
                     '<option value="data_report">数据上报</option></optgroup>' +
                     '<optgroup label="外设执行">' +
                     '<option value="periph_exec_completed">外设执行完成</option></optgroup>' +
-                    '<optgroup label="RFID/红外">' +
+                    '<optgroup label="RFID/红外/RF">' +
                     '<option value="rfid_card_detected">RFID卡片检测</option>' +
                     '<option value="rfid_card_removed">RFID卡片移开</option>' +
-                    '<option value="ir_code_received">红外编码接收</option></optgroup>' +
+                    '<option value="ir_code_received">红外编码接收</option>' +
+                    '<option value="rf_code_received">RF编码接收</option></optgroup>' +
                     '</select>' +
                     '<small class="pe-trigger-event-help is-hidden">选择要模拟触发的设备事件</small>' +
                     '</div>' +
@@ -395,6 +407,26 @@
                 // 同步 UI 状态（帮助文本、显隐等）
                 this.onPeriphExecActionTypeChangeInBlock('11', Array.from(container.children).indexOf(div));
                 this._initNeoPixelPresetFromData(div, data.actionValue, 11);
+            } else if (this._isSetPwmTarget(data.targetPeriphId) && (data.actionType ?? 0) == 10) {
+                // 自动迁移：PWM 输出目标的 actionType=10（发送指令，旧格式）→ 4（设置PWM）
+                // 覆盖两类目标：type=17 原生 PWM 输出（本项目无源蜂鸣器）、type=12+passive 无源蜂鸣器接数字口
+                // 均由 PWM 占空比驱动（HIGH=50%占空比发声），将命令格式迁移为占空比
+                var actSelBz = div.querySelector('.pe-action-type');
+                if (actSelBz) actSelBz.value = '4';
+                var valInputBz = div.querySelector('.pe-action-value');
+                if (valInputBz) {
+                    var bzVal = (valInputBz.value || '').trim().toLowerCase();
+                    if (bzVal === 'on' || bzVal === 'high' || bzVal === '1' || bzVal === 'beep' || bzVal === 'toggle') valInputBz.value = '128';
+                    else if (bzVal === 'off' || bzVal === 'low' || bzVal === '0' || bzVal === 'stop') valInputBz.value = '0';
+                    // 数字占空比及其他值保持不变
+                }
+                this.onPeriphExecActionTypeChangeInBlock('4', Array.from(container.children).indexOf(div));
+            } else if (this._isRfModuleTarget(data.targetPeriphId) && (data.actionType ?? 0) == 10) {
+                // 自动迁移：RF 模块目标的 actionType=10（发送指令，旧格式）→ 28（射频发送）
+                // 两者均由 executeCallPeripheralAction 执行，actionValue（RF 编码）保持不变
+                var actSelRf = div.querySelector('.pe-action-type');
+                if (actSelRf) actSelRf.value = '28';
+                this.onPeriphExecActionTypeChangeInBlock('28', Array.from(container.children).indexOf(div));
             }
             this._updateNeoPixelPresetVisibility(div);
             this._updatePeriphExecAddButtons();
@@ -611,8 +643,22 @@
             var isDataSource = val && val.indexOf('ds:') === 0;
             var isModbusCtrl = val && val.indexOf('mc:') === 0;
             var isButtonEvt = val && String(val).indexOf('button_') === 0;
+            var isIrEvt = val === 'ir_code_received';
+            var isRfEvt = val === 'rf_code_received';
             this._setSectionVisible(block.querySelector('.pe-event-condition-group'), isDataSource);
             this._setSectionVisible(block.querySelector('.pe-event-compare-group'), isDataSource);
+            // 红外编码接收事件：展示已学习按键下拉
+            var irKeyGroup = block.querySelector('.pe-ir-key-group');
+            if (irKeyGroup) {
+                this._setSectionVisible(irKeyGroup, isIrEvt);
+                if (isIrEvt) this._populateIrKeySelect(block, '');
+            }
+            // RF编码接收事件：展示已学习RF按键下拉
+            var rfKeyGroup = block.querySelector('.pe-rf-key-group');
+            if (rfKeyGroup) {
+                this._setSectionVisible(rfKeyGroup, isRfEvt);
+                if (isRfEvt) this._populateRfKeySelect(block, '');
+            }
             // 按键事件时显示触发外设下拉并填充按键类型外设；否则隐藏
             var triggerPeriphGroup = block.querySelector('.pe-trigger-periph-group');
             if (triggerPeriphGroup) {
@@ -754,6 +800,26 @@
             if (!periphId) return false;
             return (this._pePeripherals || []).some(function(p) {
                 return p.id === periphId && p.type === 45;
+            });
+        },
+
+        // 应使用"设置PWM"(4) 动作的目标外设（动作类型应为"设置PWM"而非通用"发送指令"(10)）：
+        //   - GPIO_PWM_OUTPUT(type=17)：原生 PWM 输出（本项目无源蜂鸣器即此类型，pwmFrequency=2700Hz 发声）
+        //   - GPIO数字输出(type=12) + passive 标志：无源蜂鸣器接数字口、由 PWM 占空比驱动
+        _isSetPwmTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(p) {
+                return p.id === periphId &&
+                    (p.type === 17 || (p.type === 12 && p.passive === true));
+            });
+        },
+
+        // 433MHz RF 模块：type=48 (RF_MODULE)
+        // RF 发送动作应显示为"射频发送"(28) 而非通用"发送指令"(10)
+        _isRfModuleTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(p) {
+                return p.id === periphId && p.type === 48;
             });
         },
 
@@ -1183,8 +1249,22 @@
                     if (eventIdToSet) sel.value = eventIdToSet;
                     var isDs = sel.value && sel.value.indexOf('ds:') === 0;
                     var isMc = sel.value && sel.value.indexOf('mc:') === 0;
+                    var isIr = sel.value === 'ir_code_received';
+                    var isRf = sel.value === 'rf_code_received';
                     this._setSectionVisible(blockEl.querySelector('.pe-event-condition-group'), isDs);
                     this._setSectionVisible(blockEl.querySelector('.pe-event-compare-group'), isDs);
+                    // 红外编码接收事件：回填/展示已学习按键下拉
+                    var irKeyGroup = blockEl.querySelector('.pe-ir-key-group');
+                    if (irKeyGroup) {
+                        this._setSectionVisible(irKeyGroup, isIr);
+                        if (isIr) this._populateIrKeySelect(blockEl, compareValue || '');
+                    }
+                    // RF编码接收事件：回填/展示已学习RF按键下拉
+                    var rfKeyGroup = blockEl.querySelector('.pe-rf-key-group');
+                    if (rfKeyGroup) {
+                        this._setSectionVisible(rfKeyGroup, isRf);
+                        if (isRf) this._populateRfKeySelect(blockEl, compareValue || '');
+                    }
                     var ctrlPanel = blockEl.querySelector('.pe-event-modbus-ctrl-panel');
                     if (ctrlPanel) {
                         if (isMc) {
@@ -1197,6 +1277,80 @@
                 console.warn('Failed to load periph exec events:', err);
                 sel.innerHTML = '<option value="">' + '-- 选择事件 --' + '</option>';
             });
+        },
+
+        // 填充红外按键下拉（来自 /api/ir/keys），选中值形如 "key:名称"
+        _populateIrKeySelect(blockEl, selectedCompareValue) {
+            const sel = blockEl.querySelector('.pe-ir-key');
+            if (!sel) return;
+            var want = selectedCompareValue || '';
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/ir/keys')
+                .then(function(res) {
+                    var keys = (res && res.success && res.data && res.data.keys) ? res.data.keys : [];
+                    var opts = '<option value="">' + '-- 任意红外按键 --' + '</option>';
+                    keys.forEach(function(k) {
+                        if (!k || !k.name) return;
+                        var v = 'key:' + k.name;
+                        var label = k.name + (k.code ? (' (' + k.code + ')') : '');
+                        opts += '<option value="' + escapeHtml(v) + '">' + escapeHtml(label) + '</option>';
+                    });
+                    sel.innerHTML = opts;
+                    if (want) {
+                        sel.value = want;
+                        // 回填值未在列表中（如原始编码或已删除按键），补充自定义选项以保留
+                        if (sel.value !== want) {
+                            var extra = document.createElement('option');
+                            extra.value = want;
+                            extra.textContent = want;
+                            sel.appendChild(extra);
+                            sel.value = want;
+                        }
+                    }
+                })
+                .catch(function() {
+                    // 加载失败时保留已选值，避免丢失配置
+                    if (want) {
+                        sel.innerHTML = '<option value="">' + '-- 任意红外按键 --' + '</option>' +
+                            '<option value="' + escapeHtml(want) + '" selected>' + escapeHtml(want) + '</option>';
+                    }
+                });
+        },
+
+        // 填充RF按键下拉（来自 /api/rf/keys），选中值形如 "key:名称"
+        _populateRfKeySelect(blockEl, selectedCompareValue) {
+            const sel = blockEl.querySelector('.pe-rf-key');
+            if (!sel) return;
+            var want = selectedCompareValue || '';
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/rf/keys')
+                .then(function(res) {
+                    var keys = (res && res.success && res.data && res.data.keys) ? res.data.keys : [];
+                    var opts = '<option value="">' + '-- 任意RF按键 --' + '</option>';
+                    keys.forEach(function(k) {
+                        if (!k || !k.name) return;
+                        var v = 'key:' + k.name;
+                        var label = k.name + (k.code ? (' (' + k.code + ')') : '');
+                        opts += '<option value="' + escapeHtml(v) + '">' + escapeHtml(label) + '</option>';
+                    });
+                    sel.innerHTML = opts;
+                    if (want) {
+                        sel.value = want;
+                        if (sel.value !== want) {
+                            var extra = document.createElement('option');
+                            extra.value = want;
+                            extra.textContent = want;
+                            sel.appendChild(extra);
+                            sel.value = want;
+                        }
+                    }
+                })
+                .catch(function() {
+                    if (want) {
+                        sel.innerHTML = '<option value="">' + '-- 任意RF按键 --' + '</option>' +
+                            '<option value="' + escapeHtml(want) + '" selected>' + escapeHtml(want) + '</option>';
+                    }
+                });
         },
 
         // ============ Data collection ============
@@ -1221,6 +1375,12 @@
                     if (trigger.eventId.indexOf('ds:') === 0) {
                         trigger.operatorType = parseInt(item.querySelector('.pe-event-operator')?.value || '0', 10);
                         trigger.compareValue = item.querySelector('.pe-event-compare')?.value?.trim() || '';
+                    } else if (trigger.eventId === 'ir_code_received') {
+                        // 红外编码接收：按键下拉值形如 "key:名称"，留空表示任意编码
+                        trigger.compareValue = item.querySelector('.pe-ir-key')?.value?.trim() || '';
+                    } else if (trigger.eventId === 'rf_code_received') {
+                        // RF编码接收：按键下拉值形如 "key:名称"，留空表示任意编码
+                        trigger.compareValue = item.querySelector('.pe-rf-key')?.value?.trim() || '';
                     } else if (trigger.eventId.indexOf('button_') === 0) {
                         // 按键事件：读取统一后的触发外设下拉（留空表示任意按键外设均可触发）
                         trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';

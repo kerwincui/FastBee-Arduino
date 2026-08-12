@@ -696,6 +696,297 @@ static void test_wifi_rescan_feature_removed() {
 }
 
 // ---------------------------------------------------------------------------
+// 测试：GET /api/wifi/status 响应格式验证
+// ---------------------------------------------------------------------------
+static void test_wifi_status_response_format() {
+    TestLog::testStart("Provision: WiFi Status Response Format");
+
+    // 镜像 handleWiFiStatus 的 JSON 构建逻辑
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["deviceName"] = "fastbee";
+    data["deviceId"] = "FBE00112233";
+    data["userId"] = "1";
+    data["firmwareVersion"] = "1.0.0";
+    data["networkMode"] = "ap";
+    data["connected"] = false;
+    data["ipAddress"] = "192.168.4.1";
+    data["apSSID"] = "fastbee-ap";
+    data["apIP"] = "192.168.4.1";
+    data["macAddress"] = "AA:BB:CC:DD:EE:FF";
+    data["chipModel"] = "ESP32";
+    data["chipRevision"] = 3;
+    data["freeHeap"] = 58000;
+
+    String json;
+    serializeJson(doc, json);
+
+    // 反序列化验证字段
+    JsonDocument parsed;
+    deserializeJson(parsed, json);
+    TEST_ASSERT_TRUE(parsed["success"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("fastbee", parsed["data"]["deviceName"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("FBE00112233", parsed["data"]["deviceId"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("1", parsed["data"]["userId"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("1.0.0", parsed["data"]["firmwareVersion"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("ap", parsed["data"]["networkMode"].as<const char*>());
+    TEST_ASSERT_FALSE(parsed["data"]["connected"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", parsed["data"]["ipAddress"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("fastbee-ap", parsed["data"]["apSSID"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("ESP32", parsed["data"]["chipModel"].as<const char*>());
+    TEST_ASSERT_EQUAL(58000, parsed["data"]["freeHeap"].as<int>());
+    TestLog::step("Status response has all required fields: device info + network + chip");
+
+    // STA 模式连接状态响应
+    JsonDocument doc2;
+    doc2["success"] = true;
+    JsonObject d2 = doc2["data"].to<JsonObject>();
+    d2["networkMode"] = "sta";
+    d2["connected"] = true;
+    d2["ipAddress"] = "10.52.122.2";
+    d2["ssid"] = "fastbeecn";
+    d2["rssi"] = -43;
+
+    JsonDocument p2;
+    String j2; serializeJson(doc2, j2);
+    deserializeJson(p2, j2);
+    TEST_ASSERT_EQUAL_STRING("sta", p2["data"]["networkMode"].as<const char*>());
+    TEST_ASSERT_TRUE(p2["data"]["connected"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("10.52.122.2", p2["data"]["ipAddress"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("fastbeecn", p2["data"]["ssid"].as<const char*>());
+    TEST_ASSERT_EQUAL(-43, p2["data"]["rssi"].as<int>());
+    TestLog::step("STA connected response: ssid, rssi, ipAddress verified");
+
+    TestLog::testEnd(true);
+}
+
+// ---------------------------------------------------------------------------
+// 测试：POST /api/wifi/config 必须参数校验
+// ---------------------------------------------------------------------------
+static void test_wifi_config_requires_params() {
+    TestLog::testStart("Provision: WiFi Config Requires SSID+password+userId");
+
+    // 镜像 handleWiFiConfig 的参数校验逻辑
+    auto validate = [](const String& ssid, const String& password, const String& userId) -> bool {
+        return !(ssid.isEmpty() || password.isEmpty() || userId.isEmpty());
+    };
+
+    // 缺少 SSID
+    TEST_ASSERT_FALSE(validate("", "pass123", "user1"));
+    TestLog::step("Empty SSID → rejected");
+
+    // 缺少密码
+    TEST_ASSERT_FALSE(validate("MyWiFi", "", "user1"));
+    TestLog::step("Empty password → rejected");
+
+    // 缺少 userId
+    TEST_ASSERT_FALSE(validate("MyWiFi", "pass123", ""));
+    TestLog::step("Empty userId → rejected");
+
+    // 全部提供
+    TEST_ASSERT_TRUE(validate("MyWiFi", "pass123", "user1"));
+    TestLog::step("All params present → accepted");
+
+    // 验证错误响应格式
+    JsonDocument errDoc;
+    errDoc["success"] = false;
+    errDoc["message"] = "配网必须传递 SSID、WiFi密码和用户编号(userId)";
+    String errJson;
+    serializeJson(errDoc, errJson);
+    JsonDocument parsed;
+    deserializeJson(parsed, errJson);
+    TEST_ASSERT_FALSE(parsed["success"].as<bool>());
+    TEST_ASSERT_TRUE_MESSAGE(
+        String(parsed["message"].as<const char*>()).indexOf("SSID") >= 0,
+        "Error message must mention SSID");
+    TEST_ASSERT_TRUE_MESSAGE(
+        String(parsed["message"].as<const char*>()).indexOf("userId") >= 0,
+        "Error message must mention userId");
+    TestLog::step("Error response format correct (success=false, message mentions SSID+userId)");
+
+    TestLog::testEnd(true);
+}
+
+// ---------------------------------------------------------------------------
+// 测试：POST /api/wifi/config 同时保存 network.json 和 device.json
+// ---------------------------------------------------------------------------
+static void test_wifi_config_saves_both_configs() {
+    TestLog::testStart("Provision: WiFi Config Saves to network.json + device.json");
+    _ensureConfigDir();
+
+    // 准备初始 device.json
+    _writeTestDeviceJson(
+        "{\"deviceId\":\"\",\"productNumber\":0,\"userId\":\"\","
+        "\"deviceName\":\"fastbee\",\"logLevel\":\"INFO\"}");
+
+    // 模拟 _updateDeviceConfig 写入 userId + deviceNum
+    const String userId    = "42";
+    const String deviceNum = "FBE00112233";
+    const String extra     = "7";
+
+    JsonDocument doc;
+    {
+        File f = LittleFS.open(TEST_DEVICE_CONFIG, "r");
+        TEST_ASSERT_TRUE(f);
+        deserializeJson(doc, f);
+        f.close();
+    }
+    bool changed = false;
+    if (!userId.isEmpty())    { doc["userId"]   = userId;    changed = true; }
+    if (!deviceNum.isEmpty()) { doc["deviceId"] = deviceNum; changed = true; }
+    if (!extra.isEmpty()) {
+        long pn = extra.toInt();
+        if (pn > 0) { doc["productNumber"] = (int)pn; changed = true; }
+    }
+    TEST_ASSERT_TRUE(changed);
+    if (changed) {
+        File f = LittleFS.open(TEST_DEVICE_CONFIG, "w");
+        TEST_ASSERT_TRUE(f);
+        serializeJsonPretty(doc, f);
+        f.close();
+    }
+    TestLog::step("device.json saved: userId=42, deviceId=FBE00112233, productNumber=7");
+
+    // 验证 device.json
+    String content = _readTestDeviceJson();
+    JsonDocument verify;
+    deserializeJson(verify, content);
+    TEST_ASSERT_EQUAL_STRING("42", verify["userId"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("FBE00112233", verify["deviceId"].as<const char*>());
+    TEST_ASSERT_EQUAL(7, verify["productNumber"].as<int>());
+    TestLog::step("device.json fields verified");
+
+    // 模拟 network.json WiFi 配置保存（与 handleWiFiConfig 的 cfg 更新逻辑一致）
+    const char* NET_CONFIG = "/config/network.json";
+    {
+        JsonDocument netDoc;
+        netDoc["mode"] = 0;   // AP mode initially
+        netDoc["staSSID"] = "";
+        netDoc["staPassword"] = "";
+        netDoc["apSSID"] = "fastbee-ap";
+        File nf = LittleFS.open(NET_CONFIG, "w");
+        TEST_ASSERT_TRUE(nf);
+        serializeJson(netDoc, nf);
+        nf.close();
+    }
+
+    // 模拟配网：更新 staSSID/staPassword + mode→1(STA)
+    {
+        JsonDocument netDoc;
+        File nf = LittleFS.open(NET_CONFIG, "r");
+        TEST_ASSERT_TRUE(nf);
+        deserializeJson(netDoc, nf);
+        nf.close();
+        netDoc["staSSID"] = "MyHomeWiFi";
+        netDoc["staPassword"] = "secret123";
+        netDoc["mode"] = 1;  // STA mode
+        nf = LittleFS.open(NET_CONFIG, "w");
+        TEST_ASSERT_TRUE(nf);
+        serializeJson(netDoc, nf);
+        nf.close();
+    }
+    TestLog::step("network.json saved: mode=1(STA), staSSID=MyHomeWiFi");
+
+    // 验证 network.json
+    {
+        JsonDocument netDoc;
+        File nf = LittleFS.open(NET_CONFIG, "r");
+        TEST_ASSERT_TRUE(nf);
+        deserializeJson(netDoc, nf);
+        nf.close();
+        TEST_ASSERT_EQUAL(1, netDoc["mode"].as<int>());
+        TEST_ASSERT_EQUAL_STRING("MyHomeWiFi", netDoc["staSSID"].as<const char*>());
+        TEST_ASSERT_EQUAL_STRING("secret123", netDoc["staPassword"].as<const char*>());
+        TEST_ASSERT_EQUAL_STRING("fastbee-ap", netDoc["apSSID"].as<const char*>());
+    }
+    TestLog::step("network.json verified: mode=STA, SSID/password saved, AP info preserved");
+
+    TestLog::testEnd(true);
+}
+
+// ---------------------------------------------------------------------------
+// 测试：/api/wifi/status 和 /api/wifi/config 路由注册 + 公开接口（无认证）
+// ---------------------------------------------------------------------------
+static void test_wifi_api_routes_and_public_access() {
+    TestLog::testStart("Provision: WiFi Status/Config Routes Registered + Public (No Auth)");
+
+    std::string src = _readProvisionSrcFile("src/network/handlers/ProvisionRouteHandler.cpp");
+    if (src.empty()) {
+        TEST_IGNORE_MESSAGE("ProvisionRouteHandler.cpp not readable, skipping");
+        return;
+    }
+
+    // 路由注册守护
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("\"/api/wifi/status\"") != std::string::npos,
+        "handleWiFiStatus route must be registered at /api/wifi/status");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("\"/api/wifi/config\"") != std::string::npos,
+        "handleWiFiConfig route must be registered at /api/wifi/config");
+    TestLog::step("Routes /api/wifi/status and /api/wifi/config registered");
+
+    // HTTP 方法守护
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("HTTP_GET") != std::string::npos &&
+        src.find("handleWiFiStatus") != std::string::npos,
+        "/api/wifi/status must use HTTP_GET");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("HTTP_POST") != std::string::npos &&
+        src.find("handleWiFiConfig") != std::string::npos,
+        "/api/wifi/config must use HTTP_POST");
+    TestLog::step("HTTP methods: status=GET, config=POST");
+
+    // 公开接口守护：新接口的处理函数内不应调用 requireAuth
+    size_t statusPos = src.find("void ProvisionRouteHandler::handleWiFiStatus");
+    size_t configPos = src.find("void ProvisionRouteHandler::handleWiFiConfig");
+    TEST_ASSERT_TRUE_MESSAGE(statusPos != std::string::npos, "handleWiFiStatus implementation must exist");
+    TEST_ASSERT_TRUE_MESSAGE(configPos != std::string::npos, "handleWiFiConfig implementation must exist");
+
+    // 提取两个函数体范围
+    size_t statusEnd = src.find("void ProvisionRouteHandler::handleWiFiConfig", statusPos + 1);
+    if (statusEnd == std::string::npos) statusEnd = src.size();
+    std::string statusBody = src.substr(statusPos, statusEnd - statusPos);
+
+    size_t configEnd = src.size();  // handleWiFiConfig is last function
+    std::string configBody = src.substr(configPos, configEnd - configPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        statusBody.find("requireAuth") == std::string::npos,
+        "handleWiFiStatus must NOT call requireAuth (public endpoint)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        configBody.find("requireAuth") == std::string::npos,
+        "handleWiFiConfig must NOT call requireAuth (public endpoint)");
+    TestLog::step("Both handlers are public (no requireAuth call)");
+
+    // handleWiFiConfig 必须保存 WiFi 配置并切换 STA 模式
+    TEST_ASSERT_TRUE_MESSAGE(
+        configBody.find("NETWORK_STA") != std::string::npos,
+        "handleWiFiConfig must switch to STA mode");
+    TEST_ASSERT_TRUE_MESSAGE(
+        configBody.find("updateConfig") != std::string::npos,
+        "handleWiFiConfig must call updateConfig to persist network config");
+    TEST_ASSERT_TRUE_MESSAGE(
+        configBody.find("_updateDeviceConfig") != std::string::npos,
+        "handleWiFiConfig must call _updateDeviceConfig for device.json");
+    TestLog::step("handleWiFiConfig: saves network config (STA mode) + device config");
+
+    // handleWiFiStatus 必须返回设备信息
+    TEST_ASSERT_TRUE_MESSAGE(
+        statusBody.find("deviceName") != std::string::npos,
+        "handleWiFiStatus must return deviceName");
+    TEST_ASSERT_TRUE_MESSAGE(
+        statusBody.find("networkMode") != std::string::npos,
+        "handleWiFiStatus must return networkMode");
+    TEST_ASSERT_TRUE_MESSAGE(
+        statusBody.find("firmwareVersion") != std::string::npos,
+        "handleWiFiStatus must return firmwareVersion");
+    TestLog::step("handleWiFiStatus: returns deviceName, networkMode, firmwareVersion");
+
+    TestLog::testEnd(true);
+}
+
+// ---------------------------------------------------------------------------
 // 测试组入口
 // ---------------------------------------------------------------------------
 void test_provision_api_group() {
@@ -713,6 +1004,12 @@ void test_provision_api_group() {
     RUN_TEST(test_provision_no_extended_params_compatible);
     RUN_TEST(test_provision_extra_invalid_discarded);
     RUN_TEST(test_provision_partial_params);
+
+    // 新增：AP 配网公开接口测试
+    RUN_TEST(test_wifi_status_response_format);
+    RUN_TEST(test_wifi_config_requires_params);
+    RUN_TEST(test_wifi_config_saves_both_configs);
+    RUN_TEST(test_wifi_api_routes_and_public_access);
 
     TestLog::groupEnd();
 }

@@ -7,6 +7,7 @@
 
 #include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
+#include "core/MemoryBudget.h"
 #include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <vector>
@@ -83,7 +84,28 @@ String FileUtils::readFile(const String& path) {
         return "";
     }
 
-    String content = file.readString();
+    // 审计 P2-1：文件读取闸门——超限文件直接拒绝（日志/膨胀配置），
+    // 低 DRAM 拒绝，reserve 消除 readString 逐字符 realloc churn
+    size_t fileSize = file.size();
+    if (fileSize > FastBee::MemoryBudget::FILE_READ_MAX_SIZE) {
+        LOG_WARNINGF("[FileUtils] readFile rejects %s: size %u exceeds %u cap",
+                     path.c_str(), (unsigned)fileSize,
+                     (unsigned)FastBee::MemoryBudget::FILE_READ_MAX_SIZE);
+        file.close();
+        return "";
+    }
+    if (FastBee::MemoryBudget::dramFree() < fileSize + 8192U) {
+        LOG_WARNINGF("[FileUtils] readFile rejects %s: DRAM too low", path.c_str());
+        file.close();
+        return "";
+    }
+
+    String content;
+    if (!content.reserve(fileSize + 64)) {
+        file.close();
+        return "";
+    }
+    content = file.readString();
     file.close();
     return content;
 }
@@ -160,14 +182,49 @@ bool FileUtils::renameFile(const String& oldPath, const String& newPath) {
 }
 
 bool FileUtils::atomicWriteFile(const String& path, const String& content) {
-    if (!fsInitialized) return false;
+    if (!fsInitialized) {
+        LOG_ERRORF("[FileUtils] atomicWrite failed: fs not initialized (path=%s)", path.c_str());
+        return false;
+    }
+
+    // 确保父目录存在（首次写入 /config/xxx.json 时目录可能尚未创建）
+    // 注意：堆碎片时 LittleFS.exists() 对目录可能因 opendir 内存分配失败而误报 false，
+    // 若据此中止写入会让配置保存假死；目录真不存在时后续 open 会失败并报错，故降级为警告后继续。
+    int lastSlash = path.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parentDir = path.substring(0, lastSlash);
+        if (!LittleFS.exists(parentDir)) {
+            if (!LittleFS.mkdir(parentDir)) {
+                LOG_WARNINGF("[FileUtils] atomicWrite: dir check failed for %s, attempting write anyway", parentDir.c_str());
+            } else {
+                LOG_INFOF("[FileUtils] Created directory: %s", parentDir.c_str());
+            }
+        }
+    }
+
     String tmpPath = path + ".tmp";
+
+    // 清理可能残留的旧 .tmp 文件（上次写入崩溃遗留）
+    if (LittleFS.exists(tmpPath)) {
+        LittleFS.remove(tmpPath);
+    }
+
     // 写入临时文件
     File file = LittleFS.open(tmpPath, "w");
-    if (!file) return false;
+    if (!file) {
+        size_t fsFree = LittleFS.totalBytes() > LittleFS.usedBytes()
+                        ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        LOG_ERRORF("[FileUtils] atomicWrite failed: cannot open %s for writing (free=%u, contentLen=%u)",
+                   tmpPath.c_str(), (unsigned)fsFree, (unsigned)content.length());
+        return false;
+    }
     size_t written = file.print(content);
     file.close();
     if (written != content.length()) {
+        size_t fsFree = LittleFS.totalBytes() > LittleFS.usedBytes()
+                        ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        LOG_ERRORF("[FileUtils] atomicWrite failed: write mismatch at %s (written=%u, expected=%u, free=%u)",
+                   tmpPath.c_str(), (unsigned)written, (unsigned)content.length(), (unsigned)fsFree);
         LittleFS.remove(tmpPath);
         return false;
     }
@@ -181,7 +238,128 @@ bool FileUtils::atomicWriteFile(const String& path, const String& content) {
     if (LittleFS.rename(tmpPath, path)) {
         return true;
     }
+    // 最终兜底：rename 始终失败时直接覆盖写入目标文件
+    LOG_WARNINGF("[FileUtils] atomicWrite: rename failed, falling back to direct write for %s", path.c_str());
     LittleFS.remove(tmpPath);
+    File directFile = LittleFS.open(path, "w");
+    if (!directFile) {
+        LOG_ERRORF("[FileUtils] atomicWrite failed: direct write open also failed for %s", path.c_str());
+        return false;
+    }
+    size_t directWritten = directFile.print(content);
+    directFile.close();
+    if (directWritten != content.length()) {
+        LOG_ERRORF("[FileUtils] atomicWrite failed: direct write mismatch for %s (written=%u, expected=%u)",
+                   path.c_str(), (unsigned)directWritten, (unsigned)content.length());
+        return false;
+    }
+    return true;
+}
+
+bool FileUtils::atomicWriteJsonFile(const String& path, JsonDocument& doc) {
+    if (!fsInitialized) {
+        LOG_ERRORF("[FileUtils] atomicWriteJson failed: fs not initialized (path=%s)", path.c_str());
+        return false;
+    }
+
+    // 序列化前先计算预期长度，写完后校验是否被截断
+    size_t expected = measureJson(doc);
+
+    // 确保父目录存在（堆碎片下 exists/mkdir 可能误判，降级为警告后继续；
+    // 目录真不存在时后续 open 会失败并给出明确错误）
+    int lastSlash = path.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parentDir = path.substring(0, lastSlash);
+        if (!LittleFS.exists(parentDir) && !LittleFS.mkdir(parentDir)) {
+            LOG_WARNINGF("[FileUtils] atomicWriteJson: dir check failed for %s, attempting write anyway", parentDir.c_str());
+        }
+    }
+
+    String tmpPath = path + ".tmp";
+    // 清理可能残留的旧 .tmp 文件
+    if (LittleFS.exists(tmpPath)) {
+        LittleFS.remove(tmpPath);
+    }
+
+    File file = LittleFS.open(tmpPath, "w");
+    if (!file) {
+        size_t fsFree = LittleFS.totalBytes() > LittleFS.usedBytes()
+                        ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        LOG_ERRORF("[FileUtils] atomicWriteJson failed: cannot open %s (free=%u, json=%u)",
+                   tmpPath.c_str(), (unsigned)fsFree, (unsigned)expected);
+        return false;
+    }
+
+    // 流式序列化直接写入 Flash，避免大体积 payload String 占用连续堆内存；
+    // 若堆/Flash 不足，serializeJson 会少写字节，written != expected 即可检出截断
+    size_t written = serializeJson(doc, file);
+    file.flush();
+    file.close();
+
+    if (written != expected) {
+        // 序列化被截断（堆不足或 Flash 写满），绝不覆盖已有配置文件
+        LittleFS.remove(tmpPath);
+        LOG_ERRORF("[FileUtils] atomicWriteJson aborted: truncated output for %s (written=%u, expected=%u)",
+                   path.c_str(), (unsigned)written, (unsigned)expected);
+        return false;
+    }
+
+    // 原子替换（littlefs rename 具备 POSIX 覆盖语义）
+    return commitAtomicWrite(tmpPath, path);
+}
+
+File FileUtils::openAtomicWrite(const String& path) {
+    if (!fsInitialized) {
+        LOG_ERRORF("[FileUtils] openAtomicWrite failed: fs not initialized (path=%s)", path.c_str());
+        return File();
+    }
+
+    // 确保父目录存在（堆碎片下 exists/mkdir 可能误判，降级为警告后继续；
+    // 目录真不存在时后续 open 会失败并给出明确错误）
+    int lastSlash = path.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parentDir = path.substring(0, lastSlash);
+        if (!LittleFS.exists(parentDir) && !LittleFS.mkdir(parentDir)) {
+            LOG_WARNINGF("[FileUtils] openAtomicWrite: dir check failed for %s, attempting write anyway", parentDir.c_str());
+        }
+    }
+
+    String tmpPath = path + ".tmp";
+    // 清理可能残留的旧 .tmp 文件（上次写入崩溃遗留）
+    if (LittleFS.exists(tmpPath)) {
+        LittleFS.remove(tmpPath);
+    }
+
+    File file = LittleFS.open(tmpPath, "w");
+    if (!file) {
+        size_t fsFree = LittleFS.totalBytes() > LittleFS.usedBytes()
+                        ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        LOG_ERRORF("[FileUtils] openAtomicWrite failed: cannot open %s (free=%u)",
+                   tmpPath.c_str(), (unsigned)fsFree);
+    }
+    return file;
+}
+
+bool FileUtils::commitAtomicWrite(const String& tmpPath, const String& path) {
+    // 前置检查：tmp 不存在（未写入/已被清理）时直接失败，
+    // 否则兜底分支的 remove(path) 会误删目标文件
+    if (!LittleFS.exists(tmpPath)) {
+        LOG_ERRORF("[FileUtils] commitAtomicWrite failed: tmp file missing (%s)", tmpPath.c_str());
+        return false;
+    }
+    // littlefs rename 具备 POSIX 覆盖语义（lfs_rename 原子替换已存在目标），
+    // 优先直接 rename，消除 remove→rename 之间断电导致目标文件丢失的窗口
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    // 兜底：个别分区状态下 rename 覆盖失败时退回 remove+rename
+    LittleFS.remove(path);
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    // rename 反复失败：清理 tmp，保留原文件不动（宁可失败也不损坏配置）
+    LittleFS.remove(tmpPath);
+    LOG_ERRORF("[FileUtils] commitAtomicWrite failed: rename failed for %s", path.c_str());
     return false;
 }
 

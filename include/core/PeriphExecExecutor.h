@@ -83,6 +83,15 @@ public:
     // 执行传感器读取动作
     bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result);
 
+    // 按传感器类别推断默认数据通道名（仅用于通道选择/LCD 条目等内部用途，
+    // 不作为上报 ID；上报 ID 通用规则见 reportActionResults：显式 dataField 优先，
+    // 否则回退外设配置 id）。
+    static String guessSensorDataField(const String& category);
+
+    // 内部通道字段统一解析规则（执行器缓存键与 Web 数据源 sourceId 共用）：
+    // 显式 dataField 优先；多字段类别按类别推断默认通道；单值传感器用外设配置 id
+    static String resolveChannelField(const String& category, const String& periphId, const String& explicitField);
+
     // 执行系统动作（重启、恢复出厂等）
     bool executeSystemAction(const ExecAction& action);
 

@@ -281,6 +281,14 @@ public:
      */
     bool refresh();
     
+    /**
+     * @brief 周期维护
+     * 
+     * 开机初期（启动后 30 秒内）定期重申显示参数并重发缓冲区，
+     * 抵御上电/WiFi 启动瞬间电压波动导致面板配置丢失而黑屏的情况。
+     */
+    void performMaintenance();
+    
     // ========== 状态查询 ==========
     
     /**
@@ -317,11 +325,17 @@ private:
     uint8_t _i2cAddress = 0x3C;      // 默认 I2C 地址
     int8_t _resetPin = -1;           // Reset 引脚（-1表示共用 Arduino Reset）
     uint8_t _currentFont = 1;        // 当前字体索引
+    uint8_t _contrast = 255;         // 对比度/亮度（来自配置）
     
     // 状态标志
     bool _initialized = false;
     bool _contentChanged = false;
     unsigned long _lastUpdate = 0;
+    unsigned long _initTime = 0;              // 初始化完成时刻
+    unsigned long _lastReassert = 0;          // 上次重申显示参数的时刻
+    unsigned long _lastFullRecovery = 0;      // 上次 I2C 完整恢复的时刻
+    int8_t _sdaPin = -1;                     // 保存 I2C 引脚用于长期恢复
+    int8_t _sclPin = -1;
     const unsigned long _minUpdateInterval = 50;  // 最小刷新间隔（ms）
     
     // 传感器显示模块

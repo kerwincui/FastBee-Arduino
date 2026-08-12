@@ -31,6 +31,8 @@ class BatchRouteHandler;
 class ProvisionRouteHandler;
 class OTARouteHandler;
 class PeripheralRouteHandler;
+class IrRouteHandler;
+class RfRouteHandler;
 #if FASTBEE_ENABLE_PERIPH_EXEC
 class PeriphExecRouteHandler;
 #endif
@@ -38,6 +40,7 @@ class PeriphExecRouteHandler;
 class RuleScriptRouteHandler;
 #endif
 class ProtocolRouteHandler;
+class FeatureRouteHandler;
 class SSERouteHandler;
 
 struct WebRecoveryEvent {
@@ -90,6 +93,9 @@ public:
     void trackWebRequest();
     bool isRequestBurst() const;
     bool isForegroundRequestActive() const;
+    // Web 忙碌：前台窗口活跃或有静态响应在途。MQTT publish 门控用
+    // （实测 TLS publish 与在途响应竞争 lwIP/WiFi TX 会把响应卡死）。
+    bool isWebBusy() const;
 
     /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
     SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
@@ -129,15 +135,22 @@ private:
     std::unique_ptr<OTARouteHandler>        otaHandler;
 #endif
     std::unique_ptr<PeripheralRouteHandler> peripheralHandler;
+#if FASTBEE_ENABLE_IR_REMOTE
+    std::unique_ptr<IrRouteHandler>         irHandler;
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+    std::unique_ptr<RfRouteHandler>         rfHandler;
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC
     std::unique_ptr<PeriphExecRouteHandler> periphExecHandler;
 #endif
 #if FASTBEE_ENABLE_RULE_SCRIPT
     std::unique_ptr<RuleScriptRouteHandler> ruleScriptHandler;
 #endif
-#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
 #endif
+    std::unique_ptr<FeatureRouteHandler>    featureHandler;
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
     unsigned long lastSoftRestartAtMs = 0;
@@ -184,12 +197,12 @@ private:
         FastBee::ResourceProfile::TCP_CONN_EXHAUSTION_THRESHOLD;
     static constexpr uint8_t  UNHEALTHY_COUNT_TRIGGER = 3;         // 连续不健康次数触发恢复
     static constexpr unsigned long RECOVERY_COOLDOWN_MS = 30000UL; // 恢复冷却期 30s
-    static constexpr unsigned long CHECK_INTERVAL_MS = 10000UL;    // 检查间隔 10s
+    static constexpr unsigned long CHECK_INTERVAL_MS = 5000UL;     // 检查间隔 5s（折中：2s 对 ESP32-F4R0 CPU 开销过大，10s 对 PCB 耗尽响应太慢）
 
     // TIME_WAIT 主动修剪：lwIP TIME_WAIT 默认持续 2×MSL(120s)，密集短连接很快占满 PCB 池
     // 超过阈值时主动回收（与 lwIP tcp_alloc 耗尽时杀 TIME_WAIT 同理），避免软重启造成服务中断
-    static constexpr uint8_t TIME_WAIT_PRUNE_THRESHOLD = 6;  // TIME_WAIT 超过此值开始修剪
-    static constexpr uint8_t TIME_WAIT_PRUNE_KEEP = 2;       // 修剪后保留的 TIME_WAIT 数量
+    static constexpr uint8_t TIME_WAIT_PRUNE_THRESHOLD = 6;  // TIME_WAIT 超过此值开始修剪（浏览器首屏 ~12 连接需留足 PCB 余量）
+    static constexpr uint8_t TIME_WAIT_PRUNE_KEEP = 2;       // 修剪后保留的 TIME_WAIT 数量（1 太激进，在途 close 连接易被误杀）
 
     uint8_t  tcpUnhealthyCount = 0;       // 连续检测到TCP不健康的次数
     unsigned long lastTcpCheckMs = 0;     // 上次TCP健康检查时间

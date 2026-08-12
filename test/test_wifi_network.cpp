@@ -448,6 +448,8 @@ void test_boot_mode_correction_truth_table() {
 /**
  * @brief 源码回归：开机 STA 连接需具备足够重试次数以容忍弱/边缘信号
  * （reason=6、扫描偶发 0 网络），尽量优先 STA 再回退 AP。
+ * 2026-08-10 起改为预扫描快速失败：SSID 可见时 4 次×connectTimeout，
+ * 不可见时 2 次×6s 快速回退 AP（避免不可见 SSID 阻塞 ~90s）。
  */
 void test_source_boot_connect_retries_for_weak_signal() {
     TestLog::testStart("Source: connectToWiFiBlocking retries >=4 for weak-signal tolerance");
@@ -456,16 +458,81 @@ void test_source_boot_connect_retries_for_weak_signal() {
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
         "Failed to read src/network/NetworkManager.cpp");
 
-    const std::string marker = "MAX_WIFI_RETRIES = ";
-    size_t p = content.find(marker);
-    TEST_ASSERT_TRUE_MESSAGE(p != std::string::npos,
-        "MAX_WIFI_RETRIES declaration not found");
+    // 可见 SSID 分支保留 >=4 次重试（弱信号容忍）
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MAX_WIFI_RETRIES = ssidVisible ? 4 : 2") != std::string::npos,
+        "visible SSID must keep 4 retries, invisible fast-fails with 2");
+    // 不可见 SSID 分支使用短超时（<=10s/次），不再阻塞 connectTimeout(20s)
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("perAttemptTimeoutMs = ssidVisible ? (uint32_t)wifiConfig.connectTimeout : 6000UL") != std::string::npos,
+        "invisible SSID must use 6s per-attempt timeout (fast-fail)");
+    // 连接前必须先做一次预扫描判定 SSID 可见性
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("WiFi.scanNetworks(false, true)") != std::string::npos,
+        "pre-scan (including hidden SSIDs) must run before blocking connect");
+}
 
-    int retries = std::stoi(content.substr(p + marker.length()));
-    char msg[96];
-    snprintf(msg, sizeof(msg),
-        "MAX_WIFI_RETRIES should be >=4 for weak-signal tolerance, got %d", retries);
-    TEST_ASSERT_TRUE_MESSAGE(retries >= 4, msg);
+/**
+ * @brief 源码回归：AP 模式探测必须先预扫描，SSID 不可见时禁止 WiFi.begin()
+ * 旧逻辑对不存在的 SSID 仍每 2min 切 STA + WiFi.begin()，每次白耗 ~4KB
+ * lwIP 缓冲且失败不回收，~10 次后 free8 跌破 6KB Web 门控，AP 模式下
+ * 页面永远加载不出、探测被 16KB 门控锁死（只能重启逃生）。
+ */
+void test_source_ap_probe_prescan_fast_fail() {
+    TestLog::testStart("Source: AP-mode WiFi probe pre-scans before WiFi.begin (no lwIP leak)");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read src/network/NetworkManager.cpp");
+
+    size_t fnPos = content.find("void FBNetworkManager::handleApModeWifiProbe()");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "handleApModeWifiProbe() definition not found in NetworkManager.cpp");
+
+    // 提取函数体（到下一个顶层函数定义为止）
+    size_t endPos = content.find("\nvoid FBNetworkManager::", fnPos + 20);
+    if (endPos == std::string::npos) endPos = fnPos + 16000;
+    std::string fnBody = content.substr(fnPos, endPos - fnPos);
+
+    // 1) 探测内必须含预扫描快速失败日志与可见性判断
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("[WiFi-AP] Pre-scan:") != std::string::npos,
+        "AP probe must pre-scan and log SSID visibility before any STA switch");
+    // 2) 停 AP/切 STA/WiFi.begin() 之前必须先判 ssidVisible 并快速返回
+    size_t checkPos = fnBody.find("if (!ssidVisible)");
+    size_t stopApPos = fnBody.find("stopAPMode");
+    TEST_ASSERT_TRUE_MESSAGE(checkPos != std::string::npos,
+        "ssidVisible fast-fail check missing in AP probe");
+    TEST_ASSERT_TRUE_MESSAGE(stopApPos != std::string::npos,
+        "stopAPMode call missing in AP probe");
+    TEST_ASSERT_TRUE_MESSAGE(checkPos < stopApPos,
+        "ssidVisible check must run BEFORE stopping AP / switching STA");
+    // 3) 预扫描必须含隐藏 SSID 且扫描后释放结果
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("WiFi.scanNetworks(false, true)") != std::string::npos,
+        "AP probe pre-scan must include hidden SSIDs");
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("WiFi.scanDelete()") != std::string::npos,
+        "AP probe pre-scan must release scan results");
+    // 4) scanNetworks 会把纯 AP 切成 APSTA（enableSTA 副作用），必须用
+    //    WiFiModeGuard RAII 守卫在作用域结束时自动恢复纯 AP，避免 STA 残留
+    //    持续抽干 DRAM 跌破 tcp_accept 门控
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("WiFiModeGuard modeGuard(\"AP-probe-scan\")") != std::string::npos,
+        "AP probe must use WiFiModeGuard RAII to restore pure AP after scan (scanNetworks flips AP->APSTA)");
+
+    // 5) 探测失败路径必须用 WiFi.disconnect(true, true) 关闭 STA 接口，
+    //    而非 disconnect(false)。仅断 AP 不断 STA 则 lwIP 缓冲驻留不回收，
+    //    每次探测泄漏 ~4KB（实测 1.5h 累积 ~18KB → free8 跌破 6KB）。
+    //    disconnect(true, true): 第1个true=断开连接，第2个true=关闭STA接口。
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("WiFi.disconnect(true, true)") != std::string::npos,
+        "AP probe failure path must use WiFi.disconnect(true, true) to close STA interface and release lwIP buffers");
+    // 确保不存在旧的 disconnect(false) 残留在失败路径
+    // （成功路径不调 disconnect，所以函数体内 disconnect 只应出现在失败路径）
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("WiFi.disconnect(false)") == std::string::npos,
+        "AP probe must NOT use WiFi.disconnect(false) — STA interface stays open, leaking lwIP buffers");
 }
 
 /**
@@ -559,7 +626,7 @@ void test_source_connect_failure_diagnoses_band() {
     TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
         "connectToWiFiBlocking() not found");
 
-    std::string fnBody = content.substr(pos, 6000);
+    std::string fnBody = content.substr(pos, 12000);
 
     // 验证在失败路径上调用了频段诊断
     TEST_ASSERT_TRUE_MESSAGE(
@@ -908,6 +975,42 @@ void test_source_interface_switch_restarts_mdns() {
     }
 }
 
+/**
+ * @brief 源码回归：AP 模式 startAPMode() 必须调用 WiFi.setSleep(false)
+ * 关闭省电。STA 路径已在 connectToWiFiBlocking()/connectToWiFi() 中设置，
+ * 但 AP 路径曾经遗漏，导致 AP 省电模式下无线帧缓存等待 DTIM 周期，
+ * Web 响应延迟翻倍（实测登录后页面加载 >5s）。
+ */
+void test_source_ap_mode_disables_wifi_sleep() {
+    TestLog::testStart("Source: startAPMode() calls WiFi.setSleep(false)");
+
+    std::string content = readSrcFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read WiFiManager.cpp");
+
+    // 定位 startAPMode() 函数体
+    size_t fnPos = content.find("bool WiFiManager::startAPMode()");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "startAPMode() function not found in WiFiManager.cpp");
+
+    // 截取函数体（startAPMode 函数约 120 行 / 7000+ 字符）
+    // 找到函数结束的 } 匹配（简单截取到下一个 bool/void 函数定义）
+    size_t fnEnd = content.find("\nvoid WiFiManager::stopAPMode()", fnPos);
+    if (fnEnd == std::string::npos) fnEnd = fnPos + 8000;
+    std::string fnBody = content.substr(fnPos, fnEnd - fnPos);
+
+    // 必须在 softAP() 之后调用 setSleep(false)
+    size_t softAPPos = fnBody.find("WiFi.softAP(");
+    TEST_ASSERT_TRUE_MESSAGE(softAPPos != std::string::npos,
+        "WiFi.softAP() call not found in startAPMode()");
+
+    size_t sleepPos = fnBody.find("setSleep(false)");
+    TEST_ASSERT_TRUE_MESSAGE(sleepPos != std::string::npos,
+        "WiFi.setSleep(false) must be called in startAPMode() to disable AP power save");
+    TEST_ASSERT_TRUE_MESSAGE(sleepPos > softAPPos,
+        "setSleep(false) must come AFTER softAP() to ensure AP radio is configured first");
+}
+
 void test_wifi_network_group() {
     // 频段检测测试
     RUN_TEST(test_channel_to_band_classification);
@@ -930,6 +1033,7 @@ void test_wifi_network_group() {
     RUN_TEST(test_source_boot_prefers_sta_when_credentials_exist);
     RUN_TEST(test_boot_mode_correction_truth_table);
     RUN_TEST(test_source_boot_connect_retries_for_weak_signal);
+    RUN_TEST(test_source_ap_probe_prescan_fast_fail);
     RUN_TEST(test_source_no_string_concat_in_wifi_event);
     RUN_TEST(test_source_wifi_event_handler_defers_heavy_work);
     RUN_TEST(test_source_scan_delete_called_after_scan);
@@ -947,4 +1051,7 @@ void test_wifi_network_group() {
     RUN_TEST(test_source_ap_recovery_restarts_mdns);
     RUN_TEST(test_source_mdns_rebind_premise_intact);
     RUN_TEST(test_source_interface_switch_restarts_mdns);
+
+    // AP 模式省电关闭回归保护
+    RUN_TEST(test_source_ap_mode_disables_wifi_sleep);
 }

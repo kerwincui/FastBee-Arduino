@@ -54,6 +54,11 @@ private:
     
     // 登录尝试记录
     std::map<String, uint8_t> loginAttempts;
+
+    // 审计 P1-2：仅对存在的用户计数，未知用户名失败请求只走聚合计数，
+    // 防止未认证攻击者用随机用户名无限撑大 loginAttempts
+    uint32_t unknownUserFailures = 0;
+    static constexpr size_t MAX_LOGIN_TRACKED = 16;
     
     // 配置（包含安全配置，统一存储到 auth.json）
     struct UserConfig {

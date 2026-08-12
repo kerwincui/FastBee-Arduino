@@ -14,6 +14,8 @@
 #include <unity.h>
 #include <Arduino.h>
 #include <map>
+#include <fstream>
+#include <sstream>
 #include "mocks/MockPeripheral.h"
 #include "mocks/MockHealthMonitor.h"
 #include "mocks/MockLogger.h"
@@ -48,7 +50,11 @@ namespace SchedulerConstants {
 
 // ========== 内存保护常量（镜像自 PeriphExecScheduler.cpp） ==========
 namespace MemoryGuardConstants {
-    constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 18432U;
+    constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 12288U;
+    constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 8192U;
+    constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 16384U;
+    constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 12288U;
+    constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 8192U;
     constexpr uint32_t WEB_RESERVE_LARGEST_BLOCK_BYTES = 6144U;
     constexpr uint32_t WEB_RESERVE_FRAGMENTED_BLOCK_BYTES = 12288U;
     constexpr uint8_t WEB_RESERVE_FRAGMENTATION_PERCENT = 65U;
@@ -62,18 +68,27 @@ enum class MemoryGuardLevel : uint8_t {
     CRITICAL = 3
 };
 
-// ========== 镜像 shouldSuspendBackgroundPolling 逻辑 ==========
+// ========== 镜像 shouldSuspendBackgroundPolling 逻辑（含滞回） ==========
 static bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
                                            uint32_t freeHeap,
                                            uint32_t largestBlock,
-                                           uint8_t fragmentation) {
+                                           uint8_t fragmentation,
+                                           bool currentlySuspended = false) {
     if (level >= MemoryGuardLevel::SEVERE) {
         return true;
     }
-    if (freeHeap < MemoryGuardConstants::WEB_RESERVE_FREE_HEAP_BYTES) {
+    if (currentlySuspended) {
+        return !(freeHeap >= MemoryGuardConstants::WEB_RESERVE_RESUME_FREE_HEAP_BYTES &&
+                 largestBlock >= MemoryGuardConstants::WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES);
+    }
+    if (freeHeap < MemoryGuardConstants::WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES) {
         return true;
     }
-    if (largestBlock < MemoryGuardConstants::WEB_RESERVE_LARGEST_BLOCK_BYTES) {
+    if (largestBlock < MemoryGuardConstants::WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES) {
+        return true;
+    }
+    if (freeHeap < MemoryGuardConstants::WEB_RESERVE_FREE_HEAP_BYTES ||
+        largestBlock < MemoryGuardConstants::WEB_RESERVE_LARGEST_BLOCK_BYTES) {
         return true;
     }
     return fragmentation >= MemoryGuardConstants::WEB_RESERVE_FRAGMENTATION_PERCENT &&
@@ -289,66 +304,200 @@ void test_suspend_when_guard_level_critical() {
 
 void test_suspend_when_free_heap_below_threshold() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 15000, 30000, 20);  // 15000 < 18432
+        MemoryGuardLevel::NORMAL, 8000, 15000, 20);  // free8=8000 < 12288
     TEST_ASSERT_TRUE(result);
 }
 
 void test_suspend_when_largest_block_below_threshold() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 50000, 5000, 20);  // 5000 < 6144
+        MemoryGuardLevel::NORMAL, 30000, 4000, 20);  // blk8=4000 < 8192
     TEST_ASSERT_TRUE(result);
 }
 
 void test_suspend_when_fragmented_and_small_block() {
-    // fragmentation >= 65% AND largestBlock < 12288
+    // fragmentation >= 65% AND largestBlock < 12288（free8/blk8 均高于暂停阈值才走到碎片化分支）
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 50000, 10000, 70);
+        MemoryGuardLevel::NORMAL, 20000, 10000, 70);
     TEST_ASSERT_TRUE(result);
 }
 
 void test_no_suspend_normal_conditions() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 80000, 40000, 30);
+        MemoryGuardLevel::NORMAL, 25000, 12000, 30);  // 8BIT 开机基线
     TEST_ASSERT_FALSE(result);
 }
 
 void test_no_suspend_high_fragmentation_but_large_block() {
-    // fragmentation >= 65% BUT largestBlock >= 12288
+    // fragmentation >= 65% BUT blk8 >= 12288（碎片化分支不触发）
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 50000, 15000, 70);
+        MemoryGuardLevel::NORMAL, 25000, 13000, 70);
     TEST_ASSERT_FALSE(result);
+}
+
+void test_suspend_boot_baseline_tight_memory() {
+    // 8BIT 紧张内存：free8=11000 < 12KB 暂停阈值，应暂停后台轮询保 Web
+    bool result = shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 11000, 9000, 40);
+    TEST_ASSERT_TRUE(result);
+}
+
+void test_hysteresis_stays_suspended_below_resume_threshold() {
+    // 已暂停时 free8=15KB（位于暂停 12KB/恢复 16KB 之间）应保持暂停，防边界振荡
+    bool result = shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 15000, 11000, 20, true);
+    TEST_ASSERT_TRUE(result);
+}
+
+void test_hysteresis_resumes_above_resume_threshold() {
+    // 已暂停时 free8≥16KB 且 blk8≥12KB 才恢复（8BIT 开机基线 25KB/12KB 可达）
+    bool result = shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 25000, 13000, 20, true);
+    TEST_ASSERT_FALSE(result);
+}
+
+void test_hysteresis_resume_requires_both_conditions() {
+    // free8 达标但 blk8 未达标（< 12288）：仍保持暂停
+    bool result = shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 25000, 11000, 20, true);
+    TEST_ASSERT_TRUE(result);
+}
+
+void test_hysteresis_real_device_baseline_stays_suspended() {
+    // 回归：无 PSRAM ESP32 AP 模式实测稳态 free8≈25KB/blk8≈12KB。
+    // AP 模式 blk8(12KB) < 恢复阈值 12KB → 保持暂停，心跳放行刷新传感器缓存。
+    // STA 模式 free8≈28KB/blk8≈16KB 均达标 → 恢复后台轮询。
+    // 历史故障：INTERNAL 口径虚高（36KB）导致暂停触发太晚，8BIT 早已被切碎。
+    bool result = shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 25000, 12000, 47, true);
+    TEST_ASSERT_TRUE_MESSAGE(result, "AP steady-state baseline stays suspended; heartbeat pass-through refreshes cache");
+    // 同一基线未暂停时也不应误暂停（开机基线 free8=25352/blk8=12276 同理）
+    TEST_ASSERT_FALSE(shouldSuspendBackgroundPolling(
+        MemoryGuardLevel::NORMAL, 25352, 12276, 47, false));
 }
 
 void test_no_suspend_warn_level_with_enough_memory() {
     // WARN level doesn't trigger suspend (only SEVERE+)
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::WARN, 50000, 30000, 20);
+        MemoryGuardLevel::WARN, 25000, 16000, 20);
     TEST_ASSERT_FALSE(result);
 }
 
 void test_suspend_boundary_free_heap_exactly_threshold() {
-    // Exactly at threshold: 18432 is NOT less than 18432
+    // Exactly at threshold: 12288 is NOT less than 12288
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 18432, 30000, 20);
+        MemoryGuardLevel::NORMAL, 12288, 16000, 20);
     TEST_ASSERT_FALSE(result);
 }
 
 void test_suspend_boundary_free_heap_one_below() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 18431, 30000, 20);
+        MemoryGuardLevel::NORMAL, 12287, 16000, 20);
     TEST_ASSERT_TRUE(result);
 }
 
 void test_suspend_boundary_largest_block_exactly_threshold() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 50000, 6144, 20);
+        MemoryGuardLevel::NORMAL, 25000, 8192, 20);
     TEST_ASSERT_FALSE(result);
 }
 
 void test_suspend_boundary_largest_block_one_below() {
     bool result = shouldSuspendBackgroundPolling(
-        MemoryGuardLevel::NORMAL, 50000, 6143, 20);
+        MemoryGuardLevel::NORMAL, 25000, 8191, 20);
     TEST_ASSERT_TRUE(result);
+}
+
+// ============================================================
+//  TEST GROUP 3B: web-reserve 暂停/恢复状态机测试（防口径错误复发）
+//
+//  历史故障：checkTimers 曾用 MALLOC_CAP_DEFAULT 口径测量堆（含 IRAM/RTC
+//  且跨堆取最小），实测 largest=6644 被 IRAM 小堆拉低，而 DRAM 真实
+//  largest=27636 —— 轮询被误判暂停且堆恢复后永不 resume（真机 3 次重启
+//  复现）。本组用真机实测数据回放该场景，锁定 suspend/resume 状态机行为。
+// ============================================================
+
+// 镜像 checkTimers 的 web-reserve 暂停/恢复状态机
+struct MockWebReserveScheduler {
+    bool webReserveSuspended = false;
+    int suspendLogCount = 0;   // 进入暂停日志计数（仅状态转换时 +1）
+    int resumeLogCount = 0;    // 恢复日志计数（仅状态转换时 +1）
+
+    // 每周期调用一次，heap 指标来自调用方选定的口径
+    void cycleCheck(MemoryGuardLevel level, uint32_t freeHeap,
+                    uint32_t largestBlock, uint8_t fragmentation) {
+        if (shouldSuspendBackgroundPolling(level, freeHeap, largestBlock, fragmentation,
+                                           webReserveSuspended)) {
+            if (!webReserveSuspended) {
+                suspendLogCount++;  // 仅进入暂停时输出一次日志
+            }
+            webReserveSuspended = true;
+            return;
+        }
+        if (webReserveSuspended) {
+            resumeLogCount++;       // 恢复时输出一次日志
+            webReserveSuspended = false;
+        }
+    }
+};
+
+void test_web_reserve_boot_fragmentation_then_recovery_resumes() {
+    // 真机回放：开机瞬时碎片 suspend → 堆恢复 → 必须 resume（本次故障的正向预期）
+    MockWebReserveScheduler sched;
+
+    // 开机时刻（INTERNAL/DRAM 真实口径实测）：largest=6644 frag=83% → 暂停
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 38244, 6644, 83);
+    TEST_ASSERT_TRUE(sched.webReserveSuspended);
+    TEST_ASSERT_EQUAL_INT(1, sched.suspendLogCount);
+
+    // 堆充分恢复后（INTERNAL 口径，高于滞回恢复阈值）→ 下一周期必须恢复
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 62500, 27636, 44);
+    TEST_ASSERT_FALSE_MESSAGE(sched.webReserveSuspended,
+        "healthy DRAM metrics must resume background polling");
+    TEST_ASSERT_EQUAL_INT(1, sched.resumeLogCount);
+}
+
+void test_web_reserve_iram_dragged_metrics_keep_suspended() {
+    // 故障复现：若误用 DEFAULT 口径，largest 被 IRAM 小堆永久拉低在 6644
+    // （贴近 6144 阈值），状态机将持续暂停——证明口径选错时判定必然失真，
+    // 反证源码必须使用 INTERNAL 口径（由回归守卫源码断言锁定）
+    MockWebReserveScheduler sched;
+
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 38244, 6644, 83);
+    TEST_ASSERT_TRUE(sched.webReserveSuspended);
+
+    // 堆已恢复，但 DEFAULT 口径读数永远停在 6644/frag=87 → 永不 resume
+    for (int i = 0; i < 10; i++) {
+        sched.cycleCheck(MemoryGuardLevel::NORMAL, 50088, 6644, 87);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sched.webReserveSuspended,
+        "IRAM-dragged largest block keeps polling suspended (wrong-basis fault replay)");
+    TEST_ASSERT_EQUAL_INT(0, sched.resumeLogCount);
+    TEST_ASSERT_EQUAL_INT(1, sched.suspendLogCount);  // 日志不刷屏：仅转换时输出
+}
+
+void test_web_reserve_suspended_flag_transitions_idempotent() {
+    // 状态转换幂等：连续暂停/连续正常均不重复计数，仅边界转换触发一次
+    MockWebReserveScheduler sched;
+
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 10000, 30000, 20);  // free8=10KB < 12KB 暂停
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 10000, 30000, 20);
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 10000, 30000, 20);
+    TEST_ASSERT_TRUE(sched.webReserveSuspended);
+    TEST_ASSERT_EQUAL_INT(1, sched.suspendLogCount);
+
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 25000, 13000, 30);  // free8≥16KB 且 blk8≥12KB 恢复
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 25000, 13000, 30);
+    TEST_ASSERT_FALSE(sched.webReserveSuspended);
+    TEST_ASSERT_EQUAL_INT(1, sched.resumeLogCount);
+}
+
+void test_web_reserve_severe_level_overrides_healthy_metrics() {
+    // MemGuard SEVERE 时即使堆指标健康也必须暂停（优先级高于口径指标）
+    MockWebReserveScheduler sched;
+    sched.cycleCheck(MemoryGuardLevel::SEVERE, 80000, 40000, 20);
+    TEST_ASSERT_TRUE(sched.webReserveSuspended);
+    sched.cycleCheck(MemoryGuardLevel::NORMAL, 80000, 40000, 20);
+    TEST_ASSERT_FALSE(sched.webReserveSuspended);
 }
 
 // ============================================================
@@ -583,17 +732,72 @@ void test_rule_execution_toggle() {
     rule.id = "rule_toggle";
     rule.name = "Toggle";
     rule.enabled = true;
-    rule.actionType = ActionType::BLINK;
+    rule.actionType = ActionType::GPIO_TOGGLE;
     rule.targetPeriphId = "led_toggle";
     mgr.addRule(rule);
     
-    // First toggle: LOW -> HIGH
+    // 第一次翻转：LOW -> HIGH
     TEST_ASSERT_TRUE(mgr.executeRule("rule_toggle"));
     TEST_ASSERT_EQUAL(GPIOState::STATE_HIGH, pm.getPinState("led_toggle"));
     
-    // Second toggle: HIGH -> LOW
+    // 第二次翻转：HIGH -> LOW
     TEST_ASSERT_TRUE(mgr.executeRule("rule_toggle"));
     TEST_ASSERT_EQUAL(GPIOState::STATE_LOW, pm.getPinState("led_toggle"));
+}
+
+// 辅助：读取项目源文件（用于源码锁定回归测试）
+static std::string readPeriphExecSrcFile(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../..", "../../.." };
+    for (const char* root : roots) {
+        std::ifstream file(std::string(root) + "/" + relativePath);
+        if (file.is_open()) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            return ss.str();
+        }
+    }
+    return "";
+}
+
+// GPIO 电平翻转（actionType=30）源码锁定：枚举、执行器分发/上报、动作选项列表与前端下拉框
+void test_gpio_toggle_source_locked() {
+    // 1. 枚举值锁定：PeripheralExecution.h 必须保留 ACTION_GPIO_TOGGLE = 30（20 为 legacy 预留槽不可复用）
+    std::string header = readPeriphExecSrcFile("include/core/PeripheralExecution.h");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "cannot read PeripheralExecution.h");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("ACTION_GPIO_TOGGLE = 30") != std::string::npos,
+        "ExecActionType must keep ACTION_GPIO_TOGGLE = 30");
+
+    // 2. 执行器：executePeripheralAction 分发 + 可上报判定 + 执行后回读上报值
+    std::string exec = readPeriphExecSrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(exec.empty(), "cannot read PeriphExecExecutor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("case ExecActionType::ACTION_GPIO_TOGGLE:") != std::string::npos,
+        "executor must dispatch ACTION_GPIO_TOGGLE");
+    size_t firstReportable = exec.find("isReportableOutputAction");
+    TEST_ASSERT_TRUE(firstReportable != std::string::npos);
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("ACTION_GPIO_TOGGLE", firstReportable) != std::string::npos,
+        "ACTION_GPIO_TOGGLE must be reportable output action");
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("Execute TOGGLE on") != std::string::npos,
+        "executor must implement toggle via readPin -> invert -> writePin");
+
+    // 3. 动作选项列表：输出类外设与未指定外设两个分支都要提供“电平翻转”
+    std::string mgr = readPeriphExecSrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(mgr.empty(), "cannot read PeriphExecManager.cpp");
+    size_t firstToggle = mgr.find("ACTION_GPIO_TOGGLE), \"电平翻转\"");
+    TEST_ASSERT_TRUE_MESSAGE(firstToggle != std::string::npos,
+        "getValidActionTypes must offer 电平翻转 for output peripherals");
+    TEST_ASSERT_TRUE_MESSAGE(mgr.find("ACTION_GPIO_TOGGLE), \"电平翻转\"", firstToggle + 1) != std::string::npos,
+        "getValidActionTypes must offer 电平翻转 in all-actions branch too");
+
+    // 4. 前端：规则编辑下拉框与规则列表标签都要有 30=电平翻转
+    std::string formJs = readPeriphExecSrcFile("web-src/modules/runtime/periph-exec-form.js");
+    TEST_ASSERT_FALSE_MESSAGE(formJs.empty(), "cannot read periph-exec-form.js");
+    TEST_ASSERT_TRUE_MESSAGE(formJs.find("value=\"30\"") != std::string::npos &&
+                             formJs.find("电平翻转") != std::string::npos,
+        "periph-exec-form.js must expose option 30=电平翻转");
+    std::string listJs = readPeriphExecSrcFile("web-src/modules/runtime/periph-exec.js");
+    TEST_ASSERT_FALSE_MESSAGE(listJs.empty(), "cannot read periph-exec.js");
+    TEST_ASSERT_TRUE_MESSAGE(listJs.find("30: '电平翻转'") != std::string::npos,
+        "periph-exec.js actionLabels must map 30=电平翻转");
 }
 
 void test_rule_execution_pwm() {
@@ -2503,7 +2707,15 @@ static String mockBuildActionReport(const MockExecAction& a, const String& eff, 
             }
             return raw;
         }
-        default: return mockNormalizeScalar(eff, recv, "");
+        default: {
+            // 与修复后的固件一致：模板类动作（如 OLED actionValue="$value"）
+            // 上报值必须是替换后的实际内容，不能是字面量 "$value"
+            String reportValue = eff;
+            if (!recv.isEmpty() && reportValue.indexOf("$value") >= 0) {
+                reportValue.replace("$value", recv);
+            }
+            return mockNormalizeScalar(reportValue, recv, "");
+        }
     }
 }
 
@@ -3336,6 +3548,605 @@ void test_boot_snapshot_empty_when_no_rules() {
 }
 
 // ============================================================
+//  TEST GROUP 20: 事件分类推导同步 + 动作类型映射迁移
+//  20A 镜像 PeriphExecScheduler::getEventCategoriesJson 的分类推导逻辑：
+//      从 STATIC_EVENTS 按首次出现顺序去重收集分类，并追加 Modbus子设备。
+//      验证 红外/RF/RFID 编码接收分类不再遗漏（问题1/3）。
+//  20B 镜像 periph-exec-form.js 的动作类型自动迁移逻辑：
+//      无源蜂鸣器(type=12+passive) 10→4（设置PWM）、RF模块(type=48) 10→28（射频发送）、
+//      NeoPixel(type=45) 10→11（灯效控制）。验证动作类型映射正确（问题2/3）。
+// ============================================================
+
+// ---- 20A: 事件分类推导（镜像 getEventCategoriesJson） ----
+
+// 镜像 STATIC_EVENTS 的分类字段（按 PeripheralExecution.cpp 中的定义顺序）。
+// 分类推导仅依赖 category 字段，故此处只保留该字段。
+static const char* MIRROR_STATIC_EVENT_CATEGORIES[] = {
+    "WiFi", "WiFi", "WiFi",                                   // wifi_connected/disconnected/conn_failed
+    "MQTT", "MQTT", "MQTT", "MQTT",                           // mqtt_connected/disconnected/conn_failed/enabled
+    "网络", "网络",                                            // net_mode_ap/sta
+    "协议", "协议", "协议", "协议", "协议",                     // modbus_rtu/tcp、tcp、http、coap
+    "系统", "系统", "系统", "系统",                             // ntp_synced、ota_start/success/failed
+    "规则", "规则",                                            // rule_exec_time/error
+    "系统", "系统", "系统", "系统",                             // system_boot/ready/error、factory_reset
+    "按键", "按键", "按键", "按键", "按键", "按键", "按键",      // button 系列事件
+    "外设执行",                                                // periph_exec_completed
+    "数据", "数据",                                            // data_receive/report
+    "系统", "系统", "系统", "系统",                             // break_down、restart、device_alarm、low_power
+    "RFID", "RFID",                                           // rfid_card_detected/removed
+    "红外",                                                    // ir_code_received
+    "RF",                                                      // rf_code_received
+};
+static const size_t MIRROR_STATIC_EVENT_CATEGORIES_COUNT =
+    sizeof(MIRROR_STATIC_EVENT_CATEGORIES) / sizeof(MIRROR_STATIC_EVENT_CATEGORIES[0]);
+
+// 镜像 getEventCategoriesJson 的分类推导：按首次出现顺序去重 + 追加 Modbus子设备
+static std::vector<String> mirror_deriveEventCategories() {
+    std::vector<String> seen;
+    for (size_t i = 0; i < MIRROR_STATIC_EVENT_CATEGORIES_COUNT; i++) {
+        const char* cat = MIRROR_STATIC_EVENT_CATEGORIES[i];
+        if (!cat) continue;
+        bool dup = false;
+        for (size_t k = 0; k < seen.size(); k++) {
+            if (seen[k] == cat) { dup = true; break; }
+        }
+        if (!dup) seen.push_back(String(cat));
+    }
+    // 追加静态事件表中不存在的动态事件分类
+    seen.push_back(String("Modbus子设备"));
+    return seen;
+}
+
+// --- 20A-1: 推导分类包含 红外/RF/RFID（问题1/3 核心验证） ---
+void test_event_categories_contain_ir_rf_rfid() {
+    std::vector<String> cats = mirror_deriveEventCategories();
+    bool hasIR = false, hasRF = false, hasRFID = false;
+    for (const auto& c : cats) {
+        if (c == "红外") hasIR = true;
+        if (c == "RF") hasRF = true;
+        if (c == "RFID") hasRFID = true;
+    }
+    TEST_ASSERT_TRUE(hasIR);    // 红外编码接收分类存在
+    TEST_ASSERT_TRUE(hasRF);    // 433MHz RF编码接收分类存在
+    TEST_ASSERT_TRUE(hasRFID);  // RFID射频卡识别分类存在
+}
+
+// --- 20A-2: 所有 STATIC_EVENTS 分类均被推导覆盖（同步保证） ---
+void test_event_categories_cover_all_static_events() {
+    std::vector<String> cats = mirror_deriveEventCategories();
+    for (size_t i = 0; i < MIRROR_STATIC_EVENT_CATEGORIES_COUNT; i++) {
+        const char* cat = MIRROR_STATIC_EVENT_CATEGORIES[i];
+        bool found = false;
+        for (const auto& c : cats) {
+            if (c == cat) { found = true; break; }
+        }
+        TEST_ASSERT_TRUE_MESSAGE(found, cat);  // 静态事件表每个分类都必须出现
+    }
+}
+
+// --- 20A-3: 推导分类无重复 ---
+void test_event_categories_no_duplicates() {
+    std::vector<String> cats = mirror_deriveEventCategories();
+    for (size_t i = 0; i < cats.size(); i++) {
+        for (size_t j = i + 1; j < cats.size(); j++) {
+            TEST_ASSERT_FALSE_MESSAGE(cats[i] == cats[j], cats[i].c_str());
+        }
+    }
+}
+
+// --- 20A-4: 首次出现顺序正确（WiFi 在最前，Modbus子设备 追加在末尾） ---
+void test_event_categories_order() {
+    std::vector<String> cats = mirror_deriveEventCategories();
+    TEST_ASSERT_TRUE(cats.size() >= 2);
+    TEST_ASSERT_TRUE(cats[0] == "WiFi");                       // 首个静态分类
+    TEST_ASSERT_TRUE(cats[cats.size() - 1] == "Modbus子设备");  // 动态分类追加在末尾
+}
+
+// --- 20A-5: 红外/RF 为新增分类，位于常规分类之后 ---
+void test_event_categories_ir_rf_position() {
+    std::vector<String> cats = mirror_deriveEventCategories();
+    int irIdx = -1, rfIdx = -1, wifiIdx = -1;
+    for (size_t i = 0; i < cats.size(); i++) {
+        if (cats[i] == "红外") irIdx = (int)i;
+        if (cats[i] == "RF") rfIdx = (int)i;
+        if (cats[i] == "WiFi") wifiIdx = (int)i;
+    }
+    TEST_ASSERT_TRUE(irIdx >= 0);
+    TEST_ASSERT_TRUE(rfIdx >= 0);
+    TEST_ASSERT_TRUE(irIdx > wifiIdx);  // 红外在WiFi之后
+    TEST_ASSERT_TRUE(rfIdx > wifiIdx);  // RF在WiFi之后
+}
+
+// ---- 20B: 动作类型映射迁移（镜像 periph-exec-form.js） ----
+
+// 镜像前端 _pePeripherals 的精简外设条目（id/type/passive）
+struct MockPeriphLite {
+    String id;
+    int type;
+    bool passive;
+};
+
+// 镜像 _isSetPwmTarget：应使用"设置PWM"(4) 动作的目标
+//   - GPIO_PWM_OUTPUT(type=17)：原生 PWM 输出（本项目无源蜂鸣器即此类型）
+//   - GPIO数字输出(type=12) + passive：无源蜂鸣器接数字口
+static bool mirror_isSetPwmTarget(const std::vector<MockPeriphLite>& periphs, const String& periphId) {
+    if (periphId.isEmpty()) return false;
+    for (const auto& p : periphs) {
+        if (p.id == periphId && (p.type == 17 || (p.type == 12 && p.passive))) return true;
+    }
+    return false;
+}
+
+// 镜像 _isRfModuleTarget：type=48 (RF_MODULE)
+static bool mirror_isRfModuleTarget(const std::vector<MockPeriphLite>& periphs, const String& periphId) {
+    if (periphId.isEmpty()) return false;
+    for (const auto& p : periphs) {
+        if (p.id == periphId && p.type == 48) return true;
+    }
+    return false;
+}
+
+// 镜像 _isNeoPixelTarget：type=45 (NEO_PIXEL)
+static bool mirror_isNeoPixelTarget(const std::vector<MockPeriphLite>& periphs, const String& periphId) {
+    if (periphId.isEmpty()) return false;
+    for (const auto& p : periphs) {
+        if (p.id == periphId && p.type == 45) return true;
+    }
+    return false;
+}
+
+// 镜像前端动作类型自动迁移逻辑（_createPeriphExecActionElement）：
+//   NeoPixel(type=45) + 10 → 11（灯效控制）
+//   PWM输出(type=17 或 type=12+passive 无源蜂鸣器) + 10 → 4（设置PWM），命令 on/high/1/beep/toggle→128、off/low/0/stop→0
+//   RF模块(type=48) + 10 → 28（射频发送），actionValue（RF编码）保持不变
+// 返回迁移后的 actionType，actionValue 通过引用返回迁移后的值
+static int mirror_migrateActionType(const std::vector<MockPeriphLite>& periphs,
+                                    const String& targetPeriphId,
+                                    int actionType,
+                                    String& actionValue) {
+    if (mirror_isNeoPixelTarget(periphs, targetPeriphId) && actionType == 10) {
+        return 11;
+    } else if (mirror_isSetPwmTarget(periphs, targetPeriphId) && actionType == 10) {
+        String v = actionValue;
+        v.trim();
+        v.toLowerCase();
+        if (v == "on" || v == "high" || v == "1" || v == "beep" || v == "toggle") actionValue = "128";
+        else if (v == "off" || v == "low" || v == "0" || v == "stop") actionValue = "0";
+        // 数字占空比及其他值保持不变
+        return 4;
+    } else if (mirror_isRfModuleTarget(periphs, targetPeriphId) && actionType == 10) {
+        return 28;
+    }
+    return actionType;  // 不满足迁移条件，保持原值
+}
+
+// --- 20B-1: 无源蜂鸣器目标 actionType=10 → 4（设置PWM）（问题2 核心验证） ---
+void test_action_migrate_buzzer_call_to_pwm() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_1", 12, true}};
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "buzzer_1", 10, val);
+    TEST_ASSERT_EQUAL(4, result);                  // 迁移为设置PWM
+    TEST_ASSERT_EQUAL_STRING("128", val.c_str());  // on → 50%占空比发声
+}
+
+// --- 20B-2: 蜂鸣器命令值迁移 off → 0（停止发声） ---
+void test_action_migrate_buzzer_off_to_zero() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_1", 12, true}};
+    String val = "off";
+    int result = mirror_migrateActionType(periphs, "buzzer_1", 10, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("0", val.c_str());
+}
+
+// --- 20B-3: 蜂鸣器数字占空比保持不变 ---
+void test_action_migrate_buzzer_numeric_duty_kept() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_1", 12, true}};
+    String val = "200";
+    int result = mirror_migrateActionType(periphs, "buzzer_1", 10, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("200", val.c_str());  // 数字占空比不变
+}
+
+// --- 20B-4: 有源蜂鸣器（无 passive 标志）不迁移 ---
+void test_action_migrate_active_buzzer_not_migrated() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_active", 12, false}};  // passive=false
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "buzzer_active", 10, val);
+    TEST_ASSERT_EQUAL(10, result);  // 有源蜂鸣器保持发送指令
+}
+
+// --- 20B-5: RF模块目标 actionType=10 → 28（射频发送）（问题3 核心验证） ---
+void test_action_migrate_rf_call_to_rf_send() {
+    std::vector<MockPeriphLite> periphs = {{"rf_1", 48, false}};
+    String val = "AABBCC";  // RF编码
+    int result = mirror_migrateActionType(periphs, "rf_1", 10, val);
+    TEST_ASSERT_EQUAL(28, result);                       // 迁移为射频发送
+    TEST_ASSERT_EQUAL_STRING("AABBCC", val.c_str());     // RF编码保持不变
+}
+
+// --- 20B-6: NeoPixel目标 actionType=10 → 11（灯效控制，既有迁移回归） ---
+void test_action_migrate_neopixel_call_to_effect() {
+    std::vector<MockPeriphLite> periphs = {{"neo_1", 45, false}};
+    String val = "rainbow";
+    int result = mirror_migrateActionType(periphs, "neo_1", 10, val);
+    TEST_ASSERT_EQUAL(11, result);
+}
+
+// --- 20B-7: 普通GPIO输出（非蜂鸣器）actionType=10 保持不变 ---
+void test_action_migrate_plain_gpio_not_migrated() {
+    std::vector<MockPeriphLite> periphs = {{"led_1", 12, false}};  // 普通LED
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "led_1", 10, val);
+    TEST_ASSERT_EQUAL(10, result);  // 保持发送指令
+}
+
+// --- 20B-8: 非10的actionType不迁移（蜂鸣器目标但已是设置PWM） ---
+void test_action_migrate_non_call_type_untouched() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_1", 12, true}};
+    String val = "128";
+    int result = mirror_migrateActionType(periphs, "buzzer_1", 4, val);  // 已是设置PWM
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("128", val.c_str());
+}
+
+// --- 20B-9: 目标外设不存在时不迁移 ---
+void test_action_migrate_unknown_target_untouched() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer_1", 12, true}};
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "nonexist", 10, val);
+    TEST_ASSERT_EQUAL(10, result);  // 未知目标保持原值
+}
+
+// --- 20B-10: 红外接收器(type=53)是触发源而非动作目标，不参与动作迁移 ---
+void test_action_migrate_ir_receiver_not_target() {
+    std::vector<MockPeriphLite> periphs = {{"ir_1", 53, false}};
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "ir_1", 10, val);
+    TEST_ASSERT_EQUAL(10, result);  // 红外接收器不迁移动作类型
+}
+
+// --- 20C: GPIO_PWM_OUTPUT(type=17) 原生 PWM 输出动作迁移 ---
+// 本项目无源蜂鸣器在 peripherals.json 中即 type=17（pwmFrequency=2700Hz 发声），
+// 其动作类型应为"设置PWM"(4)。这是问题2 的真实设备场景（上一轮 type=12+passive 检测未覆盖）。
+
+// --- 20C-1: type=17 PWM 输出目标 actionType=10 → 4（设置PWM），on → 128（真实蜂鸣器场景） ---
+void test_action_migrate_pwm_output_call_to_pwm() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer", 17, false}};  // type=17，无需 passive 标志
+    String val = "on";
+    int result = mirror_migrateActionType(periphs, "buzzer", 10, val);
+    TEST_ASSERT_EQUAL(4, result);                  // 迁移为设置PWM
+    TEST_ASSERT_EQUAL_STRING("128", val.c_str());  // on → 50%占空比发声
+}
+
+// --- 20C-2: type=17 PWM 输出 toggle → 4 + 128（按键/红外遥控蜂鸣器规则） ---
+void test_action_migrate_pwm_output_toggle_to_beep() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer", 17, false}};
+    String val = "toggle";
+    int result = mirror_migrateActionType(periphs, "buzzer", 10, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("128", val.c_str());  // toggle → 占空比发声（SET_PWM 无 toggle 语义）
+}
+
+// --- 20C-3: type=17 PWM 输出 off → 4 + 0（停止发声） ---
+void test_action_migrate_pwm_output_off_to_zero() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer", 17, false}};
+    String val = "off";
+    int result = mirror_migrateActionType(periphs, "buzzer", 10, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("0", val.c_str());
+}
+
+// --- 20C-4: type=17 PWM 输出数字占空比保持不变 ---
+void test_action_migrate_pwm_output_numeric_duty_kept() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer", 17, false}};
+    String val = "200";
+    int result = mirror_migrateActionType(periphs, "buzzer", 10, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("200", val.c_str());
+}
+
+// --- 20C-5: type=17 PWM 输出已是设置PWM(4) 时保持不变 ---
+void test_action_migrate_pwm_output_already_pwm_untouched() {
+    std::vector<MockPeriphLite> periphs = {{"buzzer", 17, false}};
+    String val = "128";
+    int result = mirror_migrateActionType(periphs, "buzzer", 4, val);
+    TEST_ASSERT_EQUAL(4, result);
+    TEST_ASSERT_EQUAL_STRING("128", val.c_str());
+}
+
+// ============================================================
+//  TEST GROUP 21: 后端 passive 蜂鸣器标识序列化 + 前后端条件一致性
+//  镜像 PeripheralRouteHandler.cpp addPassiveBuzzerFlag（passive 标志写入条件），
+//  并验证后端“何时写入 passive=true”与前端 _isSetPwmTarget 的 type=12+passive 分支“何时判定为无源蜂鸣器”
+//  使用完全一致的条件，防止两侧条件漂移导致动作类型映射失效（问题2 复发防护）。
+//  后端条件：type==GPIO_DIGITAL_OUTPUT && gpio.passive
+//  前端条件：type==12 && passive==true（passive 来自后端序列化输出）
+// ============================================================
+
+// 镜像后端 addPassiveBuzzerFlag 的写入条件（使用 mock PeripheralConfig，gpio.passive 已同步真实结构）
+static bool mirror_backendAddsPassiveFlag(const PeripheralConfig& config) {
+    return config.type == PeripheralType::GPIO_DIGITAL_OUTPUT && config.gpio.passive;
+}
+
+// 后端写入条件作为 (typeValue, passive) 的纯函数（用于与前端条件做等价性对比）
+static bool backendPassiveCondition(int typeValue, bool passive) {
+    return typeValue == static_cast<int>(PeripheralType::GPIO_DIGITAL_OUTPUT) && passive;
+}
+
+// 前端 _isSetPwmTarget 的 passive 标志分支（type=12+passive）检测条件作为 (typeValue, passive) 的纯函数
+static bool frontendBuzzerCondition(int typeValue, bool passive) {
+    return typeValue == 12 && passive;
+}
+
+// --- 21A-1: GPIO_DIGITAL_OUTPUT+passive 后端写入 passive 标志 ---
+void test_backend_passive_flag_digital_output_passive() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    cfg.gpio.passive = true;
+    TEST_ASSERT_TRUE(mirror_backendAddsPassiveFlag(cfg));
+}
+
+// --- 21A-2: 有源蜂鸣器（passive=false）后端不写入标志 ---
+void test_backend_passive_flag_active_buzzer_absent() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    cfg.gpio.passive = false;
+    TEST_ASSERT_FALSE(mirror_backendAddsPassiveFlag(cfg));
+}
+
+// --- 21A-3: PWM输出类型即使 passive=true 后端也不写入（类型不匹配） ---
+void test_backend_passive_flag_pwm_output_absent() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::GPIO_PWM_OUTPUT;
+    cfg.gpio.passive = true;
+    TEST_ASSERT_FALSE(mirror_backendAddsPassiveFlag(cfg));
+}
+
+// --- 21A-4: RF模块后端不写入 passive 标志 ---
+void test_backend_passive_flag_rf_module_absent() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::RF_MODULE;
+    cfg.gpio.passive = false;
+    TEST_ASSERT_FALSE(mirror_backendAddsPassiveFlag(cfg));
+}
+
+// --- 21B-1: 前后端一致——无源蜂鸣器双侧均识别（后端写标志→前端判蜂鸣器→动作映射设置PWM） ---
+void test_consistency_passive_buzzer_both_agree() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    cfg.gpio.passive = true;
+    bool backendAdds = mirror_backendAddsPassiveFlag(cfg);
+    // 前端收到 type=12 与 passive=后端是否写入
+    bool frontendDetects = frontendBuzzerCondition(static_cast<int>(cfg.type), backendAdds);
+    TEST_ASSERT_TRUE(backendAdds);
+    TEST_ASSERT_TRUE(frontendDetects);
+}
+
+// --- 21B-2: 前后端一致——有源蜂鸣器双侧均不识别（保持发送指令） ---
+void test_consistency_active_buzzer_both_agree() {
+    PeripheralConfig cfg;
+    cfg.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    cfg.gpio.passive = false;
+    bool backendAdds = mirror_backendAddsPassiveFlag(cfg);
+    bool frontendDetects = frontendBuzzerCondition(static_cast<int>(cfg.type), backendAdds);
+    TEST_ASSERT_FALSE(backendAdds);
+    TEST_ASSERT_FALSE(frontendDetects);
+}
+
+// --- 21B-3: 前后端条件等价性穷举——GPIO类型×passive 全组合下两侧判定必须一致 ---
+void test_consistency_condition_equivalence_exhaustive() {
+    // 后端条件与前端条件必须在整个输入空间上完全等价，
+    // 任一侧修改条件而不同步另一侧时本测试将失败（问题2 复发防护）
+    const PeripheralType types[] = {
+        PeripheralType::GPIO_DIGITAL_INPUT,
+        PeripheralType::GPIO_DIGITAL_OUTPUT,
+        PeripheralType::GPIO_DIGITAL_INPUT_PULLUP,
+        PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN,
+        PeripheralType::GPIO_PWM_OUTPUT,
+        PeripheralType::RF_MODULE,
+    };
+    for (PeripheralType t : types) {
+        for (int passive = 0; passive <= 1; ++passive) {
+            int typeVal = static_cast<int>(t);
+            bool p = (passive == 1);
+            bool backend = backendPassiveCondition(typeVal, p);
+            bool frontend = frontendBuzzerCondition(typeVal, p);
+            TEST_ASSERT_EQUAL_MESSAGE(backend, frontend,
+                "backend/frontend passive-buzzer condition diverged");
+        }
+    }
+}
+
+// ============================================================
+//  TEST GROUP 22: 平台通信缺陷回归（五大问题修复防护）
+//  22A: OLED 模板动作上报值 $value 替换
+//  22B: 纯数字指令识别与分发（蜂鸣器占空比）
+//  22C: CALL_PERIPHERAL 调用 GPIO 输出外设的结果上报标记
+//  22D: ADC 电位器上报 ID 使用物模型标识符
+// ============================================================
+
+// --- 22A: buildActionReportValue 默认分支的 $value 替换（修复后镜像） ---
+static String mockBuildReportDefaultBranch(const String& eff, const String& recv) {
+    String reportValue = eff;
+    if (!recv.isEmpty() && reportValue.indexOf("$value") >= 0) {
+        reportValue.replace("$value", recv);
+    }
+    return mockNormalizeScalar(reportValue, recv, "");
+}
+
+void test_oled_report_substitutes_dollar_value() {
+    // 核心回归：平台下发 HELLO，OLED 规则 useReceivedValue=false，
+    // effectiveValue="$value" 时上报值必须是实际文本而非字面量
+    TEST_ASSERT_EQUAL_STRING("HELLO", mockBuildReportDefaultBranch("$value", "HELLO").c_str());
+}
+void test_oled_report_template_with_prefix() {
+    TEST_ASSERT_EQUAL_STRING("Temp:25", mockBuildReportDefaultBranch("Temp:$value", "25").c_str());
+}
+void test_oled_report_multiple_placeholders() {
+    TEST_ASSERT_EQUAL_STRING("a-X-b-X",
+        mockBuildReportDefaultBranch("a-$value-b-$value", "X").c_str());
+}
+void test_oled_report_no_placeholder_unchanged() {
+    TEST_ASSERT_EQUAL_STRING("fixed", mockBuildReportDefaultBranch("fixed", "other").c_str());
+}
+void test_oled_report_empty_received_keeps_template() {
+    // 无接收值（如定时触发）时保持原值，由 normalize 兑底
+    TEST_ASSERT_EQUAL_STRING("$value", mockBuildReportDefaultBranch("$value", "").c_str());
+}
+
+// --- 22B: 纯数字指令识别（executeCallPeripheralAction 新增分支） ---
+static bool mockIsAllDigits(const String& s) {
+    if (s.isEmpty()) return false;
+    for (size_t i = 0; i < s.length(); ++i) {
+        char c = s.charAt(i);
+        if (c < '0' || c > '9') return false;
+    }
+    return true;
+}
+
+void test_numeric_cmd_all_digits() {
+    TEST_ASSERT_TRUE(mockIsAllDigits("125"));
+    TEST_ASSERT_TRUE(mockIsAllDigits("0"));
+    TEST_ASSERT_TRUE(mockIsAllDigits("250"));
+}
+void test_numeric_cmd_rejects_non_digits() {
+    TEST_ASSERT_FALSE(mockIsAllDigits(""));
+    TEST_ASSERT_FALSE(mockIsAllDigits("on"));
+    TEST_ASSERT_FALSE(mockIsAllDigits("12a"));
+    TEST_ASSERT_FALSE(mockIsAllDigits("12.5"));
+    TEST_ASSERT_FALSE(mockIsAllDigits("-5"));
+}
+
+// 镜像纯数字分发语义：PWM/模拟输出→占空比；数字输出→电平；其它外设拒绝
+struct MockNumericDispatchResult {
+    bool handled = false;   // 分支是否处理
+    bool viaPwm = false;    // true=writePWM false=writePin
+    uint32_t duty = 0;
+    bool levelHigh = false;
+};
+static MockNumericDispatchResult mockNumericDispatch(int targetType, const String& cmd) {
+    MockNumericDispatchResult r;
+    if (!mockIsAllDigits(cmd)) return r;
+    r.handled = true;
+    if (targetType == 17 /*GPIO_PWM_OUTPUT*/ || targetType == 16 /*GPIO_ANALOG_OUTPUT*/) {
+        r.viaPwm = true;
+        r.duty = (uint32_t)cmd.toInt();
+    } else if (targetType == 12 /*GPIO_DIGITAL_OUTPUT*/) {
+        r.viaPwm = false;
+        r.levelHigh = cmd.toInt() != 0;
+    } else {
+        r.handled = false;  // 其它外设类型不支持数值直出
+    }
+    return r;
+}
+
+void test_numeric_dispatch_pwm_buzzer_duty() {
+    // 问题3核心回归：蜂鸣器(type=17)收到纯数字占空比 125 → writePWM(125)
+    MockNumericDispatchResult r = mockNumericDispatch(17, "125");
+    TEST_ASSERT_TRUE(r.handled);
+    TEST_ASSERT_TRUE(r.viaPwm);
+    TEST_ASSERT_EQUAL_UINT32(125, r.duty);
+}
+void test_numeric_dispatch_pwm_zero_stops_buzzer() {
+    MockNumericDispatchResult r = mockNumericDispatch(17, "0");
+    TEST_ASSERT_TRUE(r.handled && r.viaPwm);
+    TEST_ASSERT_EQUAL_UINT32(0, r.duty);
+}
+void test_numeric_dispatch_digital_output_level() {
+    MockNumericDispatchResult on = mockNumericDispatch(12, "5");
+    TEST_ASSERT_TRUE(on.handled && !on.viaPwm && on.levelHigh);
+    MockNumericDispatchResult off = mockNumericDispatch(12, "0");
+    TEST_ASSERT_TRUE(off.handled && !off.viaPwm && !off.levelHigh);
+}
+void test_numeric_dispatch_unsupported_type_rejected() {
+    TEST_ASSERT_FALSE(mockNumericDispatch(36 /*LCD*/, "125").handled);
+    TEST_ASSERT_FALSE(mockNumericDispatch(17, "toggle").handled);
+}
+
+// --- 22C: CALL_PERIPHERAL 调用 GPIO 输出外设 → 结果可上报（isCallPeripheralOutputAction 镜像） ---
+static bool mockIsCallPeripheralOutputAction(int actionType, int targetType, bool hasTarget) {
+    if (actionType != 10 /*ACTION_CALL_PERIPHERAL*/) return false;
+    if (!hasTarget) return false;
+    return targetType == 12 || targetType == 17 || targetType == 16;
+}
+
+void test_call_periph_led_result_reportable() {
+    // 问题4回归：exec_015 平台控制 LED（actionType=10 目标 led_d1 type=12）结果应上报
+    TEST_ASSERT_TRUE(mockIsCallPeripheralOutputAction(10, 12, true));
+}
+void test_call_periph_buzzer_pwm_result_reportable() {
+    TEST_ASSERT_TRUE(mockIsCallPeripheralOutputAction(10, 17, true));
+}
+void test_call_periph_analog_output_reportable() {
+    TEST_ASSERT_TRUE(mockIsCallPeripheralOutputAction(10, 16, true));
+}
+void test_call_periph_lcd_target_not_reportable() {
+    TEST_ASSERT_FALSE(mockIsCallPeripheralOutputAction(10, 36, true));
+}
+void test_call_periph_non_call_action_not_reportable() {
+    TEST_ASSERT_FALSE(mockIsCallPeripheralOutputAction(19 /*SENSOR_READ*/, 12, true));
+    TEST_ASSERT_FALSE(mockIsCallPeripheralOutputAction(27 /*OLED_DISPLAY*/, 12, true));
+}
+void test_call_periph_no_target_not_reportable() {
+    TEST_ASSERT_FALSE(mockIsCallPeripheralOutputAction(10, 12, false));
+}
+
+// --- 22D: 上报 ID 通用规则：物模型 ID 从外设配置 id 动态获取（问题2通用化） ---
+//
+// 规则（镜像 executeSensorReadAction + reportActionResults）：
+//  1) 动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）→ 上报 ID = dataField
+//  2) 未显式配置 → result.dataField 留空 → 上报 ID 回退为外设配置 id（与平台物模型对应）
+//  3) 类别推断的默认字段（如旧逻辑的 "value"）仅供内部通道选择，绝不作为上报 ID
+
+// 镜像 resolveChannelField：内部通道字段统一解析（缓存键/模板变量/Web 数据源同规则）
+static String mockResolveChannelField(const String& category, const String& periphId, const String& explicitField) {
+    if (!explicitField.isEmpty()) return explicitField;
+    if (category == "dht11" || category == "dht22" || category == "sht31" || category == "SHT31" ||
+        category == "aht20" || category == "AHT20" || category == "bmp280" || category == "BMP280" ||
+        category == "mpu6050" || category == "MPU6050") {
+        return "temperature"; // 多字段类别推断默认通道（镜像 guessSensorDataField）
+    }
+    return periphId; // 单值传感器用外设配置 id
+}
+
+// 镜像 result.dataField 填充规则：仅显式配置时携带
+static String mockSensorResultDataField(const String& explicitField) {
+    return explicitField;
+}
+
+void test_report_id_no_explicit_field_falls_back_to_periph_id() {
+    // 通用核心：adc_pot 未显式配置 dataField → result.dataField 为空 → 上报 ID = 外设配置 id
+    String resultField = mockSensorResultDataField("");
+    TEST_ASSERT_TRUE(resultField.isEmpty());
+    TEST_ASSERT_EQUAL_STRING("adc_pot", mockSelectReportId("adc_pot", resultField).c_str());
+}
+void test_report_id_explicit_field_still_takes_priority() {
+    // 显式配置的 dataField（多字段外设）仍优先，行为不回归
+    String resultField = mockSensorResultDataField("temperature");
+    TEST_ASSERT_EQUAL_STRING("temperature", mockSelectReportId("dht11", resultField).c_str());
+}
+void test_report_id_any_periph_id_dynamic_not_hardcoded() {
+    // 任意新增外设无需任何写死映射：未显式配置时上报 ID 始终等于其外设配置 id
+    const char* ids[] = {"adc_pot", "light_sensor_1", "soil_moisture", "custom_adc_99"};
+    for (const char* id : ids) {
+        TEST_ASSERT_EQUAL_STRING(id, mockSelectReportId(id, mockSensorResultDataField("")).c_str());
+    }
+}
+void test_channel_field_single_value_uses_periph_id() {
+    // 单值传感器内部通道字段也用外设配置 id（缓存键/模板变量与物模型标识符对齐）
+    TEST_ASSERT_EQUAL_STRING("adc_pot", mockResolveChannelField("analog", "adc_pot", "").c_str());
+}
+void test_channel_field_multi_field_category_inferred() {
+    // 多字段类别未显式配置时推断默认通道（仅供读取通道选择，不作上报 ID）
+    TEST_ASSERT_EQUAL_STRING("temperature", mockResolveChannelField("dht11", "dht11", "").c_str());
+    TEST_ASSERT_EQUAL_STRING("humidity", mockResolveChannelField("dht11", "dht11", "humidity").c_str());
+}
+void test_channel_field_explicit_always_wins() {
+    TEST_ASSERT_EQUAL_STRING("myField", mockResolveChannelField("dht11", "dht11", "myField").c_str());
+    TEST_ASSERT_EQUAL_STRING("custom", mockResolveChannelField("analog", "adc_pot", "custom").c_str());
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -3364,11 +4175,22 @@ void test_periph_exec_group() {
     RUN_TEST(test_suspend_when_fragmented_and_small_block);
     RUN_TEST(test_no_suspend_normal_conditions);
     RUN_TEST(test_no_suspend_high_fragmentation_but_large_block);
+    RUN_TEST(test_suspend_boot_baseline_tight_memory);
+    RUN_TEST(test_hysteresis_stays_suspended_below_resume_threshold);
+    RUN_TEST(test_hysteresis_resumes_above_resume_threshold);
+    RUN_TEST(test_hysteresis_resume_requires_both_conditions);
+    RUN_TEST(test_hysteresis_real_device_baseline_stays_suspended);
     RUN_TEST(test_no_suspend_warn_level_with_enough_memory);
     RUN_TEST(test_suspend_boundary_free_heap_exactly_threshold);
     RUN_TEST(test_suspend_boundary_free_heap_one_below);
     RUN_TEST(test_suspend_boundary_largest_block_exactly_threshold);
     RUN_TEST(test_suspend_boundary_largest_block_one_below);
+
+    // Group 3B: web-reserve 暂停/恢复状态机（真机故障回放，防堆口径错误复发）
+    RUN_TEST(test_web_reserve_boot_fragmentation_then_recovery_resumes);
+    RUN_TEST(test_web_reserve_iram_dragged_metrics_keep_suspended);
+    RUN_TEST(test_web_reserve_suspended_flag_transitions_idempotent);
+    RUN_TEST(test_web_reserve_severe_level_overrides_healthy_metrics);
     
     // Group 4: 按键事件状态机
     RUN_TEST(test_button_debounce_rejects_fast_changes);
@@ -3387,6 +4209,7 @@ void test_periph_exec_group() {
     RUN_TEST(test_rule_execution_set_high);
     RUN_TEST(test_rule_execution_disabled_rule_fails);
     RUN_TEST(test_rule_execution_toggle);
+    RUN_TEST(test_gpio_toggle_source_locked);
     RUN_TEST(test_rule_execution_pwm);
     
     // Group 6: 边界条件
@@ -3755,4 +4578,65 @@ void test_periph_exec_group() {
     RUN_TEST(test_sensor_template_unclosed_brace_kept);
     RUN_TEST(test_sensor_template_oled_title_hash_prefix);
     RUN_TEST(test_sensor_template_value_placeholder);
+
+    // Group 20: 事件分类推导同步 + 动作类型映射迁移（红外/RF/蜂鸣器兼容性修复）
+    // 20A: 事件分类推导（问题1/3：红外/RF编码接收分类缺失）
+    RUN_TEST(test_event_categories_contain_ir_rf_rfid);
+    RUN_TEST(test_event_categories_cover_all_static_events);
+    RUN_TEST(test_event_categories_no_duplicates);
+    RUN_TEST(test_event_categories_order);
+    RUN_TEST(test_event_categories_ir_rf_position);
+    // 20B: 动作类型映射迁移（问题2/3：蜂鸣器显示发送指令、RF动作映射）
+    RUN_TEST(test_action_migrate_buzzer_call_to_pwm);
+    RUN_TEST(test_action_migrate_buzzer_off_to_zero);
+    RUN_TEST(test_action_migrate_buzzer_numeric_duty_kept);
+    RUN_TEST(test_action_migrate_active_buzzer_not_migrated);
+    RUN_TEST(test_action_migrate_rf_call_to_rf_send);
+    RUN_TEST(test_action_migrate_neopixel_call_to_effect);
+    RUN_TEST(test_action_migrate_plain_gpio_not_migrated);
+    RUN_TEST(test_action_migrate_non_call_type_untouched);
+    RUN_TEST(test_action_migrate_unknown_target_untouched);
+    RUN_TEST(test_action_migrate_ir_receiver_not_target);
+    // Group 20C: GPIO_PWM_OUTPUT(type=17) 原生 PWM 输出动作迁移（真实蜂鸣器场景）
+    RUN_TEST(test_action_migrate_pwm_output_call_to_pwm);
+    RUN_TEST(test_action_migrate_pwm_output_toggle_to_beep);
+    RUN_TEST(test_action_migrate_pwm_output_off_to_zero);
+    RUN_TEST(test_action_migrate_pwm_output_numeric_duty_kept);
+    RUN_TEST(test_action_migrate_pwm_output_already_pwm_untouched);
+    // Group 21: 后端 passive 序列化 + 前后端条件一致性（问题2 复发防护）
+    RUN_TEST(test_backend_passive_flag_digital_output_passive);
+    RUN_TEST(test_backend_passive_flag_active_buzzer_absent);
+    RUN_TEST(test_backend_passive_flag_pwm_output_absent);
+    RUN_TEST(test_backend_passive_flag_rf_module_absent);
+    RUN_TEST(test_consistency_passive_buzzer_both_agree);
+    RUN_TEST(test_consistency_active_buzzer_both_agree);
+    RUN_TEST(test_consistency_condition_equivalence_exhaustive);
+
+    // Group 22: 平台通信缺陷回归（OLED $value 上报 / 纯数字占空比 /
+    // CALL_PERIPHERAL 输出上报 / ADC 上报 ID）
+    RUN_TEST(test_oled_report_substitutes_dollar_value);
+    RUN_TEST(test_oled_report_template_with_prefix);
+    RUN_TEST(test_oled_report_multiple_placeholders);
+    RUN_TEST(test_oled_report_no_placeholder_unchanged);
+    RUN_TEST(test_oled_report_empty_received_keeps_template);
+    RUN_TEST(test_numeric_cmd_all_digits);
+    RUN_TEST(test_numeric_cmd_rejects_non_digits);
+    RUN_TEST(test_numeric_dispatch_pwm_buzzer_duty);
+    RUN_TEST(test_numeric_dispatch_pwm_zero_stops_buzzer);
+    RUN_TEST(test_numeric_dispatch_digital_output_level);
+    RUN_TEST(test_numeric_dispatch_unsupported_type_rejected);
+    RUN_TEST(test_call_periph_led_result_reportable);
+    RUN_TEST(test_call_periph_buzzer_pwm_result_reportable);
+    RUN_TEST(test_call_periph_analog_output_reportable);
+    RUN_TEST(test_call_periph_lcd_target_not_reportable);
+    RUN_TEST(test_call_periph_non_call_action_not_reportable);
+    RUN_TEST(test_call_periph_no_target_not_reportable);
+
+    // Group 22D: 上报 ID 通用规则（物模型 ID 从外设配置 id 动态获取）
+    RUN_TEST(test_report_id_no_explicit_field_falls_back_to_periph_id);
+    RUN_TEST(test_report_id_explicit_field_still_takes_priority);
+    RUN_TEST(test_report_id_any_periph_id_dynamic_not_hardcoded);
+    RUN_TEST(test_channel_field_single_value_uses_periph_id);
+    RUN_TEST(test_channel_field_multi_field_category_inferred);
+    RUN_TEST(test_channel_field_explicit_always_wins);
 }

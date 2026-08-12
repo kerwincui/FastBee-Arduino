@@ -20,7 +20,8 @@ const {
     getWebProfile,
     isCompactWebProfile,
     isLiteWebProfile,
-    isFullWebProfile
+    isFullWebProfile,
+    hasDeviceControl
 } = require('./web-profile');
 const {
     buildAppBundle,
@@ -53,10 +54,13 @@ const DIRECT_RUNTIME_MODULES = [
     'periph-exec-form.js',
     'periph-exec-modbus.js',
     'peripherals.js',
+    'ir-remote.js',
+    'rf-remote.js',
     'dashboard.js',
     'device-config.js',
-    'network.js'
-].concat(isLiteWebProfile() ? [] : ['device-control.js'])
+    'network.js',
+    'feature-config.js'
+].concat(hasDeviceControl() ? ['device-control.js'] : [])
  .concat(isFullWebProfile() ? ['dashboard-fullscreen.js'] : []);
 const I18N_MODULES = isCompactWebProfile()
     ? []
@@ -68,10 +72,7 @@ const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
     'pages/logs.html',
-    'pages/fragments/device-ota.html',
-    'pages/fragments/protocol-coap.html',
-    'pages/fragments/protocol-http.html',
-    'pages/fragments/protocol-tcp.html'
+    'pages/fragments/device-ota.html'
 ]);
 const LITE_STATIC_SKIP = new Set([
     'pages/fragments/protocol-modbus-rtu.html',
@@ -185,6 +186,14 @@ function stripProdOnlyCssRules(content) {
         dropSelectors.push(
             /^\[data-theme="dark"\]/,           // 所有暗黑主题规则
             /^\/\*\s*Dark\s/,                    // Dark Theme 注释行
+            /^\.modbus-/                          // Modbus UI 样式（lite 无 Modbus）
+        );
+    }
+
+    // 无设备大屏（lite / standard 未开 DEVICE_CONTROL）：移除设备大屏专属样式。
+    // 注意：.modbus- 仅在 lite 移除，standard 的 Modbus RTU 配置页仍依赖这些类。
+    if (isLiteWebProfile() || !hasDeviceControl()) {
+        dropSelectors.push(
             /^\.dc-/,                             // device-control 样式
             /^\.fullscreen-mode\s+\.dc-/,        // fullscreen 下的 dc 样式
             /^\.coil-/,                            // 继电器线圈卡片
@@ -194,9 +203,8 @@ function stripProdOnlyCssRules(content) {
             /^\.sensor-ch-/,                       // 传感器通道配置
             /^\.pid-/,                             // PID 控制器
             /^\.motor-/,                           // 电机控制面板
-            /^#master-data-grid/,                   // Modbus 采集数据网格
-            /^\.master-data-/,                     // Modbus 采集数据项
-            /^\.modbus-/,                          // Modbus UI 样式
+            /^#master-data-grid/,                   // Modbus 采集数据网格（设备大屏）
+            /^\.master-data-/,                     // Modbus 采集数据项（设备大屏）
             /^#dc-zoom-reset-btn/                   // device-control 缩放按钮
         );
     }
@@ -233,11 +241,14 @@ function transformStaticAssetContent(relPath, content) {
             .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
         if (isLiteWebProfile()) {
             next = stripMenuItemByPage(next, 'rule-script');
-            next = stripMenuItemByPage(next, 'device-control');
             // 移除主题切换按钮（精简版无暗黑主题）
             next = next.replace(/\s*<button\s+class="dropdown-item"\s+id="theme-toggle-item"[\s\S]*?<\/button>/g, '');
             // 移除 Service Worker 注册代码块
             next = next.replace(/\s*<!-- Service Worker 注册 -->\s*<script>[\s\S]*?serviceWorker[\s\S]*?<\/script>/g, '');
+        }
+        if (isLiteWebProfile() || !hasDeviceControl()) {
+            // 无设备大屏时移除菜单项（lite 及 standard 未开 DEVICE_CONTROL）
+            next = stripMenuItemByPage(next, 'device-control');
         }
         next = stripDivByClass(next, 'login-lang-switch');
         if (!isFullWebProfile()) {
@@ -278,6 +289,10 @@ function transformStaticAssetContent(relPath, content) {
             // 移除 @media 内 device-control / modbus 相关规则
             css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.motor-[^{}]*\}/g, '');
             css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.modbus-[^{}]*\}/g, '');
+        } else if (!hasDeviceControl()) {
+            // standard 无设备大屏：仅移除设备大屏专属多行规则块（.modbus- 保留给配置页）
+            css = css.replace(/\.fullscreen-mode\s+\.dc-[^{]*\{[^}]*\}/g, '');
+            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.motor-[^{}]*\}/g, '');
         }
         return css;
     }
@@ -626,21 +641,24 @@ const SUBDIR_BUNDLES = [
         entry: 'device-control.js',
         subDir: 'device-control',
         order: ['core.js'],
-        skipProfiles: ['lite']
+        skipProfiles: ['lite'],
+        skipWithoutDC: true
     },
     {
         outName: 'device-control-view.js',
         entry: null,
         subDir: 'device-control',
         order: ['render.js', 'layout.js'],
-        skipProfiles: ['lite']
+        skipProfiles: ['lite'],
+        skipWithoutDC: true
     },
     {
         outName: 'device-control-modbus.js',
         entry: null,
         subDir: 'device-control',
         order: ['modbus-ops.js', 'modbus-ctrl.js'],
-        skipProfiles: ['lite']
+        skipProfiles: ['lite'],
+        skipWithoutDC: true
     },
     {
         outName: 'periph-exec.js',
@@ -651,7 +669,12 @@ const SUBDIR_BUNDLES = [
 
 function activeSubdirBundles() {
     const profile = getWebProfile();
-    return SUBDIR_BUNDLES.filter((bundle) => !(bundle.skipProfiles || []).includes(profile));
+    const hasDC = hasDeviceControl();
+    return SUBDIR_BUNDLES.filter((bundle) => {
+        if ((bundle.skipProfiles || []).includes(profile)) return false;
+        if (bundle.skipWithoutDC && !hasDC) return false;
+        return true;
+    });
 }
 
 // 在独立同步、子目录同步中需要跳过的文件（已被 bundle 包含）
@@ -827,10 +850,13 @@ function cleanProdObsoleteModules() {
     if (isLiteWebProfile()) {
         fileNames.add('protocol-modbus-rtu.js');
         fileNames.add('protocol-modbus-control.js');
+        fileNames.add('rule-script.js');
+    }
+    if (isLiteWebProfile() || !hasDeviceControl()) {
+        // 无设备大屏时清理旧 bundle（standard 上次构建可能带过设备大屏）
         fileNames.add('device-control.js');
         fileNames.add('device-control-view.js');
         fileNames.add('device-control-modbus.js');
-        fileNames.add('rule-script.js');
     }
     fileNames.forEach((fileName) => {
         const targetPath = path.join(PUBLISH_MODULE_DIR, fileName);

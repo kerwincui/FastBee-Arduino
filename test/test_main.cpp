@@ -28,7 +28,6 @@ extern void test_rule_script_group();
 extern void test_batch_sse_group();
 extern void test_security_auth_group();
 extern void test_system_services_group();
-extern void test_protocol_handlers_group();
 extern void test_wifi_ip_dns_group();
 extern void test_performance_bench_group();
 extern void test_string_utils_group();
@@ -40,7 +39,7 @@ extern void test_config_storage_group();
 extern void test_task_manager_group();
 extern void test_health_monitor_group();
 extern void test_regression_guard_group();
-extern void test_tcp_page_loading_group();
+extern void test_static_concurrency_group();
 extern void test_network_utils_group();
 extern void test_script_engine_group();
 extern void test_restart_diagnostics_group();
@@ -60,6 +59,12 @@ extern void test_provision_api_group();
 extern void test_wifi_network_group();
 extern void test_longrun_stability_group();
 extern void test_stability_fixes_group();
+extern void test_ir_remote_group();
+extern void test_rf_remote_group();
+extern void test_peripheral_manager_opt_group();
+extern void test_profile_consistency_group();
+extern void test_runtime_feature_manager_group();
+extern void test_feature_budget_group();
 
 // 测试夹具
 void setUp() {
@@ -149,9 +154,6 @@ void setup() {
     Serial.println("\n[TEST] Running System Services Tests...");
     test_system_services_group();
 
-    Serial.println("\n[TEST] Running Protocol Handlers Tests...");
-    test_protocol_handlers_group();
-
     Serial.println("\n[TEST] Running WiFi/IP/DNS Tests...");
     test_wifi_ip_dns_group();
 
@@ -185,8 +187,8 @@ void setup() {
     Serial.println("\n[TEST] Running Regression Guard Tests...");
     test_regression_guard_group();
 
-    Serial.println("\n[TEST] Running TCP & Page Loading Tests...");
-    test_tcp_page_loading_group();
+    Serial.println("\n[TEST] Running Static Concurrency & Login Page Speed Tests...");
+    test_static_concurrency_group();
 
     Serial.println("\n[TEST] Running NetworkUtils Tests...");
     test_network_utils_group();
@@ -214,6 +216,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running MemoryBudget Tests...");
     test_memory_budget_group();
+
+    Serial.println("\n[TEST] Running Profile Consistency Tests...");
+    test_profile_consistency_group();
 
     Serial.println("\n[TEST] Running Modbus-MQTT Interaction Tests...");
     test_modbus_mqtt_interaction_group();
@@ -244,6 +249,21 @@ void setup() {
 
     Serial.println("\n[TEST] Running Stability Fixes Guard Tests...");
     test_stability_fixes_group();
+
+    Serial.println("\n[TEST] Running IR Remote (learn/keymap/match) Tests...");
+    test_ir_remote_group();
+
+    Serial.println("\n[TEST] Running RF Remote (decode/learn/keymap/lock) Tests...");
+    test_rf_remote_group();
+
+    Serial.println("\n[TEST] Running PeripheralManager Optimization Tests...");
+    test_peripheral_manager_opt_group();
+
+    Serial.println("\n[TEST] Running RuntimeFeatureManager Tests...");
+    test_runtime_feature_manager_group();
+
+    Serial.println("\n[TEST] Running FeatureBudget Tests...");
+    test_feature_budget_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

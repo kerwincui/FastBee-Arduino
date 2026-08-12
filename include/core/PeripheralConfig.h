@@ -50,6 +50,7 @@ struct PeripheralConfig {
             uint32_t pwmFrequency;    // PWM频率
             uint8_t pwmResolution;    // PWM分辨率 (1-16位)
             uint16_t defaultDuty;     // PWM默认占空比(0~2^resolution-1)
+            bool passive;             // 无源蜂鸣器模式：GPIO_DIGITAL_OUTPUT 使用 PWM 驱动
             GPIOInterruptCallback interruptCallback;
         } gpio;
         
@@ -96,6 +97,7 @@ struct PeripheralConfig {
             uint8_t width;            // 宽度
             uint8_t height;           // 高度
             uint8_t interface;        // 0=Parallel, 1=SPI, 2=I2C
+            uint8_t contrast;         // 对比度/亮度 0-255（默认 255）
         } lcd;
         
         // 通用传感器容器参数（逻辑数据源、外部传感器）
@@ -172,6 +174,7 @@ struct PeripheralConfig {
         params.gpio.pwmFrequency = 1000;
         params.gpio.pwmResolution = 8;
         params.gpio.defaultDuty = 0;
+        params.gpio.passive = false;
         params.gpio.interruptCallback = nullptr;
     }
     

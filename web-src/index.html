@@ -122,6 +122,9 @@
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="features">
+                        <span class="menu-icon">🧩</span> <span id="menu-features">功能配置</span>
+                    </a>
                 </div>
 
             </div>
@@ -187,8 +190,9 @@
         </div>
     </div>
 
-    <!-- 串行加载 9 个 chunk：ESP32 站 lwIP socket pool 仅 4-5 个，并发请求会造成 RST。
-         依靠 async=false + 顺序 appendChild 保证按顺序执行，与 defer 语义等价但严格单连接。 -->
+    <!-- 串行加载 5 个 boot chunk：ESP32 站 lwIP socket pool 有限，并发请求易被拒。
+         依靠 async=false + 顺序 appendChild 保证按顺序执行，与 defer 语义等价但严格单连接。
+         服务端限流返回 503 时由 onerror 触发快速退避重试（300/1200/2700ms）。 -->
     <script>
     (function() {
         var bootChunks = [
@@ -199,6 +203,7 @@
             './js/chunk-9-state-2.js'
         ];
         var started = false;
+        var CHUNK_MAX_RETRY = 4; // 弱网/退化链路下单次加载失败率高，重试大幅提升成功率
         function loadSequence(files, delayMs, onDone) {
             var i = 0;
             function loadNext() {
@@ -206,22 +211,37 @@
                     if (typeof onDone === 'function') onDone(true);
                     return;
                 }
-                var s = document.createElement('script');
-                s.src = window.__fastbeeResolveAssetUrl(files[i++]);
-                s.async = false;
-                s.onload = function() { setTimeout(loadNext, delayMs || 80); };
-                s.onerror = function() {
-                    console.error('[FastBee] chunk failed:', this.src);
-                    setTimeout(loadNext, 300);
-                };
-                document.head.appendChild(s);
+                var baseUrl = window.__fastbeeResolveAssetUrl(files[i]);
+                var attempt = 0;
+                function tryLoad() {
+                    var s = document.createElement('script');
+                    // 重试追加 &r=N 绕过浏览器对失败响应的缓存
+                    s.src = baseUrl + (attempt > 0 ? '&r=' + attempt : '');
+                    s.async = false;
+                    s.onload = function() { i++; setTimeout(loadNext, delayMs || 30); };
+                    s.onerror = function() {
+                        attempt++;
+                        console.error('[FastBee] chunk failed (attempt ' + attempt + '/' + CHUNK_MAX_RETRY + '):', files[i]);
+                        if (attempt < CHUNK_MAX_RETRY) {
+                            // 递增退避：300/1200/2700ms，更快恢复且不压床设备
+                            setTimeout(tryLoad, 300 * attempt * attempt);
+                        } else {
+                            console.error('[FastBee] chunk giving up:', files[i]);
+                            window.__fastbeeChunkGaveUp = true; // E2E 测试断言：正常网络下不应出现
+                            i++;
+                            setTimeout(loadNext, 300);
+                        }
+                    };
+                    document.head.appendChild(s);
+                }
+                tryLoad();
             }
-            setTimeout(loadNext, 100);
+            setTimeout(loadNext, 20);
         }
         function startChunkLoad() {
             if (started) return;
             started = true;
-            loadSequence(bootChunks, 80);
+            loadSequence(bootChunks, 30);
         }
         window.__fastbeeStartChunks = startChunkLoad;
         window.__fastbeeLoadZhChunks = function(cb) { if (cb) cb(true); };

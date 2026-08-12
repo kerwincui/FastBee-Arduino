@@ -12,6 +12,8 @@
 #include "core/PeriphExecManager.h"
 #include "core/FeatureFlags.h"
 #include "core/MemoryBudget.h"
+#include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
 #include "systems/SystemRebooter.h"
@@ -127,18 +129,6 @@ bool ProtocolManager::setProtocolConfig(ProtocolType type, void* config) {
                 case ProtocolType::MODBUS:
                     return initModbus(config);
 #endif
-#if FASTBEE_ENABLE_TCP
-                case ProtocolType::TCP:
-                    return initTCP(config);
-#endif
-#if FASTBEE_ENABLE_HTTP
-                case ProtocolType::HTTP:
-                    return initHTTP(config);
-#endif
-#if FASTBEE_ENABLE_COAP
-                case ProtocolType::COAP:
-                    return initCoAP(config);
-#endif
                 default:
                     return false;
             }
@@ -168,24 +158,6 @@ bool ProtocolManager::startAll() {
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
 #endif
-#if FASTBEE_ENABLE_TCP
-            case ProtocolType::TCP:
-                started = tcpHandler && tcpHandler->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_TCP_ENABLED, "");
-                break;
-#endif
-#if FASTBEE_ENABLE_HTTP
-            case ProtocolType::HTTP:
-                started = httpClientWrapper && httpClientWrapper->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_HTTP_ENABLED, "");
-                break;
-#endif
-#if FASTBEE_ENABLE_COAP
-            case ProtocolType::COAP:
-                started = coapHandler && coapHandler->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_COAP_ENABLED, "");
-                break;
-#endif
         }
 
         if (!started) {
@@ -207,15 +179,6 @@ void ProtocolManager::stopAll() {
 #if FASTBEE_ENABLE_MODBUS
     if (modbusHandler)    modbusHandler->end();
 #endif
-#if FASTBEE_ENABLE_TCP
-    if (tcpHandler)       tcpHandler->disconnect();
-#endif
-#if FASTBEE_ENABLE_HTTP
-    if (httpClientWrapper) httpClientWrapper->end();
-#endif
-#if FASTBEE_ENABLE_COAP
-    if (coapHandler)      coapHandler->end();
-#endif
 }
 
 void ProtocolManager::shutdown() {
@@ -228,15 +191,6 @@ void ProtocolManager::shutdown() {
 #endif
 #if FASTBEE_ENABLE_MODBUS
     modbusHandler.reset();
-#endif
-#if FASTBEE_ENABLE_TCP
-    tcpHandler.reset();
-#endif
-#if FASTBEE_ENABLE_HTTP
-    httpClientWrapper.reset();
-#endif
-#if FASTBEE_ENABLE_COAP
-    coapHandler.reset();
 #endif
 
     protocols.clear();
@@ -280,24 +234,6 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
 #else
             return false;
 #endif
-        case ProtocolType::TCP:
-#if FASTBEE_ENABLE_TCP
-            return tcpHandler && tcpHandler->send(data);
-#else
-            return false;
-#endif
-        case ProtocolType::HTTP:
-#if FASTBEE_ENABLE_HTTP
-            return httpClientWrapper && httpClientWrapper->post(topic, data);
-#else
-            return false;
-#endif
-        case ProtocolType::COAP:
-#if FASTBEE_ENABLE_COAP
-            return coapHandler && coapHandler->send(topic, data);
-#else
-            return false;
-#endif
         default:
             return false;
     }
@@ -321,24 +257,6 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 #else
             return "Disabled";
 #endif
-        case ProtocolType::TCP:
-#if FASTBEE_ENABLE_TCP
-            return tcpHandler ? tcpHandler->getStatus() : "Not initialized";
-#else
-            return "Disabled";
-#endif
-        case ProtocolType::HTTP:
-#if FASTBEE_ENABLE_HTTP
-            return httpClientWrapper ? httpClientWrapper->getStatus() : "Not initialized";
-#else
-            return "Disabled";
-#endif
-        case ProtocolType::COAP:
-#if FASTBEE_ENABLE_COAP
-            return coapHandler ? coapHandler->getStatus() : "Not initialized";
-#else
-            return "Disabled";
-#endif
         default:
             return "Unknown protocol";
     }
@@ -346,18 +264,28 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 
 void ProtocolManager::handle() {
     // 无条件周期调试（每10秒），确认 handle() 被调用
+    // heap 统一用 MALLOC_CAP_8BIT（真实可 malloc DRAM，与 METRICS free8 同口径）；
+    // ESP.getFreeHeap() 为 INTERNAL 口径，含 IRAM/RTC 虚高约 28KB，易误读内存水位
     {
         static unsigned long _pmAliveMs = 0;
         if (millis() - _pmAliveMs > 10000) {
             _pmAliveMs = millis();
-            ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%p\n",
-                (unsigned long)ESP.getFreeHeap(),
 #if FASTBEE_ENABLE_MQTT
-                (void*)mqttClient.get()
+            if (mqttClient) {
+                ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%p conn=%u\n",
+                    (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                    (void*)mqttClient.get(),
+                    mqttClient->getIsConnected() ? 1U : 0U);
+            } else {
+                // 区分“配置禁用”（预期行为）与“启动失败”（需排查），避免裸空指针被一律误读为故障
+                ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%s\n",
+                    (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                    mqttDisabledByConfig ? "disabled" : "NULL(start-failed)");
+            }
 #else
-                (void*)0
+            ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=off\n",
+                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 #endif
-            );
         }
     }
     // 内存保护：堆低于安全阈值时跳过重型协议处理（JSON 序列化、Modbus 等），避免 OOM
@@ -452,15 +380,6 @@ void ProtocolManager::handle() {
 #if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) modbusHandler->handle();
 #endif
-#if FASTBEE_ENABLE_TCP
-    if (tcpHandler) tcpHandler->handle();
-#endif
-#if FASTBEE_ENABLE_HTTP
-    if (httpClientWrapper) httpClientWrapper->handle();
-#endif
-#if FASTBEE_ENABLE_COAP
-    if (coapHandler) coapHandler->handle();
-#endif
 }
 
 void ProtocolManager::handleMessage(ProtocolType type, const String& topic, const String& message) {
@@ -533,6 +452,7 @@ bool ProtocolManager::restartMQTT() {
         if (ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc)) {
             if (!enabledDoc["mqtt"]["enabled"].as<bool>()) {
                 LOG_INFO("Protocol Manager: MQTT disabled, skipping restart");
+                mqttDisabledByConfig = true;
                 if (mqttClient) {
                     mqttClient->stop();
                     mqttClient.reset();
@@ -540,6 +460,7 @@ bool ProtocolManager::restartMQTT() {
                 return false;
             }
         }
+        mqttDisabledByConfig = false;
     }
 
     LOG_INFO("Protocol Manager: Restarting MQTT...");
@@ -622,6 +543,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
             bool mqttEnabled = enabledDoc["mqtt"]["enabled"].as<bool>();
             if (!mqttEnabled) {
                 LOG_INFO("Protocol Manager: MQTT disabled in config, skipping deferred restart");
+                mqttDisabledByConfig = true;
                 // 如果已有运行中的客户端，停止它
                 if (mqttClient) {
                     mqttClient->stop();
@@ -630,6 +552,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
                 return false;
             }
         }
+        mqttDisabledByConfig = false;
     }
 
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
@@ -776,6 +699,18 @@ void ProtocolManager::requestMqttRestartAsync() {
 #if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::restartModbus() {
     LOG_INFO("Protocol Manager: Restarting Modbus...");
+
+    // 运行时功能门控：用户可在 Web UI 禁用 modbus
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
+        LOG_WARNING("Protocol Manager: Modbus disabled by runtime feature config, skipping");
+        return false;
+    }
+
+    // 内存预算门控：编译启用但启动时 DRAM 不足则自动降级
+    if (FastBee::FeatureBudgetRegistry::instance().isDenied("modbus")) {
+        LOG_WARNING("Protocol Manager: Modbus disabled by memory budget, skipping");
+        return false;
+    }
 
     // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()
     uint32_t freeHeap = ESP.getFreeHeap();
@@ -1363,6 +1298,12 @@ bool ProtocolManager::initMQTT(void* config) {
 bool ProtocolManager::initModbus(void* config) {
     if (!config) return false;
 
+    // 运行时功能门控：用户可在 Web UI 禁用 modbus
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
+        LOG_WARNING("Protocol Manager: Modbus disabled by runtime feature config, skipping");
+        return false;
+    }
+
     ModbusConfig* modbusConfig = static_cast<ModbusConfig*>(config);
     modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
 
@@ -1385,54 +1326,6 @@ bool ProtocolManager::initModbus(void* config) {
         registerModbusSubDevices(*modbusConfig);
     }
     return initOk;
-}
-#endif
-
-#if FASTBEE_ENABLE_TCP
-bool ProtocolManager::initTCP(void* config) {
-    if (!config) return false;
-
-    TCPConfig* tcpConfig = static_cast<TCPConfig*>(config);
-    tcpHandler = std::unique_ptr<TCPHandler>(new TCPHandler());
-
-    // 设置回调
-    tcpHandler->setMessageCallback([this](const String& message) {
-        handleMessage(ProtocolType::TCP, "tcp", message);
-    });
-
-    return tcpHandler->begin(*tcpConfig);
-}
-#endif
-
-#if FASTBEE_ENABLE_HTTP
-bool ProtocolManager::initHTTP(void* config) {
-    if (!config) return false;
-
-    HTTPConfig* httpConfig = static_cast<HTTPConfig*>(config);
-    httpClientWrapper = std::unique_ptr<HTTPClientWrapper>(new HTTPClientWrapper());
-
-    // 设置回调
-    httpClientWrapper->setResponseCallback([this](const String& endpoint, const String& response) {
-        handleMessage(ProtocolType::HTTP, endpoint, response);
-    });
-
-    return httpClientWrapper->begin(*httpConfig);
-}
-#endif
-
-#if FASTBEE_ENABLE_COAP
-bool ProtocolManager::initCoAP(void* config) {
-    if (!config) return false;
-
-    CoAPConfig* coapConfig = static_cast<CoAPConfig*>(config);
-    coapHandler = std::unique_ptr<CoAPHandler>(new CoAPHandler());
-
-    // 设置回调
-    coapHandler->setMessageCallback([this](const String& resource, const String& message) {
-        handleMessage(ProtocolType::COAP, resource, message);
-    });
-
-    return coapHandler->begin(*coapConfig);
 }
 #endif
 
@@ -1584,6 +1477,37 @@ String ProtocolManager::collectLocalSensorData() const {
         json += "\",\"remark\":\"local\"}";
         first = false;
     }
+
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    // 合并传感器读取缓存（DHT11/DHT22、DS18B20、SHT31/AHT20/BH1750/BMP280/MPU6050 等）：
+    // ACTION_SENSOR_READ 采集规则每次执行都会写入该缓存（已完成 scale/offset 与小数位格式化），
+    // 实时监测直接复用缓存值，避免在 loopTask 中同步读传感器（DHT 单次读取阻塞 250ms+）。
+    // id 通用规则与 DATA_REPORT 上报路径一致：显式 dataField 优先（多字段外设），
+    // 否则回退外设配置 id（与平台物模型标识符对应），最后才用完整缓存键兜底。
+    {
+        const auto sensorCache = PeriphExecManager::getInstance().getSensorReadCacheCopy();
+        unsigned long now = millis();
+        for (const auto& entry : sensorCache) {
+            const auto& cache = entry.second;
+            if (cache.value.isEmpty()) continue;
+            // 防御性 TTL 检查：周期性淘汰之外再拦截一次过期数据
+            if (now - cache.timestamp > PeriphExecManager::SENSOR_CACHE_TTL_MS) continue;
+            // 旧缓存条目无 periphId 时回退用完整 key（periphId_dataField）
+            String reportId = cache.dataField;
+            if (reportId.isEmpty()) {
+                reportId = cache.periphId.isEmpty() ? entry.first : cache.periphId;
+            }
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += reportId;
+            json += "\",\"value\":\"";
+            json += cache.value;
+            json += "\",\"remark\":\"sensor\"}";
+            first = false;
+        }
+    }
+#endif
+
     json += "]";
     return json;
 }

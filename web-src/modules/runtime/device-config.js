@@ -4,7 +4,10 @@
  */
 (function() {
     const MAX_CONFIG_TRANSFER_BYTES = 128 * 1024;
-    const CONFIG_IMPORT_CHUNK_BYTES = 4 * 1024;  // 4KB raw → ~8-10KB URL-encoded, backend limit 16KB
+    // 弱网适配：URL 编码后 body ≈ 原始 3 倍，1.5KB → ~4.5KB body（约 3-4 个 TCP 包），
+    // 退化链路下跨包丢失率远低于 4KB 分片（~12KB body）；后端上限 16KB/分片
+    const CONFIG_IMPORT_CHUNK_BYTES = 1536;
+    const CONFIG_IMPORT_CHUNK_RETRIES = 3;  // 单分片失败重试次数（退化链路下跨包丢失可重试恢复）
     const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
     const CONFIG_TRANSFER_LABELS = {
         'all': '全部配置包',
@@ -777,21 +780,51 @@
             const chunks = this._splitConfigTransferChunks(filteredContent, CONFIG_IMPORT_CHUNK_BYTES);
             const total = chunks.length;
             let cleanedCount = 0;
-            for (let i = 0; i < total; i++) {
-                const res = await apiPost('/api/config/transfer/import-chunk', {
+            let i = 0;
+            while (i < total) {
+                const payload = {
                     name: entry.name,
                     index: String(i),
                     total: String(total),
                     chunk: chunks[i]
-                }, 30000);
+                };
+                let res = null;
+                let lastErrMsg = null;
+                let attempt = 0;
+                // 退化链路下跨包 body 丢失会使设备收到空分片（400），重试可恢复。
+                // 幂等性：响应到达前超时/断连时设备可能已写入当前分片，重试前退回 index=0
+                // 重新覆盖写（index=0 为覆盖语义），避免追加语义下内容重复。
+                while (attempt <= CONFIG_IMPORT_CHUNK_RETRIES) {
+                    try {
+                        res = await apiPost('/api/config/transfer/import-chunk', payload, 30000);
+                    } catch (reqErr) {
+                        res = null;
+                        const status = reqErr && reqErr.status;
+                        lastErrMsg = (reqErr && reqErr.data && reqErr.data.error) || reqErr && reqErr.message || '请求失败';
+                        // 4xx 明确拒绝（设备未写入）：仅 400 空分片可重试，其余直接失败
+                        if (status !== undefined && status >= 400 && status < 500) {
+                            if (status !== 400) throw new Error(lastErrMsg);
+                        } else {
+                            // 网络错误/超时/5xx：写入状态未知，退回首个分片重来
+                            i = 0;
+                            Object.assign(payload, { index: '0', chunk: chunks[0] });
+                        }
+                    }
+                    if (res && res.success) break;
+                    if (res && !res.success) lastErrMsg = res.error || lastErrMsg;
+                    attempt++;
+                    if (attempt <= CONFIG_IMPORT_CHUNK_RETRIES) {
+                        await new Promise(r => setTimeout(r, 500 * attempt));
+                    }
+                }
                 if (!res || !res.success) {
-                    const serverMsg = (res && res.error) || ('分片导入失败：' + entry.name);
-                    throw new Error(serverMsg);
+                    throw new Error(lastErrMsg || ('分片导入失败：' + entry.name));
                 }
                 // 最后一个分片可能包含清理信息
                 if (res.data && res.data.cleaned) {
                     cleanedCount = res.data.cleaned;
                 }
+                i++;
             }
             if (cleanedCount > 0) {
                 Notification.info(`已自动清理 ${cleanedCount} 个残留配置文件`, '配置导入');

@@ -23,8 +23,15 @@ public:
         if (mode.indexOf('w') >= 0) {
             // Write mode: truncate existing content (matches real FILE_WRITE behavior)
             _content = "";
+            // 与真实 LittleFS 对齐：打开写模式即创建文件条目（exists() 立即为 true），
+            // 而非等 close 才注册，避免 exists 误判导致 tmp+rename 原子写兜底误删目标
+            g_mockFiles[path] = "";
         } else if (it != g_mockFiles.end()) {
             _content = it->second;
+        } else if (mode.indexOf('a') < 0) {
+            // 与真实 LittleFS 对齐：读模式打开不存在的文件返回无效 File
+            _open = false;
+            return;
         }
         if (mode.indexOf('a') >= 0) {
             // Append mode: load existing and position at end
@@ -51,6 +58,8 @@ public:
     size_t print(const String& value) {
         return print(value.c_str());
     }
+
+    void flush() {} // 与 ESP32 File API 对齐：mock 写入即落盘，无需刷缓冲
 
     int read() {
         if (!_open || _pos >= _content.length()) return -1;

@@ -6,6 +6,7 @@
  *  - 路径操作纯逻辑 (getFileExtension, getFileName, getDirectoryPath, joinPath, normalizePath)
  *  - 基本文件 I/O (writeFile, readFile, exists, deleteFile, getFileSize)
  *  - 原子写入 (atomicWriteFile)
+ *  - JSON 原子写入 (atomicWriteJsonFile：流式序列化 + 截断校验)
  *  - 追加写入 (appendToFile)
  *  - 文件复制/移动/重命名
  *  - 目录创建/删除
@@ -211,6 +212,152 @@ void test_atomic_write() {
     TestLog::testEnd(true);
 }
 
+// ========== JSON 原子写入 ==========
+
+void test_atomic_write_json() {
+    TestLog::testStart("Atomic Write JSON");
+
+    FileUtils::initialize();
+    cleanupTestDir();
+    LittleFS.mkdir(TEST_DIR);
+
+    String path = String(TEST_DIR) + "config.json";
+
+    // 构建文档并写入
+    JsonDocument doc;
+    doc["version"] = 3;
+    JsonArray arr = doc["rules"].to<JsonArray>();
+    JsonObject rule = arr.add<JsonObject>();
+    rule["id"] = "r1";
+    rule["name"] = "测试规则";
+    rule["enabled"] = true;
+
+    TEST_ASSERT_TRUE(FileUtils::atomicWriteJsonFile(path, doc));
+    TestLog::step("First atomic JSON write succeeded");
+
+    // 读回反序列化，字段逐一比对
+    File f = LittleFS.open(path, "r");
+    TEST_ASSERT_TRUE((bool)f);
+    JsonDocument readBack;
+    DeserializationError err = deserializeJson(readBack, f);
+    f.close();
+    TEST_ASSERT_EQUAL((int)DeserializationError::Ok, (int)err.code());
+    TEST_ASSERT_EQUAL_INT(3, readBack["version"].as<int>());
+    TEST_ASSERT_EQUAL_INT(1, readBack["rules"].size());
+    TEST_ASSERT_EQUAL_STRING("r1", readBack["rules"][0]["id"].as<const char*>());
+    TEST_ASSERT_TRUE(readBack["rules"][0]["enabled"].as<bool>());
+    TestLog::step("Read-back parse matches original document");
+
+    // 文件字节数必须与 measureJson 一致（无截断、无多余字节）
+    TEST_ASSERT_EQUAL(measureJson(doc), FileUtils::getFileSize(path));
+    TestLog::step("File size equals measureJson (no truncation)");
+
+    // 覆盖写入：旧内容必须被完整替换
+    JsonDocument doc2;
+    doc2["version"] = 4;
+    doc2["note"] = "overwritten";
+    TEST_ASSERT_TRUE(FileUtils::atomicWriteJsonFile(path, doc2));
+    File f2 = LittleFS.open(path, "r");
+    JsonDocument readBack2;
+    DeserializationError err2 = deserializeJson(readBack2, f2);
+    f2.close();
+    TEST_ASSERT_EQUAL((int)DeserializationError::Ok, (int)err2.code());
+    TEST_ASSERT_EQUAL_INT(4, readBack2["version"].as<int>());
+    TEST_ASSERT_TRUE(readBack2["rules"].isNull());
+    TEST_ASSERT_EQUAL(measureJson(doc2), FileUtils::getFileSize(path));
+    TestLog::step("Overwrite replaces previous content completely");
+
+    // 无 .tmp 残留
+    TEST_ASSERT_FALSE(FileUtils::exists(path + ".tmp"));
+    TestLog::step("No .tmp file residual");
+
+    cleanupTestDir();
+    TestLog::testEnd(true);
+}
+
+void test_atomic_write_json_empty_document() {
+    TestLog::testStart("Atomic Write JSON: Empty Document");
+
+    FileUtils::initialize();
+    cleanupTestDir();
+    LittleFS.mkdir(TEST_DIR);
+
+    String path = String(TEST_DIR) + "empty.json";
+    JsonDocument doc;
+
+    // 空文档也是合法输入：ArduinoJson 7 序列化为 "null"，且同样可被正常解析
+    TEST_ASSERT_TRUE(FileUtils::atomicWriteJsonFile(path, doc));
+    TEST_ASSERT_EQUAL_STRING("null", FileUtils::readFile(path).c_str());
+    TEST_ASSERT_FALSE(FileUtils::exists(path + ".tmp"));
+    TestLog::step("Empty document writes 'null', no .tmp residual");
+
+    cleanupTestDir();
+    TestLog::testEnd(true);
+}
+
+void test_streaming_atomic_write() {
+    TestLog::testStart("Atomic Write: Streaming open/commit (per-segment write)");
+
+    FileUtils::initialize();
+    cleanupTestDir();
+    LittleFS.mkdir(TEST_DIR);
+
+    String path = String(TEST_DIR) + "stream.json";
+
+    // 首次写入：逐段流式写入（模拟逐规则 serializeJson 直写）
+    File out = FileUtils::openAtomicWrite(path);
+    TEST_ASSERT_TRUE((bool)out);
+    size_t written = out.print("{\"rules\":[");
+    written += out.print("{\"id\":\"r1\"}");
+    written += out.print(",{\"id\":\"r2\"}");
+    written += out.print("]}");
+    out.flush();
+    out.close();
+    TEST_ASSERT_TRUE(FileUtils::commitAtomicWrite(path + ".tmp", path));
+    TestLog::step("Streaming segments written and committed");
+
+    // 读回内容必须与逐段写入的总字节完全一致
+    String content = FileUtils::readFile(path);
+    TEST_ASSERT_EQUAL(written, content.length());
+    TEST_ASSERT_EQUAL_STRING("{\"rules\":[{\"id\":\"r1\"},{\"id\":\"r2\"}]}", content.c_str());
+    TEST_ASSERT_FALSE(FileUtils::exists(path + ".tmp"));
+    TestLog::step("Read-back matches streamed content, no .tmp residual");
+
+    // 覆盖写入：openAtomicWrite 需清理旧内容，commit 后目标被完整替换
+    File out2 = FileUtils::openAtomicWrite(path);
+    TEST_ASSERT_TRUE((bool)out2);
+    out2.print("{\"replaced\":true}");
+    out2.flush();
+    out2.close();
+    TEST_ASSERT_TRUE(FileUtils::commitAtomicWrite(path + ".tmp", path));
+    TEST_ASSERT_EQUAL_STRING("{\"replaced\":true}", FileUtils::readFile(path).c_str());
+    TestLog::step("Commit atomically replaces existing target");
+
+    // 中途放弃：不 commit 时目标文件保持旧内容，再次 openAtomicWrite 清理残留 tmp
+    File out3 = FileUtils::openAtomicWrite(path);
+    TEST_ASSERT_TRUE((bool)out3);
+    out3.print("partial");
+    out3.close();
+    TEST_ASSERT_TRUE(FileUtils::exists(path + ".tmp"));
+    TEST_ASSERT_EQUAL_STRING("{\"replaced\":true}", FileUtils::readFile(path).c_str());
+    File out4 = FileUtils::openAtomicWrite(path);
+    TEST_ASSERT_TRUE((bool)out4);
+    out4.close();
+    // 重新打开后残留 tmp 已被清理（替换为空 tmp），目标文件不受影响
+    TEST_ASSERT_EQUAL_STRING("", FileUtils::readFile(path + ".tmp").c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"replaced\":true}", FileUtils::readFile(path).c_str());
+    LittleFS.remove(path + ".tmp");
+    TestLog::step("Abandoned tmp never touches target; next open cleans residual");
+
+    // 无 tmp 文件时 commit 必须失败且不破坏目标
+    TEST_ASSERT_FALSE(FileUtils::commitAtomicWrite(path + ".tmp", path));
+    TEST_ASSERT_EQUAL_STRING("{\"replaced\":true}", FileUtils::readFile(path).c_str());
+    TestLog::step("Commit without tmp fails safely");
+
+    cleanupTestDir();
+    TestLog::testEnd(true);
+}
+
 // ========== 文件复制/移动/重命名 ==========
 
 void test_file_copy_move_rename() {
@@ -366,6 +513,9 @@ void test_file_utils_group() {
     RUN_TEST(test_file_write_read_delete);
     RUN_TEST(test_file_append);
     RUN_TEST(test_atomic_write);
+    RUN_TEST(test_atomic_write_json);
+    RUN_TEST(test_atomic_write_json_empty_document);
+    RUN_TEST(test_streaming_atomic_write);
     RUN_TEST(test_file_copy_move_rename);
 
     // 行读写

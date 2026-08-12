@@ -302,10 +302,36 @@ bool UserManager::isUserEnabled(const String& username) {
 
 void UserManager::recordLoginFailure(const String& username) {
     if (!config.maxLoginAttempts) return;
-    
-    loginAttempts[username]++;
-    
-    if (loginAttempts[username] >= config.maxLoginAttempts) {
+
+    // 审计 P1-2：仅对存在的用户计数。未知用户名的失败请求只记聚合计数，
+    // 避免未认证攻击者用随机用户名无限撑大 loginAttempts（只增不减直至重启）
+    if (users.find(username) == users.end()) {
+        unknownUserFailures++;
+        if (unknownUserFailures % 10 == 1) {
+            char buf[96];
+            snprintf(buf, sizeof(buf),
+                     "UserManager: %lu failed logins with unknown username (not tracked)",
+                     (unsigned long)unknownUserFailures);
+            LOG_WARNING(buf);
+        }
+        return;
+    }
+
+    auto it = loginAttempts.find(username);
+    if (it == loginAttempts.end()) {
+        // 上限兜底：满时驱逐失败次数最少的一条（有界优先于精确）
+        if (loginAttempts.size() >= MAX_LOGIN_TRACKED) {
+            auto victim = loginAttempts.begin();
+            for (auto e = loginAttempts.begin(); e != loginAttempts.end(); ++e) {
+                if (e->second < victim->second) victim = e;
+            }
+            loginAttempts.erase(victim);
+        }
+        it = loginAttempts.emplace(username, 0).first;
+    }
+    it->second++;
+
+    if (it->second >= config.maxLoginAttempts) {
         char buf[72];
         snprintf(buf, sizeof(buf), "UserManager: Account %s locked (too many failures)", username.c_str());
         LOG_WARNING(buf);

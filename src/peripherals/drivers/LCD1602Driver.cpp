@@ -2,6 +2,7 @@
 #if FASTBEE_ENABLE_LCD1602
 
 #include "peripherals/drivers/LCD1602Driver.h"
+#include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
 #include <Wire.h>
 
@@ -69,6 +70,12 @@ LCD1602Driver::~LCD1602Driver()
 
 bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& config)
 {
+    // 运行时功能门控：用户可在 Web UI 禁用 lcd1602
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("lcd1602")) {
+        LOG_INFO("LCD1602: Compiled but runtime-disabled, skip init");
+        return false;
+    }
+
     LOG_INFO("LCD1602: Initializing...");
     
     // 如果已初始化，先停止
@@ -208,9 +215,11 @@ bool LCD1602Driver::print(int value, int base)
 bool LCD1602Driver::print(float value, uint8_t decimals)
 {
     if (!_initialized) return false;
-    
-    String str = String(value, decimals);
-    return print(str);
+
+    // 显式格式化避免 String(float, uint8_t) 重载二义性
+    char buf[32];
+    dtostrf(value, 0, decimals, buf);
+    return print(String(buf));
 }
 
 bool LCD1602Driver::printLine(uint8_t row, const String& text)

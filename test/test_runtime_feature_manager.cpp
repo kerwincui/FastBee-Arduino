@@ -1,0 +1,227 @@
+/**
+ * @file test_runtime_feature_manager.cpp
+ * @brief RuntimeFeatureManager 单元测试（计划 7.1）
+ *
+ * 覆盖: 默认配置生成 / 持久化与重载 / 依赖联动 / JSON 损坏回退 /
+ *       资源估算 / 未编译功能保护 / 状态 JSON / 预算联动
+ *
+ * native 环境不编译 src/，此处直接包含实现文件并用桩替代 LoggerSystem。
+ */
+
+#include <unity.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
+
+// 模拟 unified 全量编译宏（FeatureFlags.h 内均为 #ifndef 保护，可预先定义）
+#define FASTBEE_ENABLE_LCD 1
+#define FASTBEE_ENABLE_LCD_GB2312 1
+#define FASTBEE_ENABLE_NEOPIXEL 1
+#define FASTBEE_ENABLE_SEVEN_SEGMENT 1
+#define FASTBEE_ENABLE_SENSOR_DRIVER 1
+#define FASTBEE_ENABLE_DS18B20 1
+#define FASTBEE_ENABLE_IR_REMOTE 1
+#define FASTBEE_ENABLE_RFID 1
+#define FASTBEE_ENABLE_I2C_SENSORS 1
+#define FASTBEE_ENABLE_RF_LEARN 1
+#define FASTBEE_ENABLE_DS1302 1
+#define FASTBEE_ENABLE_LCD1602 1
+#define FASTBEE_ENABLE_RULE_SCRIPT 1
+#define FASTBEE_ENABLE_OTA 1
+#define FASTBEE_ENABLE_OTA_FS 1
+// 刻意不定义: LED_SCREEN / COMMAND_SCRIPT / MODBUS_SLAVE / BLE
+// —— 用于验证"未编译功能"路径
+
+#include "core/RuntimeFeatureManager.h"
+#include "core/FeatureBudget.h"
+
+// mock Arduino.h 未提供 Stream 类型，而 LoggerSystem.h 的成员需要它
+class Stream {
+public:
+    virtual ~Stream() = default;
+};
+
+// 直接纳入被测实现
+#include "../src/core/RuntimeFeatureManager.cpp"
+
+// ── LoggerSystem 原生桩（native 不编译 src/systems/LoggerSystem.cpp）─────
+LoggerSystem::LoggerSystem()
+    : currentLevel(LOG_INFO), outputStream(nullptr), serialEnabled(false),
+      fileLoggingEnabled(false), initialized(false), espLogCaptureEnabled(false),
+      logFileSizeLimit(0) {}
+LoggerSystem::~LoggerSystem() {}
+bool LoggerSystem::initialize() { initialized = true; return true; }
+void LoggerSystem::setLogLevel(LogLevel level) { currentLevel = level; }
+void LoggerSystem::error(const char*, const char*) {}
+void LoggerSystem::warning(const char*, const char*) {}
+void LoggerSystem::info(const char*, const char*) {}
+void LoggerSystem::debug(const char*, const char*) {}
+void LoggerSystem::verbose(const char*, const char*) {}
+
+using FastBee::RuntimeFeatureManager;
+
+static void resetMockFs() {
+    g_mockFiles.clear();
+    g_mockFileTimes.clear();
+}
+
+// Test 1: 首次加载生成默认配置（计划 7.1 Test 1）
+void test_rfm_first_run_generates_defaults() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json"));
+    // B 类功能默认启用
+    TEST_ASSERT_TRUE(mgr.shouldEnable("lcd"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("neopixel"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("modbus"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("ruleScript"));
+    // C 类功能默认禁用
+    TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("rfid"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("lcdGb2312"));
+}
+
+// Test 2: 配置持久化与重载
+void test_rfm_persist_and_reload() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    JsonDocument doc;
+    doc["features"]["irRemote"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(doc));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("irRemote"));
+    TEST_ASSERT_TRUE(mgr.saveCurrentConfig());
+
+    // 重新加载后状态保持
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.shouldEnable("irRemote"));
+}
+
+// Test 3: 依赖联动 - lcd 禁用则 lcdGb2312 自动禁用（计划 7.1 Test 2）
+void test_rfm_dependency_cascade() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    JsonDocument doc;
+    doc["features"]["lcd"]["enabled"] = false;
+    doc["features"]["lcdGb2312"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(doc));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("lcd"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("lcdGb2312"));  // 被父功能连带禁用
+
+    // 恢复父功能后子功能可重新启用
+    JsonDocument doc2;
+    doc2["features"]["lcd"]["enabled"] = true;
+    doc2["features"]["lcdGb2312"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(doc2));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("lcdGb2312"));
+}
+
+// Test 4: JSON 损坏回退到默认配置（计划 7.1 Test 3）
+void test_rfm_corrupted_json_fallback() {
+    resetMockFs();
+    g_mockFiles["/config/features.json"] = "{corrupted: json data!!!";
+    auto& mgr = RuntimeFeatureManager::instance();
+    // 返回 false 表示使用了回退
+    TEST_ASSERT_FALSE(mgr.loadConfig());
+    // 回退后仍正常工作，B 类默认启用
+    TEST_ASSERT_TRUE(mgr.shouldEnable("lcd"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
+}
+
+// Test 5: 资源估算正确性（计划 7.1 Test 4）
+void test_rfm_estimation() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    // B 类默认启用合计: lcd20+neopixel12+sevenSegment3+ds18b20 5+modbus20+ruleScript 8 = 68KB
+    TEST_ASSERT_GREATER_OR_EQUAL(68, mgr.estimateFlashKB());
+    TEST_ASSERT_GREATER_THAN(0, mgr.estimateRamB());
+
+    // estimateFromJson 预估新配置
+    JsonDocument doc;
+    doc["features"]["irRemote"]["enabled"] = true;
+    uint32_t flashKB = 0, ramB = 0;
+    mgr.estimateFromJson(doc, flashKB, ramB);
+    TEST_ASSERT_GREATER_THAN(mgr.estimateFlashKB(), flashKB);
+}
+
+// Test 6: 未编译功能不允许通过 API 开启
+void test_rfm_uncompiled_cannot_enable() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    // ble / commandScript / ledScreen 在当前宏下未编译
+    TEST_ASSERT_FALSE(mgr.shouldEnable("ble"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("commandScript"));
+
+    JsonDocument doc;
+    doc["features"]["ble"]["enabled"] = true;
+    // 仅含未编译功能的更新视为无效（changed=false）
+    TEST_ASSERT_FALSE(mgr.updateFromJson(doc));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("ble"));
+}
+
+// Test 7: 未知功能键安全返回 false
+void test_rfm_unknown_key_disabled() {
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_FALSE(mgr.shouldEnable("noSuchFeature"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable(nullptr));
+}
+
+// Test 8: 状态 JSON 结构（/api/features/status 数据源）
+void test_rfm_status_json() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    JsonDocument doc;
+    mgr.getStatusJson(doc.as<JsonVariant>());
+    JsonArray features = doc["features"];
+    TEST_ASSERT_TRUE(features.size() >= 20);
+
+    // 未编译功能应带 locked 标记
+    bool foundLockedBle = false;
+    for (JsonObject f : features) {
+        if (strcmp(f["key"], "ble") == 0) {
+            foundLockedBle = f["locked"] == true;
+        }
+    }
+    TEST_ASSERT_TRUE(foundLockedBle);
+
+    JsonObject summary = doc["summary"];
+    TEST_ASSERT_TRUE(summary["totalFlashKB"].as<uint32_t>() > 0);
+    TEST_ASSERT_TRUE(summary["activeFlashKB"].as<uint32_t>() > 0);
+}
+
+// Test 9: 预算拒绝联动 - FeatureBudgetRegistry 拒绝的功能即使启用也不生效
+void test_rfm_budget_denied() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    JsonDocument doc;
+    doc["features"]["rfid"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(doc));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("rfid"));
+
+    // 模拟启动预算拒绝 rfid
+    FastBee::FeatureBudgetRegistryAccess::deny("rfid");
+    TEST_ASSERT_TRUE(mgr.loadConfig());  // 重新同步预算状态
+    TEST_ASSERT_FALSE(mgr.shouldEnable("rfid"));
+}
+
+void test_runtime_feature_manager_group() {
+    RUN_TEST(test_rfm_first_run_generates_defaults);
+    RUN_TEST(test_rfm_persist_and_reload);
+    RUN_TEST(test_rfm_dependency_cascade);
+    RUN_TEST(test_rfm_corrupted_json_fallback);
+    RUN_TEST(test_rfm_estimation);
+    RUN_TEST(test_rfm_uncompiled_cannot_enable);
+    RUN_TEST(test_rfm_unknown_key_disabled);
+    RUN_TEST(test_rfm_status_json);
+    RUN_TEST(test_rfm_budget_denied);
+}

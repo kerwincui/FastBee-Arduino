@@ -262,6 +262,12 @@ bool WiFiManager::startAPMode() {
                   wifiConfig.apHidden,
                   wifiConfig.apMaxConnections);
 
+    // AP 模式关闭省电：默认省电模式会让 AP 缓存帧等待 DTIM 周期，
+    // 增加客户端请求延迟（实测 AP 省电下 Web 响应延迟翻倍）。
+    // STA 路径已在 connectToWiFiBlocking() 中 setSleep(false)，
+    // 但 AP 路径遗漏——补齐以确保 AP 模式下无线帧即时发送。
+    WiFi.setSleep(false);
+
     triggerEvent(NetworkStatus::AP_MODE, "AP mode started successfully");
     return true;
 }
@@ -389,8 +395,8 @@ String WiFiManager::scanNetworks() {
     }
     WiFi.scanDelete();  // 释放扫描结果内存
 
-    // 序列化到静态缓冲区
-    size_t len = serializeJson(doc, buffer, sizeof(buffer));
+    // 序列化到静态缓冲区（审计 P2-6：预留 '\0' 位，截断时不越界写）
+    size_t len = serializeJson(doc, buffer, sizeof(buffer) - 1);
     buffer[len] = '\0';
     return String(buffer);
 }
@@ -795,11 +801,19 @@ const char* WiFiManager::wifiStatusToString(wl_status_t status) {
 
 // ── WiFi 频段诊断 ──────────────────────────────────────────────────────
 BandDiagnosis WiFiManager::diagnoseBandMismatch(const String& ssid) {
+    // 连接失败后 WiFi 驱动可能处于异常状态，先完整重置再扫描
+    WiFi.disconnect(true);
+    delay(200);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(300);
+    WiFi.mode(WIFI_MODE_STA);
+    delay(500);
+
     // 执行快速扫描，检查目标 SSID 的频段分布
-    int numFound = WiFi.scanNetworks(false, false, false, 300);
+    int numFound = WiFi.scanNetworks(false, true, false, 300);
     if (numFound <= 0) {
         WiFi.scanDelete();
-        Serial.printf("[WiFi-Diag] Scan returned 0 networks\n");
+        Serial.printf("[WiFi-Diag] Scan returned 0 networks (driver reset done)\n");
         return BandDiagnosis::NOT_FOUND;
     }
 

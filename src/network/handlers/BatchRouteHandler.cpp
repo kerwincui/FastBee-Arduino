@@ -1,4 +1,5 @@
 #include "./network/handlers/BatchRouteHandler.h"
+#include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
@@ -16,13 +17,13 @@ constexpr const char* DEVICE_CONFIG_FILE = "/config/device.json";
 
 bool isBatchMemoryCriticallyLow() {
     if (FastBee::psramAvailableForJson(32768)) {
-        return ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024;
+        return FastBee::MemoryBudget::dramFree() < 2048 || FastBee::MemoryBudget::dramLargest() < 1024;
     }
-    return ESP.getFreeHeap() < 4096 || ESP.getMaxAllocHeap() < 1536;
+    return FastBee::MemoryBudget::dramFree() < 4096 || FastBee::MemoryBudget::dramLargest() < 1536;
 }
 
 bool shouldUseCompactSystemInfo() {
-    return ESP.getFreeHeap() < 12288 || ESP.getMaxAllocHeap() < 6144;
+    return FastBee::MemoryBudget::dramFree() < 12288 || FastBee::MemoryBudget::dramLargest() < 6144;
 }
 
 void fillMemorySummary(JsonObject memory) {

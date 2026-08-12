@@ -10,9 +10,11 @@
 #if FASTBEE_ENABLE_CELLULAR
 
 #include "systems/LoggerSystem.h"
+#include "core/MemoryBudget.h"
 #include <SSLClient.h>
 #include <ctype.h>
 #include <new>
+#include <esp_heap_caps.h>
 
 namespace {
 
@@ -682,9 +684,27 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
     // 清空串口缓冲
     while (_serial->available()) _serial->read();
 
-    // 创建 TinyGSM modem 实例
-    _modem = new TinyGsm(*_serial);
-    _gsmClient = new TinyGsmClient(*_modem);
+    // 创建 TinyGSM modem 实例（审计 P2-7：水位预检 + nothrow，断线重建路径可反复触发，
+    // OOM 时优雅失败交给上层退避，而非抛出型 new → abort 整机重启）
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < FastBee::MemoryBudget::CELLULAR_BEGIN_MIN_DRAM) {
+        ets_printf("[4G] ERROR: DRAM below %lu, skip modem init\n",
+                   (unsigned long)FastBee::MemoryBudget::CELLULAR_BEGIN_MIN_DRAM);
+        powerOff();
+        return false;
+    }
+    _modem = new (std::nothrow) TinyGsm(*_serial);
+    if (!_modem) {
+        ets_printf("[4G] ERROR: TinyGsm alloc failed\n");
+        powerOff();
+        return false;
+    }
+    _gsmClient = new (std::nothrow) TinyGsmClient(*_modem);
+    if (!_gsmClient) {
+        ets_printf("[4G] ERROR: TinyGsmClient alloc failed\n");
+        delete _modem; _modem = nullptr;
+        powerOff();
+        return false;
+    }
     _trackedClient = new (std::nothrow) CellularTrackedClient(_gsmClient, _clientBusy, _connected);
     Client* tlsBaseClient = _trackedClient ? static_cast<Client*>(_trackedClient) : static_cast<Client*>(_gsmClient);
     _softwareTlsClient = new (std::nothrow) CellularSoftwareTlsClient(tlsBaseClient, _clientBusy, _connected);

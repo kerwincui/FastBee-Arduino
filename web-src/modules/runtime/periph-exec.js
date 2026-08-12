@@ -681,10 +681,14 @@
                 });
             }
             this.openPeriphExecModal(id);
+            return this._loadPeriphExecEditData(id, 1);
+        },
+
+        _loadPeriphExecEditData(id, retriesLeft) {
             // 串行请求：ESP32 heap 紧张时并发 4 个请求会 OOM，必须逐个等完
             const _editResults = {};
             const loadRule = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
-            loadRule('/api/periph-exec', { id: id })
+            return loadRule('/api/periph-exec', { id: id })
                 .then(execRes => { _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }); })
                 .then(periphRes => { _editResults.periphRes = periphRes; return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
                 .then(protoRes => { _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
@@ -754,7 +758,17 @@
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
                 })
                 .catch(err => {
+                    // 设备瞬时拥塞（TIME_WAIT 占满 PCB / 看门狗回收）会导致单个请求链被 abort，
+                    // 延迟 1.5s 自动重试一次，避免用户手动刷新
+                    if (retriesLeft > 0 && !(err && err._pageAborted)) {
+                        console.warn('Periph exec edit data load failed, retrying:', err && err.message);
+                        return new Promise(resolve => setTimeout(resolve, 1500))
+                            .then(() => this._loadPeriphExecEditData(id, retriesLeft - 1));
+                    }
                     console.error('Failed to load periph exec edit data:', err);
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, '规则数据加载失败，请稍后重试', '外设执行');
+                    }
                 });
         },
 
@@ -955,7 +969,8 @@
                         26: '数码管清屏',
                         27: 'OLED自定义显示',
                         28: '射频发送',
-                        29: '串口发送'
+                        29: '串口发送',
+                        30: '电平翻转'
                     };
                     let html = '';
                     rules.forEach(r => {

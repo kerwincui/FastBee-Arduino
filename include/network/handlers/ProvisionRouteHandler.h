@@ -26,6 +26,10 @@ private:
     void handleWiFiScan(AsyncWebServerRequest* request);
     void handleWiFiConnect(AsyncWebServerRequest* request);
 
+    // AP 配网公开接口（无需身份认证，供手机端直接调用）
+    void handleWiFiStatus(AsyncWebServerRequest* request);   // GET  /api/wifi/status  设备状态检测
+    void handleWiFiConfig(AsyncWebServerRequest* request);   // POST /api/wifi/config  配网下发配置
+
     // 将配网下发的扩展参数（userId/deviceNum/extra）写入 device.json
     void _updateDeviceConfig(const String& userId,
                              const String& deviceNum,

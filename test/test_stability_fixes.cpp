@@ -13,6 +13,9 @@
  *  - P1 ConfigStorage dirty 缓存读己之写
  *  - P1 MQTT flapping 抑制 + reconnectCount 老化
  *  - P2 millis() 回绕不安全比较四处
+ *  - P1-1 TCP 收包无界 readString → 限长读 + 低内存丢弃（2026-08）
+ *  - P2-5 WiFi scanNetworks 结果未释放 → scanDelete（2026-08）
+ *  - P2-7 ticker/4G 适配器抛出型 new → 水位预检 + nothrow + 闸门集中 MemoryBudget（2026-08）
  */
 
 #include <unity.h>
@@ -526,6 +529,73 @@ static void test_config_write_is_atomic() {
     }
 }
 
+// ========== P0：规则配置保存防截断 ==========
+
+// 回归：堆碎片下 serializeJson(doc, String) 扩容失败会静默截断，旧代码
+// written == content.length() 两侧同为截断值恰好相等 → 残缺 JSON 被 rename 就位，
+// 重启后 IncompleteInput 导致规则全部丢失。三层防护不得回退：
+//  1) FileUtils::atomicWriteJsonFile 流式写入 + written != measureJson 截断校验
+//  2) PeriphExecManager::saveConfiguration 拒绝 overflowed 文档 + 逐规则流式原子写入
+//  3) saveConfiguration 不得退回 serializeJson 到大 String payload，
+//     也不得把全部规则构建进单个 JsonDocument（堆碎片下整表 overflow 导致保存失败）
+static void test_periph_exec_save_truncation_guard() {
+    TestLog::testStart("Stability: PeriphExec config save must guard against truncation");
+
+    std::string fileUtils = readStabilitySrcFile("src/utils/FileUtils.cpp");
+    if (fileUtils.empty()) {
+        TEST_IGNORE_MESSAGE("FileUtils.cpp not readable, skipping source check");
+        return;
+    }
+    size_t fnPos = fileUtils.find("FileUtils::atomicWriteJsonFile");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "FileUtils must provide atomicWriteJsonFile (streaming JSON write)");
+    std::string fnBody = fileUtils.substr(fnPos);
+    // 流式序列化直接写文件，而非先构建大体积 payload String
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("serializeJson(doc, file)") != std::string::npos,
+        "atomicWriteJsonFile must serialize directly to file (no large payload String)");
+    // 截断校验：写入字节数必须与 measureJson 一致，否则拒绝覆盖
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("written != expected") != std::string::npos,
+        "atomicWriteJsonFile must detect truncation via written != measureJson");
+    // 流式原子写辅助：openAtomicWrite/commitAtomicWrite 供逐规则流式保存复用
+    TEST_ASSERT_TRUE_MESSAGE(fileUtils.find("FileUtils::openAtomicWrite") != std::string::npos,
+        "FileUtils must provide openAtomicWrite for streaming atomic writes");
+    TEST_ASSERT_TRUE_MESSAGE(fileUtils.find("FileUtils::commitAtomicWrite") != std::string::npos,
+        "FileUtils must provide commitAtomicWrite (rename-first atomic replace)");
+    TestLog::step("streaming write + truncation check + open/commitAtomicWrite present");
+
+    std::string mgr = readStabilitySrcFile("src/core/PeriphExecManager.cpp");
+    if (mgr.empty()) {
+        TEST_IGNORE_MESSAGE("PeriphExecManager.cpp not readable, skipping source check");
+        return;
+    }
+    size_t savePos = mgr.find("PeriphExecManager::saveConfiguration");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
+        "PeriphExecManager::saveConfiguration must exist");
+    size_t saveEnd = mgr.find("PeriphExecManager::loadConfiguration", savePos);
+    TEST_ASSERT_TRUE_MESSAGE(saveEnd != std::string::npos && saveEnd > savePos,
+        "cannot locate saveConfiguration body end");
+    std::string saveBody = mgr.substr(savePos, saveEnd - savePos);
+    // 文档构建期 OOM 检测：overflowed 的 doc 不完整，必须拒绝保存
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("doc.overflowed()") != std::string::npos,
+        "saveConfiguration must reject overflowed JsonDocument");
+    // 逐规则流式保存：单条规则小 JsonDocument 直写临时文件，
+    // 峰值内存与规则总数无关（回归：整表 JsonDocument 在堆碎片下 overflow 保存失败）
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("openAtomicWrite") != std::string::npos,
+        "saveConfiguration must stream via FileUtils::openAtomicWrite");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("commitAtomicWrite") != std::string::npos,
+        "saveConfiguration must commit via FileUtils::commitAtomicWrite");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("serializeJson(doc, out)") != std::string::npos,
+        "saveConfiguration must serialize each rule directly to the temp file");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("w != expected") != std::string::npos,
+        "saveConfiguration must detect per-rule serialization truncation");
+    // 不得退回旧路径：serializeJson 到 String payload 在堆碎片下会静默截断
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("serializeJson(doc, payload)") == std::string::npos,
+        "saveConfiguration must NOT serialize into a String payload (silent truncation risk)");
+    TestLog::step("overflowed check + per-rule streaming atomic write, no String payload path");
+
+    TestLog::testEnd(true);
+}
+
 // ========== P1：ConfigStorage 读己之写 ==========
 
 static void test_config_cache_read_your_write() {
@@ -571,8 +641,10 @@ static void test_millis_wraparound_safe_comparisons() {
 
     std::string network = readStabilitySrcFile("src/network/NetworkManager.cpp");
     if (!network.empty()) {
+        // 2026-08-10 起等待上限改为 perAttemptTimeoutMs（预扫描快速失败），
+        // 仍保持减法写法以兼容 millis 回绕
         TEST_ASSERT_TRUE_MESSAGE(
-            network.find("millis() - waitStart < wifiConfig.connectTimeout") != std::string::npos,
+            network.find("millis() - waitStart < perAttemptTimeoutMs") != std::string::npos,
             "WiFi connect wait must use subtraction-based timeout");
     }
 
@@ -872,6 +944,426 @@ static void test_low_memory_gates_are_consistent() {
         (uint8_t)MemoryBudget::guardLevelForDram(60000u, 4000u, 90u, true));
 }
 
+// ========== 残余盲区修复守护（审计 P1-1 / P2-5 / P2-7） ==========
+
+// MemoryBudget.h 闸门常量锁定：阈值集中管理，防止回退到散落魔法数字
+static void test_blindspot_gate_constants_locked() {
+    TestLog::testStart("Stability: runtime alloc gates must stay in MemoryBudget");
+
+    std::string content = readStabilitySrcFile("include/core/MemoryBudget.h");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("MemoryBudget.h not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("ACTION_TICKER_MIN_DRAM = 4096U") != std::string::npos,
+        "ACTION_TICKER_MIN_DRAM must stay 4096U");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CELLULAR_BEGIN_MIN_DRAM = 8192U") != std::string::npos,
+        "CELLULAR_BEGIN_MIN_DRAM must stay 8192U");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_RX_MIN_DRAM = 12000U") != std::string::npos,
+        "TCP_RX_MIN_DRAM must stay 12000U");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_RX_MAX_FRAME = 2048U") != std::string::npos,
+        "TCP_RX_MAX_FRAME must stay 2048U");
+
+    using FastBee::MemoryBudget;
+    // 入站丢弃门控与 MQTT 接收门控对齐（同一类"低内存丢弃入站"策略）
+    TEST_ASSERT_EQUAL_UINT32(MemoryBudget::MQTT_RECEIVE_MIN_DRAM,
+                             MemoryBudget::TCP_RX_MIN_DRAM);
+    // 单轮读取上限必须小于门控本身，否则一次读满就把门控打穿
+    TEST_ASSERT_TRUE(MemoryBudget::TCP_RX_MAX_FRAME < MemoryBudget::TCP_RX_MIN_DRAM);
+}
+
+// P2-7a：BLINK/BREATHE ticker 水位预检 + nothrow + 判空（OOM 降级而非 abort）
+static void test_action_ticker_nothrow_precheck_locked() {
+    TestLog::testStart("Stability: action tickers must precheck DRAM + nothrow alloc");
+
+    std::string content = readStabilitySrcFile("src/core/PeripheralManager.cpp");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
+        return;
+    }
+    // 预检 + nothrow 各出现两次（BLINK 与 BREATHE 分支）
+    size_t precheck = 0, nothrow = 0;
+    size_t pos = 0;
+    while ((pos = content.find("ACTION_TICKER_MIN_DRAM", pos)) != std::string::npos) {
+        precheck++; pos += 22;
+    }
+    pos = 0;
+    while ((pos = content.find("new (std::nothrow) ActionTickerData()", pos)) != std::string::npos) {
+        nothrow++; pos += 36;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(precheck >= 3,  // 定义引用至少含 blink/breathe 两处比较
+        "startActionTicker must precheck DRAM before allocating ticker data");
+    TEST_ASSERT_TRUE_MESSAGE(nothrow == 2,
+        "Both BLINK and BREATHE must use nothrow allocation for ticker data");
+    // 判空降级：分配失败不得继续使用
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("blink ticker alloc failed") != std::string::npos &&
+        content.find("breathe ticker alloc failed") != std::string::npos,
+        "Ticker alloc failure must be checked and logged, not dereferenced");
+}
+
+// P2-7b：4G 适配器 begin() 水位预检 + nothrow（断线重建可反复触发）
+static void test_cellular_begin_nothrow_precheck_locked() {
+    TestLog::testStart("Stability: cellular begin must precheck DRAM + nothrow alloc");
+
+    std::string content = readStabilitySrcFile("src/network/CellularAdapter.cpp");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("CellularAdapter.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CELLULAR_BEGIN_MIN_DRAM") != std::string::npos,
+        "begin() must precheck DRAM before creating TinyGSM objects");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("new (std::nothrow) TinyGsm") != std::string::npos &&
+        content.find("new (std::nothrow) TinyGsmClient") != std::string::npos,
+        "Modem/client objects must use nothrow allocation");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TinyGsm alloc failed") != std::string::npos,
+        "Modem alloc failure must be handled gracefully, not crash");
+}
+
+// P2-5：WiFi 扫描结果必须 scanDelete 释放（三处：两个 scanNetworks 实现
+// + ProvisionRouteHandler 扫描任务的失败/超时路径）
+static void test_wifi_scan_delete_locked() {
+    TestLog::testStart("Stability: scanNetworks must release results via scanDelete");
+
+    std::string nm = readStabilitySrcFile("src/network/NetworkManager.cpp");
+    std::string wm = readStabilitySrcFile("src/network/WiFiManager.cpp");
+    std::string ph = readStabilitySrcFile("src/network/handlers/ProvisionRouteHandler.cpp");
+    if (nm.empty() || wm.empty() || ph.empty()) {
+        TEST_IGNORE_MESSAGE("Scan sources not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        nm.find("WiFi.scanDelete()") != std::string::npos,
+        "FBNetworkManager::scanNetworks must call WiFi.scanDelete()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wm.find("WiFi.scanDelete()") != std::string::npos,
+        "WiFiManager::scanNetworks must call WiFi.scanDelete()");
+
+    // 扫描任务必须覆盖成功与失败两条路径：失败/超时不释放会让
+    // 驱动内残留结果随多次失败扫描累积（审计 P2-5 的原始问题）
+    size_t deletes = 0;
+    size_t pos = 0;
+    while ((pos = ph.find("WiFi.scanDelete()", pos)) != std::string::npos) {
+        deletes++; pos += 17;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(deletes >= 2,
+        "_wifiScanTask must scanDelete on both success and failure paths");
+}
+
+// ========== 行为镜像测试：TCP 限长读（镜像 readTcpBounded 三重防护） ==========
+
+namespace {
+// 镜像 readTcpBounded：入站队列 + 可控 DRAM 水位 + 单轮分配上限
+struct MirrorTcpRx {
+    static const size_t MAX_FRAME = 2048;   // TCP_RX_MAX_FRAME
+    static const uint32_t MIN_DRAM = 12000; // TCP_RX_MIN_DRAM
+    std::string pending;
+    uint32_t dramFree = 60000;
+    bool allocFail = false;
+    uint32_t drops = 0;
+    size_t maxSingleAlloc = 0;
+
+    bool readOneRound(std::string& out) {
+        if (pending.empty()) return false;
+        if (dramFree < MIN_DRAM) {          // ① 低内存 drain 丢弃入站
+            drops += pending.size();
+            pending.clear();
+            return false;
+        }
+        size_t want = pending.size() > MAX_FRAME ? MAX_FRAME : pending.size();
+        if (allocFail) return false;        // ③ 分配失败静默跳过本轮
+        maxSingleAlloc = maxSingleAlloc > want + 1 ? maxSingleAlloc : want + 1;
+        out = pending.substr(0, want);      // ② 单轮上限，剩余留给下轮
+        pending.erase(0, want);
+        return !out.empty();
+    }
+};
+}  // namespace
+
+static void test_tcp_rx_frame_cap_preserves_data_order() {
+    TestLog::testStart("Stability: bounded read splits burst without loss or reorder");
+
+    MirrorTcpRx rx;
+    // 5000B 突发：必须切成 2048+2048+904 三轮，拼接后与原数据逐字节一致
+    std::string burst;
+    for (size_t i = 0; i < 5000; i++) burst += static_cast<char>('A' + (i % 26));
+    rx.pending = burst;
+
+    std::string assembled, chunk;
+    int rounds = 0;
+    while (rx.readOneRound(chunk)) {
+        assembled += chunk;
+        rounds++;
+        TEST_ASSERT_TRUE_MESSAGE(chunk.size() <= 2048,
+            "Single round must never read more than MAX_FRAME");
+    }
+    TEST_ASSERT_EQUAL_INT(3, rounds);
+    TEST_ASSERT_TRUE(rx.pending.empty());
+    TEST_ASSERT_EQUAL_UINT32(0, rx.drops);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)burst.size(), (uint32_t)assembled.size());
+    TEST_ASSERT_TRUE_MESSAGE(assembled == burst,
+        "Reassembled stream must be byte-identical and in order");
+    // 单次分配上限受控（对照旧 readString 的无上限 O(n²) 追加）
+    TEST_ASSERT_TRUE(rx.maxSingleAlloc <= 2049);
+}
+
+static void test_tcp_rx_drop_gate_and_recovery() {
+    TestLog::testStart("Stability: low-DRAM gate drains inbound, recovery resumes");
+
+    MirrorTcpRx rx;
+    rx.pending = "hello-from-peer";
+    rx.dramFree = MirrorTcpRx::MIN_DRAM - 1;
+
+    // 低于门控：整段 drain 丢弃、不产出消息
+    std::string chunk;
+    TEST_ASSERT_FALSE(rx.readOneRound(chunk));
+    TEST_ASSERT_TRUE(rx.pending.empty());
+    TEST_ASSERT_EQUAL_UINT32(15, rx.drops);
+
+    // 内存恢复后新入站正常读取（门控是无状态的，不残留封禁）
+    rx.dramFree = 40000;
+    rx.pending = "after-recovery";
+    TEST_ASSERT_TRUE(rx.readOneRound(chunk));
+    TEST_ASSERT_EQUAL_STRING("after-recovery", chunk.c_str());
+
+    // 分配失败路径：数据留在缓冲下轮重试，不丢弃不崩溃
+    rx.pending = "retry-me";
+    rx.allocFail = true;
+    TEST_ASSERT_FALSE(rx.readOneRound(chunk));
+    TEST_ASSERT_EQUAL_UINT32(8, (uint32_t)rx.pending.size());
+    TEST_ASSERT_EQUAL_UINT32(15, rx.drops);  // 丢弃计数未增长
+    rx.allocFail = false;
+    TEST_ASSERT_TRUE(rx.readOneRound(chunk));
+    TEST_ASSERT_EQUAL_STRING("retry-me", chunk.c_str());
+}
+
+// ========== 行为镜像测试：ticker 分配闸门降级语义 ==========
+
+namespace {
+// 镜像 startActionTicker 的预检 → nothrow → 判空降级链
+struct MirrorTickerGate {
+    static const uint32_t MIN_DRAM = 4096;  // ACTION_TICKER_MIN_DRAM
+    uint32_t dramFree = 60000;
+    bool allocFail = false;
+    bool running = false;
+    uint32_t skips = 0;
+
+    void stop() { running = false; }
+
+    bool start() {
+        stop();                            // 先清理已有（与生产一致）
+        if (dramFree < MIN_DRAM) { skips++; return false; }
+        if (allocFail) { skips++; return false; }  // nothrow 返回空
+        running = true;
+        return true;
+    }
+};
+}  // namespace
+
+static void test_ticker_gate_degrades_instead_of_crash() {
+    TestLog::testStart("Stability: ticker alloc gate skips action instead of abort");
+
+    MirrorTickerGate t;
+
+    // 低内存：跳过本次动作，无 ticker 残留，不崩溃
+    t.dramFree = MirrorTickerGate::MIN_DRAM - 1;
+    TEST_ASSERT_FALSE(t.start());
+    TEST_ASSERT_FALSE(t.running);
+    TEST_ASSERT_EQUAL_UINT32(1, t.skips);
+
+    // 水位恢复：动作正常启动（闸门无状态）
+    t.dramFree = 20000;
+    TEST_ASSERT_TRUE(t.start());
+    TEST_ASSERT_TRUE(t.running);
+
+    // 重复启动先停旧再起新（无泄漏/双 ticker）
+    TEST_ASSERT_TRUE(t.start());
+    TEST_ASSERT_TRUE(t.running);
+
+    // 预检通过但分配仍失败（碎片化）：nothrow 路径同样降级
+    t.allocFail = true;
+    TEST_ASSERT_FALSE(t.start());
+    TEST_ASSERT_FALSE_MESSAGE(t.running,
+        "Failed alloc must stop any prior ticker, not leave it running");
+}
+
+// ========== 审计残余修复守护（2026-08 补充：P1-2 / P1-3 / P2-1 / P2-2 / P2-3 / P2-4 / P2-6）==========
+
+// P1-2：登录失败计数仅跟踪存在的用户 + 双重上限兜底，防止无界增长
+static void test_login_failure_tracking_bounded() {
+    TestLog::testStart("Stability: login failure tracking must stay bounded");
+
+    std::string src = readStabilitySrcFile("src/security/UserManager.cpp");
+    if (src.empty()) {
+        TEST_IGNORE_MESSAGE("UserManager.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("users.find(username) == users.end()") != std::string::npos,
+        "recordLoginFailure must skip per-user tracking for unknown usernames");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("unknownUserFailures") != std::string::npos,
+        "Unknown-user failures must aggregate into a scalar counter");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("MAX_LOGIN_TRACKED") != std::string::npos,
+        "loginAttempts map must have an eviction cap");
+
+    std::string auth = readStabilitySrcFile("src/security/AuthManager.cpp");
+    if (auth.empty()) {
+        TEST_IGNORE_MESSAGE("AuthManager.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        auth.find("MAX_LOCKED_ACCOUNTS") != std::string::npos,
+        "lockedAccounts must evict oldest entry when full");
+}
+
+// P1-3：MQTTS 重连任务栈保守提升至 8192（6144 为边缘值）
+static void test_mqtts_reconnect_stack_locked() {
+    TestLog::testStart("Stability: MQTTS reconnect task stack must stay 8192");
+
+    std::string content = readStabilitySrcFile("include/core/MemoryBudget.h");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("MemoryBudget.h not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTTS_RECONNECT_TASK_STACK = 8192U") != std::string::npos,
+        "MQTTS_RECONNECT_TASK_STACK must stay 8192U (audit P1-3)");
+
+    using FastBee::MemoryBudget;
+    TEST_ASSERT_EQUAL_UINT32(8192U, MemoryBudget::MQTTS_RECONNECT_TASK_STACK);
+}
+
+// P2-1：readFile 工具层入口三重防线（大小上限 + DRAM 预检 + reserve）
+static void test_read_file_gate_locked() {
+    TestLog::testStart("Stability: readFile must enforce size cap and DRAM gate");
+
+    std::string budget = readStabilitySrcFile("include/core/MemoryBudget.h");
+    if (budget.empty()) {
+        TEST_IGNORE_MESSAGE("MemoryBudget.h not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        budget.find("FILE_READ_MAX_SIZE = 16384U") != std::string::npos,
+        "FILE_READ_MAX_SIZE must stay 16384U");
+
+    const char* files[] = {"src/utils/FileUtils.cpp", "src/network/WebHandlerContext.cpp"};
+    for (const char* path : files) {
+        std::string src = readStabilitySrcFile(path);
+        if (src.empty()) {
+            TEST_IGNORE_MESSAGE("readFile source not readable, skipping source check");
+            return;
+        }
+        TEST_ASSERT_TRUE_MESSAGE(
+            src.find("FILE_READ_MAX_SIZE") != std::string::npos,
+            "readFile must reject files above FILE_READ_MAX_SIZE");
+        TEST_ASSERT_TRUE_MESSAGE(
+            src.find("dramFree()") != std::string::npos,
+            "readFile must precheck DRAM before loading content");
+        TEST_ASSERT_TRUE_MESSAGE(
+            src.find(".reserve(") != std::string::npos,
+            "readFile must reserve capacity before readString");
+    }
+}
+
+// P2-2：Modbus 配置流式反序列化，消除文件→String→JsonDocument 双份峰值
+static void test_modbus_config_streaming_deserialize() {
+    TestLog::testStart("Stability: Modbus config must deserialize streaming from file");
+
+    std::string src = readStabilitySrcFile("src/protocols/ModbusHandler.cpp");
+    if (src.empty()) {
+        TEST_IGNORE_MESSAGE("ModbusHandler.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("deserializeJson(doc, configFile)") != std::string::npos,
+        "Modbus config must stream-parse from File (no intermediate String copy)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("#include <LittleFS.h>") != std::string::npos,
+        "ModbusHandler must include LittleFS for direct file open");
+}
+
+// P2-3：传感器模板解析逐键持锁查询，不再全量深拷贝缓存表
+static void test_sensor_template_single_lookup() {
+    TestLog::testStart("Stability: sensor template resolution must use per-key lookup");
+
+    std::string header = readStabilitySrcFile("include/core/PeriphExecManager.h");
+    if (header.empty()) {
+        TEST_IGNORE_MESSAGE("PeriphExecManager.h not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("lookupSensorCache") != std::string::npos,
+        "PeriphExecManager must expose per-key lookupSensorCache");
+
+    std::string src = readStabilitySrcFile("src/core/PeriphExecExecutor.cpp");
+    if (src.empty()) {
+        TEST_IGNORE_MESSAGE("PeriphExecExecutor.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("lookupSensorCache(key, entry)") != std::string::npos,
+        "resolveSensorTemplate must query cache per key");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("getSensorReadCacheCopy()") == std::string::npos,
+        "resolveSensorTemplate must not deep-copy the whole sensor cache");
+}
+
+// P2-4：运行期闸门统一走 MemoryBudget DRAM 口径（排除 PSRAM 虚高）
+static void test_runtime_gates_use_dram_budget() {
+    TestLog::testStart("Stability: runtime gates must use MemoryBudget DRAM helpers");
+
+    std::string budget = readStabilitySrcFile("include/core/MemoryBudget.h");
+    if (budget.empty()) {
+        TEST_IGNORE_MESSAGE("MemoryBudget.h not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        budget.find("heap_caps_get_free_size(MALLOC_CAP_INTERNAL)") != std::string::npos,
+        "dramFree must measure internal DRAM only (PSRAM excluded)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        budget.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)") != std::string::npos,
+        "dramLargest must measure internal DRAM only");
+
+    // 抽查代表性调用方：日志系统闸门必须走 DRAM 口径
+    std::string logger = readStabilitySrcFile("src/systems/LoggerSystem.cpp");
+    if (logger.empty()) {
+        TEST_IGNORE_MESSAGE("LoggerSystem.cpp not readable, skipping source check");
+        return;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("MemoryBudget::dramFree()") != std::string::npos,
+        "LoggerSystem gates must use MemoryBudget::dramFree()");
+}
+
+// P2-6：扫描结果序列化预留终止符位，截断时不越界写
+static void test_scan_serialization_reserve_null() {
+    TestLog::testStart("Stability: scan JSON serialization must reserve null terminator slot");
+
+    const char* files[] = {"src/network/NetworkManager.cpp", "src/network/WiFiManager.cpp"};
+    for (const char* path : files) {
+        std::string src = readStabilitySrcFile(path);
+        if (src.empty()) {
+            TEST_IGNORE_MESSAGE("scan serialization source not readable, skipping");
+            return;
+        }
+        TEST_ASSERT_TRUE_MESSAGE(
+            src.find("serializeJson(doc, buffer, sizeof(buffer) - 1)") != std::string::npos,
+            "serializeJson must leave one byte for the terminator");
+        TEST_ASSERT_TRUE_MESSAGE(
+            src.find("buffer[len] = '\\0'") != std::string::npos,
+            "Truncated serialization must explicitly null-terminate");
+    }
+}
+
 // ========== 测试组入口 ==========
 
 void test_stability_fixes_group() {
@@ -894,6 +1386,7 @@ void test_stability_fixes_group() {
 
     // P0/P1 配置持久化
     RUN_TEST(test_config_write_is_atomic);
+    RUN_TEST(test_periph_exec_save_truncation_guard);
     RUN_TEST(test_config_cache_read_your_write);
 
     // P2 时间回绕
@@ -910,4 +1403,24 @@ void test_stability_fixes_group() {
     RUN_TEST(test_mqtt_flapping_backoff_progression);
     RUN_TEST(test_ring_buffer_interleaved_stress_invariants);
     RUN_TEST(test_low_memory_gates_are_consistent);
+
+    // 残余盲区修复守护（2026-08 补充：P1-1 / P2-5 / P2-7）
+    RUN_TEST(test_blindspot_gate_constants_locked);
+    RUN_TEST(test_action_ticker_nothrow_precheck_locked);
+    RUN_TEST(test_cellular_begin_nothrow_precheck_locked);
+    RUN_TEST(test_wifi_scan_delete_locked);
+
+    // 行为镜像（限长读分片/丢包门控 + ticker 闸门降级）
+    RUN_TEST(test_tcp_rx_frame_cap_preserves_data_order);
+    RUN_TEST(test_tcp_rx_drop_gate_and_recovery);
+    RUN_TEST(test_ticker_gate_degrades_instead_of_crash);
+
+    // 审计残余修复守护（2026-08 补充：P1-2 / P1-3 / P2-1 / P2-2 / P2-3 / P2-4 / P2-6）
+    RUN_TEST(test_login_failure_tracking_bounded);
+    RUN_TEST(test_mqtts_reconnect_stack_locked);
+    RUN_TEST(test_read_file_gate_locked);
+    RUN_TEST(test_modbus_config_streaming_deserialize);
+    RUN_TEST(test_sensor_template_single_lookup);
+    RUN_TEST(test_runtime_gates_use_dram_budget);
+    RUN_TEST(test_scan_serialization_reserve_null);
 }

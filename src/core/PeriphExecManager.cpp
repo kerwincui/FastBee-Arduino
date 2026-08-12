@@ -9,6 +9,7 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "core/PeriphExecManager.h"
+#include "core/MemoryBudget.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecScheduler.h"
 #include "core/PeriphExecWorkerPool.h"
@@ -621,7 +622,8 @@ void PeriphExecManager::rebuildDataSourceCache() {
     }
 }
 
-void PeriphExecManager::updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit) {
+void PeriphExecManager::updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit,
+                                              const String& dataField, const String& periphId) {
     static unsigned long lastLockWarn = 0;
     unsigned long now = millis();
     bool cacheUpdated = false;
@@ -640,6 +642,8 @@ void PeriphExecManager::updateSensorReadCache(const String& key, const String& l
         cache.label = label;
         cache.value = value;
         cache.unit = unit;
+        cache.dataField = dataField;
+        cache.periphId = periphId;
         cache.timestamp = now;
         cacheUpdated = true;
         xSemaphoreGive(_sensorCacheMutex);
@@ -671,6 +675,20 @@ std::map<String, PeriphExecManager::SensorReadCache> PeriphExecManager::getSenso
         xSemaphoreGive(_sensorCacheMutex);
     }
     return copy;
+}
+
+bool PeriphExecManager::lookupSensorCache(const String& key, SensorReadCache& out) const {
+    if (!_sensorCacheMutex || xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return false;
+    }
+    bool found = false;
+    auto it = _sensorReadCache.find(key);
+    if (it != _sensorReadCache.end()) {
+        out = it->second;
+        found = true;
+    }
+    xSemaphoreGive(_sensorCacheMutex);
+    return found;
 }
 
 void PeriphExecManager::evictStaleSensorCache() {
@@ -705,12 +723,25 @@ void PeriphExecManager::notifySensorDataSSE(const String& key, const String& lab
 bool PeriphExecManager::saveConfiguration() {
     MutexGuard lock(_rulesMutex);
 
-    JsonDocument doc;
-    JsonArray arr = doc["rules"].to<JsonArray>();
+    // 流式保存：逐规则构建小 JsonDocument（单条约 1~2KB）并直接序列化进临时文件，
+    // 避免把整份配置表（20+KB）构建进单个 JsonDocument，在堆碎片化
+    // （freeHeap~30KB / maxAlloc~27KB）下直接 overflow 失败。
+    String tmpPath = String(PERIPH_EXEC_CONFIG_FILE) + ".tmp";
+    File out = FileUtils::openAtomicWrite(PERIPH_EXEC_CONFIG_FILE);
+    if (!out) {
+        LOGGER.errorf("[PeriphExec] Save aborted: cannot open temp file (freeHeap=%u, maxAlloc=%u)",
+                      (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+        return false;
+    }
+
+    size_t written = out.print("{\"rules\":[");
+    bool first = true;
 
     for (const auto& pair : rules) {
         const PeriphExecRule& r = pair.second;
-        JsonObject obj = arr.add<JsonObject>();
+
+        JsonDocument doc; // 只容纳单条规则，峰值内存与规则总数无关
+        JsonObject obj = doc.to<JsonObject>();
         obj["id"] = r.id;
         obj["name"] = r.name;
         obj["enabled"] = r.enabled;
@@ -752,18 +783,76 @@ bool PeriphExecManager::saveConfiguration() {
 
         // 数据上报控制
         obj["reportAfterExec"] = r.reportAfterExec;
+
+        // 构建过程中若堆不足，ArduinoJson 会置位 overflowed，此时该规则不完整，
+        // 拒绝保存以防写入残缺配置（保留原文件不动）
+        if (doc.overflowed()) {
+            out.close();
+            LittleFS.remove(tmpPath);
+            LOGGER.errorf("[PeriphExec] Save aborted: rule '%s' serialization overflow (freeHeap=%u, maxAlloc=%u)",
+                          r.id.c_str(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+            return false;
+        }
+
+        size_t expected = measureJson(doc);
+        if (!first) {
+            written += out.print(",");
+        }
+        // 流式序列化直写 Flash；written != expected 即检出截断（堆/Flash 不足）
+        size_t w = serializeJson(doc, out);
+        if (w != expected) {
+            out.close();
+            LittleFS.remove(tmpPath);
+            LOGGER.errorf("[PeriphExec] Save aborted: truncated at rule '%s' (written=%u, expected=%u, fsFree=%u)",
+                          r.id.c_str(), (unsigned)w, (unsigned)expected,
+                          (unsigned)(LittleFS.totalBytes() > LittleFS.usedBytes()
+                                     ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0));
+            return false;
+        }
+        written += w;
+        first = false;
     }
 
-    String payload;
-    payload.reserve(measureJson(doc) + 1);
-    serializeJson(doc, payload);
+    written += out.print("]");
 
-    if (!FileUtils::atomicWriteFile(PERIPH_EXEC_CONFIG_FILE, payload)) {
-        LOGGER.error("[PeriphExec] Failed to save config atomically");
+    // IR 按键映射（红外对码结果）随本配置文件统一持久化，不再单独建 ir_keys.json；
+    // _irKeysJson 本身即 serializeJson 产出的合法 JSON 数组串，直接透传写入
+    if (!_irKeysJson.isEmpty()) {
+        written += out.print(",\"irKeys\":");
+        written += out.print(_irKeysJson);
+    }
+
+    written += out.print("}");
+    out.flush();
+    out.close();
+
+    // 超限检查：加载端会拒绝超过上限的配置，写入无意义
+    if (written > PERIPH_EXEC_CONFIG_MAX_BYTES) {
+        LittleFS.remove(tmpPath);
+        LOGGER.errorf("[PeriphExec] Save aborted: config too large (%u bytes, max=%u)",
+                      (unsigned)written, (unsigned)PERIPH_EXEC_CONFIG_MAX_BYTES);
         return false;
     }
 
-    LOGGER.infof("[PeriphExec] Saved %d rules (%d bytes, v3)", (int)rules.size(), (int)payload.length());
+    // 以文件长度复核总写入字节，兜底检出 Flash 写满导致的静默截断
+    File check = LittleFS.open(tmpPath, "r");
+    size_t actual = check ? check.size() : 0;
+    if (check) check.close();
+    if (actual != written) {
+        LittleFS.remove(tmpPath);
+        LOGGER.errorf("[PeriphExec] Save aborted: size mismatch (file=%u, written=%u)",
+                      (unsigned)actual, (unsigned)written);
+        return false;
+    }
+
+    // 原子替换：失败时 tmp 已被 commit 内部清理，原配置保留不动
+    if (!FileUtils::commitAtomicWrite(tmpPath, PERIPH_EXEC_CONFIG_FILE)) {
+        LOGGER.errorf("[PeriphExec] Failed to save config: commit failed (json=%u bytes)", (unsigned)written);
+        return false;
+    }
+
+    LOGGER.infof("[PeriphExec] Saved %d rules (%u bytes, v3-streaming, freeHeap=%u)",
+                 (int)rules.size(), (unsigned)written, (unsigned)ESP.getFreeHeap());
     return true;
 }
 
@@ -889,11 +978,68 @@ bool PeriphExecManager::loadConfiguration() {
 
     LOGGER.infof("[PeriphExec] Loaded %d rules", (int)rules.size());
 
+    // IR 按键映射：优先读本文件 irKeys 字段；旧版独立文件 ir_keys.json 存在则一次性迁入并删除
+    _irKeysJson = "";
+    JsonArray irKeysArr = doc["irKeys"].as<JsonArray>();
+    if (!irKeysArr.isNull() && irKeysArr.size() > 0) {
+        serializeJson(irKeysArr, _irKeysJson);
+        // 新字段已有数据时也要清理旧文件：配置导入（白名单含 ir_keys.json）可能
+        // 把旧文件重新写回设备，不清理会永久残留
+        if (LittleFS.exists("/config/ir_keys.json")) {
+            LittleFS.remove("/config/ir_keys.json");
+            LOGGER.info("[PeriphExec] Removed stale legacy ir_keys.json (irKeys already in config)");
+        }
+    } else if (LittleFS.exists("/config/ir_keys.json")) {
+        File legacy = LittleFS.open("/config/ir_keys.json", "r");
+        if (legacy) {
+            JsonDocument legacyDoc;
+            if (!deserializeJson(legacyDoc, legacy)) {
+                JsonArray legacyKeys = legacyDoc["keys"].as<JsonArray>();
+                if (!legacyKeys.isNull() && legacyKeys.size() > 0) {
+                    serializeJson(legacyKeys, _irKeysJson);
+                    LOGGER.infof("[PeriphExec] Migrated %d IR keys from legacy ir_keys.json",
+                                 (int)legacyKeys.size());
+                }
+            }
+            legacy.close();
+        }
+        LittleFS.remove("/config/ir_keys.json");
+        if (!_irKeysJson.isEmpty()) saveConfiguration();
+    }
+
     // 重建按键规则缓存（初始化时无锁竞争，安全调用）
     rebuildButtonEventCache();
     rebuildDataSourceCache();
 
     return true;
+}
+
+// ========== IR 按键映射（随 periph_exec.json 统一持久化） ==========
+
+String PeriphExecManager::getIrKeysJson() const {
+    if (!_rulesMutex) return "";
+    MutexGuard lock(_rulesMutex);
+    return _irKeysJson;
+}
+
+bool PeriphExecManager::setIrKeysJson(const String& jsonArray) {
+    if (!_rulesMutex) return false;
+    String normalized;
+    if (!jsonArray.isEmpty()) {
+        // 校验必须是 JSON 数组，拒绝非法输入避免配置文件被写坏
+        JsonDocument checkDoc;
+        if (deserializeJson(checkDoc, jsonArray) || !checkDoc.is<JsonArray>()) {
+            LOGGER.warning("[PeriphExec] setIrKeysJson: invalid JSON array, rejected");
+            return false;
+        }
+        serializeJson(checkDoc.as<JsonArray>(), normalized);
+    }
+    {
+        MutexGuard lock(_rulesMutex);
+        _irKeysJson = normalized;
+    }
+    // saveConfiguration 内部重新取锁并整体重写配置（含 irKeys）
+    return saveConfiguration();
 }
 
 // ========== 委托给 Scheduler 的方法 ==========
@@ -985,7 +1131,7 @@ void PeriphExecManager::checkButtonEvents() {
 
 void PeriphExecManager::queuePendingReport(const String& reportData) {
     // 堆守卫：低堆时跳过缓存，避免 STL 分配导致 abort
-    if (ESP.getFreeHeap() < 10000) return;
+    if (FastBee::MemoryBudget::dramFree() < 10000) return;
 
     if (_pendingReports.size() >= MAX_PENDING_REPORTS) {
         _pendingReports.erase(_pendingReports.begin());  // 移除最旧的
@@ -1172,6 +1318,7 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_GPIO_TOGGLE), "电平翻转", "GPIO");
 
             // PWM输出
             if (pType == PeripheralType::GPIO_PWM_OUTPUT) {
@@ -1220,6 +1367,7 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_GPIO_TOGGLE), "电平翻转", "GPIO");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif
@@ -1237,7 +1385,7 @@ void PeriphExecManager::recordResult(const AsyncExecResult& result) {
     if (!lock.isLocked()) return;
 
     // 堆守卫：低堆时跳过记录，防止 push_back 内部 new 失败导致 abort()
-    if (ESP.getFreeHeap() < 10000) return;
+    if (FastBee::MemoryBudget::dramFree() < 10000) return;
 
     executionResults.push_back(result);
 
@@ -1459,11 +1607,17 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     LOG_DEBUGF("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
 
     // 堆守卫：任务开始时检查堆内存，过低时直接放弃执行防止 abort()
+    // 2026-08-05 fix: INTERNAL 口径含 IRAM/RTC 虚高 ~28KB，实测崩溃现场
+    // INTERNAL 还有 29KB 时 8BIT DRAM 仅剩 <1KB → JSON 解析小分配直接
+    // new OOM abort。双口径门控，8BIT 才是真实可分配水位。
+    // 阈值校准：MQTT 连接稳态 8BIT 常态 ~7KB，门限取 5KB 保证用户规则
+    // 在常态下可执行；窗口内挤出交给 per-action 守卫 + MQTT 强制断开。
     bool allOk = false;
     size_t reportCount = 0;
-    if (ESP.getFreeHeap() < 16384) {
-        LOGGER.warningf("[PeriphExec] Heap too low (%d), skip execution: '%s'",
-                        (int)ESP.getFreeHeap(), result.ruleName.c_str());
+    uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    if (FastBee::MemoryBudget::dramFree() < 16384 || dram8Free < 5120) {
+        LOGGER.warningf("[PeriphExec] Heap too low (dram=%d dram8=%u), skip execution: '%s'",
+                        (int)ESP.getFreeHeap(), (unsigned)dram8Free, result.ruleName.c_str());
         result.status = AsyncExecStatus::FAILED;
     } else {
         // 执行所有动作（reportCount 回填本次实际上报数量）
@@ -1497,7 +1651,7 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
     // 如果执行失败，设置退避时间（30秒后才能再次触发）
     // 堆守卫：低堆时跳过 map 插入，防止 abort()
-    if (ESP.getFreeHeap() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000) {
         if (!allOk) {
             MutexGuard runLock(ctx->manager->_runningRulesMutex);
             ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
@@ -1510,7 +1664,7 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     }
 
     // 触发外设执行完成事件（低堆时跳过，避免内部 STL 分配导致 abort）
-    if (ESP.getFreeHeap() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000) {
         ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
     }
 
@@ -1570,7 +1724,7 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     }
 
     // 5. 设置或清除退避记录
-    if (ESP.getFreeHeap() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000) {
         if (!allOk) {
             MutexGuard runLock(_runningRulesMutex);
             _failureBackoff[rule.id] = millis() + 30000;
@@ -1581,7 +1735,7 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     }
 
     // 6. 触发外设执行完成事件（链式执行关键）
-    if (ESP.getFreeHeap() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000) {
         dispatchPeriphExecEvent(rule.id, allOk ? "success" : "failed");
     }
 
@@ -1607,7 +1761,7 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         if (monitor && monitor->isMemoryCritical()) {
             return;  // CRITICAL: 完全跳过轮询
         }
-        if (!monitor && ESP.getFreeHeap() < 15000) {
+        if (!monitor && FastBee::MemoryBudget::dramFree() < 15000) {
             // 守卫回退：HealthMonitor 不可用时的硬编码阈值
             return;
         }
@@ -1836,6 +1990,66 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                         ctrlMatched = true;
                     }
                     if (!ctrlMatched) continue;
+                }
+
+                // 红外事件(ir_code_received): compareValue 非空时按编码或按键名过滤
+                // 支持格式：
+                //   "key:名称"           —— 按已学习按键名匹配（推荐，可跨规则复用）
+                //   "NEC:0x00FF6897"     —— 限定协议 + 编码
+                //   "0x00FF6897"/"00FF6897" —— 任意协议 + 编码
+                if (eventId == "ir_code_received" && !trigger.compareValue.isEmpty()) {
+                    bool codeMatched = false;
+                    JsonDocument evDoc;
+                    if (!deserializeJson(evDoc, eventData) && evDoc.is<JsonObject>()) {
+                        String want = trigger.compareValue;
+                        want.trim();
+                        int keyColon = want.indexOf(':');
+                        String wantPrefix = keyColon > 0 ? want.substring(0, keyColon) : String("");
+                        if (wantPrefix.equalsIgnoreCase("key")) {
+                            // 按键名匹配（大小写不敏感）
+                            String wantName = want.substring(keyColon + 1);
+                            wantName.trim();
+                            String evKey = evDoc["key"] | "";
+                            codeMatched = (wantName.length() > 0) && wantName.equalsIgnoreCase(evKey);
+                        } else {
+                            // 编码匹配（兼容旧规则）
+                            String evCode = evDoc["code"] | "";        // 如 "0x00FF6897"
+                            String evProto = evDoc["protocol"] | "";   // 如 "NEC"
+                            if (keyColon > 0) {
+                                if (!wantPrefix.equalsIgnoreCase(evProto)) want = "";  // 协议不符
+                                else want = want.substring(keyColon + 1);
+                            }
+                            if (want.length() > 0) {
+                                if (!want.startsWith("0x") && !want.startsWith("0X")) want = "0x" + want;
+                                codeMatched = want.equalsIgnoreCase(evCode);
+                            }
+                        }
+                    }
+                    if (!codeMatched) continue;
+                }
+
+                // RF事件(rf_code_received): compareValue 非空时按编码或按键名过滤
+                // 支持格式：
+                //   "key:名称"           —— 按已学习按键名匹配
+                //   "0xABCDEF"/"ABCDEF"  —— 按编码值匹配
+                if (eventId == "rf_code_received" && !trigger.compareValue.isEmpty()) {
+                    bool rfMatched = false;
+                    JsonDocument rfDoc;
+                    if (!deserializeJson(rfDoc, eventData) && rfDoc.is<JsonObject>()) {
+                        String want = trigger.compareValue;
+                        want.trim();
+                        if (want.startsWith("key:") || want.startsWith("KEY:")) {
+                            String wantName = want.substring(4);
+                            wantName.trim();
+                            String evKey = rfDoc["key"] | "";
+                            rfMatched = (wantName.length() > 0) && wantName.equalsIgnoreCase(evKey);
+                        } else {
+                            String evCode = rfDoc["code"] | "";
+                            if (!want.startsWith("0x") && !want.startsWith("0X")) want = "0x" + want;
+                            rfMatched = want.equalsIgnoreCase(evCode);
+                        }
+                    }
+                    if (!rfMatched) continue;
                 }
 
                 // 防重复触发：同一触发器最小间隔 1 秒
@@ -2259,7 +2473,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             String reportId = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
             String reportValue = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
 
-            // 传感器读取结果：使用 dataField 作为上报 ID（物模型标识符，如 temperature/humidity）
+            // 上报 ID 通用规则：默认用外设配置 id（与平台物模型标识符对应）；
+            // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时才覆盖，
+            // 类别推断出的默认字段不作为上报 ID，避免与物模型标识符不匹配
             if (!ar.dataField.isEmpty()) {
                 reportId = ar.dataField;
             }

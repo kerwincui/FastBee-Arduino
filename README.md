@@ -46,6 +46,7 @@ graph LR
 | 3 | **外设配置** | 在 Web 界面勾选外设类型、分配引脚，完成硬件初始化 | 外设配置 |
 | 4 | **外设执行** | 配置触发条件与动作，实现按键控灯、定时联动、传感器联控等 | 外设执行 |
 | 5 | **通信协议** | 配置 MQTT / Modbus RTU 等协议，接入物联网平台 | 通信协议 |
+| 6 | **功能配置** | 按需启用/禁用显示、红外、规则脚本等功能模块，节省 Flash 与内存 | 功能配置 |
 
 > 全程无需编程：烧录固件 → 打开浏览器 → 点选配置 → 设备即刻投入使用。
 
@@ -148,11 +149,16 @@ pwsh -File scripts/deploy.ps1 -Env esp32-F4R0 -Port /dev/ttyUSB0
 | `esp32-F8R4` | Full | ESP32 | 8MB | 4MB |
 | `esp32s3-F8R4` | Full | ESP32-S3 | 8MB | 4MB |
 | `esp32s3-F16R8` | Full | ESP32-S3 | 16MB | 8MB |
+| `esp32-F4R0-unified` | Unified | ESP32 | 4MB | 无 |
+| `esp32c3-F4R0-unified` | Unified | ESP32-C3 | 4MB | 无 |
+| `esp32c6-F4R0-unified` | Unified | ESP32-C6 | 4MB | 无 |
+| `esp32s3-F8R4-unified` | Unified | ESP32-S3 | 8MB | 4MB |
 
 > 版本选择的核心依据是 **Flash 容量**和**是否有 PSRAM**。
 1. Flash ≥8MB 的环境均支持 OTA 升级（4MB 环境受空间限制不支持）。
 2. 带 PSRAM 的模组（如 ESP32-WROVER、ESP32-S3-N8R2/N16R8）均可使用 Full 版。
-3. 预定义的环境不满足可以platformio中新增，配置合适flash、psram和需要支持的外设
+3. Unified 版编译全部功能模块，启动时由内存预算自动裁剪超预算模块，并可在 Web "功能配置"页面按需关闭不用的功能。
+4. 预定义的环境不满足可以platformio中新增，配置合适flash、psram和需要支持的外设
 
 > 功能对比详表与分区表见 [版本对比](https://fastbee.cn/doc/device/getting-started/edition-comparison.html)。
 

@@ -150,6 +150,56 @@ bool FileUtils::atomicWriteFile(const String& path, const String& content) {
     return LittleFS.rename(tmpPath, path);
 }
 
+bool FileUtils::atomicWriteJsonFile(const String& path, JsonDocument& doc) {
+    if (!fsInitialized) {
+        return false;
+    }
+    // 与真机实现对等：先以 measureJson 为预期长度，写完后校验是否被截断，
+    // 截断时清理 .tmp 并拒绝覆盖已有文件
+    size_t expected = measureJson(doc);
+    String tmpPath = path + ".tmp";
+    if (LittleFS.exists(tmpPath)) {
+        LittleFS.remove(tmpPath);
+    }
+    std::string payload;
+    size_t written = serializeJson(doc, payload);
+    if (written != expected) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return atomicWriteFile(path, String(payload.data(), payload.size()));
+}
+
+File FileUtils::openAtomicWrite(const String& path) {
+    if (!fsInitialized) {
+        return File();
+    }
+    // 与真机实现对等：清理残留 .tmp 后打开临时文件供流式写入
+    String tmpPath = path + ".tmp";
+    if (LittleFS.exists(tmpPath)) {
+        LittleFS.remove(tmpPath);
+    }
+    return LittleFS.open(tmpPath, "w");
+}
+
+bool FileUtils::commitAtomicWrite(const String& tmpPath, const String& path) {
+    // 与真机实现对等：tmp 缺失时直接失败，避免兜底 remove(path) 误删目标
+    if (!LittleFS.exists(tmpPath)) {
+        return false;
+    }
+    // rename 原子替换，失败兜底 remove+rename，
+    // 全部失败时清理 tmp 保留原文件
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    LittleFS.remove(path);
+    if (LittleFS.rename(tmpPath, path)) {
+        return true;
+    }
+    LittleFS.remove(tmpPath);
+    return false;
+}
+
 bool FileUtils::copyFile(const String& sourcePath, const String& destPath) {
     if (!exists(sourcePath) || exists(destPath) || isDirectory(sourcePath)) {
         return false;
