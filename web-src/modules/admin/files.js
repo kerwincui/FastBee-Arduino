@@ -150,6 +150,8 @@
                     });
                 })
                 .catch(err => {
+                    // 页面切换导致的请求中止属预期行为，静默返回
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     console.error('Load file tree failed:', err);
                     treeContainer.innerHTML = '<div class="u-text-danger">加载失败</div>';
                 });

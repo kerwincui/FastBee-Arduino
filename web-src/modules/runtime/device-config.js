@@ -157,6 +157,8 @@
                     set('dev-sys-fw', fw.version || dev.firmwareVersion || '--');
                 })
                 .catch(err => {
+                    // 页面切换导致的请求中止属预期行为，静默返回
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     console.warn('[device-config] /api/system/info failed:', err && (err.status || err.message || err));
                 });
         },

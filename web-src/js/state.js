@@ -524,6 +524,33 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // ============ 登录（由 state-session.js 注册） ============
 
+    // ============ 功能配置与菜单联动 ============
+    // 功能 key → 菜单 data-page 映射：功能被禁用时隐藏对应菜单项
+    // （核心页面如监控/网络/外设配置不受功能开关影响，不在此表）
+    _featureMenuMap: {
+        ruleScript: 'rule-script'
+    },
+
+    /**
+     * 登录后拉取功能状态，按启用情况显示/隐藏左侧菜单项
+     * 失败时静默保持默认菜单，不阻塞主流程
+     */
+    applyFeatureMenuVisibility() {
+        if (typeof apiGet !== 'function') return;
+        const map = this._featureMenuMap;
+        apiGet('/api/features/status')
+            .then(res => {
+                if (!res || !res.success || !res.data) return;
+                (res.data.features || []).forEach(f => {
+                    const page = map[f.key];
+                    if (!page) return;
+                    const item = document.querySelector('.menu-item[data-page="' + page + '"]');
+                    if (item) item.style.display = f.active ? '' : 'none';
+                });
+            })
+            .catch(() => { /* 静默：菜单保持默认可见 */ });
+    },
+
     // ============ 页面切换 ============
     async changePage(page) {
         const navSeq = (this._pageNavSeq || 0) + 1;

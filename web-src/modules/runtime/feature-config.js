@@ -92,6 +92,22 @@
             });
             list.innerHTML = html;
 
+            // 全功能统一固件（所有功能均已编入）时，Flash 占用已固定，
+            // 开关只影响运行时 RAM，给出说明避免误解
+            var allCompiled = (this._featureState || []).every(function(f) { return f.compiled; });
+            var hint = document.getElementById('features-unified-hint');
+            if (!hint) {
+                hint = document.createElement('p');
+                hint.id = 'features-unified-hint';
+                hint.className = 'u-fs-12 u-text-secondary';
+                hint.style.marginTop = '8px';
+                list.parentNode.insertBefore(hint, list.nextSibling);
+            }
+            hint.style.display = allCompiled ? '' : 'none';
+            hint.textContent = allCompiled
+                ? '当前固件已编入全部功能（统一镜像）：Flash 占用已固定，表中 Flash 列仅为编译参考；开关功能只影响运行时 RAM 占用。'
+                : '';
+
             list.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
                 input.addEventListener('change', function() {
                     self.onFeatureToggle(input.getAttribute('data-feature-toggle'), input.checked);

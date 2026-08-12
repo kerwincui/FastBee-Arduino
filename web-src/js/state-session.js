@@ -125,6 +125,11 @@
             console.error('[Auth] Failed to prepare app shell:', e);
         }
 
+        // 按功能配置显示/隐藏左侧菜单项（失败静默，不阻塞启动）
+        if (typeof this.applyFeatureMenuVisibility === 'function') {
+            this.applyFeatureMenuVisibility();
+        }
+
         this._loadModule('dashboard', () => {
             var self = this;
             if (typeof this.bootDashboardPage === 'function') {

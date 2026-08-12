@@ -318,6 +318,8 @@
 
                 })
                 .catch(err => {
+                    // 页面切换导致的请求中止属预期行为，静默返回避免误报
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     console.error('Load network config failed:', err);
                     Notification.error('加载网络配置失败', '网络设置');
                 });
@@ -998,6 +1000,8 @@
                     this._updateNetworkStatus(res.data);
                 })
                 .catch(err => {
+                    // 页面切换导致的请求中止属预期行为，静默返回（不重试、不误报 DNS 失败）
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     console.error('Failed to load network status:', err);
                     // DNS解析失败（如4G模式关闭WiFi后mDNS不可用）无需重试
                     if (this._isDnsError(err)) {
@@ -1019,10 +1023,10 @@
          */
         _isDnsError(err) {
             if (!err) return false;
+            // 页面导航中止不是 DNS 失败，由 isPageAbortError 分支处理
+            if (err._pageAborted || err.name === 'AbortError') return false;
             // TypeError: Failed to fetch 且无 status 字段，通常是DNS/网络层错误
             if (err instanceof TypeError && !err.status) return true;
-            // AbortError 也可能是DNS超时
-            if (err.name === 'AbortError') return true;
             return false;
         },
 

@@ -212,6 +212,8 @@
                     this.applyDeveloperModeState(tbody);
                 })
                 .catch(err => {
+                    // 页面切换导致的请求中止属预期行为，静默返回不渲染错误行
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     var msg = '加载失败';
                     if (err && err.status) msg += ' (HTTP ' + err.status + ')';
                     else if (err && err.message) msg += ' (' + err.message + ')';

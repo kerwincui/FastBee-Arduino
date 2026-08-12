@@ -1013,6 +1013,16 @@
         Governor.abortPageRequests();
     };
 
+    // 识别"页面导航中止"类错误（切换菜单时旧页面请求被主动取消，属预期行为）
+    // 各模块 catch 中应先判断此函数，命中则静默返回，避免误报 DNS/加载失败
+    window.isPageAbortError = function (err) {
+        if (!err) return false;
+        if (err._pageAborted) return true;
+        if (err.name === 'AbortError') return true;
+        if (err.message && /page navigation|aborted/i.test(err.message)) return true;
+        return false;
+    };
+
     window.apiInvalidateCache = function (urlPattern) {
         Governor.invalidateCache(urlPattern);
     };
