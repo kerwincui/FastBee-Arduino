@@ -153,6 +153,7 @@ pwsh -File scripts/deploy.ps1 -Env esp32-F4R0 -Port /dev/ttyUSB0
 | `esp32c3-F4R0-unified` | Unified | ESP32-C3 | 4MB | 无 |
 | `esp32c6-F4R0-unified` | Unified | ESP32-C6 | 4MB | 无 |
 | `esp32s3-F8R4-unified` | Unified | ESP32-S3 | 8MB | 4MB |
+| `esp32s3-F16R8-unified` | Unified | ESP32-S3 | 16MB | 8MB |
 
 > 版本选择的核心依据是 **Flash 容量**和**是否有 PSRAM**。
 1. Flash ≥8MB 的环境均支持 OTA 升级（4MB 环境受空间限制不支持）。
