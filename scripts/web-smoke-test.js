@@ -404,11 +404,15 @@ function checkBootTimingRegressionGuards() {
     assert(!indexHtml.includes("window.addEventListener('load'"), 'SW registration should NOT use load event listener');
 
     const sessionJs = read('web-src/js/state-session.js');
-    // 页面预加载应延迟5000ms，间隔800ms
-    assert(sessionJs.includes('delayMs: 800'), 'page preload interval should be 800ms');
+    // 页面预加载应延迟5000ms，间隔1200ms（降低低内存设备上的并发突发，避免连接超时）
+    assert(sessionJs.includes('delayMs: 1200'), 'page preload interval should be 1200ms');
     assert(sessionJs.includes('}, 5000)'), 'page preload should be delayed 5000ms');
     // modals加载应延迟3000ms
     assert(sessionJs.includes('}, 3000)'), 'modals loading should be delayed 3000ms');
+
+    // 页面片段加载必须带退避重试（设备繁忙/堆压力下偶发连接超时）
+    const pageLoaderJs = read('web-src/js/page-loader.js');
+    assert(pageLoaderJs.includes('_fetchWithRetry'), 'PageLoader must use _fetchWithRetry for page/modals/fragment fetches');
 }
 
 function checkNetworkNotificationRegressionGuards() {
