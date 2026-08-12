@@ -5,6 +5,16 @@
 var PageLoader = {
     _loadedPages: {},
     _loadingPages: {},
+    // 静态资源串行队列：低内存设备（无 PSRAM 的经典 ESP32，最大空闲块仅 ~10KB）
+    // 无法同时支撑多个并发的 HTTP 静态响应，页面/模态框/分片排队串行执行，
+    // 避免响应截断（ERR_CONTENT_LENGTH_MISMATCH）与连接被断开
+    _opChain: null,
+    _enqueueOp(op) {
+        var prev = this._opChain || Promise.resolve();
+        var run = prev.catch(function () {}).then(op);
+        this._opChain = run.catch(function () {});
+        return run;
+    },
     _resolveAssetUrl(path) {
         if (typeof window !== 'undefined' && typeof window.__fastbeeResolveAssetUrl === 'function') {
             return window.__fastbeeResolveAssetUrl(path);
@@ -45,7 +55,7 @@ var PageLoader = {
         if (!moduleName || this._loadedPages[moduleName]) return;
         if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
 
-        this._loadingPages[moduleName] = (async () => {
+        this._loadingPages[moduleName] = this._enqueueOp((async () => {
             var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             var html = await resp.text();
             var container = document.getElementById('content-area');
@@ -62,7 +72,7 @@ var PageLoader = {
             if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
                 i18n.updatePageText(container);
             }
-        })();
+        })());
 
         try {
             await this._loadingPages[moduleName];
@@ -92,19 +102,21 @@ var PageLoader = {
     async loadModals() {
         if (this._loadedPages['modals']) return;
         try {
-            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
-            if (!resp.ok) return;
-            var html = await resp.text();
-            var wrapper = document.createElement('div');
-            wrapper.innerHTML = html;
-            while (wrapper.firstChild) {
-                document.body.appendChild(wrapper.firstChild);
-            }
-            this._loadedPages['modals'] = true;
-            // 若当前语言非中文，翻译新加载的模态框内容
-            if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
-                i18n.updatePageText(document.body);
-            }
+            await this._enqueueOp(async () => {
+                var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
+                if (!resp.ok) return;
+                var html = await resp.text();
+                var wrapper = document.createElement('div');
+                wrapper.innerHTML = html;
+                while (wrapper.firstChild) {
+                    document.body.appendChild(wrapper.firstChild);
+                }
+                this._loadedPages['modals'] = true;
+                // 若当前语言非中文，翻译新加载的模态框内容
+                if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
+                    i18n.updatePageText(document.body);
+                }
+            });
         } catch(e) {
             console.error('[PageLoader] Failed to load modals:', e);
         }
@@ -123,17 +135,19 @@ var PageLoader = {
             return;
         }
         try {
-            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
-            var html = await resp.text();
-            var container = document.getElementById(containerId);
-            if (container) {
-                container.innerHTML = html;
-            }
-            this._loadedPages[cacheKey] = true;
-            // 若当前语言非中文，翻译新加载的分片内容
-            if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
-                i18n.updatePageText(container);
-            }
+            await this._enqueueOp(async () => {
+                var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
+                var html = await resp.text();
+                var container = document.getElementById(containerId);
+                if (container) {
+                    container.innerHTML = html;
+                }
+                this._loadedPages[cacheKey] = true;
+                // 若当前语言非中文，翻译新加载的分片内容
+                if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
+                    i18n.updatePageText(container);
+                }
+            });
             if (typeof onLoaded === 'function') onLoaded();
         } catch(e) {
             console.error('[PageLoader] Failed to load fragment:', fragmentName, e);

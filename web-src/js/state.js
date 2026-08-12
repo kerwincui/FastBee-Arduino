@@ -541,7 +541,16 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         if (navSeq !== this._pageNavSeq) return;
 
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        const target = document.getElementById(normalizedPage + '-page');
+        let target = document.getElementById(normalizedPage + '-page');
+        if (!target) {
+            // 首次加载失败（登录后设备繁忙期静态资源响应可能被截断），
+            // 等待设备恢复后重试一次，避免用户需手动二次点击
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            if (navSeq !== this._pageNavSeq) return;
+            await this.loadPage(normalizedPage + '-page');
+            if (navSeq !== this._pageNavSeq) return;
+            target = document.getElementById(normalizedPage + '-page');
+        }
         if (!target) {
             console.warn('[changePage] target page not found:', page, '=>', normalizedPage);
             return;
