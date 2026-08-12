@@ -146,7 +146,7 @@
                         'network-page',
                         'peripheral-page',
                         'protocol-page'
-                    ], self._pageMapping, { delayMs: 800 }).catch(function() {});
+                    ], self._pageMapping, { delayMs: 1200 }).catch(function() {});
                 }
             }, 5000);
         });

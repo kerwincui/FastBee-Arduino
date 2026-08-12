@@ -567,6 +567,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-periph-exec': '外设执行',
             'page-title-users': '用户管理',
             'page-title-device-control': '设备大屏',
+            'page-title-rule-script': '规则脚本',
+            'page-title-admin': '用户管理',
             'page-title-features': '功能配置'
         };
         if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;

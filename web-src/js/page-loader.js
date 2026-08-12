@@ -13,6 +13,29 @@ var PageLoader = {
     },
 
     /**
+     * 带重试的 fetch（设备繁忙/堆压力下偶发连接超时，退避重试避免页面加载失败）
+     * @param {string} url - 请求地址
+     * @param {number} [retries=3] - 最大重试次数
+     */
+    async _fetchWithRetry(url, retries) {
+        retries = (retries == null) ? 3 : retries;
+        var lastErr;
+        for (var i = 0; i <= retries; i++) {
+            try {
+                var resp = await fetch(url);
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp;
+            } catch (e) {
+                lastErr = e;
+                if (i < retries) {
+                    await new Promise(function(resolve) { setTimeout(resolve, 800 * (i + 1)); });
+                }
+            }
+        }
+        throw lastErr;
+    },
+
+    /**
      * 加载页面 HTML 片段到 content-area
      * @param {string} pageId - 页面元素 ID，如 'dashboard-page'
      * @param {Object} pageMapping - pageId → moduleName 映射表
@@ -23,8 +46,7 @@ var PageLoader = {
         if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
 
         this._loadingPages[moduleName] = (async () => {
-            var resp = await fetch(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             var html = await resp.text();
             var container = document.getElementById('content-area');
             if (container) {
@@ -70,7 +92,7 @@ var PageLoader = {
     async loadModals() {
         if (this._loadedPages['modals']) return;
         try {
-            var resp = await fetch(this._resolveAssetUrl('/pages/modals.html'));
+            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
             if (!resp.ok) return;
             var html = await resp.text();
             var wrapper = document.createElement('div');
@@ -101,8 +123,7 @@ var PageLoader = {
             return;
         }
         try {
-            var resp = await fetch(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
             var html = await resp.text();
             var container = document.getElementById(containerId);
             if (container) {
