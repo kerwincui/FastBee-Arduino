@@ -179,7 +179,7 @@ esptool.py write_flash 0x0 fastbee-esp32s3-F8R4.bin
 - ✅ **测试逻辑对齐**: 单元测试验证 unified architecture 特征
 - ✅ **文档一致性**: 根目录 +docs/目录下无档案例外描述
 - ✅ **构建注释完善**: 一键构建脚本包含完整芯片矩阵说明
-- ✅ **Git 提交记录**: 10 次 commits 覆盖全部改动且 message 清晰
+- ✅ **Git 提交记录**: 11 次 commits 覆盖全部改动且 message 清晰
 - ✅ **向后兼容**: 无破坏性 API 变更，用户固件升级无缝衔接
 
 ---
