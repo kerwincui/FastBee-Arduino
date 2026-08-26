@@ -80,7 +80,7 @@ This index provides quick navigation to all 110+ experience lessons categorized 
 | 1 | 经典 ESP32 舰队设备 Web 可用需 lite 镜像加功能精简 | PSRAM constraints (4MB flash + limited RAM) | Full profile with all features | ✅ Active |
 | 2 | CI 门禁策略冲突与固件档位收敛决策 | Balance between feature richness and stability | More aggressive feature enablement | ✅ Active |
 | 3 | 设备差异统一收口 ChipConfig.h 与通用架构静态门禁 | Code maintainability across platforms | Device-specific forks | ✅ Active |
-| 4 | Lite vs Full Web profile selection criteria | Hardware resource constraints vs UX | Unified single profile | ✅ Decided: Lite for classic, Full for S3 with >8MB |
+| 4 | Web Profile Selection Criteria (Unified Architecture Decision) | Hardware resource constraints vs UX | Single unified profile for all chips | ✅ Decided: No product tier differentiation since v2.0 |
 | 5 | mqtt_test_connection save+restart approach | Eliminates clientId collision | Direct reconnect method | ✅ Active |
 
 ---
