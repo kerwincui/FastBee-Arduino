@@ -13,6 +13,33 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
 </p>
 
+---
+
+# FastBee-Arduino
+
+> **Unified Architecture v2.0**: Single firmware variant, no product tier differentiation
+
+## Architecture Overview
+
+FastBee-Arduino is a **zero-code Web IoT firmware framework** for the ESP32 series. Starting from v2.0, the project has fully upgraded to **Unified Architecture** with the following characteristics:
+
+- **Single Firmware Artifact**: All chip variants (esp32/c3/c6/s3) use unified build configuration (`unified_flags`)
+- **No Product Tiers**: No longer distinguishes between lite/standard/full tiers; all features are compiled by default
+- **Flexible Feature Flags**: Dynamically enable/disable feature modules via `data/config/features.json`
+- **Intelligent Memory Protection**: `FeatureBudget` mechanism detects DRAM watermarks at boot and automatically downgrades memory-intensive features
+- **Reduced Maintenance Cost**: One build pipeline, one E2E test suite, one documentation system
+
+### Architecture Evolution Timeline
+
+| Version | Release Date | Architecture Characteristics | Notes |
+|---------|--------------|-------------------------------|-------|
+| v1.x    | 2024-Q1      | Three-tier separation (lite/standard/full) | Deprecated |
+| v2.0    | 2026-08      | Unified Architecture           | **Current Version** |
+
+📚 **Migration Guide**: For differences between v1.x upgrade to v2.0, please refer to [`docs/architecture/unified-v2-migration.md`](file:docs/architecture/unified-v2-migration.md).
+
+---
+
 FastBee-Arduino is a zero-code Web IoT firmware for the ESP32 full series. After flashing, configure networking, devices, protocols, peripherals, and rules entirely from a browser. Suitable for ESP32 nodes, lightweight gateways, and field data-acquisition & control terminals. Whether you're a beginner or a professional developer, FastBee-Arduino helps you develop and mass-produce IoT devices quickly and easily.
 
 Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
