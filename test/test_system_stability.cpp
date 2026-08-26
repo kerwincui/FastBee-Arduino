@@ -2123,16 +2123,19 @@ void test_source_code_resource_profile_explicit_profiles() {
     TEST_ASSERT_TRUE_MESSAGE(!flags.empty(), "FeatureFlags.h must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!profile.empty(), "ResourceProfile.h must be readable");
 
+    // Unified Architecture v2.0: verify unified_flags configuration exists
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("-DFASTBEE_PROFILE_LITE=1") != std::string::npos,
-        "Lite flag section must define FASTBEE_PROFILE_LITE");
-    TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("-DFASTBEE_PROFILE_STANDARD=1") != std::string::npos,
-        "Standard flag section must define FASTBEE_PROFILE_STANDARD");
+        pio.find("[unified_flags]") != std::string::npos,
+        "Unified architecture must define [unified_flags] section");
+    
     TEST_ASSERT_TRUE_MESSAGE(
         pio.find("-DFASTBEE_PROFILE_FULL=1") != std::string::npos,
-        "Full flag section must define FASTBEE_PROFILE_FULL");
-    TestLog::step("platformio.ini profile markers present");
+        "Unified architecture must define FASTBEE_PROFILE_FULL=1");
+    
+    TestLog::step("platformio.ini unified_flags configuration present");
+
+    // Legacy profile sections are deprecated (commented out in platformio.ini)
+    // No need to verify lite/standard/full sections exist anymore
 
     TEST_ASSERT_TRUE_MESSAGE(
         flags.find("#define FASTBEE_PROFILE_LITE 0") != std::string::npos &&
@@ -2141,17 +2144,9 @@ void test_source_code_resource_profile_explicit_profiles() {
         "FeatureFlags.h must provide safe defaults for all profile markers");
     TestLog::step("FeatureFlags defaults present");
 
-    TEST_ASSERT_TRUE_MESSAGE(
-        profile.find("#elif FASTBEE_PROFILE_FULL") != std::string::npos,
-        "ResourceProfile.h must select full profile by explicit profile marker");
-    TEST_ASSERT_TRUE_MESSAGE(
-        profile.find("#elif FASTBEE_PROFILE_STANDARD") != std::string::npos &&
-        profile.find("esp32-standard") != std::string::npos,
-        "ResourceProfile.h must contain an explicit standard profile");
-    TEST_ASSERT_TRUE_MESSAGE(
-        profile.find("FASTBEE_ENABLE_RULE_SCRIPT || FASTBEE_ENABLE_OTA || FASTBEE_ENABLE_ETHERNET || FASTBEE_ENABLE_CELLULAR") == std::string::npos,
-        "Full resource profile must not be inferred from individual feature switches");
-    TestLog::step("ResourceProfile uses explicit profile markers");
+    // Unified Architecture v2.0 no longer distinguishes product tiers
+    // ResourceProfile.h is maintained for backward compatibility
+    // All features compile into single firmware; runtime FeatureBudget handles memory protection
 
     TestLog::testEnd(true);
 }
