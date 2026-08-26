@@ -30,7 +30,7 @@
 | `name` | 检查项名称，出现在测试报告中 |
 | `method` | HTTP 方法 |
 | `path` | API 路径 |
-| `profiles` | 适用环境：出厂一律使用 full profile（统一固件，无裁剪）；`lite/standard` 仅用于自定义裁剪构建实验 |
+| `profiles` | 适用环境：出厂一律使用 unified full profile(统一固件，无裁剪)；`lite/standard/full` 仅用于实验性自定义构建测试 |
 | `auth` | 是否需要登录后的 Bearer Token |
 | `type` | 特殊检查类型：`multi-session`、`bearer-over-cookie`、`expect-unavailable`、`expect-error` |
 | `jsonBody` | POST/PUT 请求体 |
@@ -55,13 +55,13 @@
 | 脚本 | 说明 |
 |------|------|
 | `build-app-bundle.js`、`build-admin-bundle.js`、`build-web-assets.js`、`build-web-modules.js` | 从 `web-src` 构建 `data/www` 资源 |
-| `gzip-www.js` | 压缩 Web 静态资源并组装 LittleFS staging（2026-08 镜像统一化后出厂一律 full 档，不裁剪页面；`--web-lite/--web-standard` 仅供自定义裁剪构建） |
+| `gzip-www.js` | 压缩 Web 静态资源并组装 LittleFS staging (Unified Architecture v2.0:单一完整固件和镜像) |
 | `generate-sw-manifest.js` | 生成 Service Worker 资源清单 |
 | `minify-js.js` | 轻量 JS 压缩器 |
 | `validate-i18n.js` | 校验中英文 i18n 键完整性 |
-| `validate-config-defaults.js` | 校验默认外设模板、执行规则和版本裁剪后的引用安全性；追加 `--staging-root .pio\fs-staging --latest-only` 可检查刚生成的 LittleFS staging |
+| `validate-config-defaults.js` | 校验默认外设模板、执行规则和版本裁剪后的引用安全性 |
 | `web-smoke-test.js` | 校验生成后的 Web 资源引用和启动资源 |
-| `web-profile.js` | Web profile 判定（出厂构建一律 full；lite/standard 裁剪路径仅供自定义构建保留） |
+| `web-profile.js` | Web profile 判定 (Unified Architecture v2.0:所有设备使用 full profile，不再区分版本) |
 | `web-asset-report.js` | 统一 Web 资源体积报告；`--source` 查看源文件体积，`--json` 输出 JSON |
 
 ## 维护诊断
