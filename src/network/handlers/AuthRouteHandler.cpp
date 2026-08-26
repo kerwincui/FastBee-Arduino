@@ -4,7 +4,67 @@
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/ChipConfig.h"
 #include <ArduinoJson.h>
+
+// ============ 登录异步化 ============
+// PBKDF2 验证需秒级 CPU：若在 lwIP 线程同步执行，整个网络栈
+// （TCP ACK/SSE/其他 API）被阻塞数秒，浏览器套件与并发请求表现为
+// 连接超时/复位。因此用 ESPAsyncWebServer 的请求延续（pause/weak_ptr）
+// 把登录验证移到独立工作任务，完成后再回包；客户端中途断连时
+// weak_ptr 自动失效，不会回包到已销毁的请求。
+// AuthManager/UserManager 内部的会话表/用户表已由各自的递归互斥量保护。
+
+namespace {
+
+// 并发登录任务槽：防止恶意并发登录请求堆叠多个 PBKDF2 计算
+SemaphoreHandle_t loginSlotMutex() {
+    static SemaphoreHandle_t sem = xSemaphoreCreateCounting(2, 2);
+    return sem;
+}
+
+struct LoginJob {
+    WebHandlerContext* ctx;
+    AsyncWebServerRequestPtr held;  // 暂停请求的弱引用，客户端断连即失效
+    String username;
+    String password;
+    String ipAddress;
+    String userAgent;
+};
+
+void loginTask(void* arg) {
+    LoginJob* job = static_cast<LoginJob*>(arg);
+    AuthResult result = job->ctx->authManager->login(
+        job->username, job->password, job->ipAddress, job->userAgent);
+
+    // 客户端可能已断开：weak_ptr 失效则静默丢弃结果
+    if (auto request = job->held.lock()) {
+        if (result.success) {
+            JsonDocument responseDoc;
+            responseDoc["success"] = true;
+            responseDoc["sessionId"] = result.sessionId;
+            responseDoc["username"] = result.username;
+
+            String jsonStr;
+            serializeJson(responseDoc, jsonStr);
+            AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
+
+            String cookieValue = result.sessionId + "; Path=/; Max-Age=" + String(3600);
+            response->addHeader("Set-Cookie", "sessionId=" + cookieValue);
+            response->addHeader("Set-Cookie", "session=" + cookieValue);
+            response->addHeader("Connection", "close");
+            request->send(response);
+        } else {
+            job->ctx->sendError(request.get(), 401, result.errorMessage);
+        }
+    }
+
+    xSemaphoreGive(loginSlotMutex());
+    delete job;
+    vTaskDelete(nullptr);
+}
+
+}  // namespace
 
 AuthRouteHandler::AuthRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -57,26 +117,36 @@ void AuthRouteHandler::handleLogin(AsyncWebServerRequest* request) {
         return;
     }
 
-    AuthResult result = ctx->authManager->login(username, password, ipAddress, userAgent);
-
-    if (result.success) {
-        JsonDocument responseDoc;
-        responseDoc["success"] = true;
-        responseDoc["sessionId"] = result.sessionId;
-        responseDoc["username"] = result.username;
-
-        String jsonStr;
-        serializeJson(responseDoc, jsonStr);
-        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
-
-        String cookieValue = result.sessionId + "; Path=/; Max-Age=" + String(3600);
-        response->addHeader("Set-Cookie", "sessionId=" + cookieValue);
-        response->addHeader("Set-Cookie", "session=" + cookieValue);
-        response->addHeader("Connection", "close");
-        request->send(response);
-    } else {
-        ctx->sendError(request, 401, result.errorMessage);
+    // 登录槽满（已有 2 个 PBKDF2 在算）：直接 503，避免任务堆叠
+    if (xSemaphoreTake(loginSlotMutex(), 0) != pdTRUE) {
+        ctx->sendError(request, 503, "Server busy, please retry");
+        return;
     }
+
+    LoginJob* job = new LoginJob();
+    job->ctx = ctx;
+    job->held = request->pause();  // 请求延续：handler 返回后不触发 501 兜底
+    job->username = username;
+    job->password = password;
+    job->ipAddress = ipAddress;
+    job->userAgent = userAgent;
+
+    // 双核芯片钉到 APP 核（核 1），把核 0 留给 WiFi/lwIP；
+    // 单核芯片（C3/C6）普通创建：PBKDF2 任务优先级低于 lwIP tcpip 任务，
+    // 网络栈仍可及时响应（此前同步执行时正是 lwIP 线程自身被占住）
+    BaseType_t ok;
+#if CHIP_DUAL_CORE
+    ok = xTaskCreatePinnedToCore(loginTask, "fb_login", 8192, job, 1, nullptr, 1);
+#else
+    ok = xTaskCreate(loginTask, "fb_login", 8192, job, 1, nullptr);
+#endif
+    if (ok != pdPASS) {
+        xSemaphoreGive(loginSlotMutex());
+        job->ctx->sendError(request, 503, "Login task create failed");
+        delete job;
+        return;
+    }
+    // 回包由 loginTask 在验证完成后发出
 }
 
 void AuthRouteHandler::handleLogout(AsyncWebServerRequest* request) {

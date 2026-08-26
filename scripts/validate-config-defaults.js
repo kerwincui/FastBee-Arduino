@@ -78,7 +78,6 @@ function getRuleTriggers(rule) {
 
 function shouldKeepProfilePeripheral(item, profile) {
     const id = String((item && item.id) || '');
-    if (id === 'modbus_tcp') return false;
     if (profile === 'lite' && (id === 'modbus_rtu' || id === 'ethernet')) return false;
     if (COMPACT_TEMPLATE_PERIPHERALS.has(id)) return true;
     return item && item.enabled !== false;
@@ -305,6 +304,17 @@ function main() {
     const peripheralsDoc = readJson(path.join(DATA_CONFIG_DIR, 'peripherals.json'));
     const execDoc = readJson(path.join(DATA_CONFIG_DIR, 'periph_exec.json'));
     const rules = getRules(execDoc);
+
+    // data/config 双重身份：出厂模板 vs 设备运行态备份（如 bak-s3 还原）。
+    // 存在已启用的外设/规则即为运行态备份，出厂默认断言不适用，
+    // 与 test/test_c3_config_adaptation.cpp 工厂守卫的 runtimeBackup 检测一致。
+    const hasEnabledPeripheral = (getPeripherals(peripheralsDoc) || []).some((p) => p && p.enabled === true);
+    const hasEnabledRule = rules.some((rule) => rule && rule.enabled === true);
+    if (hasEnabledPeripheral || hasEnabledRule) {
+        console.log('FastBee config defaults SKIPPED: data/config holds a runtime device backup; factory default checks not applicable');
+        process.exit(0);
+    }
+
     const issues = [];
     const stageRootArg = readArgValue('--staging-root');
     const latestOnly = process.argv.includes('--latest-only');

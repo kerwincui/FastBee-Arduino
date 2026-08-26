@@ -4,6 +4,10 @@
  *       最终 registerModule 调用由入口 protocol.js 在所有子模块加载完成后执行
  */
 (function() {
+    function t(key, fallback) {
+        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
+    }
+
     Object.assign(AppState, {
 
         // ============ 状态变量 ============
@@ -81,6 +85,22 @@
                 } else if (newScheme === 'mqtt' && (currentPort === 8883 || !portEl.value)) {
                     portEl.value = 1883;
                 }
+                // 切换到 mqtts 时提醒内存占用与功能开关状态：
+                // TLS 握手需 ~42KB DRAM，功能配置页未启用时设备会拒绝连接
+                if (newScheme === 'mqtts' && typeof Notification !== 'undefined' && typeof apiGet === 'function') {
+                    apiGet('/api/features/status').then(function(res) {
+                        var feats = res && res.data && res.data.features;
+                        var f = Array.isArray(feats) ? feats.find(function(x) { return x.key === 'mqtts'; }) : null;
+                        if (!f) return;
+                        if (!f.compiled) {
+                            Notification.warning(t('proto-mqtts-not-compiled', 'MQTTS 未编入当前固件，无法使用'), 'MQTTS');
+                        } else if (!f.active) {
+                            Notification.warning(t('proto-mqtts-mem-hint', 'TLS 需约 42KB 内存：请先到功能配置页启用「MQTTS 加密传输」，否则设备将拒绝连接'), 'MQTTS');
+                        } else {
+                            Notification.info(t('proto-mqtts-enabled-hint', 'MQTTS 已启用：TLS 握手约占用 42KB 内存'), 'MQTTS');
+                        }
+                    }).catch(function() { /* 状态查询失败不阻断配置流程 */ });
+                }
             }) || boundAny;
             if (boundAny) this._protocolEventsBound = true;
         },
@@ -129,7 +149,7 @@
             if (loading) {
                 if (!button.dataset.fbOriginalText) button.dataset.fbOriginalText = button.textContent || '';
                 button.disabled = true;
-                button.textContent = '加载中...';
+                button.textContent = t('common-loading', '加载中...');
                 return;
             }
             if (button.dataset.fbOriginalText) {
@@ -145,7 +165,7 @@
                 return;
             }
             if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') {
-                Notification.error('加载失败，请刷新重试');
+                Notification.error(t('common-load-fail-retry', '加载失败，请刷新重试'));
                 return;
             }
 
@@ -167,7 +187,7 @@
                 self._setProtocolActionLoading(self._modbusControlPendingButton, false);
                 self._modbusControlPendingButton = null;
                 self._modbusControlPendingIndex = -1;
-                Notification.error('加载失败，请刷新重试');
+                Notification.error(t('common-load-fail-retry', '加载失败，请刷新重试'));
             }, 20000);
 
             ModuleLoader.loadModule('protocol-modbus-control', function() {
@@ -186,7 +206,7 @@
                 if (typeof self._openCtrlModal === 'function' && targetIndex >= 0) {
                     self._openCtrlModal(targetIndex);
                 } else {
-                    Notification.error('加载失败，请刷新重试');
+                    Notification.error(t('common-load-fail-retry', '加载失败，请刷新重试'));
                 }
             });
         },
@@ -230,7 +250,7 @@
             if (!fragInfo) return;
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
-            var title = '加载中...';
+            var title = t('common-loading', '加载中...');
             container.innerHTML = '<div class="fb-loading-placeholder protocol-loading-placeholder">' +
                 '<div class="fb-loading-placeholder-title">' + title + '</div>' +
                 '</div>';
@@ -242,7 +262,7 @@
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
             container.innerHTML = '<div class="message message-error">' +
-                escapeHtml(message || '加载失败，请刷新重试') +
+                escapeHtml(message || t('common-load-fail-retry', '加载失败，请刷新重试')) +
                 '</div>';
         },
 
@@ -324,14 +344,14 @@
             var label = task.name || task.label || ('Slave ' + (task.slaveAddress || 1));
             var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
             var mappingCount = (task.mappings && task.mappings.length) || 0;
-            if (mappingCount > 0) info += ' [' + mappingCount + '映射]';
+            if (mappingCount > 0) info += ' [' + mappingCount + ' ' + t('proto-mapping-count', '映射') + ']';
             // 采集任务始终允许打开寄存器映射配置：
             // - JSON 模式：映射用于解析寄存器为物模型属性
             // - 透传模式：映射仍可用于本地缓存展示（device-control/render.js 依赖 mappings）
             var actions = [
-                this._renderProtocolActionButton('编辑', 'primary', 'edit-device', index, 'sensor'),
-                this._renderProtocolActionButton('映射', 'warning', 'open-mapping', index),
-                this._renderProtocolActionButton('删除', 'danger', 'delete-device', index, 'sensor')
+                this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'edit-device', index, 'sensor'),
+                this._renderProtocolActionButton(t('proto-btn-mapping', '映射'), 'warning', 'open-mapping', index),
+                this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'delete-device', index, 'sensor')
             ];
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
@@ -352,9 +372,9 @@
                 '<td><small>' + escapeHtml(this._getProtocolControlDeviceInfo(device)) + '</small></td>' +
                 '<td>' + this._renderProtocolStatus(device.enabled) + '</td>' +
                 this._renderProtocolActionCell([
-                    this._renderProtocolActionButton('编辑', 'primary', 'edit-device', index, 'control'),
-                    this._renderProtocolActionButton('控制', 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton('删除', 'danger', 'delete-device', index, 'control')
+                    this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'edit-device', index, 'control'),
+                    this._renderProtocolActionButton(t('proto-btn-control', '控制'), 'warning', 'open-control-modal', index),
+                    this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'delete-device', index, 'control')
                 ]) +
                 '</tr>';
         },
@@ -371,9 +391,9 @@
                 '<td>' + (protocolLabels[controlProtocol] || 'Coil') + '</td>' +
                 '<td>' + (device.ncMode ? 'ON' : '-') + '</td>' +
                 this._renderProtocolActionCell([
-                    this._renderProtocolActionButton('编辑', 'primary', 'open-edit-modal', index),
-                    this._renderProtocolActionButton('控制', 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton('删除', 'danger', 'remove-device', index)
+                    this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'open-edit-modal', index),
+                    this._renderProtocolActionButton(t('proto-btn-control', '控制'), 'warning', 'open-control-modal', index),
+                    this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'remove-device', index)
                 ]) +
                 '</tr>';
         },

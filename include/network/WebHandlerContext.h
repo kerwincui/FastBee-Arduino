@@ -19,6 +19,7 @@ class OTAManager;
 class ProtocolManager;
 class SSERouteHandler;
 class WebConfigManager;
+class BLEProvisioner;
 
 // JSON 文档大小限制
 #define JSON_DOC_SMALL  512
@@ -42,6 +43,7 @@ public:
     OTAManager*     otaManager;
     ProtocolManager* protocolManager;
     SSERouteHandler* sseHandler;
+    BLEProvisioner* bleProvisioner;   // BLE 配网器（FASTBEE_ENABLE_BLE=0 时为 nullptr）
 
     // ============ 共享状态 ============
     String webRootPath;

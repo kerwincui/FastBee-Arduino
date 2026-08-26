@@ -2,7 +2,7 @@
 PlatformIO hook for FastBee filesystem profiles and release artifacts.
 
 Responsibilities:
-1. Map each PlatformIO environment to a Lite/Standard/Full filesystem profile.
+1. Map each PlatformIO environment to a filesystem profile (unified: all full).
 2. Build a clean profile-specific staging directory before buildfs/uploadfs.
 3. Copy the latest per-environment binaries into dist/firmware/<env>/.
 4. Generate merged factory images with esptool when the required pieces exist.
@@ -20,15 +20,18 @@ from SCons.Script import COMMAND_LINE_TARGETS  # type: ignore
 Import("env")  # type: ignore[name-defined]
 
 
+# Web 镜像统一化：所有设备使用统一的 full 档
+# Flash 空间充足（LittleFS = 1MB, web ~320KB），无需按 profile 裁剪
+# 内存压力通过 runtime TCP queue optimization 解决
 ENV_TO_PROFILE = {
-    "esp32c3-F4R0": "lite",
-    "esp32c6-F4R0": "lite",
-    "esp32-F4R0": "standard",
-    "esp32-F8R4": "full",
-    "esp32s3-F8R0": "standard",
+    "esp32c3-F4R0": "full",   # All devices use unified full web image
+    "esp32c6-F4R0": "full",
+    "esp32-F4R0": "full",     # Classic ESP32 uses full (TCP queue 32→8)
     "esp32s3-F8R4": "full",
     "esp32s3-F16R8": "full",
 }
+
+# No more lite/standard profiles - all unified
 
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}
 

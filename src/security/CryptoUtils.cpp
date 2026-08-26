@@ -8,6 +8,8 @@
 #include "security/CryptoUtils.h"
 #include "systems/LoggerSystem.h"
 #include <esp_system.h>
+#include <mbedtls/pkcs5.h>
+#include <mbedtls/md.h>
 
 
 CryptoUtils::CryptoUtils() : initialized(false) {
@@ -542,30 +544,44 @@ CryptoResult CryptoUtils::pbkdf2(const String& password, const String& salt,
                                 uint32_t iterations, size_t keyLength,
                                 HashAlgorithm algorithm) {
     CryptoResult result;
-    
-    // 简化实现 - 实际应该使用mbedtls_pkcs5_pbkdf2_hmac
-    // 这里使用多次哈希来模拟
-    
-    String currentHash = password + salt;
-    
-    for (uint32_t i = 0; i < iterations; i++) {
-        auto hashResult = hash(currentHash, algorithm);
-        if (!hashResult.success) {
-            result.error = "PBKDF2 failed at iteration " + String(i);
+
+    if (!initialized && !initialize()) {
+        result.error = "Crypto utils not initialized";
+        return result;
+    }
+
+    // 映射哈希算法到 mbedtls md 类型
+    mbedtls_md_type_t mdType;
+    switch (algorithm) {
+        case HashAlgorithm::MD5:
+            mdType = MBEDTLS_MD_MD5;
+            break;
+        case HashAlgorithm::SHA256:
+            mdType = MBEDTLS_MD_SHA256;
+            break;
+        default:
+            result.error = "PBKDF2: unsupported hash algorithm";
             return result;
-        }
-        currentHash = hashResult.data;
     }
-    
-    // 截取所需长度
-    if (keyLength * 2 <= currentHash.length()) {
-        currentHash = currentHash.substring(0, keyLength * 2);
+
+    // mbedtls 原生 PBKDF2-HMAC 实现（ESP-IDF 仅提供 _ext 变体）
+    uint8_t* output = new uint8_t[keyLength];
+    int ret = mbedtls_pkcs5_pbkdf2_hmac_ext(mdType,
+                                            (const uint8_t*)password.c_str(), password.length(),
+                                            (const uint8_t*)salt.c_str(), salt.length(),
+                                            (unsigned int)iterations, (uint32_t)keyLength, output);
+
+    if (ret != 0) {
+        delete[] output;
+        result.error = "PBKDF2 failed: " + String(ret);
+        return result;
     }
-    
+
     result.success = true;
-    result.data = currentHash;
+    result.data = bytesToHex(output, keyLength);
     result.outputLength = keyLength;
-    
+
+    delete[] output;
     return result;
 }
 

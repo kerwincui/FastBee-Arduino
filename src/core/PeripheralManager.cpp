@@ -695,6 +695,28 @@ const PeripheralConfig* PeripheralManager::getPeripheral(const String& id) const
     return nullptr;
 }
 
+// C 字符串零分配查找：std::less<String> 非透明比较器导致 find(const char*)
+// 会隐式构造 String（堆分配），热路径改为线性扫描 strcmp 规避
+PeripheralConfig* PeripheralManager::getPeripheralCStrLocked(const char* id) {
+    if (!id || id[0] == '\0') return nullptr;
+    for (auto& pair : peripherals) {
+        if (strcmp(pair.first.c_str(), id) == 0) {
+            return &pair.second;
+        }
+    }
+    return nullptr;
+}
+
+PeripheralRuntimeState* PeripheralManager::getRuntimeStateCStrLocked(const char* id) {
+    if (!id || id[0] == '\0') return nullptr;
+    for (auto& pair : runtimeStates) {
+        if (strcmp(pair.first.c_str(), id) == 0) {
+            return &pair.second;
+        }
+    }
+    return nullptr;
+}
+
 std::vector<PeripheralConfig> PeripheralManager::getPeripheralsByType(PeripheralType type) const {
     RecursiveMutexGuard lock(_mutex);
     std::vector<PeripheralConfig> result;
@@ -820,6 +842,21 @@ bool PeripheralManager::initHardware(const String& id) {
         return false;
     }
 
+    // 2026-08-13: 保留引脚安全网。启动时从 peripherals.json 加载的配置不经过
+    // validateConfig，若含芯片保留引脚（如 S3 Octal PSRAM 的 GPIO25/33-37），
+    // pinMode/digitalRead 会踩坏 PSRAM 总线导致 TG1WDT 复位循环（实测）。
+    // 此处统一拦截并标记 ERROR，后续轮询循环也不再触碰该外设。
+    for (uint8_t i = 0; i < config->pinCount && i < 8; i++) {
+        if (config->pins[i] != 255 && isReservedPin(config->pins[i])) {
+            LOG_ERRORF("Peripheral Manager: '%s' rejected, GPIO%d is reserved on %s",
+                       id.c_str(), config->pins[i], CHIP_NAME);
+            if (runtimeStates.find(id) != runtimeStates.end()) {
+                runtimeStates[id].status = PeripheralStatus::PERIPHERAL_ERROR;
+            }
+            return false;
+        }
+    }
+
     bool success = setupHardware(*config);
 
     if (runtimeStates.find(id) != runtimeStates.end()) {
@@ -870,6 +907,38 @@ bool PeripheralManager::initAllEnabledPeripherals() {
     LOG_INFOF("Peripheral Manager: Initialized %d peripherals, %d failed",
               successCount, failCount);
     return failCount == 0;
+}
+
+// 外设类型 → 网络依赖功能 key 映射（仅列出 setupHardware 中早期 eager 初始化、
+// 且被 requiresNetwork 门控的类型）。返回 nullptr 表示该类型不受网络延迟门控。
+// 说明：I2C 传感器(BMP280/MPU6050)与 RFID 为惰性初始化（轮询/使用时才 begin），
+//       天然落在网络就绪之后，无需在此重试；此处仅覆盖启动期被跳过的 eager 类型。
+static const char* deferredFeatureKeyForType(PeripheralType type) {
+    switch (type) {
+        case PeripheralType::IR_RECEIVER: return "irRemote";
+        default: return nullptr;
+    }
+}
+
+int PeripheralManager::retryDeferredPeripherals() {
+    int retried = 0, ok = 0;
+    for (auto& pair : peripherals) {
+        if (!pair.second.enabled) continue;
+        auto* rtState = getRuntimeState(pair.first);
+        if (!rtState || rtState->status != PeripheralStatus::PERIPHERAL_ERROR) continue;
+        const char* featureKey = deferredFeatureKeyForType(pair.second.type);
+        if (!featureKey) continue;  // 非网络延迟门控类型，不重试（避免误触真实硬件故障）
+        // 网络就绪后门控解除才重试（此时 shouldEnable 应返回 true）
+        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable(featureKey)) continue;
+        rtState->status = PeripheralStatus::PERIPHERAL_ENABLED;
+        if (initHardware(pair.first)) ok++;
+        retried++;
+    }
+    if (retried > 0) {
+        LOG_INFOF("Peripheral Manager: Deferred init retry after network: %d/%d succeeded",
+                  ok, retried);
+    }
+    return ok;
 }
 
 // ========== GPIO兼容层 ==========
@@ -951,6 +1020,9 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
 
     uint8_t pin = config->getPrimaryPin();
     if (pin == 255) return GPIOState::STATE_UNDEFINED;
+    // 保留引脚守卫：按键扫描等周期轮询会对未成功初始化的外设反复 read，
+    // 触碰保留引脚（如 S3 Octal PSRAM 的 GPIO25）会产生错误风暴甚至踩坏总线
+    if (isReservedPin(pin)) return GPIOState::STATE_UNDEFINED;
 
     GPIOState state;
 
@@ -977,6 +1049,48 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
 
     // 返回物理状态（电平反转已迁移至外设执行）
     return state;
+}
+
+// 热路径零分配版本：普通 GPIO 数字输入直接物理读取，全程无堆操作；
+// Modbus/雷达/编码器/RF 等依赖 String 接口的特例外设回退委托原实现
+GPIOState PeripheralManager::readPinByCStr(const char* peripheralId) {
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId);
+    if (!config) return GPIOState::STATE_UNDEFINED;
+
+    // 特例外设回退：构造一次 String 委托原实现（低频路径，可接受；
+    // _mutex 为递归锁，原实现内部再次加锁安全）
+    if (config->isModbusPeripheral() ||
+        config->type == PeripheralType::RADAR_SENSOR ||
+        config->type == PeripheralType::ENCODER ||
+        config->type == PeripheralType::RF_MODULE) {
+        return readPin(String(peripheralId));
+    }
+
+    if (!config->isGPIOPeripheral()) {
+        return GPIOState::STATE_UNDEFINED;
+    }
+
+    uint8_t pin = config->getPrimaryPin();
+    if (pin == 255) return GPIOState::STATE_UNDEFINED;
+    if (isReservedPin(pin)) return GPIOState::STATE_UNDEFINED;
+
+    switch (config->type) {
+        case PeripheralType::GPIO_DIGITAL_INPUT:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
+            return digitalRead(pin) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+
+        case PeripheralType::GPIO_ANALOG_INPUT:
+            return analogRead(pin) > 2048 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+
+        default:
+            break;
+    }
+
+    // 输出类型：返回最后设置的状态（零分配查运行时状态表）
+    auto* rt = getRuntimeStateCStrLocked(peripheralId);
+    return rt ? rt->state.gpio.currentState : GPIOState::STATE_UNDEFINED;
 }
 
 bool PeripheralManager::writePin(uint8_t pin, GPIOState state) {
@@ -1059,6 +1173,57 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     return success;
 }
 
+// 热路径零分配版本：普通 GPIO 数字输出直接写物理电平，全程无堆操作；
+// Modbus/编码器回退委托原实现
+bool PeripheralManager::writePinByCStr(const char* peripheralId, GPIOState state) {
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId);
+    if (!config) return false;
+
+    // 特例外设回退：构造一次 String 委托原实现（低频路径）
+    if (config->isModbusPeripheral() || config->type == PeripheralType::ENCODER) {
+        return writePin(String(peripheralId), state);
+    }
+
+    if (!config->isGPIOPeripheral()) return false;
+
+    uint8_t pin = config->getPrimaryPin();
+    if (pin == 255) return false;
+
+    bool success = true;
+    switch (config->type) {
+        case PeripheralType::GPIO_DIGITAL_OUTPUT:
+            if (config->params.gpio.passive) {
+                uint32_t maxDuty = (1U << config->params.gpio.pwmResolution) - 1;
+                ledcWrite(pin, state == GPIOState::STATE_HIGH ? (maxDuty / 2) : 0);
+            } else {
+                digitalWrite(pin, state == GPIOState::STATE_HIGH ? HIGH : LOW);
+            }
+            break;
+
+        case PeripheralType::GPIO_PWM_OUTPUT:
+        case PeripheralType::GPIO_ANALOG_OUTPUT:
+            ledcWrite(pin, state == GPIOState::STATE_HIGH
+                ? (uint32_t)((1U << config->params.gpio.pwmResolution) - 1) : 0U);
+            break;
+
+        default:
+            success = false;
+            break;
+    }
+
+    // 零分配更新运行时状态（仅已存在的条目，避免误插入触发堆分配）
+    if (success) {
+        auto* rt = getRuntimeStateCStrLocked(peripheralId);
+        if (rt) {
+            rt->state.gpio.currentState = state;
+            rt->lastActivity = millis();
+        }
+    }
+
+    return success;
+}
+
 bool PeripheralManager::togglePin(uint8_t pin) {
     String id = getPinPeripheralId(pin);
     if (id.isEmpty()) return false;
@@ -1099,6 +1264,26 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
     }
 
     uint32_t maxVal = (1U << config->params.gpio.pwmResolution) - 1;
+
+    // AO 模拟量输出模式：输入值视为 0-100% 百分比，线性映射到
+    // [aoMinPct, aoMaxPct] 区间的占空比（无 DAC 芯片的工业 AO 方案）。
+    // 边界钳位：超范围输入收敛到区间两端，避免执行器过冲。
+    if (config->params.gpio.aoMode) {
+        uint32_t pct = dutyCycle > 100 ? 100 : dutyCycle;
+        uint8_t lo = config->params.gpio.aoMinPct;
+        uint8_t hi = config->params.gpio.aoMaxPct;
+        if (lo > hi) { uint8_t t = lo; lo = hi; hi = t; }
+        if (hi > 100) hi = 100;
+        uint32_t mappedPct = lo + (hi - lo) * pct / 100;
+        uint32_t duty = (uint32_t)((uint64_t)maxVal * mappedPct / 100);
+        if (isPassiveGPIO) {
+            ledcWrite(config->getPrimaryPin(), duty);
+        } else {
+            ledcWrite(config->params.gpio.pwmChannel, duty);
+        }
+        return true;
+    }
+
     uint32_t duty = dutyCycle > maxVal ? maxVal : dutyCycle;
     if (isPassiveGPIO) {
         ledcWrite(config->getPrimaryPin(), duty);  // pin-based API
@@ -1116,7 +1301,10 @@ uint16_t PeripheralManager::readAnalog(uint8_t pin) {
 }
 
 uint16_t PeripheralManager::readAnalog(const String& peripheralId) {
-    auto config = getPeripheral(peripheralId);
+    // 持锁保护整个函数体：getPeripheral 返回的裸指针仅在持锁期间有效，
+    // 与 readAnalogByCStr 对齐，防止并发 removePeripheral 导致指针失效
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId.c_str());
     if (!config) return 0;
 
     if (config->type != PeripheralType::GPIO_ANALOG_INPUT &&
@@ -1126,8 +1314,76 @@ uint16_t PeripheralManager::readAnalog(const String& peripheralId) {
 
     uint8_t pin = config->getPrimaryPin();
     if (pin == 255) return 0;
+    // 保留引脚守卫（同 readPin）：避免周期采样触碰 PSRAM/Flash 总线引脚
+    if (isReservedPin(pin)) return 0;
+
+    // ADC 类型外设支持多采样滤波（GPIO_ANALOG_INPUT 保持单次采样原行为）
+    if (config->type == PeripheralType::ADC) {
+        uint8_t samples = config->params.adc.sampleCount;
+        if (samples < 1) samples = 1;
+        if (samples > 16) samples = 16;
+        uint8_t mode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+        return adcFilterRead(pin, samples, mode);
+    }
 
     return (uint16_t)analogRead(pin);
+}
+
+// 热路径零分配版本：轮询执行器 AI 读取主入口，全程无堆操作
+uint16_t PeripheralManager::readAnalogByCStr(const char* peripheralId) {
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId);
+    if (!config) return 0;
+
+    if (config->type != PeripheralType::GPIO_ANALOG_INPUT &&
+        config->type != PeripheralType::ADC) {
+        return 0;
+    }
+
+    uint8_t pin = config->getPrimaryPin();
+    if (pin == 255) return 0;
+    if (isReservedPin(pin)) return 0;
+
+    if (config->type == PeripheralType::ADC) {
+        uint8_t samples = config->params.adc.sampleCount;
+        if (samples < 1) samples = 1;
+        if (samples > 16) samples = 16;
+        uint8_t mode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+        return adcFilterRead(pin, samples, mode);
+    }
+
+    return (uint16_t)analogRead(pin);
+}
+
+// ADC 多采样滤波：均值滤波平滑随机噪声，中值滤波抑制脉冲尖峰
+// 栈上缓冲（16×2B=32B），零堆分配；采样间隔 100us 降低通道串扰
+uint16_t PeripheralManager::adcFilterRead(uint8_t pin, uint8_t samples, uint8_t filterMode) {
+    if (samples <= 1) return (uint16_t)analogRead(pin);
+
+    uint16_t buf[16];
+    for (uint8_t i = 0; i < samples; i++) {
+        buf[i] = (uint16_t)analogRead(pin);
+        if (i + 1 < samples) delayMicroseconds(100);
+    }
+
+    if (filterMode == 1) {
+        // 中值滤波：插入排序后取中间值（n<=16，排序开销可忽略）
+        for (uint8_t i = 1; i < samples; i++) {
+            uint16_t key = buf[i];
+            int j = i - 1;
+            while (j >= 0 && buf[j] > key) {
+                buf[j + 1] = buf[j];
+                j--;
+            }
+            buf[j + 1] = key;
+        }
+        return buf[samples / 2];
+    }
+
+    // 均值滤波
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < samples; i++) sum += buf[i];
+    return (uint16_t)(sum / samples);
 }
 
 // ========== 持久化 ==========
@@ -1182,11 +1438,20 @@ bool PeripheralManager::saveConfiguration() {
             params["pwmResolution"] = config.params.gpio.pwmResolution;
             params["defaultDuty"] = config.params.gpio.defaultDuty;
             if (config.params.gpio.passive) params["passive"] = true;
+            // AO 模拟量输出模式（非默认值时才写入，保持配置精简）
+            if (config.params.gpio.aoMode) {
+                params["aoMode"] = true;
+                params["aoMinPct"] = config.params.gpio.aoMinPct;
+                params["aoMaxPct"] = config.params.gpio.aoMaxPct;
+            }
         }
         else if (config.type == PeripheralType::ADC) {
             params["attenuation"] = config.params.adc.attenuation;
             params["resolution"] = config.params.adc.resolution;
             params["sampleRate"] = config.params.adc.sampleRate;
+            // 多采样滤波（非默认值时才写入，向后兼容旧配置）
+            if (config.params.adc.sampleCount > 1) params["sampleCount"] = config.params.adc.sampleCount;
+            if (config.params.adc.filterMode > 0) params["filterMode"] = config.params.adc.filterMode;
         }
         else if (config.type == PeripheralType::DAC) {
             params["channel"] = config.params.dac.channel;
@@ -1356,11 +1621,18 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.gpio.pwmResolution = params["pwmResolution"] | 8;
                 config.params.gpio.defaultDuty = params["defaultDuty"] | 0;
                 config.params.gpio.passive = params["passive"] | false;
+                // AO 模拟量输出模式（旧配置无此字段时默认关闭，保持原行为）
+                config.params.gpio.aoMode = params["aoMode"] | false;
+                config.params.gpio.aoMinPct = params["aoMinPct"] | 0;
+                config.params.gpio.aoMaxPct = params["aoMaxPct"] | 100;
             }
             else if (config.type == PeripheralType::ADC) {
                 config.params.adc.attenuation = params["attenuation"] | 0;
                 config.params.adc.resolution = params["resolution"] | 12;
                 config.params.adc.sampleRate = params["sampleRate"] | 0;
+                // 多采样滤波（旧配置无此字段时默认单次采样，保持原行为）
+                config.params.adc.sampleCount = params["sampleCount"] | 1;
+                config.params.adc.filterMode = params["filterMode"] | 0;
             }
             else if (config.type == PeripheralType::DAC) {
                 config.params.dac.channel = params["channel"] | 1;
@@ -1594,6 +1866,14 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
             }
             if (config.params.adc.resolution < 9 || config.params.adc.resolution > 12) {
                 errorMsg = "ADC 分辨率无效 (有效范围: 9-12 位)";
+                return false;
+            }
+            if (config.params.adc.sampleCount > 16) {
+                errorMsg = "ADC 采样次数无效 (有效范围: 1-16)";
+                return false;
+            }
+            if (config.params.adc.filterMode > 1) {
+                errorMsg = "ADC 滤波模式无效 (有效值: 0=均值, 1=中值)";
                 return false;
             }
             break;
@@ -2918,31 +3198,8 @@ bool PeripheralManager::isValidPin(uint8_t pin) const {
     if (pin > CHIP_MAX_GPIO) return false;
     if (!GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(pin))) return false;
 
-    // 内部Flash使用的引脚（绝对禁止）- 检查是否为保留引脚
-    for (uint8_t i = 0; i < CHIP_RESERVED_PIN_COUNT; i++) {
-        if (CHIP_RESERVED_PINS[i] == pin) {
-            // GPIO 6-11 是内部 Flash SPI，绝对禁止
-            #if defined(CONFIG_IDF_TARGET_ESP32)
-            if (pin >= 6 && pin <= 11) return false;
-            #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-            // ESP32-S3: GPIO 26-32 是 Flash SPI；Octal PSRAM (R8) 下 GPIO 33-37
-            // 被 PSRAM 总线独占，任何方向的使用都会导致内存损坏，绝对禁止
-            #if defined(CONFIG_SPIRAM_MODE_OCT)
-            if ((pin >= 19 && pin <= 20) || (pin >= 22 && pin <= 37)) return false;
-            #else
-            if ((pin >= 19 && pin <= 20) || (pin >= 22 && pin <= 32)) return false;
-            #endif
-            #elif defined(CONFIG_IDF_TARGET_ESP32C3)
-            // ESP32-C3: GPIO 12-17 是 Flash SPI
-            if (pin >= 12 && pin <= 17) return false;
-            #elif defined(CONFIG_IDF_TARGET_ESP32C6)
-            // ESP32-C6: GPIO 12-14 是 Flash SPI
-            if (pin >= 12 && pin <= 14) return false;
-            #else
-            if (pin >= 6 && pin <= 11) return false;
-            #endif
-        }
-    }
+    // Flash SPI / PSRAM 总线绝对禁区（芯片差异统一由 ChipConfig.h 提供）
+    if (chipIsAbsoluteForbiddenPin(pin)) return false;
 
     return true;
 }

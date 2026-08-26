@@ -67,7 +67,10 @@ public:
     void checkTimers();
 
     // 内存保护暂停/恢复（由 HealthMonitor 内存恢复机制调用）
-    void setMemoryPaused(bool paused) { _memoryPressurePaused = paused; }
+    void setMemoryPaused(bool paused) {
+        _memoryPressurePaused = paused;
+        if (paused) _memoryPressurePausedSince = millis();
+    }
     bool isMemoryPaused() const { return _memoryPressurePaused; }
 
     // ========== 事件触发 ==========
@@ -130,6 +133,10 @@ private:
     PeriphExecManager* _manager = nullptr;
     PeriphExecExecutor* _executor = nullptr;
 
+    // 碎片治理：复用序列化缓冲（单线程串行使用，不跨任务）
+    // String = "" 仅 length 归零不释放底层 buffer，避免反复 alloc/free
+    static String _serializeBuffer;
+
     // 定时器状态
     unsigned long _lastTimerCheck = 0;
     uint32_t _currentCheckPeriodMs = CHECK_PERIOD_NORMAL_MS;   // 当前检查周期（动态调整）
@@ -137,6 +144,7 @@ private:
     bool _webReserveSuspended = false;  // 后台轮询是否因 Web 内存预留而暂停
 unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心跳放行计时基准）
     bool _memoryPressurePaused = false; // 内存保护暂停（由 HealthMonitor 设置）
+    unsigned long _memoryPressurePausedSince = 0;  // 进入内存保护暂停的时间戳（心跳放行计时基准）
 
     // 按键状态
     unsigned long _lastButtonCheck = 0;

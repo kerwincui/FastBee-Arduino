@@ -15,6 +15,9 @@
 #include <freertos/task.h>
 #include "./core/ChipConfig.h"
 #include "./core/SystemConstants.h"
+#if FASTBEE_ENABLE_BLE
+#include "./network/BLEProvisioner.h"
+#endif
 
 // 统一使用 device.json 存储配网配置
 static const char* DEVICE_CONFIG_FILE = "/config/device.json";
@@ -57,6 +60,16 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/wifi/config", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleWiFiConfig(request); });
+
+    // BLE 蓝牙配网管理接口（WebUI 调用，需身份认证）
+    server->on("/api/ble/provision/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleBleProvisionStatus(request); });
+
+    server->on("/api/ble/provision/start", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleBleProvisionStart(request); });
+
+    server->on("/api/ble/provision/stop", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleBleProvisionStop(request); });
 
     // 启动时预热扫描缓存：确保首次 /api/wifi/scan 命中缓存。
     // STA 模式下冷扫描会让射频离开当前信道数秒，HTTP 连接因 ACK 超时被
@@ -521,4 +534,71 @@ void ProvisionRouteHandler::handleWiFiConfig(AsyncWebServerRequest* request) {
     ctx->sendSuccess(request, "Connecting to WiFi...");
     delay(100);
     WiFi.begin(ssid.c_str(), password.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/ble/provision/status — BLE 配网状态（WebUI 调用，需认证）
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::handleBleProvisionStatus(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+
+    if (ctx->bleProvisioner) {
+#if FASTBEE_ENABLE_BLE
+        ctx->bleProvisioner->fillStatusJson(data);
+#endif
+    } else {
+        // 当前固件未编入 BLE 配网（FASTBEE_ENABLE_BLE=0），前端据此隐藏入口
+        data["supported"] = false;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/ble/provision/start — 手动启动 BLE 配网广播
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::handleBleProvisionStart(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+
+    if (!ctx->bleProvisioner) {
+        ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
+        return;
+    }
+
+#if FASTBEE_ENABLE_BLE
+    if (ctx->bleProvisioner->isRunning()) {
+        ctx->sendSuccess(request, "BLE provisioning already running");
+        return;
+    }
+    if (ctx->bleProvisioner->begin(true)) {
+        LOG_INFO("[Provision] BLE provisioning started manually");
+        ctx->sendSuccess(request, "BLE provisioning started");
+    } else {
+        ctx->sendError(request, 500, "Failed to start BLE provisioning");
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/ble/provision/stop — 停止 BLE 配网广播并释放内存
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::handleBleProvisionStop(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+
+    if (!ctx->bleProvisioner) {
+        ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
+        return;
+    }
+
+#if FASTBEE_ENABLE_BLE
+    ctx->bleProvisioner->stop();
+    LOG_INFO("[Provision] BLE provisioning stopped");
+    ctx->sendSuccess(request, "BLE provisioning stopped");
+#endif
 }

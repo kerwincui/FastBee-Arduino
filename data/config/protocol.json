@@ -1,34 +1,34 @@
 {
   "modbusRtu": {
-    "enabled": false,
-    "peripheralId": "",
-    "mode": "master",
-    "dePin": 14,
+    "enabled": true,
+    "peripheralId": "rs485",
+    "mode": "slave",
+    "slaveAddress": 1,
+    "baudRate": 9600,
+    "txPin": 17,
+    "rxPin": 18,
+    "dePin": 255,
     "transferType": 0,
     "master": {
       "tasks": [],
       "devices": []
     }
   },
-  "modbusTcp": {
-    "enabled": false,
-    "server": "",
-    "port": 502,
-    "slaveId": 1,
-    "timeout": 5000
-  },
   "mqtt": {
     "enabled": false,
     "scheme": "mqtt",
-    "server": "",
+    "server": "iot.fastbee.cn",
     "port": 1883,
-    "clientId": "",
-    "username": "",
-    "password": "",
+    "clientId": "E&FBE14C19FC152D8&2193&1",
+    "username": "admin",
+    "password": "PJ87J7JGB57H96MC",
     "keepAlive": 60,
     "autoReconnect": true,
-    "authType": 0,
-    "mqttSecret": "",
+    "authType": 1,
+    "mqttSecret": "K60YRNP7Q52YVXZ1",
+    "deviceNum": "FBE14C19FC152D8",
+    "userId": "1",
+    "ntpServer": "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
     "authCode": "",
     "willTopic": "",
     "willPayload": "",
@@ -38,11 +38,11 @@
     "latitude": 0,
     "iccid": "",
     "cardPlatformId": 0,
-    "summary": "{\"name\":\"fastbee\",\"chip\":\"ESP32\"}",
+    "summary": "{\"name\":\"fastbee-s3-01\",\"chip\":\"ESP32-S3\"}",
     "publishTopics": [
       {
         "topic": "/property/post",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -50,7 +50,7 @@
       },
       {
         "topic": "/info/post",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -58,7 +58,7 @@
       },
       {
         "topic": "/event/post",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -66,7 +66,7 @@
       },
       {
         "topic": "/monitor/post",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -74,7 +74,7 @@
       },
       {
         "topic": "/ntp/post",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -82,7 +82,7 @@
       },
       {
         "topic": "/http/upgrade/reply",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -90,7 +90,7 @@
       },
       {
         "topic": "/fetch/upgrade/reply",
-        "qos": 0,
+        "qos": 1,
         "retain": false,
         "enabled": true,
         "autoPrefix": true,
@@ -100,42 +100,42 @@
     "subscribeTopics": [
       {
         "topic": "/function/get",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 1
       },
       {
         "topic": "/info/get",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 2
       },
       {
         "topic": "/monitor/get",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 3
       },
       {
         "topic": "/ntp/get",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 7
       },
       {
         "topic": "/http/upgrade/set",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 5
       },
       {
         "topic": "/fetch/upgrade/set",
-        "qos": 0,
+        "qos": 1,
         "enabled": true,
         "autoPrefix": true,
         "topicType": 6

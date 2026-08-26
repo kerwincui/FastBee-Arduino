@@ -16,7 +16,6 @@ const EventDef STATIC_EVENTS[] = {
     {EventType::EVENT_NET_MODE_STA, "net_mode_sta", "网络模式切换为STA", "网络"},
     // 协议事件
     {EventType::EVENT_MODBUS_RTU_ENABLED, "modbus_rtu_enabled", "Modbus RTU启用", "协议"},
-    {EventType::EVENT_MODBUS_TCP_ENABLED, "modbus_tcp_enabled", "Modbus TCP启用", "协议"},
     // 系统服务事件
     {EventType::EVENT_NTP_SYNCED, "ntp_synced", "NTP时间同步完成", "系统"},
     {EventType::EVENT_OTA_START, "ota_start", "OTA升级开始", "系统"},

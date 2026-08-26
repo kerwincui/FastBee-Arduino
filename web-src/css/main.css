@@ -85,6 +85,7 @@
 [data-theme="dark"] .fb-form-group input[type="number"],
 [data-theme="dark"] .fb-form-group input[type="password"],
 [data-theme="dark"] .fb-form-group input[type="email"],
+[data-theme="dark"] .fb-form-group input[type="url"],
 [data-theme="dark"] .fb-form-group select,
 [data-theme="dark"] .fb-form-group textarea { background: var(--bg-input); border-color: var(--border); color: var(--text-primary); }
 [data-theme="dark"] .fb-table { border-color: var(--border); }
@@ -251,6 +252,7 @@ button.dev-mode-locked,
 .fb-form-group input[type="number"],
 .fb-form-group input[type="password"],
 .fb-form-group input[type="email"],
+.fb-form-group input[type="url"],
 .fb-form-group select,
 .fb-form-group textarea {
   width: 100%;
@@ -1033,7 +1035,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 .ble-autostart-switch-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 6px 0; }
 .ble-autostart-switch-row > label:first-child { margin-bottom: 0; flex: 1; }
 .ota-inline-action-row { display: flex; align-items: flex-end; gap: var(--space-3); }
-.ota-inline-input-wrap { flex: 1; min-width: 240px; }
+.ota-inline-input-wrap { flex: 1; min-width: 200px; }
 .ota-inline-action-row .fb-btn { white-space: nowrap; }
 
 /* Nested card flattening */

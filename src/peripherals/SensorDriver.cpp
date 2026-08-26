@@ -250,6 +250,18 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
         return NAN;
     }
 
+    // 总线互斥：pulseIn() 内部关中断忙等 ~30ms，并发读取会互相干扰时序
+    // 产生错误距离值（同 DHT/DS18B20 单总线时序保护，见文件头注释）
+    SensorBusLock busLock;
+    if (!busLock.acquired) {
+        LOGGER.warningf("[SensorDriver] Ultrasonic bus lock timeout on trig=%d, skip physical read", trigPin);
+        auto jt = _ultrasonicInstances.find(trigPin);
+        if (jt != _ultrasonicInstances.end() && jt->second.lastRead.success) {
+            return jt->second.lastRead.value;
+        }
+        return NAN;
+    }
+
     // 查找或创建实例
     auto it = _ultrasonicInstances.find(trigPin);
     if (it == _ultrasonicInstances.end()) {
@@ -451,6 +463,92 @@ float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal) {
     return actualVoltage;
 }
 
+// ========== NTC 热敏电阻 (分压器 + B 参数法) ==========
+
+float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal) {
+    if (!sensor_pin_valid(pin)) {
+        static unsigned long s_lastWarn = 0;
+        unsigned long now = millis();
+        if (now - s_lastWarn > 60000) {
+            LOGGER.errorf("[SensorDriver] NTC sensor invalid pin %u", (unsigned)pin);
+            s_lastWarn = now;
+        }
+        return NAN;
+    }
+
+    // 查找或创建实例
+    auto it = _ntcInstances.find(pin);
+    if (it == _ntcInstances.end()) {
+        analogReadResolution(12);
+        analogSetAttenuation(ADC_11db);
+
+        NTCSensorInstance inst;
+        inst.initialized = true;
+        inst.cal = cal;
+        inst.lastRead = {false, NAN, 0};
+        _ntcInstances[pin] = inst;
+        it = _ntcInstances.find(pin);
+
+        LOGGER.infof("[SensorDriver] NTC initialized pin=%d series=%.0f nominal=%.0f B=%.0f",
+                     pin, cal.seriesResistor, cal.nominalResistance, cal.bCoefficient);
+    }
+
+    NTCSensorInstance& inst = it->second;
+    unsigned long now = millis();
+
+    // 缓存有效性检查
+    if (inst.lastRead.success && (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
+        return inst.lastRead.value;
+    }
+
+    // 多次采样中值滤波（NTC 对脉冲噪声敏感，中值更稳健）
+    const int SAMPLES = 10;
+    int samples[SAMPLES];
+    for (int i = 0; i < SAMPLES; i++) {
+        samples[i] = analogRead(pin);
+        delayMicroseconds(100);
+    }
+    // 简单插入排序后取中值
+    for (int i = 1; i < SAMPLES; i++) {
+        int key = samples[i];
+        int j = i - 1;
+        while (j >= 0 && samples[j] > key) {
+            samples[j + 1] = samples[j];
+            j--;
+        }
+        samples[j + 1] = key;
+    }
+    float adcVal = (float)samples[SAMPLES / 2];
+
+    // 防除零/极端值
+    if (adcVal <= 1.0f || adcVal >= (float)inst.cal.adcMax - 1.0f) {
+        LOGGER.warningf("[SensorDriver] NTC pin=%d adc=%.0f out of range", pin, adcVal);
+        return NAN;
+    }
+
+    // 电路：VCC --[R_series]-- ADC --[NTC]-- GND
+    // NTC 电压 = adc * vRef / adcMax；NTC 电阻 = series * Vntc / (vRef - Vntc)
+    float vNtc = adcVal * inst.cal.vRef / inst.cal.adcMax;
+    float rNtc = inst.cal.seriesResistor * vNtc / (inst.cal.vRef - vNtc);
+    if (rNtc <= 0.0f) {
+        return NAN;
+    }
+
+    // B 参数法: 1/T = 1/T0 + ln(R/R0)/B
+    float tempK = 1.0f / (
+        (1.0f / (inst.cal.nominalTempC + 273.15f)) +
+        (logf(rNtc / inst.cal.nominalResistance) / inst.cal.bCoefficient));
+    float tempC = tempK - 273.15f;
+
+    // 更新缓存
+    inst.lastRead.success = true;
+    inst.lastRead.value = tempC;
+    inst.lastRead.timestamp = now;
+
+    LOGGER.debugf("[SensorDriver] NTC pin=%d adc=%.0f R=%.0f T=%.2fC", pin, adcVal, rNtc, tempC);
+    return tempC;
+}
+
 // ========== 资源释放 ==========
 
 void SensorDriver::release(uint8_t pin) {
@@ -473,6 +571,8 @@ void SensorDriver::release(uint8_t pin) {
     _ultrasonicInstances.erase(pin);
     // 释放 ADC 传感器
     _adcSensorInstances.erase(pin);
+    // 释放 NTC 热敏电阻
+    _ntcInstances.erase(pin);
 }
 
 void SensorDriver::releaseAll() {
@@ -491,6 +591,7 @@ void SensorDriver::releaseAll() {
 
     _ultrasonicInstances.clear();
     _adcSensorInstances.clear();
+    _ntcInstances.clear();
 }
 
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER

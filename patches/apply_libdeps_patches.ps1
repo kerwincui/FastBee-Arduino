@@ -10,6 +10,8 @@
 #     - WebResponseImpl.h / WebResponses.cpp：
 #       2872B 固定发送缓冲改为动态容量 + nothrow 降级回退
 #       （低 DRAM 时小缓冲仍能完成响应，避免 new OOM → abort 整机重启）
+#     - WebServer.cpp：连接接受回调 new AsyncWebServerRequest 改 nothrow
+#       （高并发 DRAM 耗尽时 throwing new(368) 直接 abort，2026-08-24 实测崩溃环）
 #
 # 用法：powershell -ExecutionPolicy Bypass -File patches\apply_libdeps_patches.ps1
 # 补丁与库版本绑定：脚本校验 library.json 版本，版本不符时跳过并告警

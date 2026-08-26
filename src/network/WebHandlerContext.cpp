@@ -12,13 +12,19 @@
 #include "./network/WebConfigManager.h"
 #include <esp_heap_caps.h>
 
+// ROM 日志函数：不走 newlib / 不加锁 / 不分配内存。OOM 拒绝路径上
+// Serial.printf 会堆分配并解引用堆字符串（vsnprintf -> strlen %s 参数），
+// 实测在 free8=3544 时触发 LoadProhibited panic（serveStaticFile 拒绝分支）。
+// 临界路径一律 ets_printf + 纯数字，不传 %s 堆指针。
+extern "C" int ets_printf(const char* fmt, ...);
+
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
     : server(srv), authManager(authMgr), userManager(userMgr),
       networkManager(nullptr), otaManager(nullptr),
-      protocolManager(nullptr), sseHandler(nullptr), webRootPath("/www"),
+      protocolManager(nullptr), sseHandler(nullptr), bleProvisioner(nullptr), webRootPath("/www"),
       scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400),
       webForegroundModeActive(false), webForegroundUntilMs(0),
-      devModeCacheValid(false), devModeCacheValue(true), devModeCacheExpiryMs(0),
+      devModeCacheValid(false), devModeCacheValue(false), devModeCacheExpiryMs(0),
       webConfigManager(nullptr) {
     loadCacheDuration();
 }
@@ -56,7 +62,7 @@ int WebHandlerContext::getParamInt(AsyncWebServerRequest* request, const String&
 // ============ 认证辅助方法 ============
 
 bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
-    const char* publicPaths[] = {
+    static const char* publicPaths[] = {
         "/api/auth/login",
         "/api/health",
         "/api/events",  // SSE 推送通道，EventSource 不支持 Cookie，需跳过 session 认证
@@ -67,10 +73,10 @@ bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
         "/assets/"
     };
 
-    String path = request->url();
+    const char* path = request->url().c_str();
 
     for (const char* publicPath : publicPaths) {
-        if (path.startsWith(publicPath)) {
+        if (strncmp(path, publicPath, strlen(publicPath)) == 0) {
             return false;
         }
     }
@@ -136,6 +142,12 @@ bool WebHandlerContext::requireAuth(AsyncWebServerRequest* request) {
 }
 
 bool WebHandlerContext::isDeveloperModeEnabled() {
+    // SEVERE+ 内存压力时禁止 DevMode API（诊断序列化会加剧内存压力）
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor && monitor->isMemorySevere()) {
+        return false;
+    }
     // 缓存优化：避免每次请求都读取+解析 JSON 文件
     unsigned long now = millis();
     if (devModeCacheValid && (long)(devModeCacheExpiryMs - now) > 0) {
@@ -144,26 +156,26 @@ bool WebHandlerContext::isDeveloperModeEnabled() {
 
     File f = LittleFS.open("/config/device.json", "r");
     if (!f) {
-        devModeCacheValue = true;
+        devModeCacheValue = false;  // 配置文件缺失时默认禁用开发者模式（安全优先）
         devModeCacheValid = true;
         devModeCacheExpiryMs = now + 30000UL;  // 缓存 30s
-        return true;
+        return false;
     }
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, f);
     f.close();
     if (err) {
-        devModeCacheValue = true;
+        devModeCacheValue = false;  // JSON 解析失败时默认禁用开发者模式
         devModeCacheValid = true;
         devModeCacheExpiryMs = now + 10000UL;  // 解析失败缓存 10s
-        return true;
+        return false;
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
-        devModeCacheValue = true;
+        devModeCacheValue = false;  // 字段缺失时默认禁用开发者模式
         devModeCacheValid = true;
         devModeCacheExpiryMs = now + 30000UL;
-        return true;
+        return false;
     }
     devModeCacheValue = doc["developerModeEnabled"].as<bool>();
     devModeCacheValid = true;
@@ -206,14 +218,36 @@ static bool canAllocateResponse(size_t requiredSize) {
             FastBee::MemoryBudget::dramFree() >= 2048 && FastBee::MemoryBudget::dramLargest() >= 1024) {
             return true;
         }
-        Serial.printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
-                      (unsigned)safeSize, (unsigned long)health.largestFreeBlock);
+        ets_printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
+                   (unsigned)safeSize, (unsigned long)health.largestFreeBlock);
         return false;
     }
     return true;
 }
 
+// 2026-08-24 OOM 崩溃环取证：拒绝路径自身在临界堆上构建响应也会崩。
+// backtrace 实锤：sendServiceUnavailable -> addHeader -> throwing operator new(40)
+// 在 free8 耗尽时 malloc 失败直接 abort（-fno-exceptions，无 try/catch 可救）
+// -> panic 重启 -> 重启后基线仍差 -> 再次触发，形成死环。
+// 临界水位下放弃构建任何响应，也不 send：请求挂起后由客户端超时/RST 清理。
+// 注意：不能在此处调 request->client()->close()——本函数运行在 async_tcp
+// 任务的 _recv 回调链内，同步 close 会销毁 AsyncClient 而请求链仍在引用它，
+// 实测直接触发 StoreProhibited panic（三次复现，PC 一致）。
+static bool rejectPathSafe(AsyncWebServerRequest* request) {
+    const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
+    const uint32_t blk8 = FastBee::MemoryBudget::dram8Largest();
+    // 与静态文件门控（free8<6144 拒绝）对齐：拒绝后的链路（std::function
+    // 拷贝、响应构建）仍需小分配，实测 blk8 碎到 28B 时 next() 拷贝 32B 即 abort
+    if (free8 >= 6144 && blk8 >= 1536) {
+        return true;  // 水位足够承担 beginResponse + addHeader 的小分配
+    }
+    ets_printf("[MemGuard] reject path unsafe (free8=%u blk8=%u), dropping request without response\n",
+               (unsigned)free8, (unsigned)blk8);
+    return false;
+}
+
 static void sendServiceUnavailable(AsyncWebServerRequest* request) {
+    if (!rejectPathSafe(request)) return;
     AsyncWebServerResponse* response = request->beginResponse(
         503,
         "application/json",
@@ -257,8 +291,8 @@ static bool staticInFlightAllowed() {
     // watchdog: force-reset a stuck counter to avoid permanent 503
     if (s_staticInFlight > 0 &&
         (now - s_staticInFlightTouchMs) > STATIC_INFLIGHT_WATCHDOG_MS) {
-        Serial.printf("[MemGuard] Static in-flight counter stuck (%u), resetting\n",
-                      (unsigned)s_staticInFlight);
+        ets_printf("[MemGuard] Static in-flight counter stuck (%u), resetting\n",
+                   (unsigned)s_staticInFlight);
         s_staticInFlight = 0;
     }
     if (s_staticInFlight < STATIC_MAX_INFLIGHT) {
@@ -283,6 +317,7 @@ bool WebHandlerContext::isStaticTransferActive() const {
 // 浏览器导航请求（登录页文档）被限流/内存门控拒绝时，返回带自动刷新的轻量
 // HTML 页而不是 JSON：避免用户看到 503 JSON 白屏，页面每秒自动重试直至恢复。
 static void sendStaticBusyRetryPage(AsyncWebServerRequest* request) {
+    if (!rejectPathSafe(request)) return;
     AsyncWebServerResponse* response = request->beginResponse(
         503,
         "text/html",
@@ -364,25 +399,54 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
         return;
     }
 
-    // 注意：ArduinoJson v7 的 serializeJson(doc, String) 会先清空目标字符串，
-    // 因此必须先序列化到独立字符串，再拼接到响应中。
-    auto outDoc = FastBee::makeJsonDocument(estimatedSize + 4096);
-    outDoc["success"] = true;
-    outDoc["timestamp"] = millis();
+    // 先序列化 data 为字符串（避免深拷贝到 outDoc 造成 2x 内存峰值）
+    String dataStr;
+    dataStr.reserve(estimatedSize + 1);
     if (!data.isNull()) {
-        outDoc["data"].set(data);
+        serializeJson(data, dataStr);
+    } else {
+        dataStr = "null";
     }
-    HandlerUtils::sendJsonStream(request, outDoc);
+    // 文本拼接构建响应，不产生第二个 JsonDocument
+    String response;
+    response.reserve(dataStr.length() + 64);
+    response = "{\"success\":true,\"timestamp\":";
+    response += String(millis());
+    response += ",\"data\":";
+    response += dataStr;
+    response += "}";
+
+    AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", response);
+    resp->addHeader("Connection", "close");
+    request->send(resp);
+}
+
+// JSON 安全转义：就地处理到栈缓冲，避免 String 堆分配
+static void jsonEscapeToBuffer(const char* src, char* dst, size_t dstSize) {
+    size_t oi = 0;
+    for (size_t si = 0; src[si] && oi < dstSize - 2; si++) {
+        char c = src[si];
+        if (c == '"' || c == '\\') { dst[oi++] = '\\'; dst[oi++] = c; }
+        else if (c == '\n') { dst[oi++] = '\\'; dst[oi++] = 'n'; }
+        else if (c == '\r') { dst[oi++] = '\\'; dst[oi++] = 'r'; }
+        else if (c == '\t') { dst[oi++] = '\\'; dst[oi++] = 't'; }
+        else if ((unsigned char)c < 0x20) { continue; }  // 跳过其他控制字符
+        else { dst[oi++] = c; }
+    }
+    dst[oi] = '\0';
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String& message) {
     noteWebRequestActivity();
-    char jsonBuffer[256];
+    char jsonBuffer[512];
     if (message.isEmpty()) {
         snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"timestamp\":%lu}", millis());
     } else {
-        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"message\":\"%s\",\"timestamp\":%lu}",
-                 message.c_str(), millis());
+        char escapedMsg[384];
+        jsonEscapeToBuffer(message.c_str(), escapedMsg, sizeof(escapedMsg));
+        snprintf(jsonBuffer, sizeof(jsonBuffer),
+                 "{\"success\":true,\"message\":\"%s\",\"timestamp\":%lu}",
+                 escapedMsg, millis());
     }
 
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
@@ -392,10 +456,12 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String
 
 void WebHandlerContext::sendError(AsyncWebServerRequest* request, int code, const String& message) {
     noteWebRequestActivity();
-    char jsonBuffer[256];
+    char jsonBuffer[512];
+    char escapedMsg[384];
+    jsonEscapeToBuffer(message.c_str(), escapedMsg, sizeof(escapedMsg));
     snprintf(jsonBuffer, sizeof(jsonBuffer),
              "{\"success\":false,\"error\":\"%s\",\"code\":%d,\"timestamp\":%lu}",
-             message.c_str(), code, millis());
+             escapedMsg, code, millis());
 
     AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
     response->addHeader("Connection", "close");
@@ -463,8 +529,10 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             // 重试，6KB 余量足以推进响应（pbuf 随 ACK 滚动释放）。
             uint32_t freeDram = heap_caps_get_free_size(MALLOC_CAP_8BIT);
             if (freeDram < 6144U) {
-                Serial.printf("[MemGuard] Reject static %s: DRAM(8bit) free=%lu < 6KB\n",
-                              path.c_str(), (unsigned long)freeDram);
+                // 临界水位：不传 path.c_str()（堆指针解引用实测 panic），
+                // ets_printf 纯数字输出；资源路径可由前一跳访问日志反推
+                ets_printf("[MemGuard] Reject static: DRAM(8bit) free=%lu < 6KB\n",
+                           (unsigned long)freeDram);
                 if (isCoreEntry) { sendStaticBusyRetryPage(request); }
                 else { sendServiceUnavailable(request); }
                 return true;
@@ -473,9 +541,9 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             // blkint=27636 但 blk8 仅 116，旧门控完全失效）
             uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
             if (largestBlock < minLargestBlock) {
-                Serial.printf("[MemGuard] Reject static %s: largest8=%lu < %uB\n",
-                              path.c_str(), (unsigned long)largestBlock,
-                              static_cast<unsigned>(minLargestBlock));
+                ets_printf("[MemGuard] Reject static: largest8=%lu < %uB\n",
+                           (unsigned long)largestBlock,
+                           static_cast<unsigned>(minLargestBlock));
                 if (isCoreEntry) { sendStaticBusyRetryPage(request); }
                 else { sendServiceUnavailable(request); }
                 return true;
@@ -487,7 +555,11 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     // serialise large transfers instead of letting parallel streams drain DRAM.
     // 小尺寸未压缩资源（favicon/logo 等图片）不占限流槽：登录页首屏必须
     // 立即拿到它们，且单文件仅几 KB，不构成历史崩溃场景（大文件并发流）。
-    const bool bypassInFlightCap = !isCompressible;
+    // 2026-08-24 修复K：.gz 直链（如 /js/modules/*.js.gz）旧逻辑被判为
+    // 不可压缩资源而绕过限流槽，实测 12 并发 gz 直链 4s 内把 free8 从
+    // 31KB 抽到 3KB，90s 无恢复窗口触发 DRAM<8KB 看门狗重启。gz 正是
+    // 最大的存储形态（单文件可达数十 KB），必须占槽。
+    const bool bypassInFlightCap = !isCompressible && ext != ".gz";
 
     // 2026-08-04 fix: acquire the in-flight slot AFTER a successful open.
     // Previously the slot was taken before probing the filesystem, so a
@@ -512,10 +584,19 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             sendStaticBusyRetryPage(request);
             return true;
         }
-        AsyncWebServerResponse* busy = request->beginResponse(
-            503,
-            "application/json",
-            "{\"success\":false,\"message\":\"Static file busy, retry soon\",\"code\":503,\"retryAfter\":1}");
+        // busy 响应的 MIME 与资源类型匹配：JS 请求收到 application/json 会触发
+        // 浏览器严格 MIME 检查拒绝执行，产生 console 报错噪音；返回无害占位体
+        // 保持 503 状态码不变，前端加载器仍按非 200 重试，语义一致
+        const char* busyBody = "{\"success\":false,\"message\":\"Static file busy, retry soon\",\"code\":503,\"retryAfter\":1}";
+        String busyType = "application/json";
+        if (contentType == "application/javascript") {
+            busyType = "application/javascript";
+            busyBody = "// 503 busy - retry";
+        } else if (contentType == "text/css") {
+            busyType = "text/css";
+            busyBody = "/* 503 busy - retry */";
+        }
+        AsyncWebServerResponse* busy = request->beginResponse(503, busyType, busyBody);
         busy->addHeader("Retry-After", "1");
         busy->addHeader("Connection", "close");
         request->send(busy);

@@ -149,17 +149,23 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     }
 
     const size_t fileSize = file.size();
+    
+    // WP-74: Adaptive read size based on available memory
     size_t maxSize = FastBee::MemoryBudget::dramFree() < 61440 ? 1536 : 4096;
     if (psramBacked && ESP.getMaxAllocHeap() < 4096) {
-        maxSize = 1024;
+        maxSize = 1024;  // Extremely low memory scenario
     }
-    if (request->hasParam("limit")) {
-        int requested = request->getParam("limit")->value().toInt();
-        if (requested > 0 && static_cast<size_t>(requested) < maxSize) {
-            maxSize = static_cast<size_t>(requested);
-        }
+    
+    // Enforce hard limit for user requests (getParam 可能返回 nullptr，直接解引用会导致 LoadProhibited 崩溃)
+    int requestedLimit = 0;
+    if (request->hasParam("limit", true)) {
+        requestedLimit = request->getParam("limit", true)->value().toInt();
     }
-
+    if (requestedLimit > 0) {
+        maxSize = min(maxSize, static_cast<size_t>(requestedLimit));  // Respect smaller of enforced/requested limit
+    }
+    
+    // Read only last N bytes from the log file (tail mode by default)
     const size_t start = fileSize > maxSize ? fileSize - maxSize : 0;
     file.seek(start);
 
@@ -186,8 +192,8 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     file.close();
 
     int maxLines = ctx->getParamInt(request, "tail", ctx->getParamInt(request, "lines", 80));
-    if (maxLines <= 0) maxLines = 80;
-    if (maxLines > 300) maxLines = 300;
+    if (maxLines <= 0) maxLines = 80;  // Default: show last 80 lines
+    if (maxLines > 300) maxLines = 300;  // Hard cap to prevent JSON explosion
 
     int seen = 0;
     int cut = -1;

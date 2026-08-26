@@ -299,6 +299,9 @@ protected:
   uint32_t _rx_last_ack;
   uint32_t _ack_timeout;
   uint16_t _connect_port;
+  // FastBee patch: 由 tcp_accept 准入的服务端连接标记（并发上限计数用）
+  bool _serverAccepted;
+  static volatile uint32_t _fastbee_acceptedCount;
 
   int8_t _close();
   int8_t _connected(tcp_pcb *pcb, int8_t err);

@@ -32,6 +32,9 @@
 #include "network/NetworkManager.h"
 #include "network/WebConfigManager.h"
 #include "network/OTAManager.h"
+#if FASTBEE_ENABLE_BLE
+#include "network/BLEProvisioner.h"
+#endif
 #include "systems/TaskManager.h"
 #include "systems/HealthMonitor.h"
 #include "systems/RestartDiagnostics.h"
@@ -70,8 +73,14 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #if FASTBEE_ENABLE_DEVICE_CONTROL
     {"deviceControl", 110},  // 设备大屏 JS 解压（需 PSRAM/大 DRAM）
 #endif
+#if FASTBEE_ENABLE_MQTT
+    {"mqtts", 45},           // TLS 握手 ~42KB DRAM（无 PSRAM 准入需 ~52KB 空闲）
+#endif
 #if FASTBEE_ENABLE_BLE
     {"ble", 35},             // NimBLE 初始化
+#endif
+#if FASTBEE_ENABLE_WEB_SERVER
+    {"webServer", 30},       // AsyncWebServer PCB + 路由处理器 + TCP 连接池 (~35KB)
 #endif
 #if FASTBEE_ENABLE_CELLULAR
     {"cellular", 30},        // TinyGSM + SSL
@@ -103,6 +112,24 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #if FASTBEE_ENABLE_LED_SCREEN
     {"ledScreen", 15},     // RMT 缓冲
 #endif
+#if FASTBEE_ENABLE_OTA
+    {"ota", 20},           // OTA 流式缓冲 1KB + 下载临时块
+#endif
+#if FASTBEE_ENABLE_FILE_MANAGER
+    {"fileManager", 18},   // 文件列表/读写 API 响应序列化
+#endif
+#if FASTBEE_ENABLE_RF_LEARN
+    {"rfLearn", 12},       // 脉冲捕获缓冲 300B + 中断处理
+#endif
+#if FASTBEE_MODBUS_SLAVE_ENABLE
+    {"modbusSlave", 18},   // 从站响应缓冲 440B + 寄存器映射
+#endif
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
+    {"commandScript", 20}, // 脚本缓冲 500B + 解析器
+#endif
+#if FASTBEE_ENABLE_MDNS
+    {"mdns", 8},           // mDNS 守护任务栈 + UDP PCB + 服务记录 (~8KB) - Reduced for classic ESP32-F4R0 compatibility
+#endif
     {nullptr, 0}
 };
 
@@ -130,6 +157,30 @@ void FastBee::FeatureBudgetRegistry::runChecks() {
     }
 }
 
+void FastBee::FeatureBudgetRegistry::recheck() {
+    if (!checked_) return;
+#if defined(ESP_PLATFORM)
+    const uint32_t free8Kb = FastBee::MemoryBudget::dram8Free() / 1024U;
+    for (const auto& budget : kFeatureBudgets) {
+        if (budget.name == nullptr) break;
+        // 跳过已 denied 的（不自动恢复，防振荡）
+        if (isDenied(budget.name)) continue;
+        // webServer 是设备唯一 Web 恢复/配置入口：启动瞬间的堆瞬态（MQTT 重启、
+        // LittleFS 挂载等）若在此将其永久 deny，会导致 Web 永久不启动、设备失联，
+        // 只能物理复位恢复。运行时压力由 WebMemoryGuard/tcp_accept 门控兜底，
+        // 因此 recheck 不 deny webServer。
+        if (strcmp(budget.name, "webServer") == 0) continue;
+        if (free8Kb < budget.minFree8Kb) {
+            FastBee::FeatureBudgetRegistryAccess::deny(budget.name);
+            Serial.printf("[BUDGET-RECHECK] %s disabled: free8=%luKB < need=%uKB\n",
+                          budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
+        }
+    }
+    // 同步到 RuntimeFeatureManager
+    FastBee::RuntimeFeatureManager::instance().syncBudgetState();
+#endif
+}
+
 // 构造函数
 FastBeeFramework::FastBeeFramework()
     : systemInitialized(false),
@@ -147,6 +198,46 @@ FastBeeFramework::~FastBeeFramework() {
 FastBeeFramework* FastBeeFramework::getInstance() {
     static FastBeeFramework instance;
     return &instance;
+}
+
+// 带载启动保护：STEP7 Web 服务就绪后，浏览器/前端重试流量会在启动窗口内
+// 抽干残余 DRAM。实测崩溃（2026-08-24）：带载重启后 STEP11.5 new(556) 在
+// free8=528/blk8=40 时 abort，连续 3 次带载启动均崩溃。重型初始化前等待
+// 水位回到安全区：等待期间 WebGuard 中间件持续零分配拒绝请求，挂起连接
+// 按 RxTimeout(3s) 逐批超时释放，in-flight 响应排空后数秒内即可恢复。
+// 超时后仍继续（此时水位必然高于护栏临界门限 6144/1536，数百字节级
+// 初始化分配可成功；真恶化时由各模块 nothrow 降级兜底）。
+static void waitForSafeBootHeap(const char* stepTag) {
+#if defined(ESP_PLATFORM)
+    const uint32_t SAFE_FREE8 = 20480U;  // 与 WebGuard 触发阈值同口径（健康水位起点）
+    const uint32_t SAFE_BLK8 = 6144U;
+    const unsigned long TIMEOUT_MS = 20000UL;
+    const unsigned long start = millis();
+    unsigned long lastLog = 0;
+    while (millis() - start < TIMEOUT_MS) {
+        const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
+        const uint32_t blk8 = FastBee::MemoryBudget::dram8Largest();
+        if (free8 >= SAFE_FREE8 && blk8 >= SAFE_BLK8) {
+            if (millis() - start > 1000UL) {
+                ets_printf("[Boot] %s: heap recovered after %lu ms wait (free8=%lu blk8=%lu)\n",
+                           stepTag, millis() - start,
+                           (unsigned long)free8, (unsigned long)blk8);
+            }
+            return;
+        }
+        if (millis() - lastLog >= 2000UL) {
+            lastLog = millis();
+            ets_printf("[Boot] %s: waiting for heap recovery (free8=%lu blk8=%lu, need %lu/%lu)\n",
+                       stepTag, (unsigned long)free8, (unsigned long)blk8,
+                       (unsigned long)SAFE_FREE8, (unsigned long)SAFE_BLK8);
+        }
+        delay(250);
+    }
+    ets_printf("[Boot] %s: heap still low after %lu ms wait, proceeding anyway\n",
+               stepTag, TIMEOUT_MS);
+#else
+    (void)stepTag;
+#endif
 }
 
 // 初始化框架
@@ -415,6 +506,28 @@ bool FastBeeFramework::initialize() {
 
 #endif  // FASTBEE_WEB_START_EARLY
 
+    // 步骤7.8: 延迟初始化解锁 —— 标记网络子系统已就绪（两条启动路径均已过 network->initialize()）
+    // requiresNetwork 功能（modbus/ruleScript/i2cSensors/rfid/irRemote/ledScreen）在启动
+    // 早期被 shouldEnable() 门控为 false，此处解锁后激活；把重型外设/协议的内存分配
+    // 错峰到 WiFi 启动之后，抬高启动期可用 DRAM（见内存优化方向 4）。
+    FastBee::RuntimeFeatureManager::instance().setNetworkReady(true);
+    // 重试因门控在早期被跳过的 eager 外设（如 IR 接收头），惰性外设无需处理
+    PeripheralManager::getInstance().retryDeferredPeripherals();
+
+#if FASTBEE_ENABLE_BLE
+    // 步骤7.6: BLE 配网器（仅创建实例并注入 Web 上下文；协议栈内存延迟到 begin() 才占用）
+    // AP 模式（无可用 STA 配置的配网场景）自动启动广播，其余情况由 Web/API 手动启动
+    bleProvisioner.reset(new BLEProvisioner(network.get()));
+    webConfig->setBLEProvisioner(bleProvisioner.get());
+    if (network && network->getConfig().mode == NetworkMode::NETWORK_AP) {
+        if (bleProvisioner->begin(false)) {
+            Serial.println("[STEP7.6] BLE provisioning auto-started (AP mode)");
+        } else {
+            Serial.println("[STEP7.6] WARN: BLE provisioning auto-start failed");
+        }
+    }
+#endif
+
 #if FASTBEE_ENABLE_OTA
     // 步骤8: 初始化OTA管理器
     stepStart = millis();
@@ -423,6 +536,10 @@ bool FastBeeFramework::initialize() {
     if (!ota || !ota->initialize()) {
         Serial.println("[STEP8] FATAL: Failed to initialize OTA manager");
         return false;
+    }
+    // 注入 Web 上下文，供 OTARouteHandler 委托 begin/upload/cancel 等请求
+    if (webConfig) {
+        webConfig->setOTAManager(ota.get());
     }
     Serial.printf("[Boot] OTAManager: %lu ms\n", millis() - stepStart);
 #else
@@ -523,6 +640,8 @@ bool FastBeeFramework::initialize() {
 #if FASTBEE_ENABLE_PERIPH_EXEC
     stepStart = millis();
     Serial.println("[STEP11.5] Initializing PeriphExecManager...");
+    // 带载启动保护：worker 池预分配 3×20KB 栈 + 配置加载，水位过低时先等待恢复
+    waitForSafeBootHeap("STEP11.5");
     if (!PeriphExecManager::getInstance().initialize()) {
         Serial.println("[STEP11.5] WARN: Periph exec manager init failed");
     } else {
@@ -747,10 +866,14 @@ bool FastBeeFramework::initialize() {
         Serial.println("[STEP11.6] RuleScriptManager disabled by runtime feature config");
     } else if (FastBee::FeatureBudgetRegistry::instance().isDenied("ruleScript")) {
         Serial.println("[STEP11.6] RuleScriptManager disabled by memory budget");
-    } else if (!RuleScriptManager::getInstance().initialize()) {
-        Serial.println("[STEP11.6] WARN: Rule script manager init failed");
     } else {
-        Serial.println("[STEP11.6] Rule script manager OK");
+        // 带载启动保护：配置加载会 FS::open + JSON 解析，水位过低时先等待恢复
+        waitForSafeBootHeap("STEP11.6");
+        if (!RuleScriptManager::getInstance().initialize()) {
+            Serial.println("[STEP11.6] WARN: Rule script manager init failed");
+        } else {
+            Serial.println("[STEP11.6] Rule script manager OK");
+        }
     }
     Serial.printf("[Boot] RuleScriptManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("RuleScriptManager");
@@ -883,7 +1006,7 @@ bool FastBeeFramework::addSystemTasks() {
         return false;
     }
 
-    // 健康检查任务（每30秒）
+    // 健康检查任务（每5秒）
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     if (!taskManager->addTask("health_check", [](void* param) {
         FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
@@ -912,16 +1035,6 @@ bool FastBeeFramework::addSystemTasks() {
         return false;
     }
 #endif
-
-    // Web客户端处理任务（每100ms）
-#if FASTBEE_ENABLE_WEB_SERVER
-    if (!taskManager->addTask("web_client_handler", [](void* param) {
-        // 空任务，由AsyncWebServer自动处理
-        // 这里可以添加额外的Web客户端处理逻辑
-    }, nullptr, 100)) {
-        LOG_WARNING("Failed to add web client handler task");
-        // 这个任务不是关键的，所以不返回错误
-    }
 
     // 网络状态更新任务（每5秒）
     if (!taskManager->addTask("network_update", [](void* param) {
@@ -974,8 +1087,8 @@ bool FastBeeFramework::addSystemTasks() {
                 && protocolNetworkReady && framework->protocolManager) {
                 if (protocolWaitStart == 0) {
                     protocolWaitStart = millis();
-                } else if (millis() - protocolWaitStart > (protocolTypeChanged ? 1000 : 5000)) {
-                    // 网络类型变更后等待1秒，首次启动等待5秒，确保网络稳定后再启动协议
+                } else if (millis() - protocolWaitStart > (protocolTypeChanged ? 1000 : 2000)) {
+                    // 网络类型变更后等待1秒，首次启动等待2秒（DHCP 分配 IP + DNS 解析就绪）
                     protocolTypeChanged = false;  // 重置标志
                     bool shouldStartMqtt = !framework->mqttAutoStarted;
                     bool shouldStartModbus = !framework->modbusAutoStarted;
@@ -1039,9 +1152,17 @@ bool FastBeeFramework::addSystemTasks() {
                     // 启动 Modbus
 #if FASTBEE_ENABLE_MODBUS
                     if (shouldStartModbus && modbusEnabled) {
-                        LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
-                        if (!framework->protocolManager->restartModbus()) {
-                            framework->modbusAutoStarted = false;
+                        // 运行时功能门控/内存预算拒绝时永久跳过自动启动：
+                        // 否则 modbusAutoStarted 保持 false，本任务每 5s 重试一次，
+                        // restartModbus 内的 WARN 日志会无限刷屏。
+                        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus") ||
+                            FastBee::FeatureBudgetRegistry::instance().isDenied("modbus")) {
+                            LOG_INFO("[Modbus] Modbus disabled by feature gate/budget, skipping auto-start permanently");
+                        } else {
+                            LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
+                            if (!framework->protocolManager->restartModbus()) {
+                                framework->modbusAutoStarted = false;
+                            }
                         }
                     } else if (!modbusEnabled) {
                         LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
@@ -1059,6 +1180,16 @@ bool FastBeeFramework::addSystemTasks() {
     if (!taskManager->addTask("ntp_sync", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (!framework) return;
+
+        // 冷却到期后重置计数，允许重新尝试 NTP 同步
+        if (framework->ntpRetryCount >= 10 && framework->ntpGiveUpTimeMs > 0) {
+            if (millis() - framework->ntpGiveUpTimeMs > 30UL * 60 * 1000) {
+                framework->ntpRetryCount = 0;
+                framework->ntpGiveUpTimeMs = 0;
+                framework->ntpSyncPending = true;
+                LOG_INFO("[NTP] Cooldown expired (30min), retrying NTP sync");
+            }
+        }
 
         // 检查是否需要启动同步（支持所有联网方式）
         if (framework->ntpSyncPending && framework->network && framework->network->isNetworkConnected()) {
@@ -1094,8 +1225,9 @@ bool FastBeeFramework::addSystemTasks() {
                     LOG_WARNINGF("[NTP] Sync failed (attempt %d/10), will retry", framework->ntpRetryCount);
                     framework->ntpSyncPending = true;  // 标记需要重试
                 } else {
-                    LOG_ERROR("[NTP] Sync failed after 10 attempts, giving up");
+                    LOG_ERROR("[NTP] Sync failed after 10 attempts, giving up (30min cooldown)");
                     framework->ntpSyncStarted = false;
+                    framework->ntpGiveUpTimeMs = millis();
                 }
             }
         }
@@ -1131,7 +1263,6 @@ bool FastBeeFramework::addSystemTasks() {
     }, this, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add web maintenance task");
     }
-#endif
 
 #if FASTBEE_ENABLE_LCD
     // OLED/LCD 维护任务（每1秒）：开机初期重申显示参数，防上电瞬间电压波动导致黑屏
@@ -1144,18 +1275,15 @@ bool FastBeeFramework::addSystemTasks() {
 
 #if FASTBEE_ENABLE_PERIPH_EXEC
     // 外设执行定时器检查任务（每1秒）
+    // 优先级 HIGH：SEVERE 时 TaskManager 会跳过 NORMAL 任务，若此任务被跳过，
+    // 调度器内部的内存心跳放行逻辑永远不可达，遥测定时规则永久停摆。
+    // SEVERE 下的内存保护由 checkTimers 内部多层门控负责（暂停/web预留/CRITICAL）
     if (!taskManager->addTask("periph_exec_timer", [](void* param) {
         PeriphExecManager::getInstance().checkTimers();
-    }, nullptr, 1000)) {
+    }, nullptr, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add periph exec timer task");
     }
 
-    // 设备触发轮询检查任务（每200ms）
-    if (!taskManager->addTask("periph_device_trigger", [](void* param) {
-        // 设备触发检测已移除，统一使用触发事件
-    }, nullptr, 200)) {
-        LOG_WARNING("Failed to add periph device trigger task");
-    }
 
     // 按键事件检测任务（每100ms）- 优先级 HIGH 确保 MEMGUARD SEVERE 时仍执行
     // 注意：50ms间隔过于激进，可能导致执行超时和看门狗复位
@@ -1242,6 +1370,16 @@ void FastBeeFramework::run() {
         uint32_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
         ets_printf("[STATUS] uptime=%luh%lum%lus free8=%lu blk8=%lu",
                       hours, mins, secs, (unsigned long)freeHeap, (unsigned long)maxBlock);
+        // 停摆取证：TCP 连接积压数与距上次 HTTP 请求时长。
+        // 停摆时若 tcp 高 → 连接层积压；若 noReq 持续增长但 tcp=0 → 请求未到达设备
+        if (webConfig) {
+            uint16_t tcpTotal = 0;
+            uint8_t tcpTw = 0;
+            unsigned long noReqMs = 0;
+            webConfig->getTcpDiag(tcpTotal, tcpTw, noReqMs);
+            ets_printf(" tcp=%u tw=%u noReq=%lus",
+                       (unsigned)tcpTotal, (unsigned)tcpTw, (unsigned long)(noReqMs / 1000));
+        }
 #ifdef BOARD_HAS_PSRAM
         ets_printf(" psram=%lu", (unsigned long)ESP.getFreePsram());
 #endif
@@ -1297,6 +1435,13 @@ void FastBeeFramework::run() {
     if (taskManager) {
         taskManager->run();
     }
+
+#if FASTBEE_ENABLE_BLE
+    // BLE 配网轮询（载荷处理/结果通知排空/断连恢复广播，未启动时直接返回）
+    if (bleProvisioner) {
+        bleProvisioner->update();
+    }
+#endif
 
     // 检查是否有配置变更触发的待执行重启
     SystemRebooter::update();

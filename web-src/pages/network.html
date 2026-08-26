@@ -132,6 +132,49 @@
 
             </div>
 
+            <!-- 蓝牙配网面板（仅固件支持 BLE 时显示） -->
+            <div id="ble-provision-card" class="fb-status-card fb-mb-3 fb-hidden">
+                <div class="status-header">
+                    <h3 class="status-title" data-i18n="ble-prov-title">蓝牙配网</h3>
+                    <button id="ble-prov-refresh-btn" class="fb-btn fb-btn-refresh" title="刷新状态"><span data-i18n="refresh-btn">刷新</span></button>
+                </div>
+
+                <div class="status-grid">
+                    <div class="status-item">
+                        <span class="status-label" data-i18n="ble-prov-state">配网状态</span>
+                        <span id="ble-prov-state-badge" class="status-badge status-disconnected" data-i18n="ble-prov-state-idle">未启动</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label" data-i18n="ble-prov-adv-name">蓝牙名称</span>
+                        <span id="ble-prov-adv-name" class="status-value">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label" data-i18n="ble-prov-connected">手机连接</span>
+                        <span id="ble-prov-connected" class="status-value">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label" data-i18n="ble-prov-result">最近配网结果</span>
+                        <span id="ble-prov-result" class="status-value">--</span>
+                    </div>
+                </div>
+
+                <div class="fb-info-box fb-info-box-tip fb-mt-3">
+                    <span data-i18n="ble-prov-hint">启动后使用手机 App 连接设备的蓝牙（Nordic UART 服务），下发 WiFi 名称、密码及 userId/deviceNum 即可完成配网，配网成功后自动切换到 STA 模式。</span>
+                </div>
+
+                <div class="message message-success fb-hidden fb-mt-3" id="ble-prov-success"></div>
+                <div class="message message-error fb-hidden fb-mt-3" id="ble-prov-error"></div>
+
+                <div class="fb-mt-3 u-action-row">
+                    <button type="button" id="ble-prov-start-btn" class="fb-btn fb-btn-primary fb-btn-compact">
+                        <span data-i18n="ble-prov-start-btn">启动蓝牙配网</span>
+                    </button>
+                    <button type="button" id="ble-prov-stop-btn" class="fb-btn fb-btn-secondary fb-btn-compact u-ml-8">
+                        <span data-i18n="ble-prov-stop-btn">停止</span>
+                    </button>
+                </div>
+            </div>
+
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="base" data-i18n="net-tab-basic">基本配置</div>
                 <div class="config-tab" data-tab="ap-config" data-i18n="net-tab-ap">热点配置</div>

@@ -4,9 +4,29 @@
 #include "utils/TimeUtils.h"
 #include <mbedtls/md5.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/pkcs5.h>
 #include <esp_random.h>
 
 #if FASTBEE_ENABLE_AUTH
+
+// PBKDF2-HMAC-SHA256 密码哈希参数（新格式）
+// 格式：$fb2$<iterations>$<salt_hex>$<hash_hex>
+static const char* const PASSWORD_HASH_PREFIX   = "$fb2$";
+static const uint32_t  PASSWORD_PBKDF2_ITER     = 20000;
+static const size_t    PASSWORD_SALT_LEN        = 16;  // 盐 16 字节
+static const size_t    PASSWORD_PBKDF2_KEY_LEN  = 32;  // 派生 32 字节
+
+// 字节转十六进制（小写）
+static String bytesToHexStr(const uint8_t* data, size_t length) {
+    String hex;
+    hex.reserve(length * 2);
+    for (size_t i = 0; i < length; i++) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", data[i]);
+        hex += buf;
+    }
+    return hex;
+}
 
 // Base64编码函数
 static String base64Encode(const uint8_t* data, size_t length) {
@@ -51,7 +71,23 @@ UserManager::~UserManager() {
     saveUsersToStorage();
 }
 
+// 登录异步化 RAII 持锁器：递归互斥量，允许方法间嵌套调用
+namespace {
+struct UsersLock {
+    SemaphoreHandle_t m;
+    explicit UsersLock(SemaphoreHandle_t mtx) : m(mtx) {
+        if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
+    }
+    ~UsersLock() {
+        if (m) xSemaphoreGiveRecursive(m);
+    }
+};
+}  // namespace
+
 bool UserManager::initialize() {
+    if (!_usersMutex) {
+        _usersMutex = xSemaphoreCreateRecursiveMutex();
+    }
     if (!loadConfig()) {
         LOG_INFO("UserManager: Using default config");
     }
@@ -88,7 +124,7 @@ void UserManager::initializeDefaultAdmin() {
     User admin;
     admin.username     = DEFAULT_ADMIN_USER;
     admin.salt         = generateSalt();
-    admin.passwordHash = hashPassword(DEFAULT_ADMIN_PASS, admin.salt);
+    admin.passwordHash = hashPasswordPbkdf2(DEFAULT_ADMIN_PASS);
     admin.enabled      = true;
     admin.createTime   = millis();
     admin.lastModified = millis();
@@ -104,6 +140,7 @@ String UserManager::generateSalt() {
 }
 
 String UserManager::hashPassword(const String& password, const String& salt) {
+    // 旧格式（兼容验证用）：加盐单轮 SHA256，新密码不再使用
     String data = salt + password + salt;
     
     uint8_t hash[32];
@@ -117,9 +154,89 @@ String UserManager::hashPassword(const String& password, const String& salt) {
     return base64Encode(hash, sizeof(hash));
 }
 
-bool UserManager::verifyPassword(const String& password, const String& hash, const String& salt) {
+String UserManager::hashPasswordPbkdf2(const String& password) {
+    // 16 字节随机盐（沿用现有随机源 esp_fill_random）
+    uint8_t saltBytes[PASSWORD_SALT_LEN];
+    esp_fill_random(saltBytes, sizeof(saltBytes));
+    String saltHex = bytesToHexStr(saltBytes, sizeof(saltBytes));
+
+    // PBKDF2-HMAC-SHA256 派生 32 字节（ESP-IDF mbedtls 仅提供 _ext 变体）
+    uint8_t derived[PASSWORD_PBKDF2_KEY_LEN];
+    int ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
+                                            (const uint8_t*)password.c_str(), password.length(),
+                                            saltBytes, sizeof(saltBytes),
+                                            PASSWORD_PBKDF2_ITER,
+                                            sizeof(derived), derived);
+
+    if (ret != 0) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "UserManager: PBKDF2 failed: -0x%04X", -ret);
+        LOG_ERROR(buf);
+        return "";
+    }
+
+    return String(PASSWORD_HASH_PREFIX) + String(PASSWORD_PBKDF2_ITER) + "$" +
+           saltHex + "$" + bytesToHexStr(derived, sizeof(derived));
+}
+
+bool UserManager::verifyPasswordPbkdf2(const String& password, const String& storedHash) {
+    // 格式：$fb2$<iterations>$<salt_hex>$<hash_hex>
+    int p1 = storedHash.indexOf('$', 5);                 // iterations 之后
+    if (p1 < 0) return false;
+    int p2 = storedHash.indexOf('$', p1 + 1);            // salt 之后
+    if (p2 < 0) return false;
+
+    long iterations = storedHash.substring(5, p1).toInt();
+    if (iterations <= 0 || iterations > 1000000) return false;
+
+    String saltHex = storedHash.substring(p1 + 1, p2);
+    String hashHex = storedHash.substring(p2 + 1);
+    if (saltHex.length() == 0 || saltHex.length() % 2 != 0 ||
+        hashHex.length() == 0 || hashHex.length() % 2 != 0) {
+        return false;
+    }
+
+    // hex 转字节
+    size_t saltLen = saltHex.length() / 2;
+    size_t keyLen = hashHex.length() / 2;
+    if (saltLen > 64 || keyLen > 64) return false;
+    uint8_t saltBytes[64];
+    uint8_t storedKey[64];
+    for (size_t i = 0; i < saltLen; i++) {
+        saltBytes[i] = (uint8_t)strtol(saltHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+    }
+    for (size_t i = 0; i < keyLen; i++) {
+        storedKey[i] = (uint8_t)strtol(hashHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+    }
+
+    uint8_t derived[64];
+    int ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
+                                            (const uint8_t*)password.c_str(), password.length(),
+                                            saltBytes, saltLen,
+                                            (unsigned int)iterations,
+                                            (uint32_t)keyLen, derived);
+    if (ret != 0) return false;
+
+    // 恒定时间比较，避免时序侧信道
+    volatile uint8_t diff = 0;
+    for (size_t i = 0; i < keyLen; i++) {
+        diff |= (uint8_t)(derived[i] ^ storedKey[i]);
+    }
+    return diff == 0;
+}
+
+bool UserManager::verifyLegacyPassword(const String& password, const String& storedHash,
+                                       const String& salt) {
+    // 旧格式：加盐单轮 SHA256（base64）
     String calculatedHash = hashPassword(password, salt);
-    return calculatedHash == hash;
+    return calculatedHash == storedHash;
+}
+
+bool UserManager::verifyPassword(const String& password, const String& storedHash, const String& salt) {
+    if (storedHash.startsWith(PASSWORD_HASH_PREFIX)) {
+        return verifyPasswordPbkdf2(password, storedHash);
+    }
+    return verifyLegacyPassword(password, storedHash, salt);
 }
 
 bool UserManager::validatePasswordStrength(const String& password) {
@@ -146,6 +263,7 @@ bool UserManager::validatePasswordStrength(const String& password) {
 }
 
 void UserManager::updateUserLastModified(const String& username) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it != users.end()) {
         it->second.lastModified = millis();
@@ -160,6 +278,7 @@ bool UserManager::addUser(const String& username, const String& password) {
     (void)password;
     return false;
 #else
+    UsersLock lk(_usersMutex);
     if (users.find(username) != users.end()) {
         return false;
     }
@@ -171,7 +290,7 @@ bool UserManager::addUser(const String& username, const String& password) {
     User newUser;
     newUser.username     = username;
     newUser.salt         = generateSalt();
-    newUser.passwordHash = hashPassword(password, newUser.salt);
+    newUser.passwordHash = hashPasswordPbkdf2(password);
     newUser.enabled      = true;
     newUser.createTime   = millis();
     newUser.lastModified = millis();
@@ -191,6 +310,7 @@ bool UserManager::deleteUser(const String& username) {
         return false;
     }
     
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -204,6 +324,7 @@ bool UserManager::deleteUser(const String& username) {
 
 bool UserManager::updateUser(const String& username, const String& newPassword,
                            bool enabled) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -217,7 +338,7 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
             return false;
         }
         user.salt = generateSalt();
-        user.passwordHash = hashPassword(newPassword, user.salt);
+        user.passwordHash = hashPasswordPbkdf2(newPassword);
     }
     
 #if !FASTBEE_SINGLE_ADMIN_MODE
@@ -234,6 +355,7 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
 
 bool UserManager::changePassword(const String& username, const String& oldPassword,
                                const String& newPassword) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -250,13 +372,14 @@ bool UserManager::changePassword(const String& username, const String& oldPasswo
     }
     
     user.salt = generateSalt();
-    user.passwordHash = hashPassword(newPassword, user.salt);
+    user.passwordHash = hashPasswordPbkdf2(newPassword);
     user.lastModified = millis();
     
     return saveUsersToStorage();
 }
 
 bool UserManager::resetPassword(const String& username, const String& newPassword) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -268,7 +391,7 @@ bool UserManager::resetPassword(const String& username, const String& newPasswor
     
     User& user = it->second;
     user.salt = generateSalt();
-    user.passwordHash = hashPassword(newPassword, user.salt);
+    user.passwordHash = hashPasswordPbkdf2(newPassword);
     user.lastModified = millis();
     
     return saveUsersToStorage();
@@ -277,11 +400,13 @@ bool UserManager::resetPassword(const String& username, const String& newPasswor
 // ============ 用户查询方法 ============
 
 User* UserManager::getUser(const String& username) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     return (it != users.end()) ? &it->second : nullptr;
 }
 
 std::vector<String> UserManager::getAllUsernames() {
+    UsersLock lk(_usersMutex);
     std::vector<String> usernames;
     for (const auto& pair : users) {
         usernames.push_back(pair.first);
@@ -290,10 +415,12 @@ std::vector<String> UserManager::getAllUsernames() {
 }
 
 bool UserManager::userExists(const String& username) {
+    UsersLock lk(_usersMutex);
     return users.find(username) != users.end();
 }
 
 bool UserManager::isUserEnabled(const String& username) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     return (it != users.end()) ? it->second.enabled : false;
 }
@@ -301,6 +428,7 @@ bool UserManager::isUserEnabled(const String& username) {
 // ============ 登录保护方法 ============
 
 void UserManager::recordLoginFailure(const String& username) {
+    UsersLock lk(_usersMutex);
     if (!config.maxLoginAttempts) return;
 
     // 审计 P1-2：仅对存在的用户计数。未知用户名的失败请求只记聚合计数，
@@ -339,15 +467,18 @@ void UserManager::recordLoginFailure(const String& username) {
 }
 
 void UserManager::resetLoginAttempts(const String& username) {
+    UsersLock lk(_usersMutex);
     loginAttempts.erase(username);
 }
 
 uint8_t UserManager::getLoginAttempts(const String& username) {
+    UsersLock lk(_usersMutex);
     auto it = loginAttempts.find(username);
     return (it != loginAttempts.end()) ? it->second : 0;
 }
 
 bool UserManager::isAccountLocked(const String& username) {
+    UsersLock lk(_usersMutex);
     if (!config.maxLoginAttempts) return false;
     
     auto it = loginAttempts.find(username);
@@ -355,12 +486,14 @@ bool UserManager::isAccountLocked(const String& username) {
 }
 
 void UserManager::unlockAccount(const String& username) {
+    UsersLock lk(_usersMutex);
     loginAttempts.erase(username);
 }
 
 // ============ 统计信息方法 ============
 
 UserStats UserManager::getUserStats(const String& username) {
+    UsersLock lk(_usersMutex);
     UserStats stats;
     stats.username = username;
     
@@ -376,6 +509,7 @@ UserStats UserManager::getUserStats(const String& username) {
 }
 
 std::vector<UserStats> UserManager::getAllUserStats() {
+    UsersLock lk(_usersMutex);
     std::vector<UserStats> statsList;
     
     for (const auto& pair : users) {
@@ -387,10 +521,12 @@ std::vector<UserStats> UserManager::getAllUserStats() {
 }
 
 size_t UserManager::getUserCount() {
+    UsersLock lk(_usersMutex);
     return users.size();
 }
 
 void UserManager::updateLastLogin(const String& username) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it != users.end()) {
         time_t now = TimeUtils::getTimestamp();
@@ -404,6 +540,7 @@ void UserManager::updateLastLogin(const String& username) {
 // ============ 持久化方法 ============
 
 bool UserManager::saveUsersToStorage() {
+    UsersLock lk(_usersMutex);
 #if FASTBEE_SINGLE_ADMIN_MODE
     auto adminIt = users.find(DEFAULT_ADMIN_USER);
     if (adminIt == users.end()) {
@@ -467,6 +604,7 @@ bool UserManager::saveUsersToStorage() {
 }
 
 bool UserManager::loadUsersFromStorage() {
+    UsersLock lk(_usersMutex);
     const bool hasUsersFile = LittleFS.exists(USERS_CONFIG_FILE);
     const bool hasAuthFile = LittleFS.exists(ADMIN_AUTH_CONFIG_FILE);
 
@@ -619,6 +757,7 @@ bool UserManager::validatePassword(const String& password, uint8_t minLength,
 }
 
 bool UserManager::setUserDescription(const String& username, const String& description) {
+    UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) return false;
 
@@ -633,24 +772,54 @@ bool UserManager::updatePassword(const String& username, const String& newPasswo
 }
 
 bool UserManager::validateUser(const String& username, const String& password) {
-    auto it = users.find(username);
-    if (it == users.end()) {
+    // 登录异步化：验证在独立工作任务执行，与 lwIP 线程的用户表访问并发。
+    // 分三段：锁内快照 → 锁外 PBKDF2（秒级，不得持锁）→ 锁内记账
+    String storedHash;
+    String storedSalt;
+    bool enabled = false;
+    bool exists = false;
+
+    {
+        UsersLock lk(_usersMutex);
+        auto it = users.find(username);
+        if (it != users.end()) {
+            exists = true;
+            enabled = it->second.enabled;
+            storedHash = it->second.passwordHash;
+            storedSalt = it->second.salt;
+        }
+    }
+
+    if (!exists || !enabled) {
         recordLoginFailure(username);
         return false;
     }
-    
-    const User& user = it->second;
-    
-    if (!user.enabled) {
+
+    // 锁外执行耗时的密码验证（新格式 PBKDF2 / 旧格式单轮 SHA256）
+    if (!verifyPassword(password, storedHash, storedSalt)) {
         recordLoginFailure(username);
         return false;
     }
-    
-    if (!verifyPassword(password, user.passwordHash, user.salt)) {
-        recordLoginFailure(username);
-        return false;
+
+    // 透明迁移：旧格式（单轮 SHA256）验证成功后重哈希为 $fb2$ PBKDF2 格式。
+    // 仅登录成功路径触发一次，后续登录已是新格式不会重复计算。
+    // 重哈希同样在锁外计算，失败不阻断登录，下次登录会再次尝试迁移。
+    if (!storedHash.startsWith(PASSWORD_HASH_PREFIX)) {
+        String upgraded = hashPasswordPbkdf2(password);
+        if (!upgraded.isEmpty()) {
+            UsersLock lk(_usersMutex);
+            auto it = users.find(username);
+            if (it != users.end()) {
+                it->second.passwordHash = upgraded;
+                it->second.salt = generateSalt();  // 新格式盐已内嵌，刷新遗留 salt 字段
+                it->second.lastModified = millis();
+                if (saveUsersToStorage()) {
+                    LOG_INFO("UserManager: Password hash upgraded to PBKDF2 ($fb2$)");
+                }
+            }
+        }
     }
-    
+
     resetLoginAttempts(username);
     updateLastLogin(username);
     
@@ -659,6 +828,7 @@ bool UserManager::validateUser(const String& username, const String& password) {
 
 
 String UserManager::getAllUsers() {
+    UsersLock lk(_usersMutex);
     FastBeeJsonDocLarge doc;
     JsonArray usersArray = doc["users"].to<JsonArray>();
 

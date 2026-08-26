@@ -223,6 +223,23 @@
                                         <small
                                             data-i18n="gpio-duty-help">根据分辨率计算，8位=0~255</small>
                                     </div>
+                                    <div class="fb-form-group ao-only is-hidden">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="gpio-ao-mode">
+                                            <span data-i18n="gpio-ao-mode-label">AO 模拟量输出模式</span>
+                                        </label>
+                                        <small data-i18n="gpio-ao-mode-help">启用后 PWM 按 0-100% 百分比映射输出（无 DAC 芯片的工业 AO 方案）</small>
+                                    </div>
+                                    <div class="fb-form-group ao-only is-hidden">
+                                        <label for="gpio-ao-min-pct" data-i18n="gpio-ao-min-label">AO 最小百分比</label>
+                                        <input type="number" id="gpio-ao-min-pct" class="" value="0"
+                                            min="0" max="100">
+                                    </div>
+                                    <div class="fb-form-group ao-only is-hidden">
+                                        <label for="gpio-ao-max-pct" data-i18n="gpio-ao-max-label">AO 最大百分比</label>
+                                        <input type="number" id="gpio-ao-max-pct" class="" value="100"
+                                            min="0" max="100">
+                                    </div>
                                 </div>
 
                                 <!-- UART参数 -->
@@ -325,6 +342,23 @@
                                             <option value="1">2.5dB (0-1.5V)</option>
                                             <option value="2">6dB (0-2.2V)</option>
                                             <option value="3" selected>11dB (0-3.3V)</option>
+                                        </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="adc-sample-count" data-i18n="adc-sample-count-label">采样次数 (滤波)</label>
+                                        <select id="adc-sample-count" class="">
+                                            <option value="1" selected>1次 (单次采样)</option>
+                                            <option value="4">4次</option>
+                                            <option value="8">8次 (推荐)</option>
+                                            <option value="16">16次</option>
+                                        </select>
+                                        <small data-i18n="adc-sample-count-help">多次采样滤波可抑制工业噪声，默认 1 次保持原行为</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="adc-filter-mode" data-i18n="adc-filter-mode-label">滤波模式</label>
+                                        <select id="adc-filter-mode" class="">
+                                            <option value="0" selected>均值滤波</option>
+                                            <option value="1">中值滤波 (抗尖峰)</option>
                                         </select>
                                     </div>
                                 </div>

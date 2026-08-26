@@ -19,17 +19,21 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 
 ## Pre-defined Environments
 
-| PlatformIO Environment | Edition | Chip | Flash | PSRAM | Key Capabilities |
-| --- | --- | --- | --- | --- | --- |
-| `esp32c3-F4R0` | Lite | ESP32-C3 | 4MB | None | WiFi, MQTT, basic peripherals, execution rules, NeoPixel |
-| `esp32c6-F4R0` | Lite | ESP32-C6 | 4MB | None | Same as above, WiFi 6 support |
-| `esp32-F4R0` | Standard | ESP32 | 4MB | None | Lite + command script, Modbus, I2C sensors, RFID, IR, Ethernet, 4G |
-| `esp32s3-F8R0` | Standard | ESP32-S3 | 8MB | None | Same as esp32 Standard + **OTA**, dual-core higher performance |
-| `esp32-F8R4` | Full | ESP32 | 8MB | 4MB | Standard + OTA, rule script, file management, logs, multi-user, BLE |
-| `esp32s3-F8R4` | Full | ESP32-S3 | 8MB | 4MB | Same as above, dual-core higher performance |
-| `esp32s3-F16R8` | Full | ESP32-S3 | 16MB | 8MB | Same as above, larger storage and memory headroom |
+Each chip specification keeps **a single factory environment**: all supported features are compiled in but disabled by default, so there is no edition to choose:
 
-> Edition selection is primarily based on **Flash capacity** and **PSRAM availability**. Environments with Flash ≥ 8MB support OTA upgrades (4MB environments cannot due to space constraints). Modules with PSRAM (e.g., ESP32-WROVER, ESP32-S3-N8R2/N16R8) can use the Full edition.
+| PlatformIO Environment | Chip | Flash | PSRAM |
+| --- | --- | --- | --- |
+| `esp32-F4R0` | ESP32 | 4MB | None |
+| `esp32c3-F4R0` | ESP32-C3 | 4MB | None |
+| `esp32c6-F4R0` | ESP32-C6 | 4MB | None |
+| `esp32s3-F8R4` | ESP32-S3 | 8MB | 4MB |
+| `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB |
+
+> All environments use the unified mode: every supported feature is compiled into the firmware, disabled by default, and can be enabled on demand from the Web **"Feature Config"** page (Modbus, rule scripts, dashboard, logs, file management, multi-user, etc.).
+1. Environments with Flash ≥ 8MB support OTA upgrades (4MB environments cannot due to space constraints).
+2. 4MB boards are Flash-constrained (firmware partition 2.94MB + LittleFS 1MB); high-RAM features (e.g. deviceControl) are automatically rejected by the boot budget.
+3. S3 boards without PSRAM can still flash `esp32s3-F8R4`; PSRAM-dependent features are automatically downgraded by the boot budget.
+4. If a predefined environment does not fit, add your own in platformio.ini; the `lite_flags`/`standard_flags`/`full_flags` config sections are kept as customization templates.
 
 > For detailed feature comparison and partition tables, see [Edition Comparison](https://fastbee.cn/doc/device/getting-started/edition-comparison.html).
 
@@ -170,6 +174,15 @@ docs/             Test plans and design documents
 ## Documentation
 
 📖 **Full online documentation**: https://fastbee.cn/doc/device/
+
+## Resource Limits and Memory Conventions (Soak Test Key Metrics)
+
+This project's core acceptance criteria for long-term stability (72-hour Soak test):
+
+- **Flash increase** ≤ 2KB (new code volume limit)
+- **RAM increase** ≤ 1KB (free8/MALLOC_CAP_8BIT convention)
+
+Serial logs show DRAM heap (`freeHeap`); API returns `heapFree`(INTERNAL convention), `dramFree/free8`(MALLOC_CAP_8BIT convention) for real-time monitoring.
 
 | Document | Content |
 | --- | --- |

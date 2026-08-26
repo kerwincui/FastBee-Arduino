@@ -106,6 +106,11 @@ public:
     // 初始化所有启用的外设
     bool initAllEnabledPeripherals();
 
+    // 延迟初始化重试：网络就绪后，重新初始化因 requiresNetwork 功能门控
+    // 而在启动早期被跳过（标记为 PERIPHERAL_ERROR）的外设。仅针对类型映射到
+    // 网络依赖功能的外设，避免误重试真实硬件故障。返回成功重试的数量。
+    int retryDeferredPeripherals();
+
     // ========== 数据读写 ==========
 
     // 通用数据读写接口
@@ -129,6 +134,14 @@ public:
     // 写入GPIO状态
     bool writePin(uint8_t pin, GPIOState state);
     bool writePin(const String& peripheralId, GPIOState state);
+
+    // 热路径零分配重载（const char*）：轮询执行器每周期调用，
+    // 避免 String(periphId) 临时对象反复堆分配。
+    // 普通 GPIO DI/DO/AI 快路径完全无堆操作；Modbus/雷达/编码器等
+    // 特例外设内部回退一次 String 构造后委托原实现。
+    GPIOState readPinByCStr(const char* peripheralId);
+    bool writePinByCStr(const char* peripheralId, GPIOState state);
+    uint16_t readAnalogByCStr(const char* peripheralId);
 
     // 切换GPIO状态
     bool togglePin(uint8_t pin);
@@ -335,7 +348,7 @@ private:
     void rebuildPinMapping();
 
     // 中断事件队列
-    static constexpr uint8_t ISR_QUEUE_SIZE = 8;
+    static constexpr uint8_t ISR_QUEUE_SIZE = 16;
     static QueueHandle_t _isrQueue;
     // 队列溢出计数（静态：isrHandler 为静态 ISR 上下文，不能依赖实例指针）
     static volatile uint32_t _isrQueueOverruns;
@@ -356,6 +369,15 @@ private:
 
     // DAC硬件初始化
     bool setupDACPin(const PeripheralConfig& config);
+
+    // ADC 多采样滤波读取（工业噪声抑制）
+    // samples: 采样次数 1-16；filterMode: 0=均值, 1=中值
+    uint16_t adcFilterRead(uint8_t pin, uint8_t samples, uint8_t filterMode);
+
+    // C 字符串零分配查找（调用方须已持有 _mutex）：
+    // 外设数量小（<32），线性扫描 strcmp 开销远低于 String 构造的堆分配
+    PeripheralConfig* getPeripheralCStrLocked(const char* id);
+    PeripheralRuntimeState* getRuntimeStateCStrLocked(const char* id);
 };
 
 #endif // PERIPHERAL_MANAGER_H

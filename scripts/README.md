@@ -15,6 +15,7 @@
 | `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-F16R8 -Port COM6` |
 | `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full` |
 | `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100` |
+| `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://192.168.4.1 --user admin --pass 123456 --allow-begin` |
 
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
 
@@ -29,7 +30,7 @@
 | `name` | 检查项名称，出现在测试报告中 |
 | `method` | HTTP 方法 |
 | `path` | API 路径 |
-| `profiles` | 适用版本：`lite`、`standard`、`full` |
+| `profiles` | 适用环境：出厂一律使用 full profile（统一固件，无裁剪）；`lite/standard` 仅用于自定义裁剪构建实验 |
 | `auth` | 是否需要登录后的 Bearer Token |
 | `type` | 特殊检查类型：`multi-session`、`bearer-over-cookie`、`expect-unavailable`、`expect-error` |
 | `jsonBody` | POST/PUT 请求体 |
@@ -37,9 +38,9 @@
 
 当前矩阵覆盖三类检查：
 
-- **基础可用性**：登录、系统健康、系统指标、设备配置、网络状态、MQTT 状态、协议配置、外设、外设执行、批量请求。
-- **版本功能面**：Standard/Full 的 Modbus，Full 的文件系统、日志、OTA、RuleScript、用户、角色和权限。
-- **版本边界**：Lite/Standard 下 Full-only 接口应返回 404/405/501，缺少必要参数的接口应返回 400，避免功能裁剪后误暴露或错误成功。
+- **基础可用性**: 登录、系统健康、系统指标、设备配置、网络状态、MQTT 状态、协议配置、外设、外设执行、批量请求。
+- **运行时开关功能**: Modbus,RuleScript、用户权限等功能在功能配置页按需启用。
+- **API 行为一致性**: 功能未启用时接口返回 404/405/501，缺少必要参数时返回 400。
 
 ## 构建与发布
 
@@ -54,13 +55,13 @@
 | 脚本 | 说明 |
 |------|------|
 | `build-app-bundle.js`、`build-admin-bundle.js`、`build-web-assets.js`、`build-web-modules.js` | 从 `web-src` 构建 `data/www` 资源 |
-| `gzip-www.js` | 按版本档位裁剪并压缩 Web 静态资源 |
+| `gzip-www.js` | 压缩 Web 静态资源并组装 LittleFS staging（2026-08 镜像统一化后出厂一律 full 档，不裁剪页面；`--web-lite/--web-standard` 仅供自定义裁剪构建） |
 | `generate-sw-manifest.js` | 生成 Service Worker 资源清单 |
 | `minify-js.js` | 轻量 JS 压缩器 |
 | `validate-i18n.js` | 校验中英文 i18n 键完整性 |
 | `validate-config-defaults.js` | 校验默认外设模板、执行规则和版本裁剪后的引用安全性；追加 `--staging-root .pio\fs-staging --latest-only` 可检查刚生成的 LittleFS staging |
 | `web-smoke-test.js` | 校验生成后的 Web 资源引用和启动资源 |
-| `web-profile.js` | 检查不同版本 Web profile 的裁剪结果 |
+| `web-profile.js` | Web profile 判定（出厂构建一律 full；lite/standard 裁剪路径仅供自定义构建保留） |
 | `web-asset-report.js` | 统一 Web 资源体积报告；`--source` 查看源文件体积，`--json` 输出 JSON |
 
 ## 维护诊断

@@ -8,6 +8,13 @@
 #include "network/IPManager.h"
 #include "systems/LoggerSystem.h"
 
+#include <cstring>
+#include <sys/types.h>
+#include <lwip/ip4_addr.h>
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+#include <lwip/priv/tcpip_priv.h>  // LOCK_TCPIP_CORE / UNLOCK_TCPIP_CORE
+
 IPManager::IPManager() {
     backupIPs.clear();
 }
@@ -242,9 +249,54 @@ bool IPManager::testIPAvailability(const String& ip) {
 }
 
 bool IPManager::detectConflictByARP(const String& ip) {
-    // 这是一个简化的ARP检测实现
-    LOG_DEBUG("IPManager: ARP conflict detection for IP: " + ip);
-    return false; // 暂时返回false，需要根据实际情况实现
+    // 通过 ARP 探测 IP 冲突：对本机当前 IP 发送 who-has 请求，
+    // 若局域网内另有主机响应（ARP 缓存中出现该 IP 且 MAC 非本机），
+    // 说明该 IP 被占用，判定为冲突。
+    //
+    // 注意：本函数在 NetworkManager loop（非 TCPIP 线程）中被调用，
+    // 所有 lwIP etharp/netif 访问必须持 TCPIP core 锁，否则触发
+    // "Required to lock TCPIP core functionality" assert 并复位。
+    struct netif* nif = netif_default;
+    if (nif == nullptr || !netif_is_up(nif)) {
+        return false;
+    }
+
+    ip4_addr_t probe;
+    if (!ip4addr_aton(ip.c_str(), &probe)) {
+        return false;
+    }
+
+    // 本机 MAC，供后续比对
+    uint8_t ownMac[NETIF_MAX_HWADDR_LEN];
+    LOCK_TCPIP_CORE();
+    memcpy(ownMac, nif->hwaddr, NETIF_MAX_HWADDR_LEN);
+    // 发送 ARP who-has 请求
+    etharp_query(nif, &probe, nullptr);
+    UNLOCK_TCPIP_CORE();
+
+    // 轮询 ARP 缓存最多 ~1s，等待冲突主机的响应落入缓存（每次加锁短查询）
+    const uint32_t start = millis();
+    while (millis() - start < 1000) {
+        bool found = false;
+        bool isForeign = false;
+        LOCK_TCPIP_CORE();
+        struct eth_addr* ethret = nullptr;
+        const ip4_addr_t* ipret = nullptr;
+        ssize_t idx = etharp_find_addr(nif, &probe, &ethret, &ipret);
+        if (idx >= 0 && ethret != nullptr) {
+            found = true;
+            isForeign = (memcmp(ethret->addr, ownMac, NETIF_MAX_HWADDR_LEN) != 0);
+        }
+        UNLOCK_TCPIP_CORE();
+
+        if (found) {
+            // 命中本机自身 MAC：无冲突；外来 MAC：冲突
+            return isForeign;
+        }
+        delay(50);
+    }
+    // 超时无响应：无法判定冲突
+    return false;
 }
 
 bool IPManager::detectConflictByPing(const String& ip) {

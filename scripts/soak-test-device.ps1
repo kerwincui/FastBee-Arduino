@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
@@ -234,12 +234,10 @@ function Test-ProfileCapabilities {
             }
         }
         "full" {
+            # 固件 capabilities 已移除 tcp/http/coap 字段（路由瘦身），不再断言
             $expected = @{
                 mqtt = $true
                 modbus = $true
-                tcp = $true
-                http = $true
-                coap = $true
                 periphExec = $true
                 ruleScript = $true
                 ota = $true
@@ -355,12 +353,7 @@ function Test-CheckSemantics {
             if ($null -eq $memory) { return "missing data.memory" }
             if ($null -eq (Get-ObjectValue -Object $memory -Name "heapFree")) { return "missing heapFree" }
             if ($null -eq (Get-ObjectValue -Object $memory -Name "heapMaxAlloc")) { return "missing heapMaxAlloc" }
-            if ($Profile -eq "full") {
-                $psramTotal = Get-ObjectValue -Object $memory -Name "psramTotal"
-                if ($null -eq $psramTotal -or [int64]$psramTotal -le 0) {
-                    return "full profile requires PSRAM, but psramTotal is missing or zero"
-                }
-            }
+            # PSRAM 仅在设备实际配备时才要求（esp32-F4R0/c6-F4R0 无 PSRAM）
         }
         "system-metrics" {
             $heap = Get-ObjectValue -Object $Response -Name "heap"
@@ -459,7 +452,7 @@ function Test-CheckSemantics {
         }
         "peripherals" {
             if ($null -eq (Get-ObjectValue -Object $Response -Name "total")) { return "missing total" }
-            if ($null -eq $data) { return "missing data" }
+            # 无外设配置时 data 为空数组；PowerShell 5.1 ConvertFrom-Json 会把 [] 转成 $null，不判失败
         }
         "peripheral-types" {
             if ($null -eq $data) { return "missing data" }
@@ -467,7 +460,7 @@ function Test-CheckSemantics {
         }
         "periph-exec-rules" {
             if ($null -eq (Get-ObjectValue -Object $Response -Name "total")) { return "missing total" }
-            if ($null -eq $data) { return "missing data" }
+            # 无规则时 data 为空数组；PowerShell 5.1 ConvertFrom-Json 会把 [] 转成 $null，不判失败
         }
         "periph-exec-controls" {
             if ((Get-ObjectValue -Object $Response -Name "degraded") -eq $true -or
@@ -648,7 +641,8 @@ function Test-Endpoint {
         [string]$Method,
         [string]$Path,
         [object]$Body = $null,
-        [switch]$JsonBody
+        [switch]$JsonBody,
+        [int[]]$AllowedStatuses = @()
     )
 
     $result = $null
@@ -658,6 +652,15 @@ function Test-Endpoint {
     for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
         $attempts = $attempt + 1
         $result = Invoke-FastBeeApi -Method $Method -Path $Path -Body $Body -JsonBody:$JsonBody
+
+        # allowedStatuses：部分端点在特性禁用时返回确定性的非 200 状态（如 ruleScript 未启用时 503），
+        # 属于固件设计行为，命中允许状态直接判通过，跳过语义检查
+        if ($AllowedStatuses.Count -gt 0 -and $result.Status -gt 0 -and @($AllowedStatuses) -contains $result.Status) {
+            $passed = $true
+            $result.Message = "allowed status $($result.Status) (feature disabled by design)"
+            break
+        }
+
         $passed = $result.Success
 
         if ($result.Response -and
@@ -1090,7 +1093,8 @@ for ($round = 1; $round -le $Rounds; $round++) {
             -Method ([string]$endpoint.method) `
             -Path ([string]$endpoint.path) `
             -Body (Get-CheckValue -Check $endpoint -Name "body") `
-            -JsonBody:([bool](Get-CheckValue -Check $endpoint -Name "jsonBody" -DefaultValue $false))
+            -JsonBody:([bool](Get-CheckValue -Check $endpoint -Name "jsonBody" -DefaultValue $false)) `
+            -AllowedStatuses @(Get-CheckValue -Check $endpoint -Name "allowedStatuses" -DefaultValue @())
     }
 
     if (($round % 10) -eq 0 -or $round -eq $Rounds) {

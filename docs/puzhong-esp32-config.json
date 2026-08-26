@@ -1,0 +1,157 @@
+{
+  "device": {
+    "deviceId": "FBE_PZ_001",
+    "deviceName": "普中 ESP32 环境监测设备",
+    "productNumber": 1,
+    "userId": "1",
+    "description": "基于普中 ESP32 开发板的温湿度监测与 OLED 显示系统",
+    "location": "实验室 A 区",
+    "enableNTP": true,
+    "ntpServer1": "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
+    "ntpServer2": "cn.pool.ntp.org",
+    "timezone": "CST-8",
+    "syncInterval": 3600,
+    "logLevel": "INFO",
+    "developerModeEnabled": true
+  },
+  "network": {
+    "wifiMode": "station",
+    "wifiSSID": "your_wifi_ssid",
+    "wifiPassword": "your_wifi_password",
+    "staticIP": "",
+    "staticGateway": "",
+    "staticSubnet": "",
+    "staticDNS": "",
+    "apSSID": "FastBee-PZ-001",
+    "apPassword": "12345678",
+    "hostname": "fastbee-pz-001"
+  },
+  "mqtt": {
+    "server": "iot.fastbee.cn",
+    "port": 1883,
+    "sslEnabled": false,
+    "clientId": "FBE_PZ_001",
+    "username": "",
+    "password": "",
+    "keepAlive": 60,
+    "cleanSession": true,
+    "autoReconnect": true,
+    "publishTopic": "fb/iot/FBE_PZ_001/data",
+    "subscribeTopic": "fb/iot/FBE_PZ_001/cmd"
+  },
+  "peripherals": [
+    {
+      "id": "oled_display",
+      "name": "0.96 英寸 OLED 显示屏",
+      "type": "LCD",
+      "enabled": true,
+      "pinCount": 2,
+      "pins": [5, 21],
+      "params": {
+        "width": 128,
+        "height": 64,
+        "interface": 2,
+        "frequency": 400000,
+        "address": 3,
+        "contrast": 255
+      }
+    },
+    {
+      "id": "led_indicator",
+      "name": "板载 LED 指示灯",
+      "type": "GPIO_DIGITAL_OUTPUT",
+      "enabled": true,
+      "pinCount": 1,
+      "pins": [8],
+      "params": {
+        "initialState": 0,
+        "passive": false
+      }
+    },
+    {
+      "id": "dht11_sensor",
+      "name": "DHT11 温湿度传感器",
+      "type": "SENSOR_DHT11",
+      "enabled": true,
+      "pinCount": 1,
+      "pins": [10],
+      "params": {
+        "sampleInterval": 2000,
+        "timeout": 1000
+      }
+    }
+  ],
+  "periph_exec": [
+    {
+      "id": "periodic_data_collection",
+      "name": "周期性数据采集上报",
+      "enabled": true,
+      "triggerType": "interval",
+      "interval": 60000,
+      "actions": [
+        {
+          "type": "readPeripheral",
+          "peripheralId": "dht11_sensor",
+          "params": {}
+        },
+        {
+          "type": "updateDisplay",
+          "peripheralId": "oled_display",
+          "params": {
+            "template": "Temp: {{temp}}°C Humi: {{humi}}%RH"
+          }
+        },
+        {
+          "type": "publishData",
+          "params": {
+            "topic": "fb/iot/FBE_PZ_001/data",
+            "payloadTemplate": "{\"deviceId\":\"FBE_PZ_001\",\"temperature\":{{temp}},\"humidity\":{{humi}},\"timestamp\":{{timestamp}}}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "led_control_rule",
+      "name": "LED 开关控制规则",
+      "enabled": true,
+      "triggerType": "command",
+      "commandPattern": "led 开关",
+      "actions": [
+        {
+          "type": "writePin",
+          "peripheralId": "led_indicator",
+          "params": {
+            "state": "{{value}}"
+          }
+        }
+      ]
+    }
+  ],
+  "protocol": {
+    "version": "1.0",
+    "dataFormat": "json",
+    "compression": false,
+    "encryption": false,
+    "publishTopics": [
+      "fb/iot/FBE_PZ_001/data"
+    ],
+    "subscribeTopics": [
+      "fb/iot/FBE_PZ_001/cmd"
+    ],
+    "commands": [
+      {
+        "name": "led 开关",
+        "description": "控制 LED 指示灯开关",
+        "parameters": [
+          {
+            "name": "value",
+            "type": "integer",
+            "required": true,
+            "description": "LED 状态：0=关闭，1=开启",
+            "enum": [0, 1]
+          }
+        ]
+      }
+    ]
+  }
+}

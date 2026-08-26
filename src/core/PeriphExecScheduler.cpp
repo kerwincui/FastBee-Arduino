@@ -9,6 +9,7 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "core/PeriphExecScheduler.h"
+#include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
@@ -30,6 +31,13 @@
 // 注意：不再使用静态 JsonDocument，因为 ArduinoJson v7 的 JsonDocument
 // 内存池只增不减（clear() 不释放内存），长时间运行会导致堆碎片化。
 // 改为每次使用局部 JsonDocument，用完即销毁释放内存。
+//
+// 碎片治理（2026-08-18）：序列化输出使用静态复用 String _serializeBuffer，
+// 仅清空 length 不释放底层 buffer，消除高频 alloc/free 抖动。
+// JsonDocument 仍为局部变量（v7 clear() 不释放），但序列化目标复用。
+
+// 静态复用缓冲定义（单线程串行使用，Scheduler 在 loopTask 中运行）
+String PeriphExecScheduler::_serializeBuffer;
 
 // 协议连接状态标志位
 #define PROTOCOL_MQTT_CONNECTED    (1 << 0)
@@ -37,29 +45,12 @@
 
 namespace {
 // web-reserve 阈值（滞回设计，防边界振荡）—— 8BIT DRAM 口径，与静态资源门控一致：
-// 各芯片 DRAM 总量不同，开机基线差异大，统一阈值会导致：
-//   - S3(512KB DRAM, 基线~44KB)：阈值 12KB 太接近基线，频繁触发振荡
-//   - C3(272KB DRAM, 基线~20KB)：阈值 12KB 太宽松，余量不足时规则切片导致 503
-// 因此按 CONFIG_IDF_TARGET 编译期派生：
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
-// C3/C6: 基线 free8≈18-22KB，留 ~8KB 余量
-constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 10240U;    // free8 < 10KB 暂停
-constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 6144U; // blk8 < 6KB 暂停
-constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 14336U;     // free8 ≥ 14KB 恢复
-constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 10240U; // 且 blk8 ≥ 10KB
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-// S3: 基线 free8≈40-50KB，阈值宽松，避免小波动触发振荡
-constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 16384U;    // free8 < 16KB 暂停
-constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 12288U; // blk8 < 12KB 暂停
-constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 20480U;     // free8 ≥ 20KB 恢复
-constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 16384U; // 且 blk8 ≥ 16KB
-#else
-// ESP32 经典: 基线 free8≈25-28KB
-constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = 12288U;    // free8 < 12KB 暂停
-constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = 8192U; // blk8 < 8KB 暂停
-constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = 16384U;     // free8 ≥ 16KB 恢复
-constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = 12288U; // 且 blk8 ≥ 12KB
-#endif
+// 各芯片 DRAM 基线不同，阈值按芯片差异化定义统一收口在 ChipConfig.h
+// （CHIP_WEB_RESERVE_*），业务代码禁止再按 CONFIG_IDF_TARGET 自行派生。
+constexpr uint32_t WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES;
+constexpr uint32_t WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK;
+constexpr uint32_t WEB_RESERVE_RESUME_FREE_HEAP_BYTES = CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES;
+constexpr uint32_t WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK;
 // 心跳放行：持续暂停期间每 90s 放行一次检查，让后台采集规则跑一轮刷新
 // 传感器缓存（TTL 120s），保证实时监测不丢失温湿度等缓存型数据；
 // 单次执行的内存跌落是瞬时的，与 Web 请求碰撞概率极低。
@@ -74,6 +65,10 @@ constexpr unsigned long SERIAL_CHECK_INTERVAL_MS = 250UL;
 constexpr unsigned long SERIAL_FRAME_IDLE_MS = 500UL;
 constexpr size_t SERIAL_READ_CHUNK_BYTES = 64;
 constexpr size_t SERIAL_FRAME_MAX_BYTES = 160;
+// 内存保护暂停心跳：HealthMonitor 暂停定时器后，每 120s 放行一次（非 CRITICAL
+// 且 DRAM 高于外设执行门控时），避免无 PSRAM 板启用 MQTT 后 DRAM 基线长期
+// 停留 SEVERE、遥测定时规则永久停摆（NORMAL 恢复线在该机型不可达）
+constexpr unsigned long MEM_PAUSE_HEARTBEAT_ALLOW_MS = 120000UL;
 
 bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
                                     uint32_t freeHeap,
@@ -205,8 +200,33 @@ uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
 }
 
 void PeriphExecScheduler::checkTimers() {
-    // 内存保护暂停：HealthMonitor 检测到内存压力时暂停所有定时器
-    if (_memoryPressurePaused) return;
+    // 内存保护暂停：HealthMonitor 检测到内存压力时暂停所有定时器；
+    // 心跳放行：暂停期间每 120s 放行一次（CRITICAL 或 DRAM 低于外设执行
+    // 门控时除外），保证遥测定时规则在长期 SEVERE 机型上不完全停摆
+    if (_memoryPressurePaused) {
+        const uint32_t pausedDram = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        MemoryGuardLevel pausedLevel = MemoryGuardLevel::NORMAL;
+        auto* pausedFw = FastBeeFramework::getInstance();
+        if (pausedFw && pausedFw->getHealthMonitor()) {
+            pausedLevel = pausedFw->getHealthMonitor()->getMemoryGuardLevel();
+        }
+        const bool heartbeatDue =
+            (millis() - _memoryPressurePausedSince >= MEM_PAUSE_HEARTBEAT_ALLOW_MS);
+        if (pausedLevel >= MemoryGuardLevel::CRITICAL ||
+            pausedDram < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM ||
+            !heartbeatDue) {
+            return;
+        }
+        _memoryPressurePausedSince = millis();
+        // 同步强制 web-reserve 一并放行：两套暂停机制串行检查，若各自独立
+        // 心跳周期(120s/90s)，放行需两周期同时命中(LCM=360s)，遥测近乎停摆。
+        // 将 web-reserve 计时回拨至已到期，保证本次内存心跳两套同时放行
+        if (_webReserveSuspended) {
+            _webReserveSuspendedSince = millis() - WEB_RESERVE_HEARTBEAT_ALLOW_MS;
+        }
+        Serial.println("[PeriphExec] Memory-pause heartbeat allow: timers run once");
+        // 不 return：本次检查放行，保持 _memoryPressurePaused=true，下次检查继续暂停
+    }
 
     unsigned long now = millis();
 
@@ -503,9 +523,11 @@ void PeriphExecScheduler::checkSerialEvents() {
         item["id"] = id;
         item["value"] = frame;
 
-        String payload;
-        serializeJson(doc, payload);
-        _manager->handlePollData("serial", payload);
+        // 复用缓冲：避免每帧 alloc/free String
+        _serializeBuffer.reserve(128);
+        _serializeBuffer = "";
+        serializeJson(doc, _serializeBuffer);
+        _manager->handlePollData("serial", _serializeBuffer);
         LOGGER.debugf("[PeriphExec] Serial data source: %s='%s'", id.c_str(), frame.c_str());
     };
 
@@ -735,8 +757,9 @@ void PeriphExecScheduler::triggerButtonEvent(const String& periphId, EventType e
 
     if (!_manager) return;
 
-    // 构建事件数据包含外设ID
-    String eventData = "{\"periphId\":\"" + periphId + "\"}";
+    // 碎片治理：用栈缓冲替代 String 拼接，消除 3-4 次小 alloc
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"periphId\":\"%s\"}", periphId.c_str());
 
     // 通过 manager 分发按键事件匹配的规则
     _manager->dispatchButtonEventRules(targetEventId, periphId);
@@ -745,6 +768,10 @@ void PeriphExecScheduler::triggerButtonEvent(const String& periphId, EventType e
 // ========== 配置辅助方法 ==========
 
 String PeriphExecScheduler::getStaticEventsJson() {
+    // 碎片治理：内容基于编译期 STATIC_EVENTS，首次构建后缓存，后续直接返回
+    static String cached;
+    if (!cached.isEmpty()) return cached;
+
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
@@ -756,9 +783,8 @@ String PeriphExecScheduler::getStaticEventsJson() {
         obj["type"] = static_cast<uint8_t>(STATIC_EVENTS[i].type);
     }
 
-    String result;
-    serializeJson(doc, result);
-    return result;
+    serializeJson(doc, cached);
+    return cached;
 }
 
 String PeriphExecScheduler::getDynamicEventsJson() {
@@ -767,6 +793,10 @@ String PeriphExecScheduler::getDynamicEventsJson() {
 }
 
 String PeriphExecScheduler::getValidTriggerTypes() {
+    // 碎片治理：内容基于编译期常量，首次构建后缓存
+    static String cached;
+    if (!cached.isEmpty()) return cached;
+
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
@@ -793,9 +823,8 @@ String PeriphExecScheduler::getValidTriggerTypes() {
     addTrigger(static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER),
                "轮询触发", "本地数据源（如Modbus传感器）周期轮询条件评估触发");
 
-    String result;
-    serializeJson(doc, result);
-    return result;
+    serializeJson(doc, cached);
+    return cached;
 }
 
 // 事件分类描述映射（用于 getEventCategoriesJson 生成分类说明）
@@ -816,6 +845,10 @@ static const char* eventCategoryDescription(const char* cat) {
 }
 
 String PeriphExecScheduler::getEventCategoriesJson() {
+    // 碎片治理：内容基于编译期 STATIC_EVENTS 推导，首次构建后缓存
+    static String cached;
+    if (!cached.isEmpty()) return cached;
+
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
@@ -846,9 +879,8 @@ String PeriphExecScheduler::getEventCategoriesJson() {
     modbusObj["name"] = "Modbus子设备";
     modbusObj["description"] = "Modbus采集与控制子设备触发事件";
 
-    String result;
-    serializeJson(doc, result);
-    return result;
+    serializeJson(doc, cached);
+    return cached;
 }
 
 // ========== 内部方法 ==========
@@ -899,9 +931,11 @@ String PeriphExecScheduler::collectPeripheralData() {
         }
     });
 
-    String result;
-    serializeJson(doc, result);
-    return result;
+    // 复用缓冲：reserve 仅扩容不缩容，已足够大时是 no-op
+    _serializeBuffer.reserve(256);
+    _serializeBuffer = "";
+    serializeJson(doc, _serializeBuffer);
+    return _serializeBuffer;
 }
 
 bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtocols) {

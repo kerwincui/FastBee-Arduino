@@ -361,13 +361,30 @@ private:
     bool _apFallbackAuto;             // true = STA 失败自动回退的 AP；false = 用户主动设置的 AP
     int  _apProbeFailCount;           // 连续探测失败次数（用于退避）
     static constexpr unsigned long AP_PROBE_INTERVAL_MS     = 120000;  // 正常探测间隔：2 分钟
-    static constexpr unsigned long AP_PROBE_BACKOFF_MS      = 600000;  // 退避探测间隔：10 分钟
+    static constexpr unsigned long AP_PROBE_BACKOFF_MS      = 1200000; // 退避探测间隔：20 分钟（实测认证持续被拒时高频探测会加剧路由器端限流）
     static constexpr int AP_PROBE_BACKOFF_THRESHOLD         = 5;       // 连续失败 5 次后进入退避
-    // 单次探测超时：6 秒（从 10s 缩短）——探测期间 AP 处于停摆状态，
-    // 窗口越短对 AP 客户端的影响越小；STA 可连时通常 1-4s 内完成关联
-    static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 6000;
+    // 单次探测超时：15 秒——探测期间 AP 处于停摆状态，但弱信号链路上
+    // 认证本身可能耗时 10s+（AUTH_EXPIRE 多次重试后才关联成功），窗口过短
+    // 会把“能连上但慢”的链路误判为不可用；实测边缘信号设备需 >6s 才能完成关联
+    static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 15000;
     // AP 有客户端连接时的探测顺延间隔：60s 后重试（不杀 AP，不计失败）
     static constexpr unsigned long AP_PROBE_DEFER_MS        = 60000;
+
+    // ── 开机 STA 连接重试（FASTBEE_WEB_START_EARLY 非阻塞路径）─────────────
+    // 背景：非阻塞开机只发起一次 WiFi.begin()，单次 AUTH_EXPIRE（reason=2，
+    //       同名 SSID 多 AP 环境常见）超时即回退 AP，此后探测恢复退避到 10min，
+    //       设备可卡 AP 数小时（fastbee.local 反复不可达的直接根因）。
+    //       超时后先完整重置驱动重试若干次，全部失败才回退 AP。
+    uint8_t _bootConnectRetries;                       // 当前开机重试计数
+    static constexpr uint8_t BOOT_STA_MAX_RETRIES = 3; // 回退 AP 前的重试次数（共最多 4 次连接尝试）
+
+    // ── AP 回退滞留看门狗 ──────────────────────────────────────────────
+    // 自动回退后探测可能因认证失败/弱信号持续不恢复（且退避到 10min 间隔），
+    // 设备长期停在 192.168.4.1、局域网不可达。滞留超阈值且 AP 无客户端
+    // （不打断用户配网）时调度一次干净重启，重启后开机流程走全信道扫描
+    // + 多次重试的 STA 连接，成功率高于运行时探测。
+    unsigned long _apFallbackSince;   // 自动回退 AP 起始时间戳（0=未处于自动回退）
+    static constexpr unsigned long AP_STUCK_REBOOT_MS = 1800000;  // 30 分钟：回退滞留达此时长仍无恢复即重启重试 STA（避免重启风暴加剧认证限流）
 
     // STA 运行时长时间失联 → 调度重启回落 AP 的看门狗
     // 背景：AP 回退仅在开机流程（connectToWiFiBlocking 失败）触发；开机已连上、
@@ -377,6 +394,28 @@ private:
     //       恢复 192.168.4.1 可达）。不在运行时直接切模式，避免 arduino_events 栈溢出。
     unsigned long _staDisconnectedSince;  // STA 持续断开起始时间戳（0=已连接/未计时）
     static constexpr unsigned long STA_LOST_REBOOT_MS = 60000;  // 1 分钟：STA 连不上达此时长即重启回退 AP，让用户尽快能配置
+
+    // ── 数据面连通性看门狗（"假连接"自愈）────────────────────────────
+    // 背景：长时间运行后 WiFi 可能自报 CONNECTED 且持有 IP，但 lwIP/驱动数据面
+    //       已失效（网关 ARP 无应答、HTTP/mDNS 全不可达）。STA_LOST_REBOOT_MS
+    //       只覆盖"断开事件"，对此状态无能为力，设备只能靠人工复位。
+    //       此处每 30s 用异步 ICMP ping 探测网关（真实往返；旧版 ARP 缓存判定
+    //       在入站流量维持缓存条目时会误判为可达而永久失效），
+    //       连续失败达阈值即强制重连；重连后若真实断开，既有 STA 失联看门狗
+    //       会接力调度重启回退 AP，整条链路无需人工干预。
+    bool probeGatewayReachable();
+    void resetGatewayWatchdog();
+    static void gwPingOnSuccess(void* handle, void* args);
+    static void gwPingOnEnd(void* handle, void* args);
+    unsigned long _lastGwProbeTime = 0;
+    uint8_t _gwArpFailCount = 0;
+    uint8_t _gwProbeState = 0;            // 0=空闲 1=探测中 2=已有结果待消费
+    volatile bool _gwProbeResult = false; // 上一轮 ping 是否收到回包
+    unsigned long _gwProbeStart = 0;
+    void* _gwPingHandle = nullptr;        // esp_ping_handle_t
+    static constexpr unsigned long GW_PROBE_INTERVAL_MS = 30000;   // 探测间隔 30s
+    static constexpr unsigned long GW_PROBE_TIMEOUT_MS = 8000;     // 单轮探测超时兑底（ping 自身 2s）
+    static constexpr uint8_t GW_FAIL_RECONNECT_THRESHOLD = 3;      // 连续 3 次失败（约 90-120s）触发强制重连
 };
 
 #endif

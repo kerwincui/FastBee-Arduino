@@ -398,7 +398,7 @@ public:
      * @brief 处理 WiFi 事件
      * @param event 事件 ID
      */
-    void handleWiFiEvent(arduino_event_id_t event);
+    void handleWiFiEvent(arduino_event_id_t event, const arduino_event_info_t& info);
     
     /**
      * @brief 诊断 WiFi 频段不匹配问题

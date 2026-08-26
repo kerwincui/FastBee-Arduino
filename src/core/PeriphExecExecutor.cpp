@@ -25,6 +25,7 @@
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
 #include "core/MemoryBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include <esp_heap_caps.h>
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
@@ -319,8 +320,10 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_UART_SEND)) {
         return executeCallPeripheralAction(action, effectiveValue, receivedValue);
     }
-    // 系统功能 (actionType 6-9)
-    if (action.actionType >= 6 && action.actionType <= 9) {
+    // 系统功能 (actionType 6-9) 与运行时功能开关 (actionType 31/32)
+    if ((action.actionType >= 6 && action.actionType <= 9) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE)) {
         return executeSystemAction(action);
     }
     // 命令脚本 (actionType 15)
@@ -862,40 +865,32 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             JsonDocument resultDoc;
             JsonArray resultsArr = resultDoc.to<JsonArray>();
 
+            // 收集任务索引，交给 ModbusHandler 统一调度（同从站/同功能码相邻寄存器合并读）
+            uint8_t batchIdx[Protocols::MODBUS_MAX_POLL_TASKS];
+            uint8_t batchCount = 0;
             for (JsonVariant v : pollArr) {
-                // 批次总超时检查
-                if (millis() - batchStart > MODBUS_POLL_BATCH_TIMEOUT_MS) {
-                    Serial.printf("[PeriphExec] Poll batch timeout (%lums), stopping early\n",
-                                  (unsigned long)MODBUS_POLL_BATCH_TIMEOUT_MS);
+                if (batchCount >= Protocols::MODBUS_MAX_POLL_TASKS) {
+                    Serial.printf("[PeriphExec] Poll batch truncated at %d tasks\n",
+                                  Protocols::MODBUS_MAX_POLL_TASKS);
                     break;
                 }
-                // MemGuard 动态堆检查：防止多任务迭代中堆逐渐耗尽
-                {
-                    auto* fwInner = FastBeeFramework::getInstance();
-                    HealthMonitor* monInner = fwInner ? fwInner->getHealthMonitor() : nullptr;
-                    if ((monInner && monInner->isMemoryCritical()) || FastBee::MemoryBudget::dramFree() < 15000) {
-                        Serial.printf("[PeriphExec] Heap dropped to %d during poll, stopping early\n",
-                                      (int)ESP.getFreeHeap());
-                        break;
+                batchIdx[batchCount++] = v.as<uint8_t>();
+            }
+
+            // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
+            String result = modbus->executePollTaskBatch(batchIdx, batchCount, timeout, retries, interDelay, false);
+            Serial.printf("[PeriphExec] Poll batch (%d tasks) len=%u\n", batchCount, (unsigned)result.length());
+            if (result != "[]") {
+                anySuccess = true;
+                // 解析批量结果并追加到结构化数组（避免字符串拼接）
+                JsonDocument taskDoc;
+                if (!deserializeJson(taskDoc, result)) {
+                    JsonArray taskArr = taskDoc.as<JsonArray>();
+                    for (JsonVariant item : taskArr) {
+                        resultsArr.add(item);
                     }
-                }
-                uint8_t taskIdx = v.as<uint8_t>();
-                if (resultsArr.size() > 0 && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
-                // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
-                String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
-                Serial.printf("[PeriphExec] Poll task[%d] len=%u\n", taskIdx, (unsigned)result.length());
-                if (result != "[]") {
-                    anySuccess = true;
-                    // 解析任务结果并追加到结构化数组（避免字符串拼接）
-                    JsonDocument taskDoc;
-                    if (!deserializeJson(taskDoc, result)) {
-                        JsonArray taskArr = taskDoc.as<JsonArray>();
-                        for (JsonVariant item : taskArr) {
-                            resultsArr.add(item);
-                        }
-                    } else {
-                        Serial.printf("[PeriphExec] Poll task[%d] result JSON parse failed\n", taskIdx);
-                    }
+                } else {
+                    Serial.printf("[PeriphExec] Poll batch result JSON parse failed\n");
                 }
             }
             if (anySuccess && resultsArr.size() > 0) {
@@ -1112,43 +1107,39 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     JsonDocument resultDoc;
     JsonArray resultsArr = resultDoc.to<JsonArray>();
     bool anySuccess = false;
-    unsigned long legacyBatchStart = millis();
-    constexpr unsigned long MODBUS_LEGACY_BATCH_TIMEOUT_MS = 30000;
 
+    // 收集任务索引，交给 ModbusHandler 统一调度（同从站/同功能码相邻寄存器合并读）
+    uint8_t legacyBatchIdx[Protocols::MODBUS_MAX_POLL_TASKS];
+    uint8_t legacyBatchCount = 0;
     int start = 0;
     while (start <= (int)actionVal.length()) {
-        // 批次总超时检查
-        if (millis() - legacyBatchStart > MODBUS_LEGACY_BATCH_TIMEOUT_MS) {
-            Serial.printf("[PeriphExec] Legacy poll batch timeout (%lums), stopping early\n",
-                          (unsigned long)MODBUS_LEGACY_BATCH_TIMEOUT_MS);
-            break;
-        }
         int comma = actionVal.indexOf(',', start);
         if (comma < 0) comma = actionVal.length();
         String token = actionVal.substring(start, comma);
         token.trim();
         if (token.length() > 0) {
-            uint8_t taskIdx = (uint8_t)token.toInt();
-
-            if (resultsArr.size() > 0 && interDelay > 0) {
-                vTaskDelay(pdMS_TO_TICKS(interDelay));
+            if (legacyBatchCount >= Protocols::MODBUS_MAX_POLL_TASKS) {
+                LOGGER.warningf("[PeriphExec] Legacy poll batch truncated at %d tasks",
+                                Protocols::MODBUS_MAX_POLL_TASKS);
+                break;
             }
-
-            // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
-            String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
-            if (result != "[]") {
-                anySuccess = true;
-                // 解析任务结果并追加到结构化数组（避免字符串拼接）
-                JsonDocument taskDoc;
-                if (!deserializeJson(taskDoc, result)) {
-                    JsonArray taskArr = taskDoc.as<JsonArray>();
-                    for (JsonVariant item : taskArr) {
-                        resultsArr.add(item);
-                    }
-                }
-            }
+            legacyBatchIdx[legacyBatchCount++] = (uint8_t)token.toInt();
         }
         start = comma + 1;
+    }
+
+    // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
+    String legacyResult = modbus->executePollTaskBatch(legacyBatchIdx, legacyBatchCount, timeout, retries, interDelay, false);
+    if (legacyResult != "[]") {
+        anySuccess = true;
+        // 解析批量结果并追加到结构化数组（避免字符串拼接）
+        JsonDocument taskDoc;
+        if (!deserializeJson(taskDoc, legacyResult)) {
+            JsonArray taskArr = taskDoc.as<JsonArray>();
+            for (JsonVariant item : taskArr) {
+                resultsArr.add(item);
+            }
+        }
     }
 
     if (anySuccess && resultsArr.size() > 0) {
@@ -1187,6 +1178,8 @@ String PeriphExecExecutor::guessSensorDataField(const String& category) {
         return "voltage";
     } else if (category == "radar") {
         return "presence";
+    } else if (category == "ntc") {
+        return "temperature";
     }
     return "value"; // 其它类别的内部通道名兜底
 }
@@ -1246,9 +1239,10 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     float rawValue = 0;
 
     if (strcmp(category, "analog") == 0) {
-        rawValue = (float)pm.readAnalog(String(periphId));
+        // 热路径零分配：避免 String(periphId) 每周期堆构造
+        rawValue = (float)pm.readAnalogByCStr(periphId);
     } else if (strcmp(category, "digital") == 0) {
-        GPIOState state = pm.readPin(String(periphId));
+        GPIOState state = pm.readPinByCStr(periphId);
         rawValue = (state == GPIOState::STATE_HIGH) ? 1.0f : 0.0f;
     } else if (strcmp(category, "radar") == 0) {
         bool detected = false;
@@ -1296,6 +1290,17 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
             return false;
         }
+        // 保留引脚拦截：DHT 位时序读取会关中断忙等，若引脚落在芯片保留区
+        // （如 S3 Octal Flash/PSRAM 总线 GPIO26-37）直接踩坏总线触发
+        // TG1WDT/INT_WDT 复位循环（2026-08-13 实测）
+        if (pm.isReservedPin(pin)) {
+            static unsigned long s_lastResvLog = 0;
+            if (millis() - s_lastResvLog > 30000UL) {
+                LOGGER.warningf("[PeriphExec] Sensor read blocked: '%s' GPIO%d reserved on %s", periphId, pin, CHIP_NAME);
+                s_lastResvLog = millis();
+            }
+            return false;
+        }
         SensorDriverType dhtType = (strcmp(category, "dht11") == 0) ?
             SensorDriverType::DHT11 : SensorDriverType::DHT22;
         rawValue = SensorDriver::getInstance().readDHT(pin, dhtType, String(dataField));
@@ -1325,6 +1330,10 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         uint8_t pin = cfg->getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
+            return false;
+        }
+        if (pm.isReservedPin(pin)) {
+            LOGGER.warningf("[PeriphExec] Sensor read blocked: '%s' GPIO%d reserved on %s", periphId, pin, CHIP_NAME);
             return false;
         }
         rawValue = SensorDriver::getInstance().readDS18B20(pin, deviceIndex);
@@ -1396,6 +1405,30 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         rawValue = SensorDriver::getInstance().readVoltage(pin, cal);
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: voltage read failed on '%s'", periphId);
+            return false;
+        }
+    } else if (strcmp(category, "ntc") == 0) {
+        // NTC 热敏电阻（分压器 + B 参数法测温）
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        uint8_t pin = cfg->getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: NTC sensor '%s' has no valid pin", periphId);
+            return false;
+        }
+        NTCSensorCalibration cal;
+        cal.seriesResistor = doc["seriesResistor"] | 10000.0f;
+        cal.nominalResistance = doc["nominalResistance"] | 10000.0f;
+        cal.nominalTempC = doc["nominalTempC"] | 25.0f;
+        cal.bCoefficient = doc["bCoefficient"] | 3950.0f;
+        cal.vRef = doc["vRef"] | 3.3f;
+        cal.adcMax = doc["adcMax"] | 4095;
+        rawValue = SensorDriver::getInstance().readNTC(pin, cal);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: NTC read failed on '%s'", periphId);
             return false;
         }
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER
@@ -1480,6 +1513,33 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
     ExecActionType actType = static_cast<ExecActionType>(action.actionType);
 
     switch (actType) {
+        case ExecActionType::ACTION_FEATURE_ENABLE:
+        case ExecActionType::ACTION_FEATURE_DISABLE: {
+            // 运行时功能开关：白名单仅限 webServer/mdns（支持外设规则动态恢复/关闭）
+            const bool enable = (actType == ExecActionType::ACTION_FEATURE_ENABLE);
+            String key = action.actionValue;
+            key.trim();
+            if (key != "webServer" && key != "mdns") {
+                LOGGER.warningf("[PeriphExec] Feature toggle: unsupported key '%s' (allowed: webServer/mdns)", key.c_str());
+                return false;
+            }
+            JsonDocument doc;
+            doc["features"][key.c_str()]["enabled"] = enable;
+            auto& fm = FastBee::RuntimeFeatureManager::instance();
+            if (!fm.updateFromJson(doc)) {
+                LOGGER.infof("[PeriphExec] Feature '%s' already %s, no action needed", key.c_str(), enable ? "enabled" : "disabled");
+                return true;
+            }
+            if (!fm.saveCurrentConfig()) {
+                LOGGER.errorf("[PeriphExec] Feature toggle: failed to save features.json (%s)", key.c_str());
+                return false;
+            }
+            LOGGER.infof("[PeriphExec] Feature '%s' %s, rebooting to apply...", key.c_str(), enable ? "enabled" : "disabled");
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
+            SystemRebooter::scheduleReboot("PeriphExec feature toggle", 1000UL, RestartReason::CONFIG_CHANGE);
+            return true;
+        }
+
         case ExecActionType::ACTION_SYS_RESTART:
             LOGGER.info("[PeriphExec] Executing system restart...");
             // 触发 restart 事件以便 DEVICE_EVENT 主题上报

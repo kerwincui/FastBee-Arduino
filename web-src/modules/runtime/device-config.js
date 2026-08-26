@@ -9,16 +9,20 @@
     const CONFIG_IMPORT_CHUNK_BYTES = 1536;
     const CONFIG_IMPORT_CHUNK_RETRIES = 3;  // 单分片失败重试次数（退化链路下跨包丢失可重试恢复）
     const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
+    function t(key, fallback) {
+        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
+    }
     const CONFIG_TRANSFER_LABELS = {
-        'all': '全部配置包',
-        'device.json': '设备信息',
-        'network.json': '网络配置',
-        'peripherals.json': '外设配置',
-        'periph_exec.json': '外设执行',
-        'protocol.json': '通信协议',
-        'users.json': '用户配置',
-        'auth.json': '安全认证',
-        'rule_scripts.json': '规则脚本'
+        'all': t('dc-label-all', '全部配置包'),
+        'device.json': t('dc-label-device', '设备信息'),
+        'features.json': t('dc-label-features', '功能配置'),
+        'network.json': t('dc-label-network', '网络配置'),
+        'peripherals.json': t('dc-label-peripherals', '外设配置'),
+        'periph_exec.json': t('dc-label-periph-exec', '外设执行'),
+        'protocol.json': t('dc-label-protocol', '通信协议'),
+        'users.json': t('dc-label-users', '用户配置'),
+        'auth.json': t('dc-label-auth', '安全认证'),
+        'rule_scripts.json': t('dc-label-rule-scripts', '规则脚本')
     };
 
     AppState.registerModule('device-config', {
@@ -55,6 +59,12 @@
             const devFactoryBtn = document.getElementById('dev-factory-btn');
             if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
 
+            // 固件升级
+            const otaFileInput = document.getElementById('dev-ota-file');
+            if (otaFileInput) otaFileInput.addEventListener('change', () => this.handleOTAFileSelect());
+            const otaUploadBtn = document.getElementById('dev-ota-upload-btn');
+            if (otaUploadBtn) otaUploadBtn.addEventListener('click', () => this.startOTAUpload());
+
             const devModeToggleBtn = document.getElementById('dev-mode-toggle-btn');
             if (devModeToggleBtn) devModeToggleBtn.addEventListener('click', () => this.toggleDeveloperMode());
 
@@ -68,7 +78,7 @@
             if (configImportFile) {
                 configImportFile.addEventListener('change', (e) => {
                     const files = e.target.files ? Array.from(e.target.files) : [];
-                    this._setConfigTransferStatus(files.length ? ('已选择：' + files.map(file => file.name).join('、')) : '--');
+                    this._setConfigTransferStatus(files.length ? (t('dc-selected-count', '已选择：') + files.map(file => file.name).join('、')) : '--');
                 });
             }
 
@@ -80,6 +90,10 @@
                     this.saveSecurityPolicy();
                 });
             }
+
+            // 懒加载完整 OTA 升级分片（在线升级/本地上传）；
+            // compact 配置不含该分片，加载失败时保留内联精简面板作为兜底
+            this._loadOtaFragment();
 
         },
 
@@ -193,12 +207,12 @@
                             window.apiInvalidateCache('/api/device/config');
                         }
                         this._showMessage('dev-basic-success', true);
-                        Notification.success('设备信息保存成功', '设备配置');
+                        Notification.success(t('dc-save-success', '设备信息保存成功'), t('dc-label-device', '设备信息'));
                     } else {
-                        Notification.error(res?.error || '保存失败', '设备配置');
+                        Notification.error(res?.error || t('common-save-fail', '保存失败'), t('dc-label-device', '设备信息'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '设备配置'));
+                .catch(() => Notification.error(t('common-save-fail', '保存失败'), t('dc-label-device', '设备信息')));
         },
 
         saveCacheDuration() {
@@ -206,12 +220,12 @@
             apiPut('/api/device/config', { cacheDuration: duration })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('缓存时间设置已保存', '缓存管理');
+                        Notification.success(t('dc-cache-save-success', '缓存时间设置已保存'));
                     } else {
-                        Notification.error(res?.error || '保存失败', '缓存管理');
+                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '缓存管理'));
+                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
         },
 
         clearBrowserCache: function() {
@@ -255,8 +269,7 @@
                 //    分批执行（每次2个并发），避免 ESP32 连接过多
                 var idx = 0;
                 Notification.success(
-                    '正在清除缓存并刷新资源...',
-                    '缓存管理'
+                    t('dc-cache-clearing', '正在清除缓存并刷新资源...')
                 );
 
                 function fetchBatch() {
@@ -273,7 +286,7 @@
                 }
                 fetchBatch();
             } catch (e) {
-                console.error('清除缓存失败:', e);
+                console.error(t('dc-cache-clear-fail', '清除缓存失败:'), e);
                 window.location.reload(true);
             }
         },
@@ -290,13 +303,13 @@
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('dev-ntp-success', true);
-                        Notification.success('NTP配置保存成功', '设备配置');
+                        Notification.success(t('dc-ntp-save-success', 'NTP配置保存成功'));
                         this.loadDeviceTime({ noCache: true });
                     } else {
-                        Notification.error(res?.error || '保存失败', 'NTP配置');
+                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', 'NTP配置'));
+                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
         },
 
         saveSecurityPolicy() {
@@ -314,19 +327,19 @@
                             window.apiInvalidateCache('/api/device/config');
                         }
                         this._showMessage('dev-sec-success', true);
-                        Notification.success('安全策略保存成功', '设备配置');
+                        Notification.success(t('dc-security-save-success', '安全策略保存成功'), t('dc-label-device', '设备信息'));
                     } else {
-                        Notification.error(res?.error || '保存失败', '安全策略');
+                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '安全策略'));
+                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
         },
 
         loadDeviceTime(options) {
             options = options || {};
             var self = this;
             const btn = document.getElementById('dev-time-refresh-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = '刷新中...'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = t('common-refreshing', '刷新中...'); }
 
             var batchGetter = null;
             if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
@@ -350,7 +363,7 @@
                         console.error('Load device time failed:', err);
                         if (btn) {
                             btn.disabled = false;
-                            btn.innerHTML = '刷新';
+                            btn.innerHTML = t('common-refresh', '刷新');
                             btn.title = '';
                         }
                     });
@@ -374,7 +387,7 @@
                     console.error('Load device time failed:', err);
                     if (btn) {
                         btn.disabled = false;
-                        btn.innerHTML = '刷新';
+                        btn.innerHTML = t('common-refresh', '刷新');
                         btn.title = '';
                     }
                 });
@@ -382,22 +395,22 @@
 
         syncDeviceTime() {
             const btn = document.getElementById('dev-time-refresh-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = '刷新中...'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = t('common-refreshing', '刷新中...'); }
             apiPost('/api/device/time/sync', {})
                 .then(res => {
                     if (!res || !res.success) {
-                        Notification.warning('NTP同步失败', 'NTP');
+                        Notification.warning(t('dc-ntp-sync-fail', 'NTP同步失败'), 'NTP');
                         this.loadDeviceTime({ noCache: true });
                         return;
                     }
                     this._renderDeviceTime(res.data || {}, true);
                     if (res.data && res.data.synced) {
-                        Notification.success('NTP同步成功', 'NTP');
+                        Notification.success(t('dc-ntp-sync-success', 'NTP同步成功'), 'NTP');
                     }
                 })
                 .catch(err => {
                     console.error('Sync device time failed:', err);
-                    Notification.error('NTP同步失败', 'NTP');
+                    Notification.error(t('dc-ntp-sync-fail', 'NTP同步失败'), 'NTP');
                     this.loadDeviceTime({ noCache: true });
                 });
         },
@@ -409,11 +422,11 @@
             setEl('dev-time-datetime', d.datetime);
 
             if (!internetAvailable) {
-                setHtml('dev-time-synced', '<span class="badge badge-warning">未同步</span>');
+                setHtml('dev-time-synced', '<span class="badge badge-warning">' + t('dc-ntp-not-synced', '未同步') + '</span>');
             } else if (d.synced) {
-                setHtml('dev-time-synced', '<span class="badge badge-success">已同步</span>');
+                setHtml('dev-time-synced', '<span class="badge badge-success">' + t('dc-ntp-synced', '已同步') + '</span>');
             } else {
-                setHtml('dev-time-synced', '<span class="badge badge-warning">未同步</span>');
+                setHtml('dev-time-synced', '<span class="badge badge-warning">' + t('dc-ntp-not-synced', '未同步') + '</span>');
             }
 
             if (d.uptime !== undefined) {
@@ -421,19 +434,19 @@
                 const h = Math.floor(ms / 3600000);
                 const m = Math.floor((ms % 3600000) / 60000);
                 const s = Math.floor((ms % 60000) / 1000);
-                setEl('dev-time-uptime', `${h}时 ${m}分 ${s}秒`);
+                setEl('dev-time-uptime', h + t('dc-ntp-time-format', '时') + ' ' + m + t('dc-ntp-time-format-m', '分') + ' ' + s + t('dc-ntp-time-format-s', '秒'));
             }
 
             const btn = document.getElementById('dev-time-refresh-btn');
             if (btn) {
                 if (internetAvailable) {
                     btn.disabled = false;
-                    btn.innerHTML = '刷新';
+                    btn.innerHTML = t('common-refresh', '刷新');
                     btn.title = '';
                 } else {
                     btn.disabled = true;
-                    btn.innerHTML = '没有网络';
-                    btn.title = '没有网络连接，无法进行NTP同步';
+                    btn.innerHTML = t('dc-no-network', '没有网络');
+                    btn.title = t('dc-no-network-hint', '没有网络连接，无法进行NTP同步');
                 }
             }
         },
@@ -441,29 +454,32 @@
         restartDevice() {
             const delay = document.getElementById('dev-restart-delay')?.value || '3';
             const btn = document.getElementById('dev-restart-btn');
-            if (!confirm(`确定要重启设备？将在 ${delay} 秒后重启。`)) return;
-            if (btn) { btn.disabled = true; btn.innerHTML = '… 处理中...'; }
+            if (!confirm(t('dc-reboot-confirm', '确定要重启设备？将在') + ' ' + delay + ' ' + t('dc-reboot-confirm-suffix', '秒后重启。'))) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
             apiRestart({ delay })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
+                        Notification.success(t('dc-reboot-scheduled', '设备将在') + delay + t('dc-reboot-scheduled-suffix', '秒后重启，请稍后刷新页面。'), t('dc-reboot-title', '设备重启'));
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = '立即重启'; }
-                        Notification.error('重启指令发送失败', '设备重启');
+                        if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reboot-now', '立即重启'); }
+                        Notification.error(t('dc-reboot-fail', '重启指令发送失败'), t('dc-reboot-title', '设备重启'));
                     }
                 })
                 .catch(err => {
+                    // 区分超时 vs 连接断开（设备重启导致连接断开属预期）
+                    const isTimeout = err && err.name === 'AbortError';
                     const isConnectionClosed = err && (
-                        err.name === 'AbortError' ||
                         err.name === 'TypeError' ||
                         (err.message && (err.message.includes('fetch') || err.message.includes('network')))
                     );
-                    if (isConnectionClosed) {
-                        Notification.success(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
+                    if (isTimeout) {
+                        Notification.warning(t('dc-reboot-timeout', '重启请求超时，设备可能正在重启也可能未收到指令，请等待 30 秒后刷新页面'), t('dc-reboot-timeout-title', '重启超时'));
+                    } else if (isConnectionClosed) {
+                        Notification.success(t('dc-reboot-scheduled', '设备将在') + delay + t('dc-reboot-scheduled-suffix', '秒后重启，请稍后刷新页面。'), t('dc-reboot-title', '设备重启'));
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = '立即重启'; }
-                        Notification.error('重启指令发送失败', '设备重启');
+                        if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reboot-now', '立即重启'); }
+                        Notification.error(t('dc-reboot-fail', '重启指令发送失败'), t('dc-reboot-title', '设备重启'));
                     }
                 });
         },
@@ -474,38 +490,41 @@
             const confirmValue = confirmInput?.value?.toUpperCase().trim();
 
             if (confirmValue !== 'RESET') {
-                Notification.warning('请输入 RESET 以确认操作', '恢复出厂设置');
+                Notification.warning(t('dc-reset-confirm', '请输入 RESET 以确认操作'), t('dc-reset-btn', '恢复出厂设置'));
                 if (confirmInput) confirmInput.focus();
                 return;
             }
 
-            if (!confirm('警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！')) {
+            if (!confirm(t('dc-reset-warning', '警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！'))) {
                 if (confirmInput) confirmInput.value = '';
                 return;
             }
 
-            if (btn) { btn.disabled = true; btn.innerHTML = '… 处理中...'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
             apiFactoryReset()
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('恢复出厂设置成功，设备正在重启...', '恢复出厂设置');
+                        Notification.success(t('dc-reset-success', '恢复出厂设置成功，设备正在重启...'), t('dc-reset-btn', '恢复出厂设置'));
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = '恢复出厂设置'; }
-                        Notification.error('恢复出厂设置失败', '恢复出厂设置');
+                        if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reset-btn', '恢复出厂设置'); }
+                        Notification.error(t('dc-reset-fail', '恢复出厂设置失败'), t('dc-reset-btn', '恢复出厂设置'));
                     }
                 })
                 .catch(err => {
+                    // 区分超时 vs 连接断开（设备恢复出厂导致连接断开属预期）
+                    const isTimeout = err && err.name === 'AbortError';
                     const isConnectionClosed = err && (
-                        err.name === 'AbortError' ||
                         err.name === 'TypeError' ||
                         (err.message && (err.message.includes('fetch') || err.message.includes('network')))
                     );
-                    if (isConnectionClosed) {
-                        Notification.success('恢复出厂设置成功，设备正在重启...', '恢复出厂设置');
+                    if (isTimeout) {
+                        Notification.warning(t('dc-reset-timeout', '恢复出厂请求超时，设备可能正在重启也可能未收到指令，请等待 30 秒后刷新页面'), t('dc-reset-timeout-title', '恢复出厂超时'));
+                    } else if (isConnectionClosed) {
+                        Notification.success(t('dc-reset-success', '恢复出厂设置成功，设备正在重启...'), t('dc-reset-btn', '恢复出厂设置'));
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = '恢复出厂设置'; }
-                        Notification.error('恢复出厂设置失败', '恢复出厂设置');
+                        if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reset-btn', '恢复出厂设置'); }
+                        Notification.error(t('dc-reset-fail', '恢复出厂设置失败'), t('dc-reset-btn', '恢复出厂设置'));
                     }
                 });
         },
@@ -515,15 +534,15 @@
             const statusEl = document.getElementById('dev-mode-status');
             const btn = document.getElementById('dev-mode-toggle-btn');
             if (statusEl) {
-                statusEl.textContent = enabled ? '已启用' : '已禁用';
+                statusEl.textContent = enabled ? t('common-enabled', '已启用') : t('common-disabled', '已禁用');
                 statusEl.classList.toggle('u-text-danger', !enabled);
             }
             if (btn) {
                 btn.classList.remove('fb-btn-danger', 'fb-btn-success');
                 btn.classList.add('fb-btn-warning');
                 btn.innerHTML = enabled
-                    ? '<span>禁用开发环境</span>'
-                    : '<span>启用开发环境</span>';
+                    ? '<span>' + t('dc-dev-mode-disable-btn', '禁用开发环境') + '</span>'
+                    : '<span>' + t('dc-dev-mode-enable-btn', '启用开发环境') + '</span>';
             }
         },
 
@@ -533,18 +552,18 @@
             const btn = document.getElementById('dev-mode-toggle-btn');
             const password = passwordInput ? passwordInput.value : '';
             if (!password) {
-                Notification.warning('请输入登录密码', '开发环境功能');
+                Notification.warning(t('dc-dev-mode-enter-pwd', '请输入登录密码'), t('dc-dev-mode-title', '开发环境功能'));
                 if (passwordInput) passwordInput.focus();
                 return;
             }
             const confirmText = enabled
-                ? '确定要禁用开发环境功能吗？'
-                : '确定要启用开发环境功能吗？';
+                ? t('dc-dev-mode-disable-confirm', '确定要禁用开发环境功能吗？')
+                : t('dc-dev-mode-enable-confirm', '确定要启用开发环境功能吗？');
             if (!confirm(confirmText)) return;
 
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span>处理中...</span>';
+                btn.innerHTML = '<span>' + t('common-processing', '处理中...') + '</span>';
             }
             apiPost('/api/device/developer-mode', {
                 enabled: enabled ? 'false' : 'true',
@@ -556,17 +575,17 @@
                     this._renderDeveloperModeState();
                     if (passwordInput) passwordInput.value = '';
                     Notification.success(
-                        nextEnabled ? '开发环境已启用' : '开发环境已禁用',
-                        '开发环境功能'
+                        nextEnabled ? t('dc-dev-mode-enabled', '开发环境已启用') : t('dc-dev-mode-disabled', '开发环境已禁用'),
+                        t('dc-dev-mode-title', '开发环境功能')
                     );
                 } else {
-                    Notification.error(res?.error || '开发环境设置失败', '开发环境功能');
+                    Notification.error(res?.error || t('dc-dev-mode-fail', '开发环境设置失败'), t('dc-dev-mode-title', '开发环境功能'));
                 }
             }).catch((err) => {
                 if (typeof window.apiNotifyError === 'function') {
-                    window.apiNotifyError(err, '开发环境设置失败', '开发环境功能');
+                    window.apiNotifyError(err, t('dc-dev-mode-fail', '开发环境设置失败'), t('dc-dev-mode-title', '开发环境功能'));
                 } else {
-                    Notification.error('开发环境设置失败', '开发环境功能');
+                    Notification.error(t('dc-dev-mode-fail', '开发环境设置失败'), t('dc-dev-mode-title', '开发环境功能'));
                 }
             }).finally(() => {
                 if (btn) {
@@ -614,6 +633,12 @@
             if (parsed.staSSID !== undefined || parsed.apSSID !== undefined || parsed.mode !== undefined) return 'network.json';
             if (parsed.deviceName !== undefined || parsed.chipType !== undefined) return 'device.json';
             if (parsed.mqtt !== undefined || parsed.server !== undefined) return 'protocol.json';
+            // 功能配置：功能页导出的包装格式（fastbee-feature-config）或设备原始
+            // features.json；也兼容 feature-settings.json/functions.json 等友好命名
+            if (parsed.type === 'fastbee-feature-config'
+                || (parsed.features && typeof parsed.features === 'object' && !Array.isArray(parsed.features))) {
+                return 'features.json';
+            }
             return name;
         },
 
@@ -636,11 +661,11 @@
                 const summaryEl = document.getElementById('config-transfer-summary');
                 const confirmBtn = document.getElementById('config-transfer-confirm-btn');
                 const cancelBtn = document.getElementById('config-transfer-cancel-btn');
-                if (!listEl || !confirmBtn || !cancelBtn) { reject(new Error('弹窗元素不存在')); return; }
+                if (!listEl || !confirmBtn || !cancelBtn) { reject(new Error(t('dc-transfer-modal-missing', '弹窗元素不存在'))); return; }
 
                 // 设置标题和确认按钮文字
-                if (titleEl) titleEl.textContent = mode === 'export' ? '选择导出的配置' : '选择导入的配置';
-                confirmBtn.textContent = mode === 'export' ? '确认导出' : '确认导入';
+                if (titleEl) titleEl.textContent = mode === 'export' ? t('dc-transfer-export-title', '选择导出的配置') : t('dc-transfer-import-title', '选择导入的配置');
+                confirmBtn.textContent = mode === 'export' ? t('dc-transfer-export-confirm', '确认导出') : t('dc-transfer-import-confirm', '确认导入');
 
                 // 渲染复选框列表
                 listEl.innerHTML = '';
@@ -662,7 +687,7 @@
                 // 更新摘要
                 function updateSummary() {
                     const checked = listEl.querySelectorAll('input[type="checkbox"]:checked').length;
-                    if (summaryEl) summaryEl.textContent = checked + '/' + items.length + ' 项';
+                    if (summaryEl) summaryEl.textContent = checked + '/' + items.length + t('dc-transfer-item-count', ' 项');
                     confirmBtn.disabled = checked === 0;
                     if (selectAllEl) selectAllEl.checked = checked === items.length;
                 }
@@ -700,7 +725,7 @@
                 }
                 function onCancel() {
                     cleanup();
-                    reject(new Error('用户取消'));
+                    reject(new Error(t('dc-transfer-user-cancel', '用户取消')));
                 }
 
                 confirmBtn.addEventListener('click', onConfirm);
@@ -743,15 +768,15 @@
             const name = this._normalizeConfigFileName(item && item.name);
             const content = String((item && item.content) || '');
             if (!/^[A-Za-z0-9_.-]+\.json$/.test(name)) {
-                throw new Error('配置文件名不正确：' + (item && item.name ? item.name : '--'));
+                throw new Error(t('dc-transfer-invalid-name', '配置文件名不正确：') + (item && item.name ? item.name : '--'));
             }
             if (!content || this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
-                throw new Error('配置文件过大或为空：' + name);
+                throw new Error(t('dc-transfer-empty-or-large', '配置文件过大或为空：') + name);
             }
             try {
                 JSON.parse(content);
             } catch (err) {
-                throw new Error('配置文件不是有效 JSON：' + name);
+                throw new Error(t('dc-transfer-invalid-json', '配置文件不是有效 JSON：') + name);
             }
             return { name, content };
         },
@@ -802,7 +827,7 @@
                     } catch (reqErr) {
                         res = null;
                         const status = reqErr && reqErr.status;
-                        lastErrMsg = (reqErr && reqErr.data && reqErr.data.error) || reqErr && reqErr.message || '请求失败';
+                        lastErrMsg = (reqErr && reqErr.data && reqErr.data.error) || reqErr && reqErr.message || t('dc-transfer-request-fail', '请求失败');
                         // 4xx 明确拒绝（设备未写入）：仅 400 空分片可重试，其余直接失败
                         if (status !== undefined && status >= 400 && status < 500) {
                             if (status !== 400) throw new Error(lastErrMsg);
@@ -820,7 +845,7 @@
                     }
                 }
                 if (!res || !res.success) {
-                    throw new Error(lastErrMsg || ('分片导入失败：' + entry.name));
+                    throw new Error(lastErrMsg || (t('dc-transfer-chunk-fail', '分片导入失败：') + entry.name));
                 }
                 // 最后一个分片可能包含清理信息
                 if (res.data && res.data.cleaned) {
@@ -829,7 +854,7 @@
                 i++;
             }
             if (cleanedCount > 0) {
-                Notification.info(`已自动清理 ${cleanedCount} 个残留配置文件`, '配置导入');
+                Notification.info(t('dc-transfer-cleaned-prefix', '已自动清理') + cleanedCount + t('dc-transfer-cleaned-suffix', ' 个残留配置文件'), t('dc-transfer-import-title-short', '配置导入'));
             }
             return { success: true, name: entry.name };
         },
@@ -858,13 +883,13 @@
                             console.info(`[device-config] Auto-detected config type: ${file.name} → ${detectedName}`);
                             // 在页面上显示自动重命名提示
                             this._setConfigTransferStatus(
-                                `已自动识别：${file.name} → ${CONFIG_TRANSFER_LABELS[detectedName] || detectedName}`
+                                t('dc-transfer-auto-detected', '已自动识别：') + file.name + ' → ' + (CONFIG_TRANSFER_LABELS[detectedName] || detectedName)
                             );
                         }
 
                         // JSON 格式预检查
                         if (!parsed || typeof parsed !== 'object') {
-                            throw new Error(`文件 ${file.name} 不是有效的 JSON 格式`);
+                            throw new Error(t('dc-transfer-invalid-json-file', '文件') + ' ' + file.name + ' ' + t('dc-transfer-invalid-json-format', '不是有效的 JSON 格式'));
                         }
 
                         entries.push({
@@ -880,17 +905,17 @@
         exportDeviceConfigBundle() {
             const btn = document.getElementById('dev-config-export-btn');
             if (btn) btn.disabled = true;
-            this._setConfigTransferStatus('正在读取配置列表...');
+            this._setConfigTransferStatus(t('dc-transfer-reading-list', '正在读取配置列表...'));
 
             apiGetFresh('/api/config/transfer/list')
                 .then((res) => {
                     const files = (res && res.success && res.data && res.data.files) ? res.data.files : [];
-                    if (!files.length) throw new Error('没有可导出的配置文件');
+                    if (!files.length) throw new Error(t('dc-transfer-no-exportable', '没有可导出的配置文件'));
                     return this._showConfigTransferModal(files, 'export');
                 })
                 .then(async (selected) => {
-                    if (!selected.length) throw new Error('未选择任何配置文件');
-                    this._setConfigTransferStatus('正在导出...');
+                    if (!selected.length) throw new Error(t('dc-transfer-none-selected', '未选择任何配置文件'));
+                    this._setConfigTransferStatus(t('dc-transfer-exporting', '正在导出...'));
 
                     const bundle = {
                         type: 'fastbee-config-bundle',
@@ -902,14 +927,14 @@
 
                     for (let i = 0; i < selected.length; i++) {
                         const item = selected[i];
-                        this._setConfigTransferStatus(`正在导出 ${item.name} (${i + 1}/${selected.length})...`);
+                        this._setConfigTransferStatus(t('dc-transfer-exporting', '正在导出') + ' ' + item.name + ' (' + (i + 1) + '/' + selected.length + ')...');
                         const url = new URL('/api/config/transfer/export', window.location.origin);
                         url.searchParams.set('name', item.name);
                         const resp = await this._configTransferFetch(url.toString());
-                        if (!resp.ok) throw new Error(`导出失败：${item.name}`);
+                        if (!resp.ok) throw new Error(t('dc-transfer-export-fail', '导出失败：') + item.name);
                         const content = await resp.text();
                         if (this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
-                            throw new Error(`配置文件过大：${item.name}`);
+                            throw new Error(t('dc-transfer-file-too-large', '配置文件过大：') + item.name);
                         }
                         bundle.files.push({ name: item.name, content });
                     }
@@ -931,17 +956,17 @@
                     link.remove();
                     setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
 
-                    this._setConfigTransferStatus(`配置导出完成：${bundle.files.length} 个文件`);
-                    Notification.success('配置导出完成', '配置导入/导出');
+                    this._setConfigTransferStatus(t('dc-transfer-export-done-prefix', '配置导出完成：') + bundle.files.length + t('dc-transfer-export-done-suffix', ' 个文件'));
+                    Notification.success(t('dc-transfer-export-done', '配置导出完成'), t('dc-transfer-title', '配置导入/导出'));
                 })
                 .catch((err) => {
-                    if (err && err.message === '用户取消') {
+                    if (err && err.message === t('dc-transfer-user-cancel', '用户取消')) {
                         this._setConfigTransferStatus('--');
                         return;
                     }
                     console.error('[device-config] export config bundle failed:', err);
-                    this._setConfigTransferStatus('配置导出失败');
-                    Notification.error(err && err.message ? err.message : '配置导出失败', '配置导入/导出');
+                    this._setConfigTransferStatus(t('dc-transfer-export-fail-status', '配置导出失败'));
+                    Notification.error(err && err.message ? err.message : t('dc-transfer-export-fail-status', '配置导出失败'), t('dc-transfer-title', '配置导入/导出'));
                 })
                 .finally(() => {
                     if (btn) btn.disabled = false;
@@ -953,21 +978,21 @@
             const btn = document.getElementById('dev-config-import-btn');
             const selectedFiles = input && input.files ? Array.from(input.files) : [];
             if (!selectedFiles.length) {
-                Notification.warning('请先选择配置文件或配置包', '配置导入/导出');
+                Notification.warning(t('dc-transfer-select-first', '请先选择配置文件或配置包'), t('dc-transfer-title', '配置导入/导出'));
                 return;
             }
             const totalSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
             if (totalSize > MAX_CONFIG_BUNDLE_BYTES) {
-                Notification.warning('配置文件总量过大，请分批导入', '配置导入/导出');
+                Notification.warning(t('dc-transfer-too-large', '配置文件总量过大，请分批导入'), t('dc-transfer-title', '配置导入/导出'));
                 return;
             }
 
             if (btn) btn.disabled = true;
-            this._setConfigTransferStatus('正在解析配置文件...');
+            this._setConfigTransferStatus(t('dc-transfer-parsing', '正在解析配置文件...'));
 
             this._readSelectedConfigEntries(selectedFiles)
                 .then((files) => {
-                    if (!files.length) throw new Error('配置包内没有可导入的配置文件');
+                    if (!files.length) throw new Error(t('dc-transfer-empty-bundle', '配置包内没有可导入的配置文件'));
                     // 弹窗让用户选择要导入的配置
                     return this._showConfigTransferModal(
                         files.map(f => ({ name: f.name, size: f.content ? f.content.length : 0 })),
@@ -979,31 +1004,200 @@
                     });
                 })
                 .then(async (files) => {
-                    if (!files.length) throw new Error('未选择任何配置文件');
+                    if (!files.length) throw new Error(t('dc-transfer-none-selected', '未选择任何配置文件'));
                     for (let i = 0; i < files.length; i++) {
                         const item = files[i];
-                        this._setConfigTransferStatus(`正在导入 ${item.name} (${i + 1}/${files.length})...`);
+                        this._setConfigTransferStatus(t('dc-transfer-importing', '正在导入') + ' ' + item.name + ' (' + (i + 1) + '/' + files.length + ')...');
                         await this._importConfigTransferEntry(item);
                     }
-                    this._setConfigTransferStatus(`配置导入完成：${files.length} 个文件，建议重启设备使配置完全生效`);
-                    Notification.success('配置导入完成，建议重启设备', '配置导入/导出');
+                    this._setConfigTransferStatus(t('dc-transfer-import-done-prefix', '配置导入完成：') + files.length + t('dc-transfer-import-done-suffix', ' 个文件，建议重启设备使配置完全生效'));
+                    Notification.success(t('dc-transfer-import-done', '配置导入完成，建议重启设备'), t('dc-transfer-title', '配置导入/导出'));
                     if (typeof window.apiInvalidateCache === 'function') {
                         window.apiInvalidateCache();
                     }
                 })
                 .catch((err) => {
-                    if (err && err.message === '用户取消') {
+                    if (err && err.message === t('dc-transfer-user-cancel', '用户取消')) {
                         this._setConfigTransferStatus('--');
                         return;
                     }
-                    const errMsg = err && err.message ? err.message : '配置导入失败';
+                    const errMsg = err && err.message ? err.message : t('dc-transfer-import-fail', '配置导入失败');
                     console.error('[device-config] import config bundle failed:', err);
-                    this._setConfigTransferStatus('配置导入失败：' + errMsg);
-                    Notification.error(errMsg, '配置导入/导出');
+                    this._setConfigTransferStatus(t('dc-transfer-import-fail-prefix', '配置导入失败：') + errMsg);
+                    Notification.error(errMsg, t('dc-transfer-title', '配置导入/导出'));
                 })
                 .finally(() => {
                     if (btn) btn.disabled = false;
                 });
+        },
+
+        // ============ 固件升级 (OTA) ============
+
+        /**
+         * 懒加载 device-ota 分片（完整 OTA 面板）
+         * 成功后隐藏内联精简面板并绑定 device-ota 交互模块；
+         * 失败（如 compact 配置未发布该分片）时清理容器错误提示，保留内联面板兜底
+         */
+        _loadOtaFragment() {
+            if (typeof PageLoader === 'undefined') return;
+            const container = document.getElementById('device-ota-container');
+            if (!container) return;
+
+            const self = this;
+            PageLoader.loadFragment('device-ota-container', 'device-ota', function() {
+                // 分片加载成功：隐藏内联兜底面板，按需加载交互模块
+                const inline = document.getElementById('dev-ota-inline-panel');
+                if (inline) inline.classList.add('is-hidden');
+                self._loadModule('device-ota', function() {
+                    if (typeof AppState.setupDeviceOta === 'function') {
+                        AppState.setupDeviceOta();
+                    }
+                });
+            });
+
+            // 失败兜底：分片未加载时清理容器内的错误提示文本
+            setTimeout(function() {
+                if (!document.getElementById('ota-url-form') && container) {
+                    container.innerHTML = '';
+                }
+            }, 4000);
+        },
+
+        handleOTAFileSelect() {
+            const input = document.getElementById('dev-ota-file');
+            const uploadBtn = document.getElementById('dev-ota-upload-btn');
+            const filenameEl = document.getElementById('dev-ota-filename');
+            if (!input || !input.files || input.files.length === 0) return;
+
+            const file = input.files[0];
+            if (!file.name.endsWith('.bin')) {
+                Notification.warning(t('dc-ota-select-bin', '请选择 .bin 固件文件'), t('dc-ota-title', '固件升级'));
+                input.value = '';
+                if (uploadBtn) uploadBtn.disabled = true;
+                if (filenameEl) filenameEl.textContent = '';
+                return;
+            }
+            if (filenameEl) filenameEl.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
+            if (uploadBtn) uploadBtn.disabled = false;
+        },
+
+        startOTAUpload() {
+            const input = document.getElementById('dev-ota-file');
+            const uploadBtn = document.getElementById('dev-ota-upload-btn');
+            const progressWrap = document.getElementById('dev-ota-progress-wrap');
+            const progressBar = document.getElementById('dev-ota-progress-bar');
+            const progressText = document.getElementById('dev-ota-progress-text');
+            if (!input || !input.files || input.files.length === 0) return;
+
+            const file = input.files[0];
+            if (!confirm(t('dc-ota-confirm-upload', '确认上传固件「') + file.name + t('dc-ota-confirm-upload-suffix', '」并升级？升级过程中设备将重启，请勿断电。'))) return;
+
+            if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.innerHTML = t('dc-ota-uploading', '上传中...'); }
+            if (progressWrap) progressWrap.classList.remove('is-hidden');
+            if (progressBar) progressBar.style.width = '0%';
+            if (progressText) progressText.textContent = '0%';
+
+            // Step 1: 发起 OTA begin
+            fetch('/api/ota/begin', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.success === false) {
+                        throw new Error(data.error || 'OTA begin failed');
+                    }
+                    // Step 2: 上传固件文件
+                    const formData = new FormData();
+                    formData.append('firmware', file, file.name);
+                    return fetch('/api/ota/upload', { method: 'POST', body: formData });
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.success === false) {
+                        throw new Error(data.error || 'OTA upload failed');
+                    }
+                    // 上传完成，开始轮询状态
+                    if (progressText) progressText.textContent = t('dc-ota-writing', '固件写入中...');
+                    this._pollOTAStatus();
+                })
+                .catch(err => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    if (uploadBtn) { uploadBtn.disabled = false; uploadBtn.innerHTML = t('dc-ota-upload-btn-text', '上传升级'); }
+                    if (progressText) progressText.textContent = t('dc-ota-upload-fail-short', '上传失败: ') + (err.message || err);
+                    Notification.error(t('dc-ota-upload-fail', '固件上传失败: ') + (err.message || err), t('dc-ota-title', '固件升级'));
+                });
+        },
+
+        _pollOTAStatus() {
+            const progressBar = document.getElementById('dev-ota-progress-bar');
+            const progressText = document.getElementById('dev-ota-progress-text');
+            const uploadBtn = document.getElementById('dev-ota-upload-btn');
+            let pollCount = 0;
+            const maxPolls = 120; // 最长轮询 120s
+
+            const timer = setInterval(() => {
+                pollCount++;
+                if (pollCount > maxPolls) {
+                    clearInterval(timer);
+                    if (progressText) progressText.textContent = t('dc-ota-poll-timeout', '状态轮询超时，请手动刷新页面检查设备状态');
+                    this._pollDeviceRecovery();
+                    return;
+                }
+
+                fetch('/api/ota/status', { cache: 'no-store' })
+                    .then(res => res.json())
+                    .then(data => {
+                        // /api/ota/status 返回 {success, data:{progress,...}} 包装结构
+                        const body = (data && data.data) ? data.data : (data || {});
+                        const progress = body.progress || 0;
+                        if (progressBar) progressBar.style.width = progress + '%';
+                        if (progressText) progressText.textContent = progress + '% - ' + (body.error || body.message || t('dc-ota-status-writing', '写入中'));
+
+                        // 进度达到 100% 或 OTA 已完成（写入结束且不再进行中），开始轮询设备恢复
+                        if (progress >= 100 || (body.in_progress === false && pollCount > 3 && body.current_size > 0)) {
+                            clearInterval(timer);
+                            if (progressText) progressText.textContent = t('dc-ota-write-done', '固件写入完成，设备正在重启...');
+                            Notification.success(t('dc-ota-write-done-title', '固件写入完成，设备正在重启，请勿断电'), t('dc-ota-title', '固件升级'));
+                            this._pollDeviceRecovery();
+                        }
+                    })
+                    .catch(() => {
+                        // 设备重启中，/api/ota/status 不可达，转为轮询设备恢复
+                        clearInterval(timer);
+                        if (progressText) progressText.textContent = t('dc-ota-rebooting', '设备正在重启...');
+                        this._pollDeviceRecovery();
+                    });
+            }, 1000);
+        },
+
+        _pollDeviceRecovery() {
+            const progressText = document.getElementById('dev-ota-progress-text');
+            let pollCount = 0;
+            const maxPolls = 90; // 最长等待 90s
+
+            const timer = setInterval(() => {
+                pollCount++;
+                if (pollCount > maxPolls) {
+                    clearInterval(timer);
+                    if (progressText) progressText.textContent = t('dc-ota-recovery-timeout', '设备恢复超时，请手动刷新页面');
+                    Notification.warning(t('dc-ota-recovery-timeout-title', '设备恢复超时，请手动刷新页面检查'), t('dc-ota-title', '固件升级'));
+                    return;
+                }
+
+                fetch('/api/health', { cache: 'no-store' })
+                    .then(res => {
+                        if (res.ok) {
+                            clearInterval(timer);
+                            if (progressText) progressText.textContent = t('dc-ota-recovered', '设备已恢复，正在刷新页面...');
+                            Notification.success(t('dc-ota-upgrade-done', '设备升级完成，正在刷新页面'), t('dc-ota-title', '固件升级'));
+                            setTimeout(() => window.location.reload(), 1500);
+                        }
+                    })
+                    .catch(() => {
+                        // 设备仍在重启中，继续轮询
+                        if (progressText && pollCount % 10 === 0) {
+                            progressText.textContent = t('dc-ota-waiting-reboot', '等待设备重启恢复...') + ' (' + pollCount + 's)';
+                        }
+                    });
+            }, 1000);
         },
 
     });

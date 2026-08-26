@@ -9,6 +9,8 @@
 #include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
 #include "core/ResourceProfile.h"
+#include "network/WebMemoryGuard.h"
+#include "network/IpRateLimiter.h"
 
 // 接口包含
 #include "core/interfaces/IAuthManager.h"
@@ -42,6 +44,7 @@ class RuleScriptRouteHandler;
 class ProtocolRouteHandler;
 class FeatureRouteHandler;
 class SSERouteHandler;
+class BLEProvisioner;
 
 struct WebRecoveryEvent {
     unsigned long atMs = 0;
@@ -85,6 +88,7 @@ public:
     void setNetworkManager(FBNetworkManager* netMgr);
     void setOTAManager(OTAManager* otaMgr);
     void setProtocolManager(ProtocolManager* protoMgr);
+    void setBLEProvisioner(BLEProvisioner* bleProv);
 
     AsyncWebServer* getWebServer() const;
     void performMaintenance();
@@ -100,6 +104,20 @@ public:
     /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
     SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
     size_t getSseClientCount() const;
+
+    /// 内存护栏状态（供 /api/system/web-runtime 诊断；未启用时恒 false/0）
+#if FASTBEE_WEB_MEM_GUARD
+    bool isMemGuardActive() const { return memGuard ? memGuard->isActive() : false; }
+    uint32_t getMemGuardRejectedCount() const {
+        return memGuard ? memGuard->getRejectedCount() : 0;
+    }
+    /// 暴露护栏中间件（供 HealthMonitor 周期调用 maintain()，保证无请求时
+    /// FORCE-RECOVER 兜底仍能触发）
+    WebMemoryGuardMiddleware* getMemGuard() const { return memGuard.get(); }
+#else
+    bool isMemGuardActive() const { return false; }
+    uint32_t getMemGuardRejectedCount() const { return 0; }
+#endif
     unsigned long getLastSoftRestartAtMs() const { return lastSoftRestartAtMs; }
     const String& getLastSoftRestartReason() const { return lastSoftRestartReason; }
     uint32_t getLastSoftRestartFreeHeap() const { return lastSoftRestartFreeHeap; }
@@ -108,6 +126,14 @@ public:
     uint32_t getSoftRestartCount() const { return softRestartCount; }
     unsigned long getSeverePressureSinceMs() const { return severePressureSinceMs; }
     size_t copyRecoveryEvents(WebRecoveryEvent* out, size_t maxEvents) const;
+
+    /// 停摆取证诊断：TCP 连接总数 / TIME_WAIT 数 / 距上次 HTTP 请求的毫秒数
+    /// 供框架 STATUS 心跳输出，用于判定停摆时是连接积压、请求停流还是其他原因
+    void getTcpDiag(uint16_t& total, uint8_t& timeWait, unsigned long& lastReqAgeMs) const {
+        timeWait = 0;
+        total = countTcpConnections(&timeWait);
+        lastReqAgeMs = (lastRequestSeenMs > 0) ? (millis() - lastRequestSeenMs) : 0;
+    }
 
 private:
     static constexpr size_t MAX_RECOVERY_EVENTS = 8;
@@ -153,6 +179,12 @@ private:
     std::unique_ptr<FeatureRouteHandler>    featureHandler;
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
+#if FASTBEE_WEB_MEM_GUARD
+    // 内存护栏中间件（classic ESP32 无 PSRAM）：低 DRAM 时拒绝 API 请求。
+    // server 中间件链只持裸指针，必须保证本对象生命周期覆盖 server 使用期
+    std::unique_ptr<WebMemoryGuardMiddleware> memGuard;
+#endif
+
     unsigned long lastSoftRestartAtMs = 0;
     String lastSoftRestartReason;
     uint32_t lastSoftRestartFreeHeap = 0;
@@ -163,6 +195,12 @@ private:
     WebRecoveryEvent recoveryEvents[MAX_RECOVERY_EVENTS];
     size_t recoveryEventCount = 0;
     size_t recoveryEventHead = 0;
+
+    // IP 维度令牌桶限流（固定 16 槽 + LRU，~320B，无堆分配）
+    IpRateLimiter ipRateLimiter;
+
+    // 限流分级判定 + 令牌消耗（分发链前端中间件调用）
+    bool checkIpRateLimit(AsyncWebServerRequest* request, uint32_t& retryAfterSec);
 
     void setupAllRoutes();
     void recordRecoveryEvent(const char* type,

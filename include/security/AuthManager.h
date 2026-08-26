@@ -74,11 +74,22 @@ private:
     // 会话管理
     std::map<String, UserSession> activeSessions;
     std::map<String, unsigned long> lockedAccounts;
+    // 登录异步化：activeSessions/lockedAccounts 的递归互斥量。
+    // 登录验证在工作任务执行（PBKDF2 在锁外），lwIP 线程的会话
+    // 校验/登出等并发访问必须持锁
+    SemaphoreHandle_t _sessionsMutex = nullptr;
     unsigned long lastSessionCleanup;
     static constexpr size_t MAX_ACTIVE_SESSIONS = 6;
     static constexpr size_t MAX_SESSIONS_PER_USER = 3;
     // 审计 P1-2：锁定账户表上限兜底，满时驱逐最早锁定的一条
     static constexpr size_t MAX_LOCKED_ACCOUNTS = 16;
+
+    // WP-13: NVS 写优化 (减少 Flash 寿命损耗)
+    static constexpr size_t MAX_ACTIVE_SESSIONS_LIMIT = 4;       // 限制会话数量
+    static constexpr uint32_t SESSION_PERSISTENCE_SIZE_THRESHOLD = 2048; // 单条会话 JSON 大小上限
+    static constexpr uint32_t NVS_WRITE_INTERVAL_MS = 10000;     // 10 秒写节流
+    uint32_t lastNvsWriteTime_ = 0;                              // 上次写入时间
+    uint32_t lastSessionHash_ = 0;                               // 内容变化 Hash
 
     // 事件回调
     AuthEventCallback authEventCallback;

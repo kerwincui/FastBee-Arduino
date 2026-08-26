@@ -1,7 +1,44 @@
 {
+  "name": "fastbee-arduino",
+  "version": "1.0.0",
+  "description": "FastBee IoT Platform for ESP32 - Automated testing and validation",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "npm run test:all",
+    "test:e2e": "playwright test",
+    "test:e2e:device": "playwright test --project=chromium",
+    "test:e2e:debug": "playwright test --debug",
+    "test:discover": "node test/e2e/helpers/discover-devices.js",
+    "test:e2e:html": "playwright test --reporter=html && npx playwright show-report",
+    "test:partition": "node scripts/test-partition-validation.js",
+    "test:artifacts": "node scripts/test-build-artifacts.js",
+    "test:health": "node scripts/test-device-health.js",
+    "test:unit": "python -m unittest discover -s test/unit -p 'test-*.py'",
+    "test:all": "echo 'Running all tests...' && npm run test:partition && npm run test:artifacts && npm run test:unit",
+    "precommit": "npm run test:partition && echo 'Pre-commit validation passed!'",
+    "postbuild": "node scripts/test-build-artifacts.js --quiet"
+  },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "canvas": "^3.2.3",
     "docx": "^9.7.1"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "npm run precommit",
+      "pre-push": "npm run test:all"
+    }
+  },
+  "lint-staged": {
+    "partitions/*.csv": [
+      "node scripts/test-partition-validation.js",
+      "git add"
+    ],
+    "scripts/fastbee-artifacts.py": [
+      "python -m unittest test.unit.test-fastbee-artifacts.TestFastBeeArtifacts -v",
+      "git add"
+    ]
   }
 }

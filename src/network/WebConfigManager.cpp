@@ -1,6 +1,8 @@
 #include "./network/WebConfigManager.h"
 #include "./network/WebHandlerContext.h"
 #include "core/MemoryBudget.h"
+#include "core/RuntimeFeatureManager.h"
+#include <WiFi.h>
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
 #include "protocols/ProtocolManager.h"
@@ -40,7 +42,12 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/handlers/FeatureRouteHandler.h"
 #include "./network/handlers/SSERouteHandler.h"
+#include "./network/WebMemoryGuard.h"
 #include "systems/LoggerSystem.h"
+
+// ROM 日志函数：临界水位拒绝分支上 Serial.printf 会堆分配，实测 abort/panic；
+// OOM 路径一律 ets_printf 纯数字（详见 WebHandlerContext.cpp 同名注释）
+extern "C" int ets_printf(const char* fmt, ...);
 
 // ============ 构造 / 析构 ============
 
@@ -54,6 +61,12 @@ WebConfigManager::WebConfigManager(AsyncWebServer* webServer,
 
 WebConfigManager::~WebConfigManager() {
     stop();
+#if FASTBEE_WEB_MEM_GUARD
+    // 中间件链只持裸指针：先摘除再销毁，避免悬垂引用
+    if (server && memGuard) {
+        server->removeMiddleware(memGuard.get());
+    }
+#endif
 }
 
 // ============ 生命周期 ============
@@ -100,6 +113,13 @@ bool WebConfigManager::initialize() {
     featureHandler     = std::unique_ptr<FeatureRouteHandler>(new FeatureRouteHandler(ctx.get()));
     sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
+#if FASTBEE_WEB_MEM_GUARD
+    // 内存护栏中间件：最先加入 server 中间件链，早于所有路由 handler 与 SSE 执行
+    memGuard = std::unique_ptr<WebMemoryGuardMiddleware>(new WebMemoryGuardMiddleware());
+    memGuard->setSseHandler(sseRouteHandler.get());
+    server->addMiddleware(memGuard.get());
+#endif
+
     // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
     // 解决 fastbee.local 与 IP 地址混用时的跨域问题
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
@@ -109,6 +129,38 @@ bool WebConfigManager::initialize() {
     // 全局安全头 —— 防止 MIME 嗅探和点击劫持
     DefaultHeaders::Instance().addHeader("X-Content-Type-Options", "nosniff");
     DefaultHeaders::Instance().addHeader("X-Frame-Options", "SAMEORIGIN");
+    DefaultHeaders::Instance().addHeader("Referrer-Policy", "no-referrer");
+
+    // ── IP 维度限流中间件：分发链最前端拦截，超限直接 429 ──
+    // 令牌桶固定 16 槽（LRU 替换），静态资源/OPTIONS 预检不消耗令牌
+    server->addMiddleware([this](AsyncWebServerRequest* request, ArMiddlewareNext next) {
+        uint32_t retryAfterSec = 1;
+        if (checkIpRateLimit(request, retryAfterSec)) {
+            next();
+            return;
+        }
+        // 超限：429 + Retry-After（JSON 体与 sendError 格式对齐）
+        // 临界水位守卫：429 构建同样走 throwing 分配（beginResponse +
+        // addHeader），2026-08-24 OOM 死锁取证后拒绝路径一律零分配；
+        // 且不 close（_recv 回调链内同步 close 会触发 StoreProhibited panic），
+        // 直接丢弃请求由客户端超时清理
+        const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
+        const uint32_t blk8 = FastBee::MemoryBudget::dram8Largest();
+        if (free8 < 6144 || blk8 < 1536) {
+            ets_printf("[WebConfig] rate-limit reject path unsafe (free8=%u blk8=%u), dropping without response\n",
+                       (unsigned)free8, (unsigned)blk8);
+            return;
+        }
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"success\":false,\"error\":\"Too many requests\",\"code\":429,\"timestamp\":%lu}",
+                 millis());
+        AsyncWebServerResponse* response = request->beginResponse(429, "application/json", body);
+        response->addHeader("Retry-After", String(retryAfterSec));
+        response->addHeader("Connection", "close");
+        request->send(response);
+        // 不调用 next()：请求到此终止
+    });
 
     setupAllRoutes();
 
@@ -133,6 +185,16 @@ bool WebConfigManager::isPortListening(uint16_t port) const {
 bool WebConfigManager::start() {
     if (isRunning) return true;
     if (!server) return false;
+
+    // 内存优化（STA 生产模式）：webServer 功能未启用且非 AP 配置模式时跳过启动，
+    // 节省 ~35KB DRAM（AsyncWebServer PCB + 路由处理器 + TCP 连接池）。
+    // AP 模式（首次配网/失联回退）始终保持 Web 可用，作为配置与恢复入口；
+    // 返回 true（非错误），避免启动流程误判为 FATAL。
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("webServer") &&
+        (WiFi.getMode() & WIFI_AP) == 0) {
+        LOG_INFO("[WebConfig] WebServer skipped: feature disabled in production (STA) mode");
+        return true;
+    }
 
     // 给 AsyncTCP 额外时间释放旧 socket（如果之前 end() 后立即调用 begin()）
     delay(50);
@@ -289,6 +351,10 @@ void WebConfigManager::setNetworkManager(FBNetworkManager* netMgr) {
 
 void WebConfigManager::setOTAManager(OTAManager* otaMgr) {
     if (ctx) ctx->otaManager = otaMgr;
+}
+
+void WebConfigManager::setBLEProvisioner(BLEProvisioner* bleProv) {
+    if (ctx) ctx->bleProvisioner = bleProv;
 }
 
 void WebConfigManager::setProtocolManager(ProtocolManager* protoMgr) {
@@ -573,14 +639,18 @@ void WebConfigManager::performMaintenance() {
                          (unsigned int)maintenanceFrag);
         } else {
             const unsigned long pressureDuration = maintenanceNow - safeSoftRestartSince;
-            // 持续 30s 严重压力：先尝试轻量软重启 Web 服务（比设备重启更温和）
-            if (pressureDuration >= 30000UL && pressureDuration < 35000UL) {
-                LOG_WARNING("[WebConfig] Sustained pressure 30s, trying soft-restart before device restart");
+            // 持续 90s 严重压力：先尝试轻量软重启 Web 服务（比设备重启更温和）。
+            // 阈值校准（2026-08-14 smoke 套件实测）：浏览器负载下 free8 突发
+            // 凹陷（2.7~24KB）是常态且秒级自恢复，旧 30s 窗口把瞬态压力误判为
+            // 卡死，周期性软重启 Web 导致套件中途失联。延长窗口只保留对真正
+            // 持续卡死场景的兜底；120s→300s 同理放宽设备重启兜底。
+            if (pressureDuration >= 90000UL && pressureDuration < 95000UL) {
+                LOG_WARNING("[WebConfig] Sustained pressure 90s, trying soft-restart before device restart");
                 softRestartWebServer("sustained_pressure_soft_restart");
                 // softRestart 后重置计时器，给予恢复观察期
                 safeSoftRestartSince = maintenanceNow;
-            } else if (pressureDuration >= 120000UL) {
-                // 120s 仍未恢复：调度设备重启
+            } else if (pressureDuration >= 300000UL) {
+                // 300s 仍未恢复：调度设备重启
                 LOG_WARNING("[WebConfig] Scheduling device restart after sustained web pressure");
                 scheduleDeviceRestartForWebRecovery("sustained_web_pressure",
                                                     maintenanceNow,
@@ -1005,6 +1075,30 @@ bool WebConfigManager::isWebBusy() const {
     if (ctx->webForegroundModeActive) return true;
     if ((int32_t)(ctx->webForegroundUntilMs - millis()) > 0) return true;
     return ctx->isStaticTransferActive();
+}
+
+// ============ IP 限流 ============
+
+bool WebConfigManager::checkIpRateLimit(AsyncWebServerRequest* request, uint32_t& retryAfterSec) {
+    if (!request || !request->client()) return true;  // 信息缺失时放行，避免误杀
+    if (request->method() == HTTP_OPTIONS) return true;  // CORS 预检不消耗令牌
+
+    // 分级判定：仅 API/配网路径参与限流，静态资源（/ 前缀页面、js/css/图片）不限
+    IpRateLimiter::Tier tier;
+    const String& uri = request->url();
+    if (uri.startsWith("/api/auth")) {
+        tier = IpRateLimiter::Tier::Strict;   // 登录/改密等认证端点
+    } else if (uri.startsWith("/api") || uri.startsWith("/setup")) {
+        tier = IpRateLimiter::Tier::Normal;   // 普通 API 与配网接口
+    } else {
+        return true;
+    }
+
+    // IP 取自现有请求对象（TCP 对端地址，零分配）；IPv6 暂不参与（桶用 32 位键）
+    const IPAddress remoteIp = request->client()->remoteIP();
+    if (remoteIp.type() != IPv4) return true;
+
+    return ipRateLimiter.consume(static_cast<uint32_t>(remoteIp), tier, millis(), retryAfterSec);
 }
 
 void WebConfigManager::setupAllRoutes() {

@@ -43,6 +43,10 @@ public:
     // 定义见 FastBeeFramework.cpp。
     void runChecks();
 
+    // 周期性重评估：对已通过的功能重新检查，DRAM 下降则加入 denied 表
+    // 已 denied 的不重新放行（需重启恢复，避免振荡）
+    void recheck();
+
     bool checked() const { return checked_; }
 
     // 功能是否被预算拒绝（编译启用但内存不足）

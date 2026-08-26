@@ -71,6 +71,9 @@ enum class RestartReason : uint8_t {
     WEB_RECOVERY        = 12,  // Web 服务器恢复重启（TCP耗尽/崩溃恢复）
     AP_FALLBACK         = 13,  // WiFi 紧急 AP 回退重启（所有联网方式失败）
     FACTORY_RESET       = 14,  // 恢复出厂设置后重启
+    HEAP_CORRUPTION     = 15,  // 堆完整性巡检失败（内存踩踏）
+    OOM_PANIC           = 16,  // panic/abort/WDT 硬复位（启动时补写：RTC 快照
+                               // 留存的是上次受控重启的陈旧 reason，不能代表本次崩溃）
 };
 
 // ========== RestartDiagnostics 类 ==========
@@ -81,7 +84,7 @@ public:
      *        应在 setup() 中尽早调用（Serial 初始化后立即调用）
      */
     static void logBootDiagnostics();
-    
+
     /**
      * @brief 重启前保存状态快照到 RTC 内存
      *        应在任何 ESP.restart() 调用之前调用
@@ -117,6 +120,9 @@ private:
     static uint32_t calculateChecksum(const PreRestartSnapshot& snap);
     static void collectCurrentState(PreRestartSnapshot& snap);
     static void printSnapshot(const PreRestartSnapshot& snap);
+    /// 硬复位（panic/WDT）时快照 reason 是陈旧值，补写为 OOM_PANIC
+    /// 避免 HealthMonitor boot-loop 抑制误伤 abort 后的自救重启
+    static void patchSnapshotReasonOnHardFault();
 };
 
 #endif // RESTART_DIAGNOSTICS_H

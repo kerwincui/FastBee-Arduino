@@ -19,6 +19,7 @@ nul
 tmp/
 test-results/
 logs/
+tools/logs/
 
 # Build & deploy logs
 build_log*.txt
@@ -29,15 +30,22 @@ deploy_log.txt
 partitions_dump.bin
 
 # Test reports
-test/browser/playwright.stability*.config.ts
-test/browser/playwright.fast-stability.config.ts
-test/browser/reports/
+test/!
+test/*.cpp
+test/**/*.cpp
 
 # Generated test/soak reports
 docs/soak-report-*.html
 docs/soak-summary-*.json
 docs/test-report.md
 test/browser/test-regression-output.txt
+
+# Playwright runtime output & ad-hoc debug artifacts at repo root
+playwright-report/
+test-results/
+ck-*.txt
+body*.txt
+/s*.json
 
 # ESP-IDF sdkconfig generated files
 sdkconfig*

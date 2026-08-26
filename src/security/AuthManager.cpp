@@ -5,6 +5,19 @@
 
 #if FASTBEE_ENABLE_AUTH
 
+// 登录异步化 RAII 持锁器：递归互斥量，允许 login/verifySession 等方法嵌套持锁
+namespace {
+struct SessionsLock {
+    SemaphoreHandle_t m;
+    explicit SessionsLock(SemaphoreHandle_t mtx) : m(mtx) {
+        if (m) xSemaphoreTakeRecursive(m, portMAX_DELAY);
+    }
+    ~SessionsLock() {
+        if (m) xSemaphoreGiveRecursive(m);
+    }
+};
+}  // namespace
+
 AuthManager::AuthManager(IUserManager* userMgr, LoggerSystem* loggerPtr)
     : userManager(userMgr), logger(loggerPtr), lastSessionCleanup(0) {
     sessionPrefs.begin("auth_sessions", false);
@@ -19,7 +32,11 @@ AuthManager::~AuthManager() {
 
 bool AuthManager::initialize() {
     LOG_INFO("AuthManager: Initializing...");
-    
+
+    if (!_sessionsMutex) {
+        _sessionsMutex = xSemaphoreCreateRecursiveMutex();
+    }
+
     if (!loadSecurityConfig()) {
         LOG_INFO("AuthManager: Using default security config");
     } else {
@@ -179,6 +196,7 @@ void AuthManager::trimActiveSessions(const String& username) {
 }
 
 bool AuthManager::isAccountLocked(const String& username) {
+    SessionsLock lk(_sessionsMutex);
     auto it = lockedAccounts.find(username);
     if (it != lockedAccounts.end()) {
         if (userManager) {
@@ -212,6 +230,7 @@ void AuthManager::lockAccount(const String& username) {
 }
 
 void AuthManager::unlockAccount(const String& username) {
+    SessionsLock lk(_sessionsMutex);
     lockedAccounts.erase(username);
     if (userManager) {
         userManager->resetLoginAttempts(username);
@@ -292,6 +311,9 @@ bool AuthManager::saveSecurityConfig() {
 
 AuthResult AuthManager::login(const String& username, const String& password,
                              const String& ipAddress, const String& userAgent) {
+    // 登录异步化：本方法在工作任务执行（见 AuthRouteHandler），
+    // 耗时的 PBKDF2 验证（validateUser）在锁外进行，仅短小的会话表
+    // 操作持锁，避免阻塞 lwIP 线程的会话校验
     AuthResult result;
     result.success = false;
     result.username = username;
@@ -308,10 +330,12 @@ AuthResult AuthManager::login(const String& username, const String& password,
         return result;
     }
     
+    // 锁外： UserManager 内部自行持锁， PBKDF2 计算不占任何会话锁
     if (!userManager || !userManager->validateUser(username, password)) {
         result.errorMessage = "Invalid username or password";
         
         if (userManager) {
+            SessionsLock lk(_sessionsMutex);
             uint8_t attempts = userManager->getLoginAttempts(username);
             User* user = userManager->getUser(username);
             if (user) {
@@ -326,13 +350,6 @@ AuthResult AuthManager::login(const String& username, const String& password,
         return result;
     }
     
-    cleanupExpiredSessions();
-    if (securityConfig.allowMultipleSessions) {
-        trimActiveSessions(username);
-    } else {
-        forceLogout(username);
-    }
-    
     UserSession session;
     session.sessionId = generateSessionId(username);
     session.username = username;
@@ -342,11 +359,21 @@ AuthResult AuthManager::login(const String& username, const String& password,
     session.ipAddress = ipAddress;
     session.userAgent = userAgent;
     session.isActive = true;
-    
-    activeSessions[session.sessionId] = session;
-    
-    if (securityConfig.enableSessionPersistence) {
-        saveSessionsToStorage();
+
+    {
+        SessionsLock lk(_sessionsMutex);
+        cleanupExpiredSessions();
+        if (securityConfig.allowMultipleSessions) {
+            trimActiveSessions(username);
+        } else {
+            forceLogout(username);
+        }
+
+        activeSessions[session.sessionId] = session;
+
+        if (securityConfig.enableSessionPersistence) {
+            saveSessionsToStorage();
+        }
     }
     
     result.success = true;
@@ -357,6 +384,7 @@ AuthResult AuthManager::login(const String& username, const String& password,
 }
 
 AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccessTime) {
+    SessionsLock lk(_sessionsMutex);
     AuthResult result;
     
     unsigned long currentTime = millis();
@@ -404,6 +432,7 @@ AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccess
 }
 
 bool AuthManager::logout(const String& sessionId) {
+    SessionsLock lk(_sessionsMutex);
     auto it = activeSessions.find(sessionId);
     if (it != activeSessions.end()) {
         String username = it->second.username;
@@ -421,6 +450,7 @@ bool AuthManager::logout(const String& sessionId) {
 }
 
 bool AuthManager::forceLogout(const String& username) {
+    SessionsLock lk(_sessionsMutex);
     bool found = false;
     
     for (auto it = activeSessions.begin(); it != activeSessions.end();) {
@@ -443,6 +473,7 @@ bool AuthManager::forceLogout(const String& username) {
 }
 
 size_t AuthManager::forceLogoutAll() {
+    SessionsLock lk(_sessionsMutex);
     size_t count = activeSessions.size();
     activeSessions.clear();
     
@@ -458,6 +489,7 @@ size_t AuthManager::forceLogoutAll() {
 // ============ 会话管理方法 ============
 
 UserSession AuthManager::getSessionInfo(const String& sessionId) {
+    SessionsLock lk(_sessionsMutex);
     auto it = activeSessions.find(sessionId);
     if (it != activeSessions.end()) {
         return it->second;
@@ -466,6 +498,7 @@ UserSession AuthManager::getSessionInfo(const String& sessionId) {
 }
 
 std::vector<UserSession> AuthManager::getActiveSessions() {
+    SessionsLock lk(_sessionsMutex);
     std::vector<UserSession> sessions;
     for (const auto& pair : activeSessions) {
         sessions.push_back(pair.second);
@@ -474,6 +507,7 @@ std::vector<UserSession> AuthManager::getActiveSessions() {
 }
 
 std::vector<UserSession> AuthManager::getUserSessions(const String& username) {
+    SessionsLock lk(_sessionsMutex);
     std::vector<UserSession> userSessions;
     for (const auto& pair : activeSessions) {
         if (pair.second.username == username) {
@@ -484,6 +518,7 @@ std::vector<UserSession> AuthManager::getUserSessions(const String& username) {
 }
 
 bool AuthManager::updateSessionAccessTime(const String& sessionId) {
+    SessionsLock lk(_sessionsMutex);
     auto it = activeSessions.find(sessionId);
     if (it != activeSessions.end()) {
         unsigned long currentTime = millis();
@@ -495,12 +530,14 @@ bool AuthManager::updateSessionAccessTime(const String& sessionId) {
 }
 
 size_t AuthManager::getActiveSessionCount() {
+    SessionsLock lk(_sessionsMutex);
     return activeSessions.size();
 }
 
 // ============ 在线用户管理 ============
 
 std::vector<String> AuthManager::getOnlineUsers() {
+    SessionsLock lk(_sessionsMutex);
     std::vector<String> onlineUsers;
     
     for (const auto& pair : activeSessions) {
@@ -520,6 +557,7 @@ std::vector<String> AuthManager::getOnlineUsers() {
 }
 
 bool AuthManager::isUserOnline(const String& username) {
+    SessionsLock lk(_sessionsMutex);
     for (const auto& pair : activeSessions) {
         if (pair.second.username == username) {
             return true;
@@ -552,21 +590,37 @@ void AuthManager::setAuthEventCallback(AuthEventCallback callback) {
 // ============ 系统维护 ============
 
 void AuthManager::performMaintenance() {
+    SessionsLock lk(_sessionsMutex);
     cleanupExpiredSessions();
     lastSessionCleanup = millis();
 }
 
 // ============ 持久化方法 ============
 
+// WP-13: NVS 写入节流优化 (减少 Flash 寿命损耗)
 bool AuthManager::saveSessionsToStorage() {
+    SessionsLock lk(_sessionsMutex);
     if (!securityConfig.enableSessionPersistence) {
         return true;
+    }
+    
+    // 节流检查：10 秒内多次变更合并一次写入
+    uint32_t now = millis();
+    if (now - lastNvsWriteTime_ < NVS_WRITE_INTERVAL_MS) {
+        LOG_DEBUG("WP-13: NVS write throttle active");
+        return true; // 跳过本次写入
     }
     
     FastBeeJsonDocLarge doc;
     JsonArray sessionsArray = doc["sessions"].to<JsonArray>();
     
+    // WP-13: 限制会话数量
+    size_t sessionCount = 0;
     for (const auto& pair : activeSessions) {
+        if (sessionCount >= MAX_ACTIVE_SESSIONS_LIMIT) {
+            LOG_WARNING("WP-13: Session limit reached, trimming oldest session");
+            break;
+        }
         const UserSession& session = pair.second;
         JsonObject sessionObj = sessionsArray.add<JsonObject>();
         
@@ -578,19 +632,45 @@ bool AuthManager::saveSessionsToStorage() {
         sessionObj["ipAddress"] = session.ipAddress;
         sessionObj["userAgent"] = session.userAgent;
         sessionObj["isActive"] = session.isActive;
+        
+        sessionCount++;
     }
     
     String jsonStr;
     serializeJson(doc, jsonStr);
     
+    // WP-13: 检查大小限制 (避免单次写入过大)
+    if (jsonStr.length() > SESSION_PERSISTENCE_SIZE_THRESHOLD) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "WP-13: Session data too large (%u bytes), skipping write", 
+                 (unsigned)jsonStr.length());
+        LOG_WARNING(buf);
+        return false;
+    }
+    
+    // WP-13: Hash 比较避免重复写 Flash
+    uint32_t currentHash = 0;
+    for (size_t i = 0; i < jsonStr.length(); i++) {
+        currentHash += jsonStr[i] * (i + 1);
+    }
+    
+    if (currentHash == lastSessionHash_) {
+        LOG_DEBUG("WP-13: Session data unchanged, skipping NVS write");
+        return true; // 内容无变化，跳过写入
+    }
+    
     bool success = sessionPrefs.putString("sessions", jsonStr) > 0;
     if (success) {
-        LOG_DEBUG("AuthManager: Sessions saved to storage");
+        lastSessionHash_ = currentHash;
+        lastNvsWriteTime_ = now;
+        LOG_DEBUGF("WP-13: Sessions saved to storage with optimization (count=%d, size=%uB)", 
+                  (int)sessionCount, (unsigned)jsonStr.length());
     }
     return success;
 }
 
 bool AuthManager::loadSessionsFromStorage() {
+    SessionsLock lk(_sessionsMutex);
     if (!securityConfig.enableSessionPersistence) {
         return true;
     }
@@ -820,6 +900,7 @@ String AuthManager::getPasswordStrengthRating(const String& password) {
 }
 
 void AuthManager::shutdown() {
+    SessionsLock lk(_sessionsMutex);
     if (securityConfig.enableSessionPersistence) {
         saveSessionsToStorage();
     }

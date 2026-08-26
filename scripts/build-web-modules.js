@@ -58,6 +58,7 @@ const DIRECT_RUNTIME_MODULES = [
     'rf-remote.js',
     'dashboard.js',
     'device-config.js',
+    'device-ota.js',
     'network.js',
     'feature-config.js'
 ].concat(hasDeviceControl() ? ['device-control.js'] : [])
@@ -71,8 +72,9 @@ const I18N_MODULES = isCompactWebProfile()
 const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
-    'pages/logs.html',
-    'pages/fragments/device-ota.html'
+    'pages/logs.html'
+    // 保留 pages/fragments/device-ota.html：OTA 在线升级/本地上传是 lite 必备能力
+    // （分片仅 ~1.7KB gz，device-ota.js 已在 DIRECT_RUNTIME_MODULES 发布）
 ]);
 const LITE_STATIC_SKIP = new Set([
     'pages/fragments/protocol-modbus-rtu.html',

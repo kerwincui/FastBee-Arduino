@@ -19,6 +19,16 @@ public:
 
     void setupRoutes(AsyncWebServer* server);
 
+    /**
+     * @brief 将配网下发的扩展参数（userId/deviceNum/extra）写入 device.json
+     * @details AP 配网接口与 BLE 配网共用的持久化路径：
+     *          userId → device.json.userId，deviceNum → device.json.deviceId，
+     *          extra → device.json.productNumber（仅有效正整数）
+     */
+    static void _updateDeviceConfig(const String& userId,
+                                    const String& deviceNum,
+                                    const String& extra);
+
 private:
     WebHandlerContext* ctx;
 
@@ -30,10 +40,10 @@ private:
     void handleWiFiStatus(AsyncWebServerRequest* request);   // GET  /api/wifi/status  设备状态检测
     void handleWiFiConfig(AsyncWebServerRequest* request);   // POST /api/wifi/config  配网下发配置
 
-    // 将配网下发的扩展参数（userId/deviceNum/extra）写入 device.json
-    void _updateDeviceConfig(const String& userId,
-                             const String& deviceNum,
-                             const String& extra);
+    // BLE 蓝牙配网管理接口（WebUI 调用，需身份认证）
+    void handleBleProvisionStatus(AsyncWebServerRequest* request);  // GET  /api/ble/provision/status
+    void handleBleProvisionStart(AsyncWebServerRequest* request);   // POST /api/ble/provision/start
+    void handleBleProvisionStop(AsyncWebServerRequest* request);    // POST /api/ble/provision/stop
 
     // ===== WiFi 扫描后台任务 =====
     // 扫描（含 WiFi API 调用与 JSON 构建）运行在独立 FreeRTOS 任务上，

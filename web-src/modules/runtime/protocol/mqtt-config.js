@@ -298,6 +298,7 @@
 
         _mqttErrorCodeToText(code) {
             const map = {
+                '-5': 'MQTTS 功能未启用（请到功能配置页启用）',
                 '-4': 'MQTT_CONNECTION_TIMEOUT', '-3': 'MQTT_CONNECTION_LOST',
                 '-2': 'MQTT_CONNECT_FAILED', '-1': 'MQTT_DISCONNECTED',
                 '1': 'MQTT_BAD_PROTOCOL', '2': 'MQTT_BAD_CLIENT_ID',
@@ -561,7 +562,14 @@
                     }
                 } else if (connecting && hasError) {
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    badge.textContent = '连接失败';
+                    if (d.lastError === -5) {
+                        // MQTTS 功能门控拒绝：明确告知原因与解决路径
+                        badge.textContent = 'MQTTS 功能未启用';
+                        badge.title = '请先到「功能配置」页启用「MQTTS 加密传输」（TLS 需约 42KB 内存）';
+                    } else {
+                        badge.textContent = '连接失败';
+                        badge.title = '';
+                    }
                     this._mqttConnectingStartTime = 0;
                 } else if (!d.initialized) {
                     badge.className = 'mqtt-status-badge mqtt-status-connecting';

@@ -79,7 +79,9 @@ const WEB_ASSET_BUDGETS = {
     },
     full: {
         // 285KB: 含运行时功能配置页 (feature-config.js + features.html, ~3KB gz)
-        totalGzip: 285 * 1024,
+        // 296KB: 新增 OTA 升级模块 (device-ota.js + device-ota.html 分片 + i18n 键, ~8.5KB gz, 2026-08-15)
+        // 320KB: full 当前包含设备大屏、Modbus 控制、文件/日志/用户管理和中英文完整 i18n。
+        totalGzip: 320 * 1024,
         bootGzip: 64 * 1024,
         singleAssetGzip: 32 * 1024,
         pageBundleGzip: 14 * 1024
@@ -341,6 +343,31 @@ function checkMenuOrderRegressionGuards() {
     assert(controlIdx > 0, 'index.html should contain device-control menu item');
     assert(ruleIdx > 0, 'index.html should contain rule-script menu item');
     assert(ruleIdx > controlIdx, 'rule-script menu should appear AFTER device-control');
+}
+
+function checkFeatureConfigJsonBodyGuard() {
+    // 2026-08-15 修复: 功能配置保存误用 apiPost（表单编码），后端 features/* 的
+    // onData body 回调不被触发导致 400 Missing JSON body；必须用 apiPostJson
+    const featureJs = read('web-src/modules/runtime/feature-config.js');
+    assert(featureJs.includes("apiPostJson('/api/features/apply'"), 'features/apply must be called via apiPostJson (JSON body)');
+    assert(!featureJs.includes("apiPost('/api/features/apply'"), 'features/apply must NOT use form-encoded apiPost');
+}
+
+function checkFeatureTransferRegressionGuards() {
+    // 2026-08-17: 功能配置页的导入/导出与一键精简已移除（与设备配置页配置转移冗余，
+    // 且一键精简会误关 webServer/mdns 导致 Web 入口丢失）；
+    // 功能配置备份/迁移统一走设备配置页（高级配置）的配置转移模块
+    const featuresHtml = read('web-src/pages/features.html');
+    assert(!featuresHtml.includes('features-export-btn'), 'features page must NOT have export button (moved to device config transfer)');
+    assert(!featuresHtml.includes('features-import-btn'), 'features page must NOT have import button (moved to device config transfer)');
+    assert(!featuresHtml.includes('features-lite-btn'), 'features page must NOT have lite-mode button');
+    const featureJs = read('web-src/modules/runtime/feature-config.js');
+    assert(!featureJs.includes('exportFeatureConfig'), 'feature-config must NOT implement exportFeatureConfig');
+    assert(!featureJs.includes('importFeatureConfig'), 'feature-config must NOT implement importFeatureConfig');
+    assert(!featureJs.includes('applyLiteMode'), 'feature-config must NOT implement applyLiteMode');
+    const deviceJs = read('web-src/modules/runtime/device-config.js');
+    // 2026-08: 标签改为 i18n 包装 t('dc-label-features', '功能配置')，键与回退文案均需存在
+    assert(deviceJs.includes("'features.json': t('dc-label-features', '功能配置')"), 'transfer labels must map features.json to 功能配置 (i18n key dc-label-features)');
 }
 
 function checkButtonColorRegressionGuards() {
@@ -619,6 +646,8 @@ function run() {
     checkRoleCaseRegressionGuards();
     checkMenuOrderRegressionGuards();
     checkButtonColorRegressionGuards();
+    checkFeatureConfigJsonBodyGuard();
+    checkFeatureTransferRegressionGuards();
     checkGovernorOverloadRegressionGuards();
     checkPeriphExecResultsRemoved();
     checkModuleLoaderResilience();

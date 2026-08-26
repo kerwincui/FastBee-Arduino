@@ -11,6 +11,7 @@
 #include "systems/SystemRebooter.h"
 #include "utils/NetworkUtils.h"
 #include "core/FeatureFlags.h"
+#include "core/RuntimeFeatureManager.h"  // 以太网/4G 运行时功能门控
 #include <esp_heap_caps.h>  // heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
 #include "systems/HealthMonitor.h"  // WIFI_CONNECT_MIN_DRAM
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -24,6 +25,12 @@
 #endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <lwip/ip4_addr.h>
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+#include <lwip/priv/tcpip_priv.h>  // LOCK_TCPIP_CORE / UNLOCK_TCPIP_CORE
+#include <ping/ping_sock.h>
+#include <esp_ping.h>
 #include "network/WiFiModeGuard.h"  // RAII 模式守卫（防 scanNetworks 副作用导致 APSTA 残留）
 #if FASTBEE_ENABLE_MDNS
 #include <ESPmDNS.h>
@@ -32,6 +39,7 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 #include "core/FastBeeFramework.h"  // 网络恢复 → MQTT 立即重连通知
+#include "network/WebConfigManager.h"  // Web 前台门控（mDNS 同步查询避让）
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
 
@@ -99,6 +107,8 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       , _apProbeInProgress(false)
       , _apFallbackAuto(false)
       , _apProbeFailCount(0)
+      , _bootConnectRetries(0)
+      , _apFallbackSince(0)
       , _staDisconnectedSince(0)
 {
     
@@ -137,6 +147,8 @@ bool FBNetworkManager::initialize() {
     // 重置 AP 回退探测状态（每次重新初始化都从干净状态开始）
     _apFallbackAuto = false;
     _apProbeFailCount = 0;
+    _bootConnectRetries = 0;
+    _apFallbackSince = 0;
 
     // 初始化Preferences（独立 namespace，避免与 ConfigStorage 的 "fastbee" 冲突）
     if (!preferences.begin("net_cfg", false)) {
@@ -215,6 +227,12 @@ bool FBNetworkManager::initialize() {
     ets_printf("[NET] CELLULAR=0 (4G not compiled)\n");
 #endif
 #if FASTBEE_ENABLE_ETHERNET
+    // 运行时功能门控：以太网功能被禁用（features.json）时跳过适配器初始化，回退 WiFi
+    if (wifiConfig.networkType == NetworkType::NET_ETHERNET &&
+        !FastBee::RuntimeFeatureManager::instance().shouldEnable("ethernet")) {
+        LOG_WARNING("NetworkManager: Ethernet feature disabled, falling back to WiFi");
+        wifiConfig.networkType = NetworkType::NET_WIFI;
+    }
     if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
         LOG_INFO("NetworkManager: Initializing Ethernet (W5500)...");
         ethernetAdapter.reset(new EthernetAdapter());
@@ -264,6 +282,12 @@ bool FBNetworkManager::initialize() {
 #endif
 
 #if FASTBEE_ENABLE_CELLULAR
+    // 运行时功能门控：4G 功能被禁用（features.json）时跳过适配器初始化，回退 WiFi
+    if (wifiConfig.networkType == NetworkType::NET_4G &&
+        !FastBee::RuntimeFeatureManager::instance().shouldEnable("cellular")) {
+        LOG_WARNING("NetworkManager: 4G cellular feature disabled, falling back to WiFi");
+        wifiConfig.networkType = NetworkType::NET_WIFI;
+    }
     if (wifiConfig.networkType == NetworkType::NET_4G) {
         ets_printf("[NET-4G] Starting 4G Cellular init (type=%d)...\n", (int)wifiConfig.networkType);
         cellularAdapter.reset(new CellularAdapter());
@@ -333,8 +357,13 @@ bool FBNetworkManager::initialize() {
             if (!wifiConfig.staSSID.isEmpty()) {
                 success = connectToWiFiBlocking();
                 if (success) {
+#if FASTBEE_WEB_START_EARLY
+                    // 非阻塞模式：连接已发起但未确认，update() 轮询连接结果
+                    LOG_INFO("NetworkManager: STA connection initiated (non-blocking)");
+#else
                     LOG_INFO("NetworkManager: STA connected successfully");
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
+#endif
                 } else {
                     LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
                     Serial.println("[NET] STA failed, switching to AP mode...");
@@ -350,13 +379,14 @@ bool FBNetworkManager::initialize() {
                         ets_printf("[NET] AP started: %s  IP: %s\n",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
-                        LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
+                        LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=*** (len=%d) <<<",
                             WiFi.softAPIP().toString().c_str(),
                             wifiConfig.apSSID.c_str(),
-                            wifiConfig.apPassword.c_str());
+                            wifiConfig.apPassword.length());
                         // 回退到 AP 模式后更新配置模式
                         wifiConfig.mode = NetworkMode::NETWORK_AP;
                         _apFallbackAuto = true;  // 标记为自动回退，启用 WiFi 探测恢复
+                        _apFallbackSince = millis();  // 启动 AP 滞留看门狗计时
                     } else {
                         Serial.println("[NET] AP start FAILED!");
                     }
@@ -373,10 +403,10 @@ bool FBNetworkManager::initialize() {
             LOG_INFO("NetworkManager: Starting in AP mode");
             success = startAPMode();
             if (success) {
-                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:*** (len=%d) <<<",
                     WiFi.softAPIP().toString().c_str(),
                     wifiConfig.apSSID.c_str(),
-                    wifiConfig.apPassword.c_str());
+                    wifiConfig.apPassword.length());
                 
                 // AP 模式下仅启动纯 AP 热点，不使用 AP+STA 双模式
                 // 避免模式切换导致 arduino_events 任务栈溢出崩溃
@@ -705,11 +735,30 @@ void FBNetworkManager::update() {
             lastStatusUpdate = currentTime;
         }
 
+        // mDNS 健康检查降频门控：MDNS.begin() 内含同步域名冲突检测（queryService），
+        // 实测阻塞 ~3s，原来 periph_exec R12 每 30s 一次导致 periodic DANGEROUSLY LONG。
+        // Web 前台活动时跳过；空闲时降至 5min 一次（同名收敛属慢过程，足够）
+        static unsigned long lastMdnsHealthMs = 0;
         if (currentTime - lastMdnsUpdate >= 30000) {
             if (wifiConfig.enableMDNS) {
-                dnsManager->checkMDNSHealth();
+                // Web 前台门控：避免阻塞 AsyncTCP 事件循环
+                auto* fwMdns = FastBeeFramework::getInstance();
+                auto* webGate = fwMdns ? fwMdns->getWebConfigManager() : nullptr;
+                bool inForeground = webGate && webGate->isForegroundRequestActive();
+                
+                // 降频判定：仅每 5min 执行一次健康检查（首次除外）
+                unsigned long nowMs = millis();
+                bool shouldSkipRateLimit = (lastMdnsHealthMs != 0 && 
+                                            nowMs - lastMdnsHealthMs < 300000UL);
+                
+                if (!inForeground && !shouldSkipRateLimit) {
+                    dnsManager->checkMDNSHealth();
+                    lastMdnsUpdate = currentTime;
+                    lastMdnsHealthMs = nowMs;  // 标记已执行健康检查
+                }
+            } else {
+                lastMdnsUpdate = currentTime;
             }
-            lastMdnsUpdate = currentTime;
         }
         return;
     }
@@ -719,10 +768,18 @@ void FBNetworkManager::update() {
     // WiFi 连接成功（从断开变为连接）
     if (isConnected && !wasConnected) {
         LOG_INFO("NetworkManager: WiFi connected, IP: " + WiFi.localIP().toString());
+        connecting = false;  // 非阻塞连接成功，清除 connecting 标志
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
         statusInfo.lastConnectionTime = millis();
         _staDisconnectedSince = 0;  // 重连成功，清零长时间失联看门狗计时
+        resetGatewayWatchdog();     // 重连成功，清零数据面连通性看门狗
+        _bootConnectRetries = 0;    // 连接成功，清零开机重试计数
+        // 仅在真正回到 STA 模式时解除 AP 滞留看门狗：探测失败期间 STA 状态
+        // 可能瞬时跳变 WL_CONNECTED，若此处无条件清零会永久废掉看门狗
+        if (wifiConfig.mode != NetworkMode::NETWORK_AP) {
+            _apFallbackSince = 0;
+        }
         
         // 重新启动mDNS以更新IP绑定
         if (wifiConfig.enableMDNS) {
@@ -755,8 +812,48 @@ void FBNetworkManager::update() {
             wifiConfig.ipConfigType == IPConfigType::STATIC) {
             
             ipManager->updateIPConflictStatus();
+
+            // 冲突确认后自动回退 DHCP 并重连（IPManager::performFailover 仅维护计数，
+            // 真正的切换动作需要 NetworkManager 层持久化配置并重新发起连接）
+            if (ipManager->checkIPConflict() && wifiConfig.autoFailover) {
+                LOG_WARNING("NetworkManager: Static IP conflict confirmed, falling back to DHCP");
+                Serial.println("[NET] IP conflict detected! Switching to DHCP and reconnecting...");
+                statusInfo.conflictDetected = true;
+                wifiConfig.ipConfigType = IPConfigType::DHCP;
+                saveNetworkConfig();  // 持久化，避免重启后再次陷入同一冲突
+                connectToWiFi();
+            }
         }
         lastConflictCheck = currentTime;
+    }
+
+    // 数据面连通性看门狗：WiFi 自报 CONNECTED 但数据面失效（"假连接"）时，
+    // 网关 ARP 探测连续失败达阈值即强制重连。连接后 30s 宽限期内不探测，
+    // 避免 DHCP/ARP 尚未稳定时误判；正在重连（connecting）期间跳过。
+    if (!connecting &&
+        isConnected &&
+        wifiConfig.mode == NetworkMode::NETWORK_STA &&
+        statusInfo.status == NetworkStatus::CONNECTED &&
+        (currentTime - statusInfo.lastConnectionTime >= 30000) &&
+        (currentTime - _lastGwProbeTime >= GW_PROBE_INTERVAL_MS)) {
+        _lastGwProbeTime = currentTime;
+        if (probeGatewayReachable()) {
+            _gwArpFailCount = 0;
+        } else if (_gwArpFailCount < 255) {
+            _gwArpFailCount++;
+            Serial.printf("[NET] Gateway ARP probe failed (%d/%d)\n",
+                          (int)_gwArpFailCount, (int)GW_FAIL_RECONNECT_THRESHOLD);
+            LOG_WARNINGF("NetworkManager: Gateway unreachable via ARP (%d/%d)",
+                         (int)_gwArpFailCount, (int)GW_FAIL_RECONNECT_THRESHOLD);
+            if (_gwArpFailCount >= GW_FAIL_RECONNECT_THRESHOLD) {
+                // 假连接确认：强制断开重连。若重连也失败，既有的
+                // STA_LOST_REBOOT_MS 看门狗会接力调度重启回退 AP。
+                Serial.println("[NET] Data-plane dead (fake CONNECTED), forcing WiFi reconnect...");
+                LOG_WARNING("NetworkManager: Forcing WiFi reconnect to recover data plane");
+                _gwArpFailCount = 0;
+                connectToWiFi();
+            }
+        }
     }
 
     // 处理连接超时
@@ -765,7 +862,60 @@ void FBNetworkManager::update() {
                       (unsigned long)wifiConfig.connectTimeout);
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
-        
+
+#if FASTBEE_WEB_START_EARLY
+        // 开机重试：单次超时不立即回退 AP。同名 SSID 多 AP 环境下首次关联常
+        // AUTH_EXPIRE（reason=2），重置驱动后重新全信道扫描择优 AP 即可成功；
+        // 旧逻辑一次失败即回退 AP，之后探测退避到 10min，设备可卡 AP 数小时。
+        if (_bootConnectRetries < BOOT_STA_MAX_RETRIES) {
+            _bootConnectRetries++;
+            Serial.printf("[NET] STA boot retry %d/%d: resetting WiFi driver and reconnecting...\n",
+                          (int)_bootConnectRetries, (int)BOOT_STA_MAX_RETRIES);
+            LOGGER.infof("NetworkManager: STA boot timeout, retry %d/%d",
+                         (int)_bootConnectRetries, (int)BOOT_STA_MAX_RETRIES);
+            // 完整重置 WiFi 驱动（与 connectToWiFiBlocking 重试路径一致），
+            // 避免 reason=2 后驱动状态残留导致连续失败
+            WiFi.disconnect(true);
+            delay(100);
+            WiFi.mode(WIFI_MODE_NULL);
+            delay(300);
+            WiFi.mode(WIFI_MODE_STA);
+            delay(500);
+            WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+            WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+            WiFi.setSleep(false);
+            WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+            connecting = true;
+            connectingStartTime = currentTime;
+            statusInfo.status = NetworkStatus::CONNECTING;
+        } else {
+            _bootConnectRetries = 0;  // 清零计数，供下轮连接周期重新计次
+            // 非阻塞模式：重试全部失败后回退到 AP 模式，供用户通过 Web 重新配置
+            LOG_WARNING("NetworkManager: STA timeout (non-blocking), falling back to AP mode");
+            Serial.println("[NET] STA timeout, switching to AP mode...");
+            ets_printf("[NET] STA timeout, switching to AP mode...\n");
+            wifiManager->setModeTransitioning(false);
+            if (startAPMode()) {
+                Serial.printf("[NET] AP started: %s  IP: %s\n",
+                    wifiConfig.apSSID.c_str(),
+                    WiFi.softAPIP().toString().c_str());
+                ets_printf("[NET] AP started: %s  IP: %s\n",
+                    wifiConfig.apSSID.c_str(),
+                    WiFi.softAPIP().toString().c_str());
+                LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=*** (len=%d) <<<",
+                    WiFi.softAPIP().toString().c_str(),
+                    wifiConfig.apSSID.c_str(),
+                    wifiConfig.apPassword.length());
+                wifiConfig.mode = NetworkMode::NETWORK_AP;
+                _apFallbackAuto = true;
+                _apFallbackSince = currentTime;  // 启动 AP 滞留看门狗计时
+            } else {
+                Serial.println("[NET] AP start FAILED!");
+                statusInfo.status = NetworkStatus::CONNECTION_FAILED;
+                triggerEvent(NetworkStatus::CONNECTION_FAILED, "Connection timeout");
+            }
+        }
+#else
         // 连接超时处理（纯 AP 模式下不会有 AP+STA 分支）
         LOG_WARNING("NetworkManager: Connection timeout");
         if (wifiConfig.autoFailover) {
@@ -775,6 +925,7 @@ void FBNetworkManager::update() {
             statusInfo.status = NetworkStatus::CONNECTION_FAILED;
             triggerEvent(NetworkStatus::CONNECTION_FAILED, "Connection timeout");
         }
+#endif
     }
 
     // STA 断开跟踪 + 自动重连 + 长时间失联看门狗（仅 STA 模式、未连接、非正在连接时）
@@ -816,6 +967,40 @@ void FBNetworkManager::update() {
         }
     }
 
+    // AP 回退滞留看门狗：自动回退后探测持续失败（认证失败/弱信号，退避到
+    // 10min 间隔）时设备会长期停在 192.168.4.1、局域网不可达（实测卡 3.5h+）。
+    // 滞留超阈值且 AP 无客户端（不打断用户配网/Web 访问）时调度一次干净重启：
+    // 重启后开机流程走全信道扫描 + 多次重试的 STA 连接，成功率显著高于运行时探测。
+    {
+        // 调试心跳：回退 AP 期间每 60s 打印看门狗状态，确认计时/门控是否符合预期
+        static unsigned long _lastApWdDbg = 0;
+        if (_apFallbackAuto &&
+            wifiConfig.mode == NetworkMode::NETWORK_AP &&
+            currentTime - _lastApWdDbg >= 60000) {
+            _lastApWdDbg = currentTime;
+            Serial.printf("[WiFi-AP] stuck-wd: since=%lu elapsed=%lus sched=%d clients=%d threshold=%lus\n",
+                          _apFallbackSince,
+                          (_apFallbackSince ? (currentTime - _apFallbackSince) / 1000UL : 0),
+                          (int)SystemRebooter::isScheduled(),
+                          (int)WiFi.softAPgetStationNum(),
+                          (unsigned long)(AP_STUCK_REBOOT_MS / 1000UL));
+        }
+    }
+    if (wifiConfig.mode == NetworkMode::NETWORK_AP &&
+        _apFallbackAuto &&
+        _apFallbackSince != 0 &&
+        (currentTime - _apFallbackSince) >= AP_STUCK_REBOOT_MS &&
+        WiFi.softAPgetStationNum() == 0 &&
+        !SystemRebooter::isScheduled()) {
+        LOG_WARNING("NetworkManager: AP fallback stuck too long, scheduling reboot to retry STA");
+        LOGGER.infof("[WiFi-AP] Fallback stuck %lumin with no recovery, rebooting to retry STA",
+                     (unsigned long)((currentTime - _apFallbackSince) / 60000));
+        SystemRebooter::scheduleReboot(
+            "AP fallback stuck too long, reboot to retry STA",
+            1000UL,
+            RestartReason::AP_FALLBACK);
+    }
+
     // AP 模式下定期探测 WiFi 是否恢复，成功则自动切回 STA 模式
     // 仅在 STA 失败自动回退到 AP 时才启用探测（_apFallbackAuto=true）
     // 用户主动设置的 AP 模式不触发探测，保持 AP 热点稳定运行
@@ -846,12 +1031,30 @@ void FBNetworkManager::update() {
         }
     }
     
-    // mDNS 健康检查（每 30 秒）
+    // mDNS 健康检查降频门控：MDNS.begin() 内含同步域名冲突检测（queryService）
+    // 实测阻塞 ~3s，期间 network_update 高优先级任务独占 CPU，AsyncTCP 事件循环冻结，
+    // Web 前台活动时跳过；空闲时降至 5min 一次（同名收敛属慢过程，足够）
+    static unsigned long lastMdnsHealthMs = 0;
     if (currentTime - lastMdnsUpdate >= 30000) {
         if (wifiConfig.enableMDNS) {
-            dnsManager->checkMDNSHealth();
+            // Web 前台门控：避免阻塞 AsyncTCP 事件循环
+            auto* fwMdns = FastBeeFramework::getInstance();
+            auto* webGate = fwMdns ? fwMdns->getWebConfigManager() : nullptr;
+            bool inForeground = webGate && webGate->isForegroundRequestActive();
+            
+            // 降频判定：仅每 5min 执行一次健康检查（首次除外）
+            unsigned long nowMs = millis();
+            bool shouldSkipRateLimit = (lastMdnsHealthMs != 0 && 
+                                        nowMs - lastMdnsHealthMs < 300000UL);
+            
+            if (!inForeground && !shouldSkipRateLimit) {
+                dnsManager->checkMDNSHealth();
+                lastMdnsUpdate = currentTime;
+                lastMdnsHealthMs = nowMs;  // 标记已执行健康检查
+            }
+        } else {
+            lastMdnsUpdate = currentTime;
         }
-        lastMdnsUpdate = currentTime;
     }
 
     // WiFi 僵尸连接检测（每 60 秒）
@@ -1155,7 +1358,8 @@ bool FBNetworkManager::saveNetworkConfig() {
     cellObj["baudRate"] = wifiConfig.cellular.baudRate;
     cellObj["apn"]      = wifiConfig.cellular.apn;
 
-    // 辅助写文件函数
+    // 辅助写文件函数：先写 .tmp 再 rename 原子替换，避免断电产生半截配置
+    // （与 ConfigStorage::atomicReplaceFromTmp 同策略）
     auto writeToFile = [&doc](const char* path) -> bool {
         // 确保目录存在
         String p(path);
@@ -1166,11 +1370,19 @@ bool FBNetworkManager::saveNetworkConfig() {
                 LittleFS.mkdir(dir);
             }
         }
-        File f = LittleFS.open(path, "w");
+        String tmpPath = p + ".tmp";
+        File f = LittleFS.open(tmpPath.c_str(), "w");
         if (!f) return false;
-        serializeJson(doc, f);
+        size_t written = serializeJson(doc, f);
+        f.flush();
         f.close();
-        return true;
+        if (written == 0) {
+            LittleFS.remove(tmpPath.c_str());
+            return false;
+        }
+        // 同名 rename 在 LittleFS 上是原子操作；旧文件仅在 rename 成功后被替换
+        if (LittleFS.exists(path)) LittleFS.remove(path);
+        return LittleFS.rename(tmpPath.c_str(), path);
     };
 
     // ===== 写入 /config/network.json =====
@@ -1236,7 +1448,9 @@ bool FBNetworkManager::saveNetworkConfig() {
         preferences.putBool("enable_mdns", wifiConfig.enableMDNS);
 
         preferences.putBool("initialized", true);
-        preferences.end();
+        // 注意：不得在此 end()——Preferences 仅在 initialize() 中 begin 一次，
+        // 提前 end 会使同一启动周期内后续所有 NVS 写入（含 ensureLastResortAP
+        // 的 init_fail_cnt 与二次保存的备份）静默失败，破坏 JSON→NVS→默认 回退链
 
     LOG_INFO("NetworkManager: Configuration saved successfully");
     return true;
@@ -1307,6 +1521,80 @@ bool FBNetworkManager::ensureLastResortAP() {
     delay(5000);
     ESP.restart();
     return false;  // 永远不会执行到
+}
+
+void FBNetworkManager::resetGatewayWatchdog() {
+    _gwArpFailCount = 0;
+    _gwProbeState = 0;
+    _lastGwProbeTime = millis();  // 重新连接后从完整间隔开始计时
+}
+
+// esp_ping 回调：收到任一回包即证明数据面双向可达
+void FBNetworkManager::gwPingOnSuccess(void* handle, void* args) {
+    auto* self = static_cast<FBNetworkManager*>(args);
+    if (self) self->_gwProbeResult = true;
+}
+
+void FBNetworkManager::gwPingOnEnd(void* handle, void* args) {
+    auto* self = static_cast<FBNetworkManager*>(args);
+    if (self) {
+        self->_gwProbeState = 2;  // 结果待下轮消费
+        self->_gwPingHandle = nullptr;
+    }
+    // 会话一次性使用，结束后释放（官方示例即在 on_ping_end 中删除）
+    esp_ping_stop(static_cast<esp_ping_handle_t>(handle));
+    esp_ping_delete_session(static_cast<esp_ping_handle_t>(handle));
+}
+
+// 探测网关数据面可达性（异步状态机，单轮开销 <1ms，不阻塞任务循环）。
+// 历史教训：① 同步轮询 ARP 缓存最多 1.5s，网关瞬时拥塞时累计阻塞 ~3s 拖慢 Web；
+// ② 纯 ARP 缓存判定在入站流量（mDNS/广播）维持缓存条目时误判可达，
+//    数据面实际已死也永不触发自愈。现改为对网关发单次 ICMP echo 并要求真实回包。
+bool FBNetworkManager::probeGatewayReachable() {
+    // 上一轮探测进行中：未超时前不计失败
+    if (_gwProbeState == 1) {
+        if (millis() - _gwProbeStart < GW_PROBE_TIMEOUT_MS) {
+            return true;
+        }
+        _gwProbeState = 0;  // 兑底超时（ping 会话自身会在 2s 内结束并进入 state 2）
+        return false;
+    }
+
+    // 上一轮已有结果：消费并返回
+    if (_gwProbeState == 2) {
+        _gwProbeState = 0;
+        return _gwProbeResult;
+    }
+
+    // 空闲：发起新的异步 ping
+    IPAddress gw = WiFi.gatewayIP();
+    if (gw == IPAddress(0, 0, 0, 0)) {
+        return true;  // 网关未知（DHCP 未完成），不判定为故障
+    }
+
+    esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+    cfg.count = 1;
+    cfg.interval_ms = 0;
+    cfg.timeout_ms = 2000;
+    cfg.target_addr.type = ESP_IPADDR_TYPE_V4;
+    cfg.target_addr.u_addr.ip4.addr = static_cast<uint32_t>(gw);
+
+    esp_ping_callbacks_t cbs = {};
+    cbs.on_ping_success = &FBNetworkManager::gwPingOnSuccess;
+    cbs.on_ping_timeout = nullptr;
+    cbs.on_ping_end = &FBNetworkManager::gwPingOnEnd;
+    cbs.cb_args = this;
+
+    esp_ping_handle_t handle = nullptr;
+    if (esp_ping_new_session(&cfg, &cbs, &handle) != ESP_OK || !handle) {
+        return true;  // 无法发起探测时 fail-open，避免误触发重连
+    }
+    _gwProbeResult = false;
+    _gwPingHandle = handle;
+    _gwProbeState = 1;
+    _gwProbeStart = millis();
+    esp_ping_start(handle);
+    return true;  // 本轮只负责发起，结果由下一轮判定
 }
 
 bool FBNetworkManager::connectToWiFi() {
@@ -1397,29 +1685,64 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.setSleep(false);
 
+#if FASTBEE_WEB_START_EARLY
+    // 非阻塞模式：发起 WiFi.begin() 后立即返回，连接状态由 update() 中
+    // connecting/connectingStartTime 状态机轮询。Web 服务已在 WiFi 连接前启动，
+    // STA 异常场景下 Web 可访问时间从 ~45s 降至 <2s。
+    WiFi.disconnect(false);
+    delay(200);
+    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+    connecting = true;
+    connectingStartTime = millis();
+    statusInfo.status = NetworkStatus::CONNECTING;
+    triggerEvent(NetworkStatus::CONNECTING, "STA connecting (non-blocking)");
+    Serial.printf("[NET] STA connection initiated (non-blocking), polling in update()\n");
+    LOG_INFO("NetworkManager: STA connection initiated (non-blocking)");
+    return true;
+#endif
+
     // 发起连接（最多重试 4 次）：应对首次扫描超时，并给弱/边缘信号（reason=6
     // NOT_AUTHED、扫描偶发 0 网络）更多完成关联+认证的机会，尽量优先 STA 再回退 AP。
     // ── 2026-08-10 快速失败：先扫描一次，SSID 不可见时用短超时+少重试 ──
     // 旧逻辑对不可见 SSID 仍阻塞 connectTimeout(20s)×4 次 ≈ 90s 才回退 AP，
     // 上电后 Web 配置页长时间不可用（"访问慢"的直接来源之一）。
     bool ssidVisible = false;
+    // ── 同名 SSID 候选 BSSID 收集（供重试轮换）──────────────────────
+    // 背景：同名 SSID 多 AP（mesh/中继）环境下，个别 AP 单元可能对特定设备
+    //       持续拒绝认证（AUTH_EXPIRE reason=2），而按信号择优会反复选中
+    //       同一个故障单元。收集全部候选，重试时逐个轮换 BSSID 定向关联。
+    struct BssidCandidate { uint8_t bssid[6]; int32_t channel; };
+    BssidCandidate candidates[6];
+    int candidateCount = 0;
     {
         int16_t scanCount = WiFi.scanNetworks(false, true);  // 含隐藏 SSID
         for (int16_t i = 0; i < scanCount; i++) {
             if (WiFi.SSID(i) == wifiConfig.staSSID) {
                 ssidVisible = true;
-                break;
+                if (candidateCount < 6) {
+                    memcpy(candidates[candidateCount].bssid, WiFi.BSSID(i), 6);
+                    candidates[candidateCount].channel = WiFi.channel(i);
+                    candidateCount++;
+                }
             }
         }
         WiFi.scanDelete();
-        Serial.printf("[NET] Pre-scan: %d networks, SSID '%s' %s\n",
+        Serial.printf("[NET] Pre-scan: %d networks, SSID '%s' %s (%d candidate BSSID%s)\n",
                       (int)scanCount, wifiConfig.staSSID.c_str(),
-                      ssidVisible ? "visible" : "NOT visible (fast-fail mode)");
+                      ssidVisible ? "visible" : "NOT visible (fast-fail mode)",
+                      candidateCount, candidateCount > 1 ? "s, rotation enabled" : "");
     }
     const int MAX_WIFI_RETRIES = ssidVisible ? 4 : 2;
     const uint32_t perAttemptTimeoutMs = ssidVisible ? (uint32_t)wifiConfig.connectTimeout : 6000UL;
     bool wifiConnected = false;
     char buf[80];
+
+    // 连接前置策略（每次尝试均生效）：全信道扫描 + 按信号排序 + 关 modem sleep。
+    // 实测弱信号设备（RSSI -64 仍反复 AUTH_EXPIRE reason=2/3/36）在 modem sleep
+    // 开启时认证握手易超时；旧实现仅在 attempt>1 重试路径设置，首次尝试不生效。
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    WiFi.setSleep(false);
 
     // ── 诊断：打印实际使用的凭据信息（掩码密码，仅显示长度和首尾字符）────
     {
@@ -1438,6 +1761,7 @@ bool FBNetworkManager::connectToWiFiBlocking() {
 
     for (int attempt = 1; attempt <= MAX_WIFI_RETRIES; attempt++) {
         // 每次重试前完整重置 WiFi 驱动，避免 reason=6 后驱动状态残留
+        // （扫描/排序/sleep 策略已在循环前统一设置，此处不再重复）
         if (attempt > 1) {
             WiFi.disconnect(true);
             delay(100);
@@ -1445,14 +1769,22 @@ bool FBNetworkManager::connectToWiFiBlocking() {
             delay(300);
             WiFi.mode(WIFI_MODE_STA);
             delay(500);
-            WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-            WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
-            WiFi.setSleep(false);
         } else {
             WiFi.disconnect(false);
             delay(200);
         }
-        WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+        // BSSID 轮换：首次按信号自动择优；重试时定向关联其余候选 AP 单元，
+        // 避免反复撞上对本机持续拒绝认证的故障单元（AUTH_EXPIRE reason=2）
+        if (attempt > 1 && candidateCount > 1) {
+            const BssidCandidate& c = candidates[(attempt - 1) % candidateCount];
+            WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str(),
+                       c.channel, c.bssid);
+            Serial.printf("[NET] Attempt %d pinned to BSSID %02X:%02X:%02X:%02X:%02X:%02X ch%d\n",
+                          attempt, c.bssid[0], c.bssid[1], c.bssid[2],
+                          c.bssid[3], c.bssid[4], c.bssid[5], (int)c.channel);
+        } else {
+            WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+        }
         statusInfo.status = NetworkStatus::CONNECTING;
 
         snprintf(buf, sizeof(buf), "[NET] Connecting to WiFi [%s] (attempt %d/%d)...",
@@ -1460,10 +1792,10 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         Serial.println(buf);
         ets_printf("%s\n", buf);
         LOG_INFO(buf);
-        // 调试：打印实际使用的连接凭据
+        // 调试：打印实际使用的连接凭据（密码仅打印长度，避免串口日志泄露）
         if (attempt == 1) {
             LOGGER.debugf("NetworkManager: staSSID=[%s] len=%d", wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length());
-            LOGGER.debugf("NetworkManager: staPassword=[%s] len=%d", wifiConfig.staPassword.c_str(), wifiConfig.staPassword.length());
+            LOGGER.debugf("NetworkManager: staPassword=*** len=%d", wifiConfig.staPassword.length());
         }
 
         // 阻塞等待，每 500ms 打印一个点，超时后退出（减法写法兼容 millis 回绕）
@@ -1661,10 +1993,10 @@ void FBNetworkManager::attemptReconnect() {
         
         // 启动纯 AP 模式（不使用 AP+STA，避免模式切换导致栈溢出）
         if (startAPMode()) {
-            LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
+            LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=*** (len=%d) <<<",
                 WiFi.softAPIP().toString().c_str(),
                 wifiConfig.apSSID.c_str(),
-                wifiConfig.apPassword.c_str());
+                wifiConfig.apPassword.length());
             Serial.println("[WiFi] AP fallback active - STA reconnect disabled until user reconfigures");
             LOG_INFO("NetworkManager: AP fallback active, STA reconnect paused");
             
@@ -1672,6 +2004,7 @@ void FBNetworkManager::attemptReconnect() {
             wifiConfig.mode = NetworkMode::NETWORK_AP;
             autoReconnectEnabled = false;
             _apFallbackAuto = true;  // 标记为自动回退，启用 WiFi 探测恢复
+            _apFallbackSince = millis();  // 启动 AP 滞留看门狗计时
             statusInfo.status = NetworkStatus::AP_MODE;
         } else {
             LOG_ERROR("NetworkManager: Failed to start AP mode after STA failure");
@@ -1735,6 +2068,11 @@ void FBNetworkManager::handleApModeWifiProbe() {
     // 探测也被 16KB 门控锁死，只能重启逃生。AP 模式下扫描本身就能判断
     // WiFi 是否恢复，扫描可见再做重 STA 探测。
     bool ssidVisible = false;
+    // 同名 SSID 候选收集：探测窗口内依次尝试最强与次强两个 BSSID，
+    // 避免单个故障 AP 单元对本机持续 AUTH_EXPIRE 导致探测永远失败
+    struct ProbeCandidate { uint8_t bssid[6]; int32_t channel; int32_t rssi; };
+    ProbeCandidate probeCand[2];
+    int probeCandCount = 0;
     {
         // scanNetworks 内部会 enableSTA(true) 把纯 AP 切成 APSTA（与
         // ProvisionRouteHandler::_wifiScanTask 同一副作用）。用 WiFiModeGuard
@@ -1744,15 +2082,29 @@ void FBNetworkManager::handleApModeWifiProbe() {
         WiFiModeGuard modeGuard("AP-probe-scan");
         int16_t scanCount = WiFi.scanNetworks(false, true);  // 含隐藏 SSID
         for (int16_t i = 0; i < scanCount; i++) {
-            if (WiFi.SSID(i) == wifiConfig.staSSID) {
-                ssidVisible = true;
-                break;
+            if (WiFi.SSID(i) != wifiConfig.staSSID) continue;
+            ssidVisible = true;
+            // 维护按 RSSI 降序的前 2 名（扫描结果无信号排序）
+            ProbeCandidate cur;
+            memcpy(cur.bssid, WiFi.BSSID(i), 6);
+            cur.channel = WiFi.channel(i);
+            cur.rssi = WiFi.RSSI(i);
+            if (probeCandCount < 2) {
+                probeCand[probeCandCount++] = cur;
+            } else if (cur.rssi > probeCand[1].rssi) {
+                probeCand[1] = cur;
+            }
+            if (probeCandCount == 2 && probeCand[0].rssi < probeCand[1].rssi) {
+                ProbeCandidate tmp = probeCand[0];
+                probeCand[0] = probeCand[1];
+                probeCand[1] = tmp;
             }
         }
         WiFi.scanDelete();
-        Serial.printf("[WiFi-AP] Pre-scan: %d networks, SSID '%s' %s\n",
+        Serial.printf("[WiFi-AP] Pre-scan: %d networks, SSID '%s' %s (%d candidate%s)\n",
                       (int)scanCount, wifiConfig.staSSID.c_str(),
-                      ssidVisible ? "visible" : "NOT visible (fast-fail, keep AP)");
+                      ssidVisible ? "visible" : "NOT visible (fast-fail, keep AP)",
+                      probeCandCount, probeCandCount > 1 ? "s" : "");
     }  // WiFiModeGuard 析构自动恢复纯 AP
     if (!ssidVisible) {
         // SSID 不可见：AP 保持运行不中断，无 lwIP 开销，顺延到下个探测周期
@@ -1769,19 +2121,50 @@ void FBNetworkManager::handleApModeWifiProbe() {
     delay(200);
 
     // 2. 切换到 STA 模式并尝试连接（带超时，不阻塞事件栈）
+    // 先 disconnect 清理上次探测可能残留的 connecting 状态（否则报
+    // "sta is connecting, cannot set config"），并关 modem sleep：
+    // 弱信号链路认证握手在 sleep 开启时易超时（AUTH_EXPIRE reason=2/3/36）
+    WiFi.disconnect(true);
+    delay(150);
     WiFi.mode(WIFI_MODE_STA);
     delay(300);
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    WiFi.setSleep(false);
 
     wifiManager->setNetworkConfig(wifiConfig);
-    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
 
     uint32_t probeStart = millis();
     bool probeOk = false;
-    while (WiFi.status() != WL_CONNECTED &&
-           (millis() - probeStart < AP_PROBE_TIMEOUT_MS)) {
-        delay(50);
+    // 依次尝试候选 BSSID（最多 2 个，总时长受 AP_PROBE_TIMEOUT_MS 约束）。
+    // 单个 AP 单元对本机持续 AUTH_EXPIRE 时，定向关联另一单元仍可能成功。
+    int maxTries = (probeCandCount > 1) ? 2 : 1;
+    for (int t = 0; t < maxTries && !probeOk; t++) {
+        uint32_t perTryMs = AP_PROBE_TIMEOUT_MS / maxTries;
+        if (t == 0 && probeCandCount >= 1) {
+            WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+        } else if (probeCandCount >= 2) {
+            WiFi.disconnect(true);
+            delay(150);
+            WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str(),
+                       probeCand[1].channel, probeCand[1].bssid);
+            Serial.printf("[WiFi-AP] Probe try %d pinned to BSSID %02X:%02X:%02X:%02X:%02X:%02X ch%d\n",
+                          t + 1, probeCand[1].bssid[0], probeCand[1].bssid[1],
+                          probeCand[1].bssid[2], probeCand[1].bssid[3],
+                          probeCand[1].bssid[4], probeCand[1].bssid[5],
+                          (int)probeCand[1].channel);
+        }
+        // 成功判据：关联成功且 DHCP 拿到 IP。弱信号链路关联后 DHCP 可能还需几秒，
+        // 只等 WL_CONNECTED 就切 STA 会在 IP 未到手时误判恢复，随即又掉回 AP。
+        uint32_t tryStart = millis();
+        while ((millis() - tryStart) < perTryMs && (millis() - probeStart) < AP_PROBE_TIMEOUT_MS) {
+            if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+                probeOk = true;
+                break;
+            }
+            delay(50);
+        }
     }
-    probeOk = (WiFi.status() == WL_CONNECTED);
 
     if (probeOk) {
         // 3a. WiFi 已恢复，完全切回 STA 模式
@@ -1800,6 +2183,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
         // 探测成功：重置回退标志和失败计数，回到正常 STA 模式
         _apFallbackAuto = false;
         _apProbeFailCount = 0;
+        _apFallbackSince = 0;   // STA 已恢复，解除 AP 滞留看门狗计时
 
         // 重启 mDNS（STA 模式下重新绑定到 STA IP）
         // 必须用 restartMDNS 而非 startMDNS：mDNS 之前已在 AP 模式启动（绑定 192.168.4.1），

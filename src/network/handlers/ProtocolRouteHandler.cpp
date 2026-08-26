@@ -46,6 +46,7 @@ void normalizeProtocolConfig(JsonDocument& doc) {
     if (!doc["modbusRtu"]["mode"].is<const char*>()) {
         doc["modbusRtu"]["mode"] = "master";
     }
+    doc.as<JsonObject>().remove("modbusTcp");
     if (!doc["mqtt"]["enabled"].is<bool>()) {
         doc["mqtt"]["enabled"] = true;
     }
@@ -367,7 +368,7 @@ bool isInternalHeapTight(uint32_t minFreeHeap, uint32_t minMaxAlloc) {
 
 void sendDegradedRuntimeProtocolConfig(AsyncWebServerRequest* request) {
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json",
-        F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - runtime protocol config temporarily reduced\",\"data\":{\"compact\":true,\"degraded\":true,\"modbusRtu\":{\"enabled\":false,\"degraded\":true,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},\"modbusTcp\":{\"enabled\":false,\"degraded\":true}}}"));
+        F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - runtime protocol config temporarily reduced\",\"data\":{\"compact\":true,\"degraded\":true,\"modbusRtu\":{\"enabled\":false,\"degraded\":true,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}}}}"));
     HandlerUtils::sendWithClose(request, response);
 }
 
@@ -525,11 +526,20 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     JsonDocument doc = FastBee::makeJsonDocument(8192);
 
     // 增量更新：先加载现有配置
+    // fail-safe：文件存在但解析失败时拒绝保存。若继续，会把增量参数写进
+    // 空 doc 后整体回写，导致其余协议节（mqtt/modbusRtu 等）丢失
     if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
         File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
-        if (f) {
-            deserializeJson(doc, f);
-            f.close();
+        if (!f) {
+            ctx->sendError(request, 500, "Failed to open protocol config for update");
+            return;
+        }
+        DeserializationError loadErr = deserializeJson(doc, f);
+        f.close();
+        if (loadErr) {
+            LOG_ERRORF("Protocol config save aborted: existing config unreadable (%s)", loadErr.c_str());
+            ctx->sendError(request, 500, "Existing protocol config unreadable, save aborted");
+            return;
         }
     }
     normalizeProtocolConfig(doc);
@@ -550,7 +560,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                       hasProtocolParam(request, "mqtt_server") ||
                       hasProtocolParam(request, "mqtt_publishTopics") ||
                       hasProtocolParam(request, "mqtt_subscribeTopics");
-    bool updateModbusTcp = hasProtocolParam(request, "modbusTcp_enabled");
     bool clientIdGenerated = false;
     String clientId = doc["mqtt"]["clientId"] | "";
 

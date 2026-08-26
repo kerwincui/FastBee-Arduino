@@ -148,7 +148,6 @@ const PROD_I18N_DROP_PREFIXES = [
     'role-',
     'perm-',
     'rule-script-',
-    'modbus-tcp-',
     'http-',
     'coap-',
     'tcp-'
@@ -236,7 +235,6 @@ const PROD_I18N_DROP_KEYS = new Set([
     'event-rule_exec_time',
     'event-rule_exec_error',
     'event-cat-规则',
-    'event-modbus_tcp_enabled',
     'perm-group-user',
     'perm-group-file',
     'perm-user.view',
@@ -329,7 +327,7 @@ function buildI18nZhChunk(spec) {
         obj[k] = all[k];
     }
     const isLastChunk = (quarter === total);
-    const tail = isLastChunk ? "i18n._zhLoaded=true;" : "";
+    const tail = isLastChunk ? "i18n._zhLoaded=true;i18n.updatePageText();" : "";
     // Compact JSON keeps Chinese characters as raw UTF-8 (no escaping).
     const jsonStr = JSON.stringify(obj);
     return `(function(){if(typeof i18n==='undefined')return;i18n.addTranslations('zh-CN',${jsonStr});${tail}})();\n`;

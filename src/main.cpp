@@ -1,7 +1,9 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
+#include "core/ChipConfig.h"
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
+#include "systems/OtaSelfCheck.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
 #include <esp_chip_info.h>
@@ -49,7 +51,7 @@ static void fastbee_terminate_handler() {
 
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(100);  // 115200 波特率下 100ms 足够输出 ~1150 字节
 
     // 安装全局异常终止处理器（必须在任何可能抛异常的代码之前）
     std::set_terminate(fastbee_terminate_handler);
@@ -57,15 +59,22 @@ void setup() {
     // 释放蓝牙控制器内存（~30KB），BLE配网需要时重启后启用
     // 通过 device.json 的 "bleReserve":true 可保留BT内存
     // ESP32-C6 只有 BLE 无 Classic
-#if defined(CONFIG_IDF_TARGET_ESP32)
+    // FASTBEE_ENABLE_BLE=1 时保留 BT 内存供 BLE 配网使用
+#if !FASTBEE_ENABLE_BLE
+// 芯片 BT 能力差异（经典 BTDM vs 仅 BLE）统一由 ChipConfig.h 提供
+#if CHIP_HAS_CLASSIC_BT
     esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
-#elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
+#else
     esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+#endif
 #endif
 
     // ======== 启动诊断：检测重启原因 ========
     // 必须在 Serial 初始化后尽早调用，输出上次重启的完整诊断信息
     RestartDiagnostics::logBootDiagnostics();
+
+    // OTA 自检：检测是否处于升级后首次启动的待确认状态（尽早启动计时窗口）
+    OtaSelfCheck::begin();
 
     // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
     Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());
@@ -124,24 +133,32 @@ void setup() {
         if (!framework->initialize()) {
             Serial.println("[FATAL] Failed to initialize FastBee framework!");
             Serial.printf("[FATAL] Remaining heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+            // OTA 后首次启动即初始化失败：标记新固件无效，由 bootloader 回滚到上一稳定分区
+            OtaSelfCheck::markInvalidAndRollback("framework initialize failed");
             while (1) { delay(1000); }
         }
     } catch (const std::bad_alloc& e) {
         Serial.println("[FATAL] Out of memory during initialization!");
         Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+        OtaSelfCheck::markInvalidAndRollback("init OOM");
         while (1) { delay(1000); }
     } catch (const std::exception& e) {
         Serial.printf("[FATAL] Exception during init: %s\n", e.what());
         Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+        OtaSelfCheck::markInvalidAndRollback("init exception");
         while (1) { delay(1000); }
     } catch (...) {
         Serial.println("[FATAL] Unknown exception during initialization!");
         Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+        OtaSelfCheck::markInvalidAndRollback("init unknown exception");
         while (1) { delay(1000); }
     }
 }
 
 void loop() {
+    // OTA 自检窗口到期后确认新固件有效（非 OTA 后启动时空转）
+    OtaSelfCheck::handle();
+
     // 运行框架主循环（异常保护：捕获非致命异常避免整个设备重启）
     try {
         framework->run();
@@ -182,9 +199,11 @@ void loop() {
         }
     }
     
-    // Heap integrity forensics: concurrent HTTP load crashes with DRAM
+// Heap integrity forensics: concurrent HTTP load crashes with DRAM
     // exhaustion signature; validate heap headers every 2s to catch the
     // corruption window (aborts with panic + backtrace when corrupted).
+    // 仅在压测/调试时通过 FASTBEE_HEAP_FORENSICS=1 开启，生产环境禁用以节省栈和 CPU。
+#if FASTBEE_HEAP_FORENSICS
     {
         static unsigned long _heapCheckAt = 0;
         unsigned long nowMs = millis();
@@ -193,6 +212,26 @@ void loop() {
             heap_caps_check_integrity(MALLOC_CAP_8BIT, true);
         }
     }
+#else
+    // 生产环境堆完整性巡检：每 5 分钟校验一次 DRAM 堆头。
+    // 长期运行场景下野指针/越界写可能先破坏堆头再引发随机崩溃，
+    // 主动巡检可在破坏扩散前定位并带诊断快照重启（防变砖：重启即自愈）。
+    // 单次全量校验耗时数毫秒，5 分钟周期对实时性无感知影响。
+    {
+        static unsigned long _heapPatrolAt = 0;
+        unsigned long nowMs = millis();
+        if (nowMs - _heapPatrolAt >= 300000UL) {
+            _heapPatrolAt = nowMs;
+            if (!heap_caps_check_integrity(MALLOC_CAP_8BIT, true)) {
+                ets_printf("[HEAP-PATROL] integrity FAILED: heap corruption detected, rebooting\n");
+                RestartDiagnostics::savePreRestartState(
+                    RestartReason::HEAP_CORRUPTION, "heap integrity patrol");
+                Serial.flush();
+                ESP.restart();
+            }
+        }
+    }
+#endif
 
     // 启动稳定后（120s），将 TWDT 升级为 trigger_panic=true
     // 启动阶段允许 WDT 超时仅告警（库初始化可能耗时），稳定后死锁必须触发重启

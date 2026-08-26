@@ -41,6 +41,7 @@
 #include <mbedtls/base64.h>
 #include <new>
 #include "core/StringBufferPool.h"
+#include "core/RuntimeFeatureManager.h"
 
 #if FASTBEE_ENABLE_MQTT
 
@@ -548,6 +549,12 @@ bool MQTTClient::ensureReconnectTask() {
 }
 
 bool MQTTClient::connect() {
+    // 最后一道防线：空 server 直接拒绝，避免空 host 反复 DNS 重连锁死堆内存
+    if (config.server.length() == 0) {
+        LOG_WARNING("MQTT: connect refused, server is empty");
+        stopped = true;
+        return false;
+    }
     stopped = false;
     return reconnect();
 }
@@ -1928,6 +1935,18 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 bool MQTTClient::reconnect() {
     const bool isMqttsReconnect = (config.scheme == "mqtts");
     _lastMqttsTlsMemoryFailure = false;
+    // 运行时功能门控：mqtts 功能在功能配置页被禁用（用户关闭或开机预算不足）
+    // 时拒绝建立 TLS 连接。明确提示策略：不静默降级明文，避免"以为加密实际
+    // 明文"的安全语义风险；日志指引用户到功能配置页启用。
+    if (isMqttsReconnect &&
+        !FastBee::RuntimeFeatureManager::instance().shouldEnable("mqtts")) {
+        lastErrorCode = -5;
+        reconnectCount++;
+        LOG_WARNING("[MQTT] MQTTS rejected: 'mqtts' feature disabled in feature settings (TLS needs ~42KB DRAM)");
+        Serial.println("[MQTT] MQTTS rejected: enable 'mqtts' in Feature Settings first (TLS needs ~42KB DRAM)");
+        _notifyStatusChange();
+        return false;
+    }
     if (isMqttsReconnect) {
         ensureMbedtlsAllocatorForMqtts();
     }
@@ -2225,6 +2244,19 @@ void MQTTClient::reconnectTaskEntry(void* param) {
 void MQTTClient::doReconnect() {
     _reconnectPending = false;
     _reconnectRunning = true;
+
+    // 运行时功能门控（早于一切内存腾挪）：mqtts 功能被禁用时直接拒绝，
+    // 避免为注定被拒的 TLS 握手执行 Web/mDNS 暂停等重操作。
+    // reconnect() 入口有同款门控兜底同步 connect() 路径。
+    if (config.scheme == "mqtts" &&
+        !FastBee::RuntimeFeatureManager::instance().shouldEnable("mqtts")) {
+        ets_printf("[MQTT] Reconnect skipped: mqtts feature disabled\n");
+        LOG_WARNING("[MQTT] MQTTS reconnect skipped: 'mqtts' feature disabled in feature settings");
+        lastErrorCode = -5;
+        _notifyStatusChange();
+        _reconnectRunning = false;
+        return;
+    }
 
     // 重连次数保护：连续失败超过 20 次后拉长间隔至 5 分钟，降低内存压力
     constexpr uint32_t MAX_FAST_RETRIES = 20;

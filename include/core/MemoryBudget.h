@@ -196,6 +196,34 @@ struct MemoryBudget {
                 blk8 < GUARD8_WARN_LARGEST_BLOCK);
     }
 
+    // ── Web 内存护栏（无 PSRAM 机型，见 network/WebMemoryGuard.h）──
+    // 阈值校准（2026-08-14 smoke 套件实测，esp32-F4R0 lite）：
+    //   浏览器 API 突发时 free8 瞬态跌至 13~23KB，1-2 秒内恢复 35KB+；
+    //   旧 24KB 触发把瞬态凹陷全部拦成 503（护栏 ACTIVE/RECOVERED 每 ~10s
+    //   振荡，rejected 持续增长），套件大面积误伤。真正危险区是 free8<8KB
+    //   （响应降级 256B）与 blk8<3KB（AsyncTCP 2872B 主缓冲失败），
+    //   故触发下调至 16KB、恢复 16+4KB 迟滞，保留安全边际且消除瞬态误拦。
+    // blk8 维度补充（2026-08-14 C3 full 镜像 soak 实测）：free8 尚余 22KB
+    //   时 blk8 已碎至 9.7KB，多 KB 级 JSON 响应分配挂起引发接口间歇超时，
+    //   单看 free8 会漏掉碎片化压力；触发 5KB（AsyncTCP 主缓冲 2872B +
+    //   响应构建余量）、恢复 8KB 迟滞。
+    // 提前背压（2026-08-19 classic ESP32 lite-soak 实测，缺陷 5.1 修复）：
+    //   持续轮询下 free8 在约 5 分钟内从 ~30KB 缓降至 11~18KB，随后 lwIP
+    //   饿死、HTTP 全挂 1~3 分钟（code=000，TCP 层失败，中间件无机会执行）。
+    //   16KB 触发阈值落在停摆区间之内，为时已晚。上调至 20KB/blk8 6KB，
+    //   在缓降过程中提前 503 背压，阻止连接积压进入死区；代价是突发负载
+    //   的瞬态凹陷（13~23KB）会有少量 503，属可控降级，优于整体停摆。
+    static constexpr uint32_t WEB_GUARD_MIN_DRAM_FREE = 20480U;      // 20KB 触发阈值（free8 口径）
+    static constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_FREE = 24576U; // 20KB + 4KB 迟滞恢复阈值
+    // 2026-08-24 .34 取证：重负载后 blk8 稳态碎在 ~5108B（free8 已恢复
+    // 31KB），6144 触发阈值落在"陷阱带"内 → 护栏激活后永远达不到
+    // 9216 恢复阈值，FORCE-RECOVER 后 5s 内又立即重新激活，ping-pong
+    // 死环导致 API 永久 503（最终靠 MEMGUARD 600s 看门狗重启才解套）。
+    // 下调至 4096：稳态碎片 5108 不再触发；真正压力期 blk8 实测 28~3400，
+    // 保护力不受影响。响应构建硬保护另有入口临界闸门 blk8<1536 全丢弃。
+    static constexpr uint32_t WEB_GUARD_MIN_DRAM_BLK8 = 4096U;       // 4KB 触发阈值（blk8 口径）
+    static constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_BLK8 = 9216U;  // 4KB + 5KB 迟滞恢复阈值
+
     // DRAM 水位辅助（审计 P2-4）：堆闸门必须统一用内部 DRAM 口径，
     // 而非 ESP.getFreeHeap()/getMaxAllocHeap() 总堆（PSRAM 板型上
     // PSRAM 计入导致闸门永远放行，DRAM 枯竭时 VFS/lwIP 分配直接 abort）。

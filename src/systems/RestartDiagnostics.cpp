@@ -27,6 +27,33 @@ RTC_NOINIT_ATTR static PreRestartSnapshot s_lastSnapshot;
 
 // ========== 私有辅助方法 ==========
 
+// 2026-08-24 OOM 死锁取证：panic/abort/WDT 硬复位不会执行 savePreRestartState，
+// RTC_NOINIT 快照留存的仍是上一次受控重启的 reason（如 8=MEMORY_COMPACTION）。
+// HealthMonitor 的 boot-loop 抑制按快照 reason==MEMORY_COMPACTION 拦截 MemGuard
+// 自救重启，导致 abort 崩溃后的恢复重启被误抑制（实测拖死 ~50 分钟）。
+// 启动时若硬复位原因与快照 reason 矛盾，将快照补写为 OOM_PANIC 独立类别：
+// 内存/栈水位字段仍保留崩溃前状态（诊断价值），reason 不再误伤抑制判定。
+void RestartDiagnostics::patchSnapshotReasonOnHardFault() {
+    esp_reset_reason_t espReason = esp_reset_reason();
+    if (espReason != ESP_RST_PANIC && espReason != ESP_RST_INT_WDT &&
+        espReason != ESP_RST_TASK_WDT && espReason != ESP_RST_WDT) {
+        return;
+    }
+    if (s_lastSnapshot.magic != SNAPSHOT_MAGIC) return;
+    if (RestartDiagnostics::calculateChecksum(s_lastSnapshot) != s_lastSnapshot.checksum) return;
+
+    const RestartReason prev = static_cast<RestartReason>(s_lastSnapshot.restartReason);
+    if (prev == RestartReason::OOM_PANIC) return;  // 已补写，幂等
+
+    s_lastSnapshot.restartReason = static_cast<uint8_t>(RestartReason::OOM_PANIC);
+    snprintf(s_lastSnapshot.restartContext, sizeof(s_lastSnapshot.restartContext),
+             "hard fault (esp_reset=%d), prev snapshot reason was %u",
+             (int)espReason, (unsigned)prev);
+    s_lastSnapshot.checksum = RestartDiagnostics::calculateChecksum(s_lastSnapshot);
+    Serial.printf("[RESTART-DIAG] Snapshot reason patched: %u -> %u (OOM_PANIC, esp_reset=%d)\n",
+                  (unsigned)prev, (unsigned)RestartReason::OOM_PANIC, (int)espReason);
+}
+
 uint32_t RestartDiagnostics::calculateChecksum(const PreRestartSnapshot& snap) {
     // 简单 XOR 校验（排除 checksum 字段本身）
     const uint8_t* data = reinterpret_cast<const uint8_t*>(&snap);
@@ -136,6 +163,8 @@ const char* RestartDiagnostics::getRestartReasonString(RestartReason reason) {
         case RestartReason::WEB_RECOVERY:        return "Web server recovery (TCP exhaustion)";
         case RestartReason::AP_FALLBACK:         return "Emergency AP fallback (all networks failed)";
         case RestartReason::FACTORY_RESET:       return "Factory reset completed";
+        case RestartReason::HEAP_CORRUPTION:     return "Heap corruption (integrity patrol)";
+        case RestartReason::OOM_PANIC:           return "Panic/abort/WDT hard fault (snapshot patched at boot)";
         default:                                 return "Unknown reason code";
     }
 }
@@ -212,6 +241,9 @@ void RestartDiagnostics::savePreRestartState(RestartReason reason, const char* c
 }
 
 void RestartDiagnostics::logBootDiagnostics() {
+    // 硬复位（panic/WDT）时快照 reason 是陈旧值，先补写再输出/供后续判定
+    patchSnapshotReasonOnHardFault();
+
     esp_reset_reason_t espReason = esp_reset_reason();
     bool abnormal = wasAbnormalRestart();
     

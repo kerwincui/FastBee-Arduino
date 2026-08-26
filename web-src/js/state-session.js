@@ -16,15 +16,14 @@
     AppState.refreshPage = function() {
         const token = localStorage.getItem('auth_token');
 
-        // 在 API 调用前保存"记住密码"凭据到局部变量
-        // （防止 401 处理器清除 localStorage 中的凭据）
+        // 在 API 调用前保存用户名和 Session ID 到局部变量
+        // 注意：不再保存明文密码到 localStorage，提升安全性
         const savedRemember = localStorage.getItem('remember');
         const savedUsername = localStorage.getItem('username');
-        const savedPassword = localStorage.getItem('password');
 
         if (!token) {
-            // 没有 token，尝试使用保存的凭据自动登录
-            this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
+            // 没有 token，尝试使用保存的用户名自动登录 (不再使用密码)
+            this._tryAutoLogin(savedRemember, savedUsername);
             return;
         }
         apiGet('/api/auth/session')
@@ -33,43 +32,44 @@
                     this.currentUser.name = res.data.username || 'Admin';
                     this._bootDashboardAfterAuth();
                 } else {
-                    // 会话无效，尝试使用保存的凭据重新登录
-                    this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
+                    // 会话无效，仅基于 sessionid 重试（不再依赖密码）
+                    this._tryAutoLogin(savedRemember, savedUsername);
                 }
             })
             .catch(() => {
-                // 会话验证失败（如 401），尝试自动重新登录
-                this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
+                // 会话验证失败（如 401），仅基于 sessionid 重试
+                this._tryAutoLogin(savedRemember, savedUsername);
             });
     };
 
     /**
-     * 尝试使用保存的凭据自动登录
-     * @param {string} remember - 是否记住密码
+     * 尝试使用保存的 Session ID 自动登录（基于 token 而非密码）
+     * @param {string} remember - 是否记住登录状态
      * @param {string} username - 用户名
-     * @param {string} password - 密码
      * @private
      */
-    AppState._tryAutoLogin = function(remember, username, password) {
-        if (remember === 'true' && username && password) {
-            apiPost('/api/auth/login', { username, password })
+    AppState._tryAutoLogin = function(remember, username) {
+        const token = localStorage.getItem('auth_token');
+        
+        // 优先使用 Session ID 进行免密登录
+        if (token) {
+            localStorage.setItem('sessionId', token);
+            apiPost('/api/auth/login', { username })
                 .then(res => {
                     if (res && res.success) {
                         const sid = res.sessionId;
                         localStorage.setItem('auth_token', sid);
                         localStorage.setItem('sessionId', sid);
-                        // 恢复"记住密码"凭据（可能已被 401 处理器清除）
-                        localStorage.setItem('remember', 'true');
-                        localStorage.setItem('username', username);
-                        localStorage.setItem('password', password);
+                        localStorage.setItem('remember', remember === 'true' ? 'true' : 'false');
 
                         this.currentUser.name = res.username || username;
                         sessionStorage.setItem('currentUsername', this.currentUser.name);
 
                         this._bootDashboardAfterAuth();
                     } else {
-                        // 自动登录失败（如密码已更改），清除无效凭据并显示登录页
-                        localStorage.removeItem('password');
+                        // 自动登录失败，清除所有认证信息并显示登录页
+                        localStorage.removeItem('auth_token');
+                        localStorage.removeItem('sessionId');
                         localStorage.removeItem('remember');
                         this._showLoginPage();
                     }
@@ -109,13 +109,20 @@
             });
         }
 
-        // 预填充已保存的用户名和“记住密码”状态
+        // 预填充已保存的用户名，默认不勾选"保持登录"
         const savedUsername = localStorage.getItem('username');
-        const savedRemember = localStorage.getItem('remember');
+        const savedRemember = localStorage.getItem('remember') || 'false';
         const usernameInput = document.getElementById('username');
         const rememberCheckbox = document.getElementById('remember');
         if (usernameInput && savedUsername) usernameInput.value = savedUsername;
-        if (rememberCheckbox && savedRemember === 'true') rememberCheckbox.checked = true;
+        if (rememberCheckbox) rememberCheckbox.checked = (savedRemember === 'true');
+        
+        // 清理历史密码字段 (安全加固)
+        if (localStorage.getItem('password')) {
+            const oldPwd = localStorage.getItem('password');
+            localStorage.removeItem('password');
+            console.warn('[WP-13] Cleared legacy password from localStorage for security');
+        }
     };
 
     AppState._bootDashboardAfterAuth = async function() {
@@ -235,14 +242,19 @@
                     // 保存 token 到 localStorage，fetch-api.js 会自动注入 Authorization 头
                     localStorage.setItem('auth_token', sid);
 
-                    // 记住密码
+                    // 记住登录状态 (仅保存用户名和 Session ID，不保存密码)
                     if (remember) {
                         localStorage.setItem('remember', 'true');
                         localStorage.setItem('username', username);
-                        localStorage.setItem('password', password);  // 保存密码用于自动填充
+                        // 不再保存密码到 localStorage!
                         localStorage.setItem('sessionId', sid);
                     } else {
-                        ['remember', 'username', 'password', 'sessionId'].forEach(k => localStorage.removeItem(k));
+                        ['remember', 'username', 'sessionId'].forEach(k => localStorage.removeItem(k));
+                        // 同时清理密码字段 (即使之前存在)
+                        if (localStorage.getItem('password')) {
+                            localStorage.removeItem('password');
+                            console.warn('[WP-13] Removed password field from localStorage');
+                        }
                     }
 
                     this.currentUser.name = res.username || username;
@@ -255,9 +267,16 @@
                 }
             })
             .catch((err) => {
-                // 登录失败，显示错误信息
-                const errorMsg = this._loginErrorText(err && err.data && err.data.error);
-                Notification.error(errorMsg, '登录失败');
+                // 区分超时/连接错误/凭据错误
+                if (err && err.name === 'AbortError') {
+                    Notification.warning('请求超时，请检查设备是否在线后重试', '登录超时');
+                } else if (err instanceof TypeError) {
+                    Notification.error('无法连接设备，请检查网络或设备 IP', '连接失败');
+                } else {
+                    // 登录失败，显示错误信息
+                    const errorMsg = this._loginErrorText(err && err.data && err.data.error);
+                    Notification.error(errorMsg, '登录失败');
+                }
             })
             .finally(() => {
                 if (submitBtn) { submitBtn.innerHTML = originalText; submitBtn.disabled = false; }

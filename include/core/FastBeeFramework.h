@@ -25,6 +25,9 @@ class UserManager;
 class AuthManager;
 class ProtocolManager;
 class SystemHealth;
+#if FASTBEE_ENABLE_BLE
+class BLEProvisioner;
+#endif
 struct NetworkStatusInfo;
 
 // 接口类包含
@@ -131,6 +134,7 @@ private:
     bool ntpSyncPending = false;       // NTP同步待处理标志
     bool ntpSyncStarted = false;       // NTP同步已启动标志
     int ntpRetryCount = 0;             // NTP同步重试计数
+    unsigned long ntpGiveUpTimeMs = 0; // NTP同步放弃时间戳（用于冷却后重试）
     bool mqttAutoStarted = false;      // MQTT自动启动标志
     bool modbusAutoStarted = false;    // Modbus自动启动标志
     
@@ -146,6 +150,9 @@ private:
     std::unique_ptr<UserManager> userManager;
     std::unique_ptr<AuthManager> authManager;
     std::unique_ptr<ProtocolManager> protocolManager;
+#if FASTBEE_ENABLE_BLE
+    std::unique_ptr<BLEProvisioner> bleProvisioner;   // BLE 蓝牙配网（按需启动，成功后自动释放）
+#endif
 };
 
 #endif

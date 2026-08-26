@@ -3,6 +3,13 @@
  * 包含仪表板渲染、系统监控、网络状态
  */
 (function() {
+    // i18n 助手：翻译引擎不可用或未加载键时回退中文（与 device-ota.js 保持一致）
+    function t(key, fallback) {
+        return (typeof i18n !== 'undefined' && i18n && typeof i18n.t === 'function')
+            ? i18n.t(key)
+            : fallback;
+    }
+
     AppState.registerModule('dashboard', {
         _dashboardMonitorLoadPromise: null,
         _dashboardNetworkLoadPromise: null,
@@ -16,6 +23,11 @@
             // 仪表盘网络状态刷新按钮
             const dashboardNetRefreshBtn = document.getElementById('dashboard-net-refresh-btn');
             if (dashboardNetRefreshBtn) dashboardNetRefreshBtn.addEventListener('click', () => this.loadNetworkStatus({ noCache: true }));
+
+            // i18n：将刷新按钮的默认中文标签同步为当前语言（按钮默认 data-i18n 已覆盖,
+            // 但 innerText 可能在 i18n 加载完成前被渲染，这里补一次同步以防漏译）
+            const refreshSpans = document.querySelectorAll('#monitor-refresh-btn span:not([data-i18n]), #dashboard-net-refresh-btn span:not([data-i18n])');
+            refreshSpans.forEach(el => { el.textContent = t('dashboard-refresh', '刷新'); });
         },
 
         bootDashboardPage() {
@@ -48,7 +60,9 @@
                         this.renderEmptyTableRow(
                             tbody,
                             4,
-                            d.networkConnected ? '网络已连接 IP: ' + (d.ipAddress || '') : '网络未连接'
+                            d.networkConnected
+                                ? t('network-connected', '网络已连接 IP: ') + (d.ipAddress || '')
+                                : t('network-disconnected', '网络未连接')
                         );
                     }
                 })
@@ -118,8 +132,11 @@
                             return { info: res, network: netRes };
                         })
                         .catch(function(err) {
-                            if (!(err && err._pageAborted)) {
-                                console.error('Load network status failed:', err);
+                            if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) {
+                                return { info: res, network: null };
+                            }
+                            if (typeof window.apiNotifyError === 'function') {
+                                window.apiNotifyError(err, t('net-status-load-fail', '获取网络状态失败'), t('net-status-title-msg', '网络状态'));
                             }
                             return { info: res, network: null };
                         });
@@ -188,13 +205,15 @@
                     }
                 })
                 .catch(err => {
-                    if (!(err && err._pageAborted)) {
-                        console.error('Load system monitor failed:', err);
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, t('monitor-load-fail', '加载系统监控数据失败'), t('monitor-title-msg', '系统监控'));
                     }
                 });
 
             if (options.loadRuntime === true) {
-                // Web Runtime module removed
+                // Web Runtime module removed - loadRuntime kept in signature for
+                // backwards compatibility with existing callers. No-op.
             }
             this._dashboardMonitorLoadPromise = monitorPromise.finally(function() {
                 self._dashboardMonitorLoadPromise = null;
@@ -212,26 +231,32 @@
             const refreshBtn = document.getElementById('dashboard-net-refresh-btn');
             if (refreshBtn) {
                 refreshBtn.disabled = true;
-                refreshBtn.innerHTML = '刷新中...';
+                // i18n：按钮加载态文字随语言切换
+                refreshBtn.innerHTML = '<span>' + t('net-refreshing-html', '刷新中...') + '</span>';
             }
 
             var getter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             this._dashboardNetworkLoadPromise = getter('/api/network/status')
                 .then(res => {
                     if (!res || !res.success) {
-                        Notification.error('获取网络状态失败', '网络状态');
+                        Notification.error(t('net-status-load-fail', '获取网络状态失败'), t('net-status-title-msg', '网络状态'));
                         return;
                     }
                     self._applyNetworkStatus(res);
                 })
                 .catch(err => {
-                    console.error('Load network status failed:', err);
-                    Notification.error('获取网络状态失败', '网络状态');
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, t('net-status-load-fail', '获取网络状态失败'), t('net-status-title-msg', '网络状态'));
+                    } else {
+                        Notification.error(t('net-status-load-fail', '获取网络状态失败'), t('net-status-title-msg', '网络状态'));
+                    }
                 })
                 .finally(() => {
                     if (refreshBtn) {
                         refreshBtn.disabled = false;
-                        refreshBtn.innerHTML = '刷新';
+                        // i18n：按钮文字随语言切换
+                        refreshBtn.innerHTML = '<span>' + t('net-refresh-html', '刷新') + '</span>';
                     }
                     this._dashboardNetworkLoadPromise = null;
                 });
@@ -253,13 +278,13 @@
                 if (el) el.innerHTML = html;
             };
 
-            // 状态徽章
+            // 状态徽章（i18n：所有标签走 t() 助手，未加载时回退中文）
             const statusMap = {
-                connected:    '<span class="badge badge-success">已连接</span>',
-                disconnected: '<span class="badge badge-danger">未连接</span>',
-                connecting:   '<span class="badge badge-warning">连接中...</span>',
-                ap_mode:      '<span class="badge badge-primary">AP模式</span>',
-                failed:       '<span class="badge badge-danger">连接失败</span>',
+                connected:    '<span class="badge badge-success">' + t('net-status-connected', '已连接') + '</span>',
+                disconnected: '<span class="badge badge-danger">'  + t('net-status-disconnected', '未连接') + '</span>',
+                connecting:   '<span class="badge badge-warning">' + t('net-status-connecting', '连接中...') + '</span>',
+                ap_mode:      '<span class="badge badge-primary">' + t('net-status-ap', 'AP模式') + '</span>',
+                failed:       '<span class="badge badge-danger">'  + t('net-status-failed', '连接失败') + '</span>',
             };
             setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
 
@@ -295,25 +320,27 @@
             setText('ns-ap-ssid', d.apSSID);
             setText('ns-ap-ip', d.apIPAddress);
             setText('ns-ap-channel', d.apChannel !== undefined ? `CH ${d.apChannel}` : '--');
-            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + ' 台' : '--');
+            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + t('net-ap-clients-unit', ' 台') : '--');
 
             // 连接统计
             const modeLabel = {
-                STA: '仅客户端 (STA)',
-                AP: '仅热点 (AP)'
+                STA: t('net-mode-sta', '仅客户端 (STA)'),
+                AP: t('net-mode-ap', '仅热点 (AP)')
             };
             setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
             var actualDomain = d.mdnsDomain || d.customDomain;
-            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : '已启用') : '禁用');
-            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
-            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + ' 条' : '--');
-            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + ' 条' : '--');
+            setText('ns-mdns', d.enableMDNS
+                ? (actualDomain ? actualDomain + '.local' : t('net-mdns-enabled', '已启用'))
+                : t('net-mdns-disabled', '禁用'));
+            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + t('net-reconnect-unit', ' 次') : '--');
+            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + t('net-count-unit', ' 条') : '--');
+            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + t('net-count-unit', ' 条') : '--');
             setHtml('ns-internet', d.internetAvailable
-                ? '<span class="badge badge-success">可访问</span>'
-                : '<span class="badge badge-danger">不可访问</span>');
+                ? '<span class="badge badge-success">' + t('net-accessible', '可访问') + '</span>'
+                : '<span class="badge badge-danger">' + t('net-inaccessible', '不可访问') + '</span>');
             setHtml('ns-conflict', d.conflictDetected
-                ? '<span class="badge badge-danger">已检测到冲突</span>'
-                : '<span class="badge badge-success">无冲突</span>');
+                ? '<span class="badge badge-danger">' + t('net-conflict-yes', '已检测到冲突') + '</span>'
+                : '<span class="badge badge-success">' + t('net-no-conflict', '无冲突') + '</span>');
             setText('ns-uptime', d.uptimeFormatted || '--');
         },
 

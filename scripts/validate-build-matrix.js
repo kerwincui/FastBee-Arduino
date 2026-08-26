@@ -18,54 +18,42 @@ const README_PATHS = [
 const PROFILES = new Set(['lite', 'standard', 'full']);
 const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);
 const LEGACY_ENV_NAMES = ['esp32-full', 'esp32s3-full'];
+// 专用验证环境（不进发布产物矩阵）：esp32c3-ble 仅供蓝牙配网验证/生产烧录，
+// 命名不符合 fastbee-{chip}-F{flash}R{psram}.bin 发布规范，豁免脚本清单覆盖检查
+const SPECIAL_PURPOSE_ENVS = ['esp32c3-ble'];
 
+// 2026-08 Web 镜像统一化：出厂环境一律 full 档（全量页面/样式，运行时由
+// FeatureBudget + /api/features/status 菜单门控），profile 字段仅作历史兼容保留
 const ENV_EXPECTATIONS = {
     'esp32c3-F4R0': {
-        profile: 'lite',
+        profile: 'full',
         board: 'esp32-c3-devkitm-1',
         partition: 'partitions/fastbee.csv',
         psram: false,
-        buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${lite_flags.build_flags}'],
-        forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
+        buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0', '-DFASTBEE_USE_PSRAM=0'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
     },
     'esp32c6-F4R0': {
-        profile: 'lite',
+        profile: 'full',
         board: 'esp32-c6-devkitc-1',
-        partition: 'partitions/fastbee.csv',
+        // 2026-08：实测目标板为 8MB Flash，改用 8MB 分片表（含 app1 OTA 分片）支持固件 OTA
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
         psram: false,
-        buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${lite_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0'],
-        forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
+        buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0', '-DFASTBEE_USE_PSRAM=0'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
     },
     'esp32-F4R0': {
-        profile: 'standard',
+        profile: 'full',
         board: 'esp32dev',
         mcu: 'esp32',
         partition: 'partitions/fastbee.csv',
         psram: false,
-        buildFlags: ['${esp32_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${full_flags.build_flags}'],
+        buildFlags: ['${esp32_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=0'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
-    },
-    'esp32-F8R4': {
-        profile: 'full',
-        board: 'esp32dev',
-        mcu: 'esp32',
-        partition: 'partitions/fastbee-8MB.csv',
-        flashSize: '8MB',
-        psram: true,
-        buildFlags: ['${esp32_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=1'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
-    },
-    'esp32s3-F8R0': {
-        profile: 'standard',
-        board: 'esp32-s3-devkitc-1',
-        partition: 'partitions/fastbee-8MB.csv',
-        flashSize: '8MB',
-        psram: false,
-        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=1', '-DFASTBEE_ENABLE_OTA_FS=1'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${full_flags.build_flags}']
     },
     'esp32s3-F8R4': {
         profile: 'full',
@@ -73,8 +61,8 @@ const ENV_EXPECTATIONS = {
         partition: 'partitions/fastbee-8MB.csv',
         flashSize: '8MB',
         psram: true,
-        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
+        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}']
     },
     'esp32s3-F16R8': {
         profile: 'full',
@@ -82,8 +70,8 @@ const ENV_EXPECTATIONS = {
         partition: 'partitions/fastbee-16MB.csv',
         flashSize: '16MB',
         psram: true,
-        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
+        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}']
     }
 };
 
@@ -105,9 +93,9 @@ const FLAG_SECTION_REQUIREMENTS = {
     standard_flags: [
         '-DFASTBEE_PROFILE_STANDARD=1',
         '-DFASTBEE_USE_PSRAM=0',
-        '-DFASTBEE_ENABLE_MODBUS=1',
+        '-DFASTBEE_ENABLE_MODBUS=0',
         '-DFASTBEE_ENABLE_COMMAND_SCRIPT=1',
-        '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
+        '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
         '-DFASTBEE_ENABLE_USER_ADMIN=0',
         '-DFASTBEE_ENABLE_FILE_MANAGER=0'
     ],
@@ -122,7 +110,7 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
         '-DFASTBEE_ENABLE_USER_ADMIN=1',
         '-DFASTBEE_ENABLE_FILE_MANAGER=1',
-        '-DFASTBEE_ENABLE_BLE=1',
+        '-DFASTBEE_ENABLE_BLE=0',
         '-DFASTBEE_ENABLE_I18N=1'
     ],
     esp32c3_runtime_flags: [
@@ -133,15 +121,17 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32c6_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
+        // 2026-08 TCP 连接预算调优：C6 预算 4 连接（与 esp32c3 对齐，见 ResourceProfile.h）
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=8',
         '-DARDUINO_LOOP_STACK_SIZE=12288',
         '-DSCRIPT_TASK_STACK=6144',
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
-        '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=8',
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
+        // 8->32: MQTT TLS 事件突发时队列水位更高才丢弃/节流 poll 事件（2026-08-05 登录页停滞修复）
+        '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=32',
         '-DARDUINO_LOOP_STACK_SIZE=16384',
         '-DSCRIPT_TASK_STACK=8192',
         '-DSIMPLE_TASK_STACK=6144'
@@ -394,10 +384,10 @@ function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByE
 
         const psram = resolveIniValue(platformioText, sectionName, 'board_build.psram');
         if (expectation.psram && psram !== 'enabled') {
-            issues.push(`${label}: full profile must set board_build.psram = enabled`);
+            issues.push(`${label}: PSRAM board must set board_build.psram = enabled`);
         }
         if (!expectation.psram && psram) {
-            issues.push(`${label}: non-full profile must not set board_build.psram`);
+            issues.push(`${label}: non-PSRAM board must not set board_build.psram`);
         }
 
         const buildFlags = extractIniList(platformioText, sectionName, 'build_flags');
@@ -577,7 +567,16 @@ function validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, is
             defines.get(name).push(value);
         });
 
+        // env 段自身直接声明的宏属于有意覆盖（PlatformIO 后出现者优先，
+        // 如 full_unified_flags 的 DS18B20=1 被 C3/C6 env 覆盖为 0），不算冲突
+        const directMacros = new Set();
+        extractIniList(platformioText, sectionName, 'build_flags').forEach((entry) => {
+            const direct = entry.match(/^-D([^=\s]+)/);
+            if (direct) directMacros.add(direct[1]);
+        });
+
         defines.forEach((values, name) => {
+            if (directMacros.has(name)) return;
             const uniqueValues = sortedUnique(values);
             if (uniqueValues.length > 1) {
                 issues.push(`${rel(PLATFORMIO_PATH)} [${sectionName}] build_flags: conflicting macro ${name} (${values.join(', ')})`);
@@ -617,7 +616,9 @@ function lineNumberAt(text, index) {
 
 function extractReadmeScriptReferences(text) {
     const refs = [];
-    const regex = /scripts[\\/][A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:ps1|js|py|json)/g;
+    // 末尾 \b 防扩展名前缀误匹配：无它时 "js" 分支会抢先命中 ".json" 的前两个字符，
+    // 把 device-stability-thresholds.json 误报为不存在的 .js 文件
+    const regex = /scripts[\\/][A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:ps1|js|py|json)\b/g;
     let match = regex.exec(text);
     while (match) {
         refs.push({ value: match[0], index: match.index });
@@ -741,7 +742,8 @@ function validatePartitionTables(platformioText, issues) {
     const nonOtaEnvs = new Set();
 
     partitionEnvs.forEach(([envName, exp]) => {
-        if (exp.profile === 'full') {
+        // OTA 能力由 Flash 规格决定（≥8MB 双槽分区），与 Web profile 无关
+        if (exp.flashSize) {
             otaEnvs.add(envName);
         } else {
             nonOtaEnvs.add(envName);
@@ -829,13 +831,13 @@ function validatePartitionTables(platformioText, issues) {
     otaEnvs.forEach((envName) => {
         const partition = ENV_EXPECTATIONS[envName].partition;
         if (partition.includes('fastbee.csv') && !partition.includes('8MB') && !partition.includes('16MB')) {
-            issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: full profile should use dual-slot partition table`);
+            issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: OTA-capable environment should use dual-slot partition table`);
         }
     });
     nonOtaEnvs.forEach((envName) => {
         const partition = ENV_EXPECTATIONS[envName].partition;
         if (partition.includes('8MB') || partition.includes('16MB')) {
-            // Non-full environments using 8MB/16MB is OK (e.g., esp32s3-F8R0 is standard with 8MB)
+            // Non-full environments using 8MB/16MB is OK
         }
     });
 }
@@ -850,7 +852,7 @@ function main() {
     const issues = [];
 
     const allPlatformioEnvs = extractPlatformioEnvNames(platformioText);
-    const firmwareEnvs = allPlatformioEnvs.filter((envName) => envName !== 'native');
+    const firmwareEnvs = allPlatformioEnvs.filter((envName) => envName !== 'native' && !SPECIAL_PURPOSE_ENVS.includes(envName));
     const defaultEnvs = extractIniList(platformioText, 'platformio', 'default_envs');
     const testAllEnvs = extractPowerShellStringArray(testAllText, 'Environments');
     const buildAllEnvs = extractPowerShellStringArray(buildAllText, 'Environments');

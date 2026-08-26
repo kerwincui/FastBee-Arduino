@@ -52,6 +52,9 @@ struct PeripheralConfig {
             uint16_t defaultDuty;     // PWM默认占空比(0~2^resolution-1)
             bool passive;             // 无源蜂鸣器模式：GPIO_DIGITAL_OUTPUT 使用 PWM 驱动
             GPIOInterruptCallback interruptCallback;
+            bool aoMode;              // 模拟量输出模式：PWM 输出按 0-100% 映射（无 DAC 芯片的 AO 方案）
+            uint8_t aoMinPct;         // AO 映射最小百分比（默认 0）
+            uint8_t aoMaxPct;         // AO 映射最大百分比（默认 100）
         } gpio;
         
         // ADC参数
@@ -59,6 +62,8 @@ struct PeripheralConfig {
             uint8_t attenuation;      // 衰减系数 0-3
             uint8_t resolution;       // 分辨率 9-12位
             uint16_t sampleRate;      // 采样率
+            uint8_t sampleCount;      // 多采样次数 1-16（0/1=单次，默认1；工业滤波用8）
+            uint8_t filterMode;       // 滤波模式 0=均值, 1=中值
         } adc;
         
         // DAC参数
@@ -176,6 +181,14 @@ struct PeripheralConfig {
         params.gpio.defaultDuty = 0;
         params.gpio.passive = false;
         params.gpio.interruptCallback = nullptr;
+        params.gpio.aoMode = false;
+        params.gpio.aoMinPct = 0;
+        params.gpio.aoMaxPct = 100;
+        params.adc.attenuation = 0;
+        params.adc.resolution = 12;
+        params.adc.sampleRate = 0;
+        params.adc.sampleCount = 1;
+        params.adc.filterMode = 0;
     }
     
     // 检查是否为GPIO类型

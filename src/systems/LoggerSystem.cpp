@@ -212,6 +212,9 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
                  timeStr, levelStr, message);
     }
 
+    // 捕获到诊断最近日志环形（内存常驻，不随 flush 清空）
+    captureRecentLine(entry);
+
     // 输出到串口
     if (serialEnabled && outputStream) {
         outputStream->println(entry);
@@ -342,6 +345,45 @@ void LoggerSystem::flushBuffer() {
         flushBufferInternal();
         xSemaphoreGive(_logMutex);
     }
+}
+
+// ── 诊断最近日志环形实现 ─────────────────────────────────────────
+
+void LoggerSystem::captureRecentLine(const char* entry) {
+    if (!entry || entry[0] == '\0') return;
+    // 短超时拿锁：拿不到则跳过，避免阻塞日志热路径
+    bool locked = _logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) == pdTRUE;
+    size_t len = strlen(entry);
+    if (len >= RECENT_LOG_LINE_LEN) len = RECENT_LOG_LINE_LEN - 1;
+    char* slot = _recentLogs[_recentLogWriteIdx];
+    memcpy(slot, entry, len);
+    slot[len] = '\0';
+    _recentLogWriteIdx = static_cast<uint8_t>((_recentLogWriteIdx + 1) % RECENT_LOG_LINES);
+    if (_recentLogCount < RECENT_LOG_LINES) _recentLogCount++;
+    if (locked) xSemaphoreGive(_logMutex);
+}
+
+size_t LoggerSystem::snapshotRecentLogs(char* out, size_t outSize) const {
+    if (!out || outSize == 0) return 0;
+    bool locked = _logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE;
+    const uint8_t count = _recentLogCount;
+    size_t written = 0;
+    if (count > 0) {
+        // 环形中最早的行位于 (writeIdx - count) mod LINES
+        const uint8_t start = static_cast<uint8_t>(
+            (_recentLogWriteIdx + RECENT_LOG_LINES - count) % RECENT_LOG_LINES);
+        for (uint8_t i = 0; i < count; i++) {
+            const char* line = _recentLogs[(start + i) % RECENT_LOG_LINES];
+            size_t len = strlen(line);
+            if (written + len + 1 >= outSize) break;  // 空间不足，截断
+            memcpy(out + written, line, len);
+            written += len;
+            out[written++] = '\n';
+        }
+    }
+    out[written] = '\0';
+    if (locked) xSemaphoreGive(_logMutex);
+    return written;
 }
 
 // ── 日志文件管理 ─────────────────────────────────────────────────────────

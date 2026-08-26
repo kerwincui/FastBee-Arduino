@@ -328,7 +328,8 @@
       "name": "rule-scripts",
       "method": "GET",
       "path": "/api/rule-script",
-      "profiles": ["full"]
+      "profiles": ["full"],
+      "allowedStatuses": [503]
     },
     {
       "name": "rule-scripts-unavailable",

@@ -320,8 +320,11 @@
                 .catch(err => {
                     // 页面切换导致的请求中止属预期行为，静默返回避免误报
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
-                    console.error('Load network config failed:', err);
-                    Notification.error('加载网络配置失败', '网络设置');
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, '加载网络配置失败', '网络设置');
+                    } else {
+                        Notification.error('加载网络配置失败', '网络设置');
+                    }
                 });
         },
 
@@ -557,8 +560,9 @@
                 })
                 .catch(err => {
                     console.error('Save network config failed:', err);
-                    const isNetworkTransitionError = err && (
-                        err.name === 'AbortError' ||
+                    // 区分超时（请求可能未到达）vs 连接断开（设备主动重启网络）
+                    const isTimeout = err && err.name === 'AbortError';
+                    const isConnectionClosed = err && (
                         err.name === 'TypeError' ||
                         (err.message && (
                             err.message.includes('fetch') ||
@@ -567,7 +571,20 @@
                         ))
                     );
 
-                    if (isNetworkTransitionError) {
+                    if (isTimeout) {
+                        // 超时：请求可能未到达设备，不能报成功
+                        Notification.show({
+                            type: 'warning',
+                            title: '保存超时',
+                            message: '保存请求超时，未确认是否生效，请刷新页面核对当前配置',
+                            duration: 8000
+                        });
+                        if (submitBtn && submitBtnText) {
+                            submitBtn.disabled = false;
+                            submitBtnText.innerHTML = originalText || '保存配置';
+                        }
+                    } else if (isConnectionClosed) {
+                        // 连接被设备断开：网络配置已保存，设备正在重启网络服务
                         this._showMessage('wifi-success', true);
                         Notification.show({
                             type: 'success',
@@ -1252,6 +1269,142 @@
             };
         },
 
+        // ============ 蓝牙配网（BLE Provisioning）============
+
+        /**
+         * 绑定蓝牙配网面板事件（页面加载时调用一次）
+         */
+        setupBleProvision() {
+            const startBtn = document.getElementById('ble-prov-start-btn');
+            if (startBtn) startBtn.addEventListener('click', () => this.startBleProvision());
+
+            const stopBtn = document.getElementById('ble-prov-stop-btn');
+            if (stopBtn) stopBtn.addEventListener('click', () => this.stopBleProvision());
+
+            const refreshBtn = document.getElementById('ble-prov-refresh-btn');
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', () => {
+                    refreshBtn.disabled = true;
+                    this.loadBleProvisionStatus();
+                    setTimeout(() => { refreshBtn.disabled = false; }, 1500);
+                });
+            }
+
+            // 首次进入页面时探测固件是否支持 BLE 配网（不支持则隐藏面板）
+            this.loadBleProvisionStatus();
+        },
+
+        /**
+         * 加载蓝牙配网状态（不支持时隐藏面板）
+         */
+        loadBleProvisionStatus() {
+            const card = document.getElementById('ble-provision-card');
+            if (!card) return;
+
+            apiGet('/api/ble/provision/status')
+                .then(res => {
+                    if (!res || !res.success || !res.data || !res.data.supported) {
+                        this.hideElement(card);
+                        return;
+                    }
+                    this.showElement(card, 'block');
+                    this._updateBleProvisionUI(res.data);
+                })
+                .catch(() => this.hideElement(card));
+        },
+
+        /**
+         * 启动蓝牙配网广播
+         */
+        startBleProvision() {
+            const btn = document.getElementById('ble-prov-start-btn');
+            if (btn) btn.disabled = true;
+
+            apiPost('/api/ble/provision/start')
+                .then(res => {
+                    this._showBleProvisionMessage(res && res.success, res && res.message);
+                    this.loadBleProvisionStatus();
+                })
+                .catch(() => this._showBleProvisionMessage(false))
+                .finally(() => { if (btn) btn.disabled = false; });
+        },
+
+        /**
+         * 停止蓝牙配网并释放内存
+         */
+        stopBleProvision() {
+            const btn = document.getElementById('ble-prov-stop-btn');
+            if (btn) btn.disabled = true;
+
+            apiPost('/api/ble/provision/stop')
+                .then(res => {
+                    this._showBleProvisionMessage(res && res.success, res && res.message);
+                    this.loadBleProvisionStatus();
+                })
+                .catch(() => this._showBleProvisionMessage(false))
+                .finally(() => { if (btn) btn.disabled = false; });
+        },
+
+        /**
+         * 根据状态数据刷新蓝牙配网面板 UI
+         */
+        _updateBleProvisionUI(data) {
+            const badge = document.getElementById('ble-prov-state-badge');
+            if (badge) {
+                // 状态 → 徽章样式 + i18n 键
+                const stateMap = {
+                    'idle':        { cls: 'status-disconnected', key: 'ble-prov-state-idle' },
+                    'advertising': { cls: 'status-ap-mode',      key: 'ble-prov-state-advertising' },
+                    'connected':   { cls: 'status-connected',    key: 'ble-prov-state-connected' },
+                    'provisioned': { cls: 'status-connected',    key: 'ble-prov-state-provisioned' }
+                };
+                const info = stateMap[data.state] || stateMap['idle'];
+                badge.className = 'status-badge ' + info.cls;
+                badge.setAttribute('data-i18n', info.key);
+                badge.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(info.key) : badge.textContent;
+            }
+
+            const setText = (id, text) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = text;
+            };
+            setText('ble-prov-adv-name', data.advName || '--');
+            setText('ble-prov-connected', data.connected
+                ? ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-yes') : '是')
+                : ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-no') : '否'));
+            setText('ble-prov-result', data.provisioned
+                ? ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-result-ok') : '成功')
+                : '--');
+
+            // 运行中禁用启动按钮，未运行时禁用停止按钮
+            const startBtn = document.getElementById('ble-prov-start-btn');
+            const stopBtn = document.getElementById('ble-prov-stop-btn');
+            if (startBtn) startBtn.disabled = !!data.running;
+            if (stopBtn) stopBtn.disabled = !data.running;
+        },
+
+        /**
+         * 显示蓝牙配网操作结果消息
+         */
+        _showBleProvisionMessage(ok, message) {
+            const okEl = document.getElementById('ble-prov-success');
+            const errEl = document.getElementById('ble-prov-error');
+            const t = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t.bind(i18n) : (k => k);
+
+            if (okEl) {
+                okEl.textContent = message || t('ble-prov-op-ok');
+                okEl.classList.toggle('fb-hidden', !ok);
+            }
+            if (errEl) {
+                errEl.textContent = message || t('ble-prov-op-fail');
+                errEl.classList.toggle('fb-hidden', !!ok);
+            }
+            setTimeout(() => {
+                if (okEl) okEl.classList.add('fb-hidden');
+                if (errEl) errEl.classList.add('fb-hidden');
+            }, 5000);
+        },
+
     });
 
     // 自动绑定事件
@@ -1262,6 +1415,11 @@
     // 初始化状态刷新功能
     if (typeof AppState.setupStatusRefresh === 'function') {
         AppState.setupStatusRefresh();
+    }
+
+    // 初始化蓝牙配网面板（探测固件 BLE 支持并绑定按钮）
+    if (typeof AppState.setupBleProvision === 'function') {
+        AppState.setupBleProvision();
     }
 
     // 根据固件能力隐藏不支持的联网方式

@@ -55,7 +55,14 @@
                         select.value = current;
                     }
                 })
-                .catch(() => Notification.warning('日志文件列表加载失败'));
+                .catch(err => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, '日志文件列表加载失败', '日志管理');
+                    } else {
+                        Notification.warning('日志文件列表加载失败');
+                    }
+                });
         },
 
         loadLogs(options) {
@@ -76,8 +83,12 @@
                     }
                 })
                 .catch((err) => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     if (content) content.textContent = '日志加载失败：' + (err && err.message ? err.message : '');
                     if (meta) meta.textContent = '日志接口不可用或当前构建未启用日志查看';
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, '日志加载失败', '日志管理');
+                    }
                 });
         },
 
@@ -94,7 +105,14 @@
                         Notification.error(res && (res.error || res.message) || '清空日志失败');
                     }
                 })
-                .catch(() => Notification.error('清空日志失败'));
+                .catch(err => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    if (typeof window.apiNotifyError === 'function') {
+                        window.apiNotifyError(err, '清空日志失败', '日志管理');
+                    } else {
+                        Notification.error('清空日志失败');
+                    }
+                });
         }
     });
 

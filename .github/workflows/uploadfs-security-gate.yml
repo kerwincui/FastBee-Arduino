@@ -1,0 +1,95 @@
+name: UploadFS Security Gate
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  check-uploadfs-forbidden:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Check for uploadfs usage in scripts
+        id: check-uploadfs
+        run: |
+          # Search for uploadfs in all files (excluding .git, node_modules, etc.)
+          UPLOADFS_USAGE=$(grep -r "uploadfs" . --include="*.sh" --include="*.ps1" --include="*.py" --include="*.yml" --include="*.yaml" --include="*.ini" --exclude-dir=".git" --exclude-dir="node_modules" 2>/dev/null || true)
+          
+          if [ -n "$UPLOADFS_USAGE" ]; then
+            echo "::error::❌ CRITICAL ERROR: uploadfs usage detected!"
+            echo "::error::uploadfs is FORBIDDEN and will cause device permanent brick!"
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "# 🚨 UploadFS Security Violation Detected! 🚨" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Why is this critical?**" >> $GITHUB_STEP_SUMMARY
+            echo "- uploadfs causes HARD FAULT during flash_write operation" >> $GITHUB_STEP_SUMMARY
+            echo "- This leads to PERMANENT DEVICE BRICK" >> $GITHUB_STEP_SUMMARY
+            echo "- Recovery requires GPIO0-GND physical intervention" >> $GITHUB_STEP_SUMMARY
+            echo "- May require hardware replacement if recovery fails" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Detected usage:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$UPLOADFS_USAGE" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Resolution steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. Remove all uploadfs references from scripts" >> $GITHUB_STEP_SUMMARY
+            echo "2. Replace with flash_dual target:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`powershell" >> $GITHUB_STEP_SUMMARY
+            echo "pio run -e esp32-F4R0 --target flash_dual --upload-port COM16" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "3. Review documentation at docs/security/deployment-sop.md" >> $GITHUB_STEP_SUMMARY
+            
+            echo "FAIL" > /tmp/uploadfs_status.txt
+          else
+            echo "::info::✅ Safe deployment method detected"
+            echo "PASS" > /tmp/uploadfs_status.txt
+          fi
+      
+      - name: Check platformio.ini for uploadfs targets
+        run: |
+          if grep -q "uploadfs" platformio.ini; then
+            echo "::error::uploadfs target found in platformio.ini!"
+            echo "FAIL" > /tmp/uploadfs_status.txt
+          fi
+      
+      - name: Aggregate results
+        id: final-check
+        run: |
+          STATUS=$(cat /tmp/uploadfs_status.txt 2>/dev/null || echo "PASS")
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "UploadFS check result: $STATUS"
+      
+      - name: Block merge if violation detected
+        if: steps.final-check.outputs.status == 'FAIL'
+        run: |
+          echo "::group::🚫 SECURITY GATE TRIGGERED"
+          echo ""
+          echo "This PR CANNOT be merged due to uploadfs usage."
+          echo ""
+          echo "Violation details:"
+          grep -r "uploadfs" . --include="*.sh" --include="*.ps1" --include="*.py" --include="*.yml" --include="*.yaml" --include="*.ini" --exclude-dir=".git" --exclude-dir="node_modules" || true
+          echo ""
+          echo "Required resolution:"
+          echo "1. ✅ Remove all uploadfs references"
+          echo "2. ✅ Use flash_dual target instead"
+          echo "3. ✅ Review docs/security/deployment-sop.md"
+          echo ""
+          echo "For emergency recovery procedures, see:"
+          echo ".archive-docs/TASK-18-DEVICE-RECOVERY-DIAGNOSIS.md"
+          echo ""
+          echo "::endgroup::"
+          exit 1
+          
+      - name: Report success
+        if: steps.final-check.outputs.status == 'PASS'
+        run: |
+          echo "::success::✅ No uploadfs usage detected - commit allowed"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# ✅ UploadFS Security Check Passed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No forbidden uploadfs patterns found in this PR." >> $GITHUB_STEP_SUMmary

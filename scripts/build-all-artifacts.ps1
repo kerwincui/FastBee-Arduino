@@ -2,10 +2,8 @@
 param(
     [string[]]$Environments = @(
         "esp32-F4R0",
-        "esp32-F8R4",
         "esp32c3-F4R0",
         "esp32c6-F4R0",
-        "esp32s3-F8R0",
         "esp32s3-F8R4",
         "esp32s3-F16R8"
     ),
@@ -40,12 +38,11 @@ function Kill-StaleProcesses {
 
 Write-Host "[Pre-Build] Checking for stale processes..." -ForegroundColor Cyan
 Kill-StaleProcesses
+# 2026-08 Web 镜像统一化：出厂环境一律 full 档（全量页面，运行时功能门控）
 $ProfileByEnv = @{
-    "esp32c3-F4R0"   = "lite"
-    "esp32c6-F4R0"   = "lite"
-    "esp32-F4R0"     = "standard"
-    "esp32-F8R4"     = "full"
-    "esp32s3-F8R0"   = "standard"
+    "esp32c3-F4R0"   = "full"
+    "esp32c6-F4R0"   = "full"
+    "esp32-F4R0"     = "full"
     "esp32s3-F8R4"   = "full"
     "esp32s3-F16R8"  = "full"
 }
@@ -53,19 +50,15 @@ $ProfileByEnv = @{
 # Examples: fastbee-esp32-F4R0.bin, fastbee-esp32s3-F16R8.bin
 $OutputNameByEnv = @{
     "esp32-F4R0"     = "fastbee-esp32-F4R0.bin"
-    "esp32-F8R4"     = "fastbee-esp32-F8R4.bin"
     "esp32c3-F4R0"   = "fastbee-esp32c3-F4R0.bin"
     "esp32c6-F4R0"   = "fastbee-esp32c6-F4R0.bin"
-    "esp32s3-F8R0"   = "fastbee-esp32s3-F8R0.bin"
     "esp32s3-F8R4"   = "fastbee-esp32s3-F8R4.bin"
     "esp32s3-F16R8"  = "fastbee-esp32s3-F16R8.bin"
 }
 $HardwareByEnv = @{
     "esp32-F4R0"     = "ESP32 4MB Flash"
-    "esp32-F8R4"     = "ESP32 8MB Flash + 4MB PSRAM"
     "esp32c3-F4R0"   = "ESP32-C3 4MB Flash"
     "esp32c6-F4R0"   = "ESP32-C6 4MB Flash"
-    "esp32s3-F8R0"   = "ESP32-S3 8MB Flash"
     "esp32s3-F8R4"   = "ESP32-S3 8MB Flash + 4MB PSRAM"
     "esp32s3-F16R8"  = "ESP32-S3 16MB Flash + 8MB PSRAM"
 }
@@ -336,6 +329,114 @@ $ManifestPath = Join-Path $OutputPath "manifest.json"
 $ManifestJson = $ReleaseManifest | ConvertTo-Json -Depth 8
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($ManifestPath, $ManifestJson, $Utf8NoBom)
+
+# ─── WP-71: 构建体积 delta 摘要和红线门禁 ──────────────────────────────
+$ReportPath = Join-Path $ProjectDir "scripts\build-size-report.json"
+$BaselinePath = Join-Path $ProjectDir "scripts\.pio\build-baseline.json"
+
+function Get-FirmwareSize {
+    param([string]$BinPath)
+    if (Test-Path $BinPath) {
+        return (Get-Item $BinPath).Length
+    }
+    return 0
+}
+
+$currentSizes = @{}
+foreach ($env in $Environments) {
+    $binPath = Join-Path $ProjectDir ".pio\build\$env\firmware.bin"
+    $size = Get-FirmwareSize $binPath
+    $currentSizes[$env] = @{
+        firmwareBin = $size
+        factoryBin = (Get-FirmwareSize ($binPath -replace 'firmware\.bin', 'firmware.factory.bin'))
+        total = $size + (Get-FirmwareSize ($binPath -replace 'firmware\.bin', 'firmware.factory.bin'))
+    }
+}
+
+# 读取基线对比
+$baseline = @{}
+if (Test-Path $BaselinePath) {
+    $baseline = Get-Content $BaselinePath -Raw | ConvertFrom-Json | ConvertTo-Hashtable
+}
+
+$deltaReport = [ordered]@{
+    timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+    platformioIniHash = if (Test-Path "platformio.ini") { 
+        (Get-FileHash "platformio.ini" -Algorithm SHA256).Hash 
+    } else { "unknown" }
+}
+
+$totalDeltaKB = 0
+$thresholdFlashKB = 2048  # 2KB 红线
+$thresholdWarningKB = 512 # 500B 警告
+
+foreach ($env in $currentSizes.Keys) {
+    if (-not $baseline[$env]) {
+        $deltaReport[$env] = @{
+            status = "new-environment"
+            flashKB = [math]::Round($currentSizes[$env].total / 1024, 2)
+            deltaKB = "N/A (baseline missing)"
+            gate = "pass"
+        }
+    } else {
+        $prev = $baseline[$env].total
+        $curr = $currentSizes[$env].total
+        $delta = $curr - $prev
+        $deltaKB = [math]::Round($delta / 1024, 2)
+        $totalDeltaKB += $deltaKB
+        
+        $gate = "pass"
+        if ($delta -gt ($thresholdFlashKB * 1024)) {
+            $gate = "block"
+        } elseif ($delta -gt ($thresholdWarningKB * 1024)) {
+            $gate = "warn"
+        }
+        
+        $deltaReport[$env] = @{
+            status = "updated"
+            flashKB = [math]::Round($curr / 1024, 2)
+            prevKB = [math]::Round($prev / 1024, 2)
+            deltaKB = $deltaKB
+            gate = $gate
+            explanation = $null  # 超过 500B 需要人工补充解释字段
+        }
+    }
+}
+
+$deltaReport.totalDeltaAcrossAllEnvsKB = [math]::Round($totalDeltaKB, 2)
+$deltaReport.gateSummary = if ($totalDeltaKB -gt $thresholdFlashKB) { "BLOCKED (>2KB)" } elseif ($totalDeltaKB -gt $thresholdWarningKB) { "WARNING (>500B)" } else { "PASSED" }
+
+# 保存报告
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ReportPath, ($deltaReport | ConvertTo-Json -Depth 5), $Utf8NoBom)
+
+# 保存/更新基线
+$currentBaseline = @{}
+foreach ($env in $currentSizes.Keys) {
+    $currentBaseline[$env] = @{
+        total = $currentSizes[$env].total
+        firmwareBin = $currentSizes[$env].firmwareBin
+        factoryBin = $currentSizes[$env].factoryBin
+        recordedAt = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+    }
+}
+if (-not (Test-Path (Split-Path $BaselinePath -Parent))) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $BaselinePath -Parent) | Out-Null
+}
+[System.IO.File]::WriteAllText($BaselinePath, ($currentBaseline | ConvertTo-Json -Depth 3), $Utf8NoBom)
+
+if ($deltaReport.gateSummary -eq "BLOCKED (>2KB)") {
+    Write-Host "[WP-71 GATE] BUILD BLOCKED: Total delta exceeds 2KB threshold!" -ForegroundColor Red
+    Write-Host "Details: $ReportPath" -ForegroundColor Red
+    exit 1
+} elseif ($deltaReport.gateSummary -eq "WARNING (>500B)") {
+    Write-Host "[WP-71 GATE] WARNING: Total delta exceeds 500B, review required!" -ForegroundColor Yellow
+    Write-Host "Details: $ReportPath" -ForegroundColor Yellow
+} else {
+    Write-Host "[WP-71] Build size delta within limits: $($deltaReport.totalDeltaAcrossAllEnvsKB) KB" -ForegroundColor Green
+    Write-Host "Report saved to: $ReportPath" -ForegroundColor Gray
+}
+# ────────────────────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "All artifacts are ready:" -ForegroundColor Green

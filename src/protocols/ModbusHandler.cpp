@@ -1507,6 +1507,109 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
 }
 
 // ============================================================================
+// 合并读专用：范围读（单次事务读 qty ≤ 125）并解析到寄存器值缓冲
+// 响应解析逻辑与 readRegistersOnce 保持一致（FC03/04 寄存器、FC01/02 线圈位展开）
+// ============================================================================
+OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functionCode,
+                                            uint16_t startAddress, uint16_t quantity,
+                                            uint16_t* outBuf, uint16_t outCap) {
+    // 参数校验
+    if (!outBuf) return ONESHOT_EXCEPTION;
+    if (functionCode < 0x01 || functionCode > 0x04) {
+        LOG_WARNINGF("[Modbus] MergedRead: invalid function code 0x%02X", functionCode);
+        return ONESHOT_EXCEPTION;
+    }
+    if (quantity == 0 || quantity > outCap || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+        LOG_WARNINGF("[Modbus] MergedRead: invalid quantity %d (cap=%d)", quantity, outCap);
+        return ONESHOT_EXCEPTION;
+    }
+
+    LOG_DEBUGF("[Modbus] MergedRead: slave=%d fc=0x%02X addr=%d qty=%d",
+               slaveAddress, functionCode, startAddress, quantity);
+
+    // 构建读请求帧（FC 0x01-0x04 均为 8 字节固定格式）
+    uint8_t requestBuffer[8];
+    requestBuffer[0] = slaveAddress;
+    requestBuffer[1] = functionCode;
+    requestBuffer[2] = (startAddress >> 8) & 0xFF;
+    requestBuffer[3] = startAddress & 0xFF;
+    requestBuffer[4] = (quantity >> 8) & 0xFF;
+    requestBuffer[5] = quantity & 0xFF;
+    uint16_t crc = calculateCRC(requestBuffer, 6);
+    requestBuffer[6] = crc & 0xFF;
+    requestBuffer[7] = (crc >> 8) & 0xFF;
+
+    // 发送并接收原始响应帧（成员缓冲，事务由信号量串行化）
+    uint8_t rawLen = 0;
+    uint8_t exceptionCode = 0;
+    OneShotError error = _sendOneShotRequestRaw(requestBuffer, 8, slaveAddress,
+                                                _mergeRespBuf, sizeof(_mergeRespBuf), rawLen, exceptionCode);
+    if (error != ONESHOT_SUCCESS) {
+        return error;
+    }
+
+    // 功能码匹配
+    uint8_t respFC = _mergeRespBuf[1];
+    if (respFC != functionCode) {
+        LOG_WARNINGF("[Modbus] MergedRead: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respFC);
+        return ONESHOT_CRC_ERROR;
+    }
+
+    if (functionCode == 0x03 || functionCode == 0x04) {
+        uint16_t byteCount = _mergeRespBuf[2];
+        if (byteCount != (uint16_t)quantity * 2) {
+            LOG_WARNINGF("[Modbus] MergedRead: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
+            return ONESHOT_CRC_ERROR;
+        }
+        // 防御性检查：确保响应数据不越界
+        uint16_t needLen = 3 + (uint16_t)quantity * 2;
+        if (rawLen < needLen) {
+            LOG_WARNINGF("[Modbus] MergedRead: response too short (need %d, have %d bytes)", needLen, rawLen);
+            return ONESHOT_CRC_ERROR;
+        }
+        for (uint16_t i = 0; i < quantity; i++) {
+            uint16_t idx1 = 3 + i * 2;
+            uint16_t idx2 = 4 + i * 2;
+            outBuf[i] = ((uint16_t)_mergeRespBuf[idx1] << 8) | _mergeRespBuf[idx2];
+        }
+    } else {
+        // FC 0x01/0x02：线圈/离散量按位展开为每元素 0/1（与 readRegistersOnce 一致）
+        uint8_t expectedDataBytes = (quantity + 7) / 8;
+        uint8_t standardLen = 3 + expectedDataBytes + 2;  // addr+FC+byteCount+data+CRC
+        uint8_t nonStdLen   = 2 + expectedDataBytes + 2;  // addr+FC+data+CRC (无byteCount)
+
+        uint8_t dataOffset;
+        uint8_t actualByteCount;
+        if (rawLen == standardLen) {
+            dataOffset = 3;
+            actualByteCount = _mergeRespBuf[2];
+        } else if (rawLen == nonStdLen) {
+            dataOffset = 2;
+            actualByteCount = expectedDataBytes;
+            LOG_INFOF("[Modbus] MergedRead: non-standard FC 0x%02X response (no byteCount field, %d bytes)", functionCode, rawLen);
+        } else {
+            dataOffset = 3;
+            actualByteCount = _mergeRespBuf[2];
+            LOG_WARNINGF("[Modbus] MergedRead: unexpected FC 0x%02X response length %d (expected %d or %d)", functionCode, rawLen, standardLen, nonStdLen);
+        }
+
+        for (uint16_t i = 0; i < quantity; i++) {
+            uint8_t byteIdx = i / 8;
+            uint8_t bitIdx = i % 8;
+            uint16_t accessIdx = (uint16_t)dataOffset + byteIdx;
+            uint8_t dataByte = 0;
+            if (byteIdx < actualByteCount && accessIdx < rawLen) {
+                dataByte = _mergeRespBuf[accessIdx];
+            }
+            outBuf[i] = (dataByte & (1 << bitIdx)) ? 1 : 0;
+        }
+    }
+
+    LOG_INFOF("[Modbus] MergedRead: success, read %d values from slave %d", quantity, slaveAddress);
+    return ONESHOT_SUCCESS;
+}
+
+// ============================================================================
 // 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
 // ============================================================================
 OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
@@ -1515,14 +1618,41 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
     result.error = ONESHOT_TIMEOUT;
     result.count = 0;
 
+    uint8_t rawBuf[Protocols::MODBUS_BUFFER_SIZE];
+    uint8_t rawLen = 0;
+    result.error = _executeModbusTransactionRaw(request, reqLen, expectedSlaveAddr,
+                                                rawBuf, sizeof(rawBuf), rawLen, result.exceptionCode);
+    if (result.error == ONESHOT_SUCCESS) {
+        // 成功 — 将原始响应帧存入 result.data（按uint16打包，便于调用者解析）
+        result.count = rawLen;  // 存储原始响应字节数
+        // 将响应字节逐一存入data数组（每个uint16存一个字节）
+        for (uint8_t i = 0; i < rawLen && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
+            result.data[i] = rawBuf[i];
+        }
+        LOG_INFOF("[Modbus] OneShot: success, %d bytes response from slave %d", rawLen, expectedSlaveAddr);
+    }
+    return result;
+}
+
+// ============================================================================
+// 原始帧事务：重试/超时/CRC 等核心通信逻辑，响应以原始字节返回
+// （合并范围读响应可达 255 字节，超出 OneShotResult.data 缓冲，故提供原始版本）
+// ============================================================================
+OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
+                                                          uint8_t expectedSlaveAddr,
+                                                          uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                                          uint8_t& exceptionCode) {
+    OneShotError error = ONESHOT_TIMEOUT;
+    rawLen = 0;
+    exceptionCode = 0;
+
     // 连续超时冷却保护：防止持续超时耗尽堆内存导致 abort()
     if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
         unsigned long now = millis();
         if (now < _cooldownUntil) {
-            result.error = ONESHOT_TIMEOUT;
             LOG_WARNINGF("[Modbus] In cooldown (%lus left), skip transaction",
                          (_cooldownUntil - now) / 1000);
-            return result;
+            return ONESHOT_TIMEOUT;
         }
         // 冷却结束，重置计数器，尝试一次
         _consecutiveTimeouts = 0;
@@ -1593,21 +1723,21 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
         // 超时且无数据
         if (timedOut && respIdx == 0) {
             LOG_WARNINGF("[Modbus] OneShot: timeout (attempt %d, no response)", attempt + 1);
-            result.error = ONESHOT_TIMEOUT;
+            error = ONESHOT_TIMEOUT;
             continue;
         }
 
         // 帧过短
         if (respIdx < 4) {
             LOG_WARNINGF("[Modbus] OneShot: frame too short (%d bytes)", respIdx);
-            result.error = ONESHOT_CRC_ERROR;
+            error = ONESHOT_CRC_ERROR;
             continue;
         }
 
         // CRC 校验
         if (!validateFrame(respBuf, respIdx)) {
             LOG_WARNING("[Modbus] OneShot: CRC validation failed");
-            result.error = ONESHOT_CRC_ERROR;
+            error = ONESHOT_CRC_ERROR;
             continue;
         }
 
@@ -1625,33 +1755,32 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
         // 地址匹配（广播地址 0x00 时跳过，允许任意从站响应）
         if (expectedSlaveAddr != 0 && respBuf[0] != expectedSlaveAddr) {
             LOG_WARNINGF("[Modbus] OneShot: address mismatch (expected %d, got %d)", expectedSlaveAddr, respBuf[0]);
-            result.error = ONESHOT_CRC_ERROR;
+            error = ONESHOT_CRC_ERROR;
             continue;
         }
 
         // 异常响应检测
         if (respBuf[1] & 0x80) {
-            result.error = ONESHOT_EXCEPTION;
-            result.exceptionCode = respBuf[2];
+            error = ONESHOT_EXCEPTION;
+            exceptionCode = respBuf[2];
             LOG_WARNINGF("[Modbus] OneShot: exception response 0x%02X", respBuf[2]);
             break; // 异常是确定性错误，不重试
         }
 
-        // 成功 — 将原始响应帧存入 result.data（按uint16打包，便于调用者解析）
-        result.error = ONESHOT_SUCCESS;
-        result.count = respIdx;  // 存储原始响应字节数
-        // 将响应字节逐一存入data数组（每个uint16存一个字节）
-        for (uint8_t i = 0; i < respIdx && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
-            result.data[i] = respBuf[i];
+        // 成功 — 复制原始响应帧到调用者缓冲
+        error = ONESHOT_SUCCESS;
+        rawLen = respIdx;
+        if (rawResp) {
+            uint8_t copyLen = (respIdx < rawCap) ? respIdx : rawCap;
+            memcpy(rawResp, respBuf, copyLen);
         }
-        LOG_INFOF("[Modbus] OneShot: success, %d bytes response from slave %d", respIdx, expectedSlaveAddr);
         break;
     }
 
     // 连续超时追踪：成功时重置，超时时累加并触发冷却
-    if (result.error == ONESHOT_SUCCESS || result.error == ONESHOT_EXCEPTION) {
+    if (error == ONESHOT_SUCCESS || error == ONESHOT_EXCEPTION) {
         _consecutiveTimeouts = 0;
-    } else if (result.error == ONESHOT_TIMEOUT) {
+    } else if (error == ONESHOT_TIMEOUT) {
         _consecutiveTimeouts++;
         if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
             _cooldownUntil = millis() + COOLDOWN_DURATION_MS;
@@ -1660,7 +1789,7 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
         }
     }
 
-    return result;
+    return error;
 }
 
 // ============================================================================
@@ -1733,6 +1862,77 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         xSemaphoreGive(_oneShotSemaphore);
     }
     return result;
+}
+
+// ============================================================================
+// 带信号量保护的原始帧发送/接收（合并范围读专用，响应不受 OneShotResult 缓冲限制）
+// ============================================================================
+OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
+                                                    uint8_t expectedSlaveAddr,
+                                                    uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                                    uint8_t& exceptionCode) {
+    rawLen = 0;
+    exceptionCode = 0;
+
+    // 前置检查
+    if (!isInitialized || !modbusSerial) {
+        LOG_WARNING("[Modbus] OneShot: not initialized");
+        return ONESHOT_NOT_INITIALIZED;
+    }
+    if (isOneShotReading) {
+        // 使用信号量等待总线空闲（FreeRTOS 友好）
+        if (_oneShotSemaphore) {
+            // 等待获取信号量，最多 2 秒
+            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
+                return ONESHOT_BUSY;
+            }
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+        } else {
+            // 信号量未创建，使用旧的轮询方式（降级兼容）
+            const unsigned long maxWaitMs = 2000;
+            unsigned long startWait = millis();
+            while (isOneShotReading) {
+                if (millis() - startWait >= maxWaitMs) {
+                    LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
+                    return ONESHOT_BUSY;
+                }
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+        }
+    } else {
+        // 总线空闲，立即获取信号量
+        if (_oneShotSemaphore) {
+            // 非阻塞获取，确保独占访问
+            if (xSemaphoreTake(_oneShotSemaphore, 0) == pdFALSE) {
+                LOG_WARNING("[Modbus] OneShot: failed to acquire semaphore");
+                return ONESHOT_BUSY;
+            }
+        }
+    }
+    if (expectedSlaveAddr > 247) {
+        exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
+        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
+        if (_oneShotSemaphore) {
+            xSemaphoreGive(_oneShotSemaphore);
+        }
+        return ONESHOT_EXCEPTION;
+    }
+
+    // 设置守卫标志
+    isOneShotReading = true;
+
+    // 执行实际的 Modbus 通信
+    OneShotError error = _executeModbusTransactionRaw(request, reqLen, expectedSlaveAddr,
+                                                      rawResp, rawCap, rawLen, exceptionCode);
+
+    isOneShotReading = false;
+    // 释放信号量
+    if (_oneShotSemaphore) {
+        xSemaphoreGive(_oneShotSemaphore);
+    }
+    return error;
 }
 
 // ============================================================================
@@ -2141,10 +2341,6 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         return "[]";
     }
 
-    // 更新统计计数
-    _totalPollCount++;
-    _lastPollTime = millis();
-
     // 记录轮询开始时间
     unsigned long _pollStartMs = millis();
 
@@ -2184,6 +2380,24 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     }
 #endif
 
+    // 读后处理：统计/缓存/自适应/去重/JSON 生成（countStats=true：单条读按任务计数）
+    return _finalizePollResult(taskIdx, result, emitCallback, true);
+}
+
+// ============================================================================
+// 轮询后处理：统计/缓存/自适应间隔/hash去重/死区/心跳/JSON生成
+// countStats=false 用于批量合并路径（统计按合并事务统一计数，避免重复）
+// ============================================================================
+String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& result,
+                                          bool emitCallback, bool countStats) {
+    PollTask& task = config.master.tasks[taskIdx];
+
+    // 更新统计计数
+    if (countStats) {
+        _totalPollCount++;
+        _lastPollTime = millis();
+    }
+
     // 更新任务缓存和统计计数
     PollTaskCache& cache = _taskCache[taskIdx];
     cache.timestamp = millis();
@@ -2193,10 +2407,12 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         LOG_WARNINGF("[Modbus] PollTask[%d] failed: error=%d", taskIdx, result.error);
         
         // 分类统计失败原因
-        if (result.error == ONESHOT_TIMEOUT) {
-            _timeoutPollCount++;
-        } else {
-            _failedPollCount++;
+        if (countStats) {
+            if (result.error == ONESHOT_TIMEOUT) {
+                _timeoutPollCount++;
+            } else {
+                _failedPollCount++;
+            }
         }
         
         // 自适应：连续错误时逐步增大轮询间隔
@@ -2223,7 +2439,9 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     }
     
     // 成功：更新成功计数和缓存数据
-    _successPollCount++;
+    if (countStats) {
+        _successPollCount++;
+    }
     cache.valid = true;
     cache.count = result.count;
     memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
@@ -2373,6 +2591,241 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         dataCallback(task.slaveAddress, json);
     }
     return json;
+}
+
+// ============================================================================
+// 批量轮询：相邻寄存器合并读优化
+//   调度策略：同一 slaveId + 同一功能码的待发读请求按起始地址排序，
+//   间隔 ≤ MODBUS_MERGE_MAX_GAP 个寄存器即合并为一个范围读（上限 125，超限分段）；
+//   读回后按原任务 (地址偏移,长度) 切片分发；合并读失败时回退为逐条原始请求重试一次，
+//   失败计数按合并事务记一次。仅作用于主站轮询路径，显式直读不参与合并。
+// ============================================================================
+String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t idxCount,
+                                           uint16_t timeout, uint8_t retries,
+                                           uint16_t interDelayMs, bool emitCallback) {
+    if (!taskIdxList || idxCount == 0) return "[]";
+
+    // 收集有效候选任务索引（去重、跳过越界/禁用任务）
+    uint8_t cand[Protocols::MODBUS_MAX_POLL_TASKS];
+    uint8_t candCount = 0;
+    for (uint8_t i = 0; i < idxCount; i++) {
+        uint8_t idx = taskIdxList[i];
+        if (idx >= config.master.taskCount) {
+            LOG_WARNINGF("[Modbus] Batch: invalid task idx %d (count=%d)", idx, config.master.taskCount);
+            continue;
+        }
+        if (!config.master.tasks[idx].enabled) continue;
+        bool dup = false;
+        for (uint8_t j = 0; j < candCount; j++) {
+            if (cand[j] == idx) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (candCount >= Protocols::MODBUS_MAX_POLL_TASKS) break;
+        cand[candCount++] = idx;
+    }
+    if (candCount == 0) return "[]";
+
+    // 未启用合并或仅单任务：退化为逐条执行（语义与原有路径完全一致）
+    if (!Protocols::MODBUS_MERGE_READS_ENABLED || candCount == 1) {
+        String combined;
+        combined.reserve(512);
+        combined = "[";
+        bool first = true;
+        for (uint8_t i = 0; i < candCount; i++) {
+            if (i > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
+            String r = executePollTaskByIndex(cand[i], timeout, retries, emitCallback);
+            if (r.length() > 2) {
+                if (!first) combined += ",";
+                combined += r.substring(1, r.length() - 1);  // 去掉外层 []
+                first = false;
+            }
+        }
+        combined += "]";
+        return combined;
+    }
+
+    // 检查堆内存是否充足
+    if (FastBee::MemoryBudget::dramFree() < 10000) {
+        LOG_WARNINGF("[Modbus] Batch: insufficient heap: %d bytes", ESP.getFreeHeap());
+        return "[]";
+    }
+
+    // 控制操作挂起时让路（与单任务轮询一致）
+    if (_controlPending) {
+        LOG_INFO("[Modbus] Batch: control pending, skipping poll to yield bus");
+        return "[]";
+    }
+
+    unsigned long batchStartMs = millis();
+
+    // 临时设置 PeriphExec 传入的通信参数
+    uint16_t origTimeout = config.master.responseTimeout;
+    uint8_t origRetries = config.master.maxRetries;
+    config.master.responseTimeout = timeout;
+    config.master.maxRetries = retries;
+
+    // 按 (slaveId, functionCode, startAddress) 插入排序（稳定，数量≤ 8）
+    for (uint8_t i = 1; i < candCount; i++) {
+        uint8_t key = cand[i];
+        const PollTask& kt = config.master.tasks[key];
+        int j = i - 1;
+        while (j >= 0) {
+            const PollTask& jt = config.master.tasks[cand[j]];
+            bool after = (jt.slaveAddress > kt.slaveAddress) ||
+                         (jt.slaveAddress == kt.slaveAddress && jt.functionCode > kt.functionCode) ||
+                         (jt.slaveAddress == kt.slaveAddress && jt.functionCode == kt.functionCode &&
+                          jt.startAddress > kt.startAddress);
+            if (!after) break;
+            cand[j + 1] = cand[j];
+            j--;
+        }
+        cand[j + 1] = key;
+    }
+
+    // 贪心窗口合并：仅尝试并入最后一个段（排序后最优）
+    struct MergeMember {
+        uint8_t  taskIdx;
+        uint16_t offset;   // 相对段起始地址的偏移
+        uint16_t qty;
+    };
+    struct MergeSegment {
+        uint8_t  slave;
+        uint8_t  fc;
+        uint16_t start;
+        uint16_t qty;      // 合并后范围长度
+        uint8_t  memberCount;
+        MergeMember members[Protocols::MODBUS_MAX_POLL_TASKS];
+    };
+    MergeSegment segs[Protocols::MODBUS_MAX_POLL_TASKS];
+    uint8_t segCount = 0;
+
+    for (uint8_t i = 0; i < candCount; i++) {
+        const PollTask& t = config.master.tasks[cand[i]];
+        // 单任务数量超出单次读缓冲能力 → 独立事务（readRegistersOnce 将按原有语义报错）
+        bool mergeable = (t.quantity > 0 && t.quantity <= Protocols::MODBUS_ONESHOT_BUFFER_SIZE);
+        bool merged = false;
+        if (mergeable && segCount > 0) {
+            MergeSegment& last = segs[segCount - 1];
+            if (last.slave == t.slaveAddress && last.fc == t.functionCode &&
+                last.memberCount < Protocols::MODBUS_MAX_POLL_TASKS) {
+                uint32_t lastEnd = (uint32_t)last.start + last.qty;       // 开区间终点
+                uint32_t tStart  = t.startAddress;
+                uint32_t tEnd    = tStart + t.quantity;
+                uint32_t gap     = (tStart > lastEnd) ? (tStart - lastEnd) : 0;
+                uint32_t newEnd  = (tEnd > lastEnd) ? tEnd : lastEnd;
+                uint32_t newQty  = newEnd - last.start;
+                if (gap <= Protocols::MODBUS_MERGE_MAX_GAP &&
+                    newQty <= Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+                    last.members[last.memberCount].taskIdx = cand[i];
+                    last.members[last.memberCount].offset = (uint16_t)(tStart - last.start);
+                    last.members[last.memberCount].qty = t.quantity;
+                    last.memberCount++;
+                    last.qty = (uint16_t)newQty;
+                    merged = true;
+                }
+            }
+        }
+        if (!merged && segCount < Protocols::MODBUS_MAX_POLL_TASKS) {
+            MergeSegment& s = segs[segCount++];
+            s.slave = t.slaveAddress;
+            s.fc = t.functionCode;
+            s.start = t.startAddress;
+            s.qty = t.quantity;
+            s.memberCount = 1;
+            s.members[0].taskIdx = cand[i];
+            s.members[0].offset = 0;
+            s.members[0].qty = t.quantity;
+        }
+    }
+
+    LOG_INFOF("[Modbus] Batch: %d tasks -> %d transactions", candCount, segCount);
+
+    // 拼接各任务 JSON 结果（去掉各自外层括号后合并为一个数组）
+    String combined;
+    combined.reserve(512);
+    combined = "[";
+    bool first = true;
+    auto appendJson = [&](const String& r) {
+        if (r.length() > 2) {
+            if (!first) combined += ",";
+            combined += r.substring(1, r.length() - 1);
+            first = false;
+        }
+    };
+
+    // 逐段执行
+    for (uint8_t s = 0; s < segCount; s++) {
+        if (s > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
+        MergeSegment& seg = segs[s];
+
+        // 统计按事务计数
+        _totalPollCount++;
+        _lastPollTime = millis();
+
+        if (seg.memberCount == 1) {
+            // 单成员段：走原有 readRegistersOnce 路径，语义不变
+            const MergeMember& m = seg.members[0];
+            OneShotResult r = readRegistersOnce(seg.slave, seg.fc, seg.start, m.qty);
+            if (r.error == ONESHOT_SUCCESS) _successPollCount++;
+            else if (r.error == ONESHOT_TIMEOUT) _timeoutPollCount++;
+            else _failedPollCount++;
+            appendJson(_finalizePollResult(m.taskIdx, r, emitCallback, false));
+            continue;
+        }
+
+        // 合并范围读
+        OneShotError err = _readRangeInto(seg.slave, seg.fc, seg.start, seg.qty,
+                                          _mergeReadBuf, Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+        if (err == ONESHOT_SUCCESS) {
+            _successPollCount++;
+            LOG_INFOF("[Modbus] Merged read ok: slave=%d fc=0x%02X start=%d qty=%d members=%d",
+                      seg.slave, seg.fc, seg.start, seg.qty, seg.memberCount);
+            // 按原请求 (偏移,长度) 切片分发
+            for (uint8_t mi = 0; mi < seg.memberCount; mi++) {
+                const MergeMember& m = seg.members[mi];
+                if ((uint32_t)m.offset + m.qty > seg.qty || m.qty > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
+                    LOG_WARNINGF("[Modbus] Batch: member slice out of range (task=%d off=%d qty=%d)",
+                                 m.taskIdx, m.offset, m.qty);
+                    continue;
+                }
+                OneShotResult slice;
+                slice.error = ONESHOT_SUCCESS;
+                slice.count = m.qty;
+                memcpy(slice.data, _mergeReadBuf + m.offset, m.qty * sizeof(uint16_t));
+                appendJson(_finalizePollResult(m.taskIdx, slice, emitCallback, false));
+            }
+        } else {
+            // 合并读失败：失败计数按合并事务记一次，回退为逐条原始请求重试一次
+            if (err == ONESHOT_TIMEOUT) _timeoutPollCount++;
+            else _failedPollCount++;
+            LOG_WARNINGF("[Modbus] Merged read failed (slave=%d fc=0x%02X start=%d qty=%d err=%d), falling back to individual reads",
+                         seg.slave, seg.fc, seg.start, seg.qty, err);
+            for (uint8_t mi = 0; mi < seg.memberCount; mi++) {
+                const MergeMember& m = seg.members[mi];
+                if (mi > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
+                OneShotResult r = readRegistersOnce(seg.slave, seg.fc,
+                                                    (uint16_t)(seg.start + m.offset), m.qty);
+                // countStats=false：失败已按合并事务计一次，回退结果不重复计数
+                appendJson(_finalizePollResult(m.taskIdx, r, emitCallback, false));
+            }
+        }
+    }
+
+    // 恢复原始通信参数
+    config.master.responseTimeout = origTimeout;
+    config.master.maxRetries = origRetries;
+
+    // 上报批次总耗时到 HealthMonitor
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    {
+        uint32_t batchDuration = millis() - batchStartMs;
+        HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+        if (hm) hm->setPollDurationMs(batchDuration);
+    }
+#endif
+
+    combined += "]";
+    return combined;
 }
 
 // ============================================================================

@@ -78,6 +78,15 @@ public:
     // 环形缓冲 flush（公开以便 TaskManager 定时调用）
     void flushBuffer();
 
+    // ── 诊断最近日志（内存环形，不随 flush 清空）───────────────────────────
+    // 将最近日志按时间顺序（最旧在前）拷贝到 out，每行以 '\n' 结尾，
+    // 返回写入字节数；空间不足时截断。供 /api/system/diag-bundle 使用。
+    size_t snapshotRecentLogs(char* out, size_t outSize) const;
+    // 当前环形中已保存的日志行数（≤ RECENT_LOG_LINES）
+    size_t recentLogLineCount() const { return static_cast<size_t>(_recentLogCount); }
+    // 环形容量（行数）
+    static constexpr size_t recentLogCapacity() { return RECENT_LOG_LINES; }
+
     // 日志文件管理
     bool   rotateLogFile(const char* newName = nullptr);
     size_t getLogFileSize() const;
@@ -114,6 +123,9 @@ private:
     void flushBufferInternal();  // 不拿锁版本，供 log() 内部调用
     size_t bufferedDataSize() const;
     void checkLogFileSize();     // 检查文件大小并轮转
+
+    // 诊断最近日志：将一行截断保存到环形（供 snapshotRecentLogs 读取）
+    void captureRecentLine(const char* entry);
 
     static const char* getLevelString(LogLevel level);
     
@@ -154,6 +166,15 @@ private:
 
     LogRingBuffer _ringBuffer;
     SemaphoreHandle_t _logMutex = nullptr;
+
+    // ── 诊断用最近日志环形（静态内存，不 flush 到磁盘）──────────────────────
+    // 保留最近 RECENT_LOG_LINES 行（每行截断至 RECENT_LOG_LINE_LEN），
+    // 常驻开销 RECENT_LOG_LINES * RECENT_LOG_LINE_LEN 字节。
+    static constexpr size_t  RECENT_LOG_LINES    = 32;
+    static constexpr size_t  RECENT_LOG_LINE_LEN = 128;
+    char     _recentLogs[RECENT_LOG_LINES][RECENT_LOG_LINE_LEN] = {{0}};
+    uint8_t  _recentLogWriteIdx = 0;   // 下一条写入位置
+    uint8_t  _recentLogCount = 0;      // 当前有效行数
 };
 
 // ============================================================================

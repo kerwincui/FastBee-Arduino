@@ -43,9 +43,9 @@
         </div>
     </div>
     <script>
-        var T={zh:{pageTitle:'FastBee WiFi 配网',pageSubtitle:'配置设备的 WiFi 连接',lblStatus:'状态：',lblIp:'IP 地址：',lblSsid:'WiFi 名称 (SSID)',lblPwd:'密码',scanBtn:'扫描 WiFi 网络',connectBtn:'连接',loginLink:'进入登录页',phSsid:'输入或选择 WiFi 名称',phPwd:'输入 WiFi 密码',scanning:'扫描中...',noNet:'未发现 WiFi 网络',scanFail:'扫描失败：',connecting:'正在连接 WiFi...',waitMsg:'正在连接，请等待 10 秒后刷新。',connOk:'已连接，可访问：http://',connYes:'已连接',connNo:'未连接',checking:'检测中...'}};
-        var lang='zh';
-        function applyLang(){var t=T.zh;['pageTitle','pageSubtitle','lblStatus','lblIp','lblSsid','lblPwd','scanBtn','connectBtn','loginLink'].forEach(function(k){var e=document.getElementById(k);if(e)e.textContent=t[k];});document.getElementById('ssid').placeholder=t.phSsid;document.getElementById('password').placeholder=t.phPwd;}
+        var T={zh:{pageTitle:'FastBee WiFi 配网',pageSubtitle:'配置设备的 WiFi 连接',lblStatus:'状态：',lblIp:'IP 地址：',lblSsid:'WiFi 名称 (SSID)',lblPwd:'密码',scanBtn:'扫描 WiFi 网络',connectBtn:'连接',loginLink:'进入登录页',phSsid:'输入或选择 WiFi 名称',phPwd:'输入 WiFi 密码',scanning:'扫描中...',noNet:'未发现 WiFi 网络',scanFail:'扫描失败：',connecting:'正在连接 WiFi...',waitMsg:'正在连接，请等待 10 秒后刷新。',connOk:'已连接，可访问：http://',connYes:'已连接',connNo:'未连接',checking:'检测中...'},en:{pageTitle:'FastBee WiFi Setup',pageSubtitle:'Configure WiFi connection',lblStatus:'Status:',lblIp:'IP Address:',lblSsid:'WiFi Name (SSID)',lblPwd:'Password',scanBtn:'Scan WiFi Networks',connectBtn:'Connect',loginLink:'Go to Login Page',phSsid:'Enter or select WiFi name',phPwd:'Enter WiFi password',scanning:'Scanning...',noNet:'No WiFi networks found',scanFail:'Scan failed:',connecting:'Connecting to WiFi...',waitMsg:'Connecting, please wait 10s and refresh.',connOk:'Connected, access at: http://',connYes:'Connected',connNo:'Not connected',checking:'Checking...'}};
+        var lang=(localStorage.getItem('language')||navigator.language||'zh').indexOf('zh')>=0?'zh':'en';
+        function applyLang(){var t=T[lang];['pageTitle','pageSubtitle','lblStatus','lblIp','lblSsid','lblPwd','scanBtn','connectBtn','loginLink'].forEach(function(k){var e=document.getElementById(k);if(e)e.textContent=t[k];});document.getElementById('ssid').placeholder=t.phSsid;document.getElementById('password').placeholder=t.phPwd;}
         applyLang();
         function showMessage(text, type) {
             var msg = document.getElementById('message');

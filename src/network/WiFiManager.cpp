@@ -35,7 +35,7 @@ bool WiFiManager::initialize() {
 
     // 设置 WiFi 事件回调
     WiFi.onEvent([this](arduino_event_id_t event, arduino_event_info_t info) {
-        this->handleWiFiEvent(event);
+        this->handleWiFiEvent(event, info);
     });
 
     LOG_INFO("WiFiManager: Initialized successfully");
@@ -254,9 +254,10 @@ bool WiFiManager::startAPMode() {
 
     LOG_INFO("WiFiManager: AP mode started: " + apSSID);
     LOG_INFO("WiFiManager: AP IP: " + statusInfo.apIPAddress);
-    Serial.printf("[WiFi] AP Started: ssid=%s pwd=%s ip=%s ch=%d hidden=%d max_conn=%d\n",
+    // 密码仅打印长度，避免串口日志泄露凭据
+    Serial.printf("[WiFi] AP Started: ssid=%s pwd=***(len=%d) ip=%s ch=%d hidden=%d max_conn=%d\n",
                   apSSID.c_str(),
-                  wifiConfig.apPassword.c_str(),
+                  wifiConfig.apPassword.length(),
                   statusInfo.apIPAddress.c_str(),
                   wifiConfig.apChannel,
                   wifiConfig.apHidden,
@@ -535,7 +536,7 @@ void WiFiManager::updateStatusInfo() {
     }
 }
 
-void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
+void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_info_t& info) {
     // 注意：此函数运行在 arduino_events 任务栈上，必须保持轻量
     // 禁止使用 LOGGER 日志宏（内部有 256 字节栈缓冲区），统一用 Serial.printf
     switch (event) {
@@ -579,7 +580,10 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
 
             statusInfo.status = NetworkStatus::DISCONNECTED;
             connecting = false;
-            Serial.printf("[WiFi] Disconnected! reason=%d reconnects=%d\n",
+            // 记录 IDF 断连 reason（如 201=密码错/202=认证失败/6=未授权/8=离开），
+            // 弱网偶发掉线排障的关键线索
+            Serial.printf("[WiFi] Disconnected! reason=%d status=%d reconnects=%d\n",
+                          (int)info.wifi_sta_disconnected.reason,
                           (int)WiFi.status(), (int)statusInfo.reconnectAttempts);
             // 重量级后续处理延迟到 loopTask 执行（同上）
             if (!modeTransitioning && connectingStartTime > 0) {

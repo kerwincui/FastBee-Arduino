@@ -285,15 +285,6 @@
                 // 控制设备（devices）不在 _peDataSources 中重复添加
                 // 它们通过 _modbusDevices 在事件下拉列表的「控制设备」分组中展示
             }
-            const tcp = protocolConfig.modbusTcp;
-            if (tcp && tcp.enabled && tcp.master && tcp.master.tasks) {
-                tcp.master.tasks.forEach(task => {
-                    if (!task.enabled || !task.mappings) return;
-                    task.mappings.forEach(m => {
-                        if (m.sensorId) sources.push({ id: m.sensorId, label: 'TCP/' + m.sensorId });
-                    });
-                });
-            }
             return sources;
         },
 
@@ -360,6 +351,10 @@
                 fields = [
                     ['voltage', '电压']
                 ];
+            } else if (cat === 'ntc') {
+                fields = [
+                    ['temperature', '温度']
+                ];
             } else if (cat === 'bh1750') {
                 fields = [
                     ['illuminance', '光照']
@@ -413,7 +408,7 @@
             else if (cat === 'dht11' || cat === 'dht22') allowedTypes = dhtTypes;
             else if (cat === 'ds18b20') allowedTypes = ds18b20Types;
             else if (cat === 'ultrasonic') allowedTypes = ultrasonicTypes;
-            else if (cat === 'current' || cat === 'voltage') allowedTypes = analogTypes.concat([38]);
+            else if (cat === 'current' || cat === 'voltage' || cat === 'ntc') allowedTypes = analogTypes.concat([38]);
             else if (cat === 'sht31' || cat === 'aht20' || cat === 'bh1750' || cat === 'bmp280' || cat === 'mpu6050') allowedTypes = i2cSensorTypes;
             else allowedTypes = analogTypes;
             var prev = selectedValue || sel.value;
@@ -458,6 +453,11 @@
                 if (unitEl) unitEl.value = 'V';
                 if (scaleEl) scaleEl.value = '1';
                 if (decEl) decEl.value = '2';
+            } else if (normCat === 'ntc') {
+                if (labelEl) labelEl.value = '温度';
+                if (unitEl) unitEl.value = '℃';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '1';
             } else if (normCat === 'ultrasonic') {
                 if (labelEl) labelEl.value = '距离';
                 if (unitEl) unitEl.value = 'cm';
@@ -497,6 +497,9 @@
             // 显示/隐藏 DS18B20 设备索引
             var diGroup = block.querySelector('.pe-sensor-devindex-group');
             if (diGroup) this._setSectionVisible(diGroup, normCat === 'ds18b20');
+            // 显示/隐藏 NTC 校准参数（B值/串联电阻/标称电阻）
+            var ntcGroup = block.querySelector('.pe-sensor-ntc-group');
+            if (ntcGroup) this._setSectionVisible(ntcGroup, normCat === 'ntc');
             // 数字传感器隐藏缩放系数/偏移量和高级参数（它们直接输出物理值，不需要校准）
             var digitalCats = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
             var isDigital = digitalCats.indexOf(normCat) >= 0;

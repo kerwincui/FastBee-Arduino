@@ -31,6 +31,12 @@
                     data-i18n="dev-ota-free-label">可用空间：</span>
                 <span id="ota-free-space">--</span>
             </div>
+            <div class="u-meta-item">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-network-label">网络状态：</span>
+                <span id="ota-network-badge" class="status-badge status-offline"
+                    data-i18n="dev-ota-network-unknown">检测中</span>
+            </div>
         </div>
         <!-- 进度条 -->
         <div id="ota-progress-wrap" class="is-hidden u-mt-15">
@@ -54,6 +60,11 @@
                 data-i18n="dev-ota-online-title">在线升级</span></h4>
     </div>
     <div class="fb-card-body fb-panel-body-lg">
+        <!-- 无外网连接提示：引导用户先联网或改用本地上传 -->
+        <div id="ota-network-hint" class="fb-hidden u-mb-15"
+            style="padding:10px 12px;border-radius:6px;background:var(--warning-bg,#fff7e6);color:var(--warning-text,#ad6800);font-size:13px">
+            <span data-i18n="dev-ota-no-network-hint">当前未检测到可用的网络连接，请先连接网络，或选择本地文件上传方式升级。</span>
+        </div>
         <form id="ota-url-form" class="fb-form">
             <div class="fb-form-group ota-inline-action-row u-mb-15">
                 <div class="ota-inline-input-wrap">
@@ -66,10 +77,12 @@
                 <button type="submit" class="fb-btn fb-btn-primary"
                     id="ota-url-btn">
                     <span
-                        data-i18n="dev-ota-url-btn">开始在线升级</span>
+                        data-i18n="dev-ota-url-btn">在线升级</span>
                 </button>
             </div>
         </form>
+        <!-- 操作反馈消息区（成功/失败提示，5秒后自动隐藏） -->
+        <div id="ota-online-message" class="is-hidden u-mt-10" style="font-size:13px"></div>
     </div>
 </div>
 
@@ -88,7 +101,7 @@
                     <div class="file-input-wrapper file-input-wrapper-top">
                         <input type="file" id="ota-file" accept=".bin"
                             class="is-hidden">
-                        <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary"
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary"
                             data-action="triggerOtaFileSelect"
                             data-i18n="choose-file-btn">选择文件</button>
                         <span id="ota-file-name" class="file-name-display"
@@ -99,10 +112,12 @@
                 </div>
                 <button type="submit" class="fb-btn fb-btn-primary"
                     id="ota-upload-btn">
-                    <span data-i18n="dev-ota-upload-btn">上传并升级</span>
+                    <span data-i18n="dev-ota-upload-btn">上传升级</span>
                 </button>
             </div>
         </form>
+        <!-- 本地上传操作反馈消息区 -->
+        <div id="ota-upload-message" class="is-hidden u-mt-10" style="font-size:13px"></div>
     </div>
 </div>
 

@@ -446,19 +446,27 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
 
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::restartMQTT() {
-    // MQTT 启用检查：禁用时不创建客户端
+    // MQTT 启用检查：fail-closed —— 禁用或配置不可用时一律不创建客户端
     {
         JsonDocument enabledDoc;
-        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc)) {
-            if (!enabledDoc["mqtt"]["enabled"].as<bool>()) {
-                LOG_INFO("Protocol Manager: MQTT disabled, skipping restart");
-                mqttDisabledByConfig = true;
-                if (mqttClient) {
-                    mqttClient->stop();
-                    mqttClient.reset();
-                }
-                return false;
+        bool sectionOk = ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc);
+        bool mqttEnabled = sectionOk && enabledDoc["mqtt"]["enabled"].as<bool>();
+        if (!sectionOk) {
+            // 配置节缺失/解析失败：按禁用处理。若放行，MQTT 会以空 host 反复
+            // DNS 重连，每次数 KB 堆分配，最终耗尽内存并锁死 WebMemoryGuard
+            LOG_WARNING("Protocol Manager: MQTT config section missing/unreadable, fail-closed as disabled");
+        } else if (mqttEnabled && enabledDoc["mqtt"]["server"].as<String>().length() == 0) {
+            // 启用但 server 为空同样是死循环重连，第二道防线一并按禁用处理
+            LOG_WARNING("Protocol Manager: MQTT enabled but server is empty, fail-closed as disabled");
+            mqttEnabled = false;
+        }
+        if (!mqttEnabled) {
+            mqttDisabledByConfig = true;
+            if (mqttClient) {
+                mqttClient->stop();
+                mqttClient.reset();
             }
+            return false;
         }
         mqttDisabledByConfig = false;
     }
@@ -539,18 +547,23 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     // 禁用 MQTT 后，任何路径都不应创建客户端或发起连接
     {
         JsonDocument enabledDoc;
-        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc)) {
-            bool mqttEnabled = enabledDoc["mqtt"]["enabled"].as<bool>();
-            if (!mqttEnabled) {
-                LOG_INFO("Protocol Manager: MQTT disabled in config, skipping deferred restart");
-                mqttDisabledByConfig = true;
-                // 如果已有运行中的客户端，停止它
-                if (mqttClient) {
-                    mqttClient->stop();
-                    mqttClient.reset();
-                }
-                return false;
+        bool sectionOk = ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc);
+        bool mqttEnabled = sectionOk && enabledDoc["mqtt"]["enabled"].as<bool>();
+        if (!sectionOk) {
+            // 配置节缺失/解析失败：按禁用处理（fail-closed），避免空 host 重连环
+            LOG_WARNING("Protocol Manager: MQTT config section missing/unreadable, fail-closed as disabled (deferred)");
+        } else if (mqttEnabled && enabledDoc["mqtt"]["server"].as<String>().length() == 0) {
+            LOG_WARNING("Protocol Manager: MQTT enabled but server is empty, fail-closed as disabled (deferred)");
+            mqttEnabled = false;
+        }
+        if (!mqttEnabled) {
+            mqttDisabledByConfig = true;
+            // 如果已有运行中的客户端，停止它
+            if (mqttClient) {
+                mqttClient->stop();
+                mqttClient.reset();
             }
+            return false;
         }
         mqttDisabledByConfig = false;
     }

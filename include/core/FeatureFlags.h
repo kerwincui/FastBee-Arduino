@@ -150,12 +150,13 @@
 /**
  * @brief Web 服务提前启动
  * 默认：启用
- * 说明：为1时，Web服务器在WiFi连接完成前就启动（AP模式下直接可用）；
+ * 说明：为1时，Web服务器在WiFi连接完成前就启动（AP模式下直接可用），
+ *       STA连接非阻塞发起，由 update() 状态机轮询连接结果；
  *       为0时，保持原有行为（等WiFi连接后再启动Web服务器）
  * 需要：FASTBEE_ENABLE_WEB_SERVER=1
  */
 #ifndef FASTBEE_WEB_START_EARLY
-#define FASTBEE_WEB_START_EARLY 0
+#define FASTBEE_WEB_START_EARLY 1
 #endif
 
 // ============================================================================
@@ -218,6 +219,20 @@
  */
 #ifndef FASTBEE_ENABLE_OTA_FS
 #define FASTBEE_ENABLE_OTA_FS 0
+#endif
+
+// ============================================================================
+// 调试与诊断开关
+// ============================================================================
+
+/**
+ * @brief 堆完整性取证
+ * 默认：禁用（仅压测/调试时开启）
+ * 每 2s 调用 heap_caps_check_integrity 遍历堆头链表，
+ * 低内存设备消耗 ~1-2KB 栈且触发全量扫描输出
+ */
+#ifndef FASTBEE_HEAP_FORENSICS
+#define FASTBEE_HEAP_FORENSICS 0
 #endif
 
 // ============================================================================

@@ -9,7 +9,8 @@ class OTAManager;
 /**
  * @brief OTA固件升级路由处理器
  * 
- * 处理 /api/ota/* 的状态查询、触发升级、URL升级和文件上传
+ * 处理 /api/ota/* 的状态查询、开始/取消升级、URL升级和文件上传；
+ * 全部路由统一在此注册并委托到 OTAManager，避免多处注册导致处理器被遮蔽
  */
 class OTARouteHandler {
 public:
@@ -22,6 +23,8 @@ private:
 
     void handleOtaUpdate(AsyncWebServerRequest* request);
     void handleOtaStatus(AsyncWebServerRequest* request);
+    void handleOtaBegin(AsyncWebServerRequest* request);
+    void handleOtaCancel(AsyncWebServerRequest* request);
     void handleOtaUrl(AsyncWebServerRequest* request);
     void handleOtaUpload(AsyncWebServerRequest* request, const String& filename,
                          size_t index, uint8_t* data, size_t len, bool final);

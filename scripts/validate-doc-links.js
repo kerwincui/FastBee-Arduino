@@ -17,11 +17,11 @@ const LEGACY_ENV_NAMES = [
 ];
 const LEGACY_ENV_COMMAND_PATTERNS = [
     { regex: /(^|[\s"`'])-Env\s+esp32(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32; use esp32-F4R0' },
-    { regex: /(^|[\s"`'])-Env\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32s3; use esp32s3-F8R0' },
+    { regex: /(^|[\s"`'])-Env\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32s3; use esp32s3-F8R4' },
     { regex: /(^|[\s"`'])-Env\s+esp32c3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32c3; use esp32c3-F4R0' },
     { regex: /(^|[\s"`'])-Env\s+esp32c6(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32c6; use esp32c6-F4R0' },
     { regex: /\bpio\s+run\s+-e\s+esp32(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32; use esp32-F4R0' },
-    { regex: /\bpio\s+run\s+-e\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32s3; use esp32s3-F8R0' },
+    { regex: /\bpio\s+run\s+-e\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32s3; use esp32s3-F8R4' },
     { regex: /\bpio\s+run\s+-e\s+esp32c3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32c3; use esp32c3-F4R0' },
     { regex: /\bpio\s+run\s+-e\s+esp32c6(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32c6; use esp32c6-F4R0' }
 ];

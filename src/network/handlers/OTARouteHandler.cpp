@@ -6,10 +6,10 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/OTAManager.h"
 #include "systems/LoggerSystem.h"
-#include "systems/RestartDiagnostics.h"
-#include "systems/SystemRebooter.h"
 #include <ArduinoJson.h>
-#include <Update.h>
+
+// 注：分块写入/重启调度已下沉到 OTAManager，此处不再直接依赖
+// Update/RestartDiagnostics/SystemRebooter
 
 OTARouteHandler::OTARouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -19,6 +19,16 @@ void OTARouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/ota/status", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         handleOtaStatus(request);
+    });
+
+    server->on("/api/ota/begin", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleOtaBegin(request);
+    });
+
+    server->on("/api/ota/cancel", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleOtaCancel(request);
     });
 
     server->on("/api/ota/update", HTTP_POST,
@@ -33,10 +43,11 @@ void OTARouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/ota/upload", HTTP_POST,
         [this](AsyncWebServerRequest* request) {
-            if (ctx->otaManager && ctx->otaManager->isOTAInProgress()) {
-                ctx->sendSuccess(request, "Firmware uploading...");
-            } else {
-                ctx->sendSuccess(request, "Upload completed");
+            // multipart 分块解析完成后的收尾回调：实际响应已在 final 分块
+            // 处理时发送；仅对未发过响应的异常请求（如空 body）兜底，
+            // 重复 send 会被库的 isSent 标志安全忽略
+            if (!request->isSent()) {
+                ctx->sendError(request, 400, "OTA upload received no data");
             }
         },
         [this](AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
@@ -51,16 +62,51 @@ void OTARouteHandler::handleOtaUpdate(AsyncWebServerRequest* request) {
     ctx->sendSuccess(request, "OTA update started");
 }
 
+void OTARouteHandler::handleOtaBegin(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+
+    if (!ctx->otaManager) {
+        ctx->sendError(request, 500, "OTA manager not initialized");
+        return;
+    }
+
+    // 委托 OTAManager：内存门控/停滞回收/Update.begin 均在内部完成，
+    // 失败时由 handleOTAStart 按错误类型返回 400/500/503
+    ctx->otaManager->handleOTAStart(request);
+}
+
+void OTARouteHandler::handleOtaCancel(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+
+    if (!ctx->otaManager) {
+        ctx->sendError(request, 500, "OTA manager not initialized");
+        return;
+    }
+
+    ctx->otaManager->handleOTACancel(request);
+}
+
 void OTARouteHandler::handleOtaStatus(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
 
     if (ctx->otaManager) {
+        // 状态轮询时同步触发僵死上传会话回收（前端轮询即可自愈）
+        ctx->otaManager->checkStalledUpload();
         doc["status"] = ctx->otaManager->getOTAStatus();
+        doc["in_progress"] = ctx->otaManager->isOTAInProgress();
         doc["progress"] = ctx->otaManager->getProgress();
+        doc["current_size"] = ctx->otaManager->getCurrentSize();
+        doc["total_size"] = ctx->otaManager->getTotalSize();  // 0 = 大小未知
+        doc["elapsed_ms"] = ctx->otaManager->getElapsedTime();
+        String err = ctx->otaManager->getErrorMessage();
+        if (!err.isEmpty()) {
+            doc["error"] = err;
+        }
     } else {
         doc["status"] = "unavailable";
+        doc["in_progress"] = false;
         doc["progress"] = 0;
     }
 
@@ -115,59 +161,17 @@ void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const Stri
         return;
     }
 
-    if (index == 0) {
-        LOGGER.infof("OTA: Upload started - file: %s", filename.c_str());
-
-        uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
-
-        if (!Update.begin(maxSketchSpace)) {
-            LOGGER.errorf("OTA: Update begin failed - %s", Update.errorString());
-            return;
+    if (!ctx->otaManager) {
+        LOGGER.error("OTA: OTA manager not initialized, upload rejected");
+        if (index == 0) {
+            ctx->sendError(request, 500, "OTA manager not initialized");
         }
-
-        Update.onProgress([](size_t progress, size_t total) {
-            int percent = total > 0 ? (progress * 100 / total) : 0;
-            if (percent % 10 == 0) {
-                LOGGER.infof("OTA: Upload progress: %d%%", percent);
-            }
-        });
-    }
-
-    if (Update.write(data, len) != len) {
-        LOGGER.errorf("OTA: Write failed - %s", Update.errorString());
-        Update.end(false);
         return;
     }
 
-    if (final) {
-        LOGGER.infof("OTA: Upload completed - total size: %d bytes", index + len);
-
-        if (Update.end(true)) {
-            if (Update.isFinished()) {
-                LOGGER.info("OTA: Firmware verification passed, restarting...");
-
-                JsonDocument doc;
-                doc["success"] = true;
-                doc["message"] = "Firmware uploaded, restarting in 3s";
-                doc["size"] = index + len;
-                doc["md5"] = Update.md5String();
-
-                HandlerUtils::sendJsonStream(request, doc);
-
-                // 延迟重启交给主循环 SystemRebooter，避免在 async_tcp 上同步睡眠 3 秒
-                // 阻塞响应发送（客户端收不到成功响应会误判失败）
-                RestartDiagnostics::savePreRestartState(
-                    RestartReason::OTA_UPDATE,
-                    "OTA firmware uploaded via Web");
-                SystemRebooter::scheduleReboot("OTA firmware uploaded via Web", 3000,
-                                               RestartReason::OTA_UPDATE);
-            } else {
-                LOGGER.error("OTA: Firmware verification failed");
-            }
-        } else {
-            LOGGER.errorf("OTA: Update end failed - %s", Update.errorString());
-        }
-    }
+    // 委托 OTAManager：begin 由 /api/ota/begin 预先完成（含内存门控与大小预留），
+    // 此处仅负责分块写入与 final 收尾，避免二次 Update.begin 导致首块丢失
+    ctx->otaManager->handleOTAUpload(request, filename, index, data, len, final);
 }
 
 #endif // FASTBEE_ENABLE_OTA

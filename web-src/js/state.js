@@ -96,6 +96,33 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         ModuleLoader.loadModule(name, callback);
     },
 
+    // ============ 页面生命周期注册（WP-13/73）============
+    // 模块经 onPageHide/onPageShow 注册切页回调（如定时器清理），
+    // changePage 时统一触发。同名重复注册覆盖旧回调。
+    _pageHideHandlers: [],
+    _pageShowHandlers: [],
+
+    onPageHide(name, fn) {
+        if (typeof fn !== 'function') return;
+        this._pageHideHandlers = this._pageHideHandlers.filter(h => h.name !== name);
+        this._pageHideHandlers.push({ name: name, fn: fn });
+    },
+
+    onPageShow(name, fn) {
+        if (typeof fn !== 'function') return;
+        this._pageShowHandlers = this._pageShowHandlers.filter(h => h.name !== name);
+        this._pageShowHandlers.push({ name: name, fn: fn });
+    },
+
+    _firePageLifecycle(handlers, tag) {
+        const self = this;
+        handlers.forEach(function (h) {
+            try { h.fn.call(self); } catch (e) {
+                console.warn('[' + tag + '] ' + h.name + ' handler failed:', e);
+            }
+        });
+    },
+
     isDeveloperModeEnabled() {
         return this.developerModeEnabled !== false;
     },
@@ -132,13 +159,14 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     },
 
     getDeveloperModeDisabledText() {
-        return '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
+        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('dc-dev-mode-disabled-tip') : '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
     },
 
     guardDeveloperModeAction() {
         if (this.isDeveloperModeEnabled()) return true;
         if (typeof Notification !== 'undefined') {
-            Notification.warning(this.getDeveloperModeDisabledText(), '开发环境');
+            var title = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('dc-dev-mode-title') : '开发环境功能';
+            Notification.warning(this.getDeveloperModeDisabledText(), title);
         }
         return false;
     },
@@ -394,7 +422,15 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             device: () => { this.loadDeviceConfig({ deferHardware: true }); },
             peripheral: () => { this.loadPeripherals(); },
             'periph-exec': () => { this.loadPeriphExecPage(); },
-            protocol: () => { this.loadProtocolConfig('mqtt'); },
+            protocol: () => {
+                // Modbus 功能禁用时隐藏 Modbus RTU 子项；状态未就绪时补拉一次
+                if (this._featureActive) {
+                    this.applyProtocolFeatureGate();
+                } else {
+                    this.applyFeatureMenuVisibility();
+                }
+                this.loadProtocolConfig('mqtt');
+            },
             logs: () => { this.loadLogsPage({ noCache: true }); },
             data: () => { this.loadFileSystemInfo({ noCache: true }); this.loadFileTree('/', { noCache: true }); },
             users: () => { this.loadUsers({ noCache: true }); },
@@ -410,7 +446,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                         content.innerHTML = '';
                         var loadDiv = document.createElement('div');
                         loadDiv.className = 'dc-empty';
-                        loadDiv.textContent = '加载中...';
+                        loadDiv.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('common-loading') : '加载中...';
                         content.appendChild(loadDiv);
                         var self = this;
                         setTimeout(function() {
@@ -420,7 +456,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                                 content.innerHTML = '';
                                 var errDiv = document.createElement('div');
                                 errDiv.className = 'dc-empty u-text-danger';
-                                errDiv.textContent = '模块加载失败，请刷新页面重试';
+                                errDiv.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('state-module-load-fail') : '模块加载失败，请刷新页面重试';
                                 content.appendChild(errDiv);
                             }
                         }, 1000);
@@ -528,8 +564,15 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     // 功能 key → 菜单 data-page 映射：功能被禁用时隐藏对应菜单项
     // （核心页面如监控/网络/外设配置不受功能开关影响，不在此表）
     _featureMenuMap: {
-        ruleScript: 'rule-script'
+        ruleScript: 'rule-script',
+        deviceControl: 'device-control',   // 设备大屏
+        logViewer: 'logs',                 // 设备日志
+        fileManager: 'data',               // 文件管理
+        userAdmin: 'users'                 // 用户管理
     },
+
+    // 最近一次 /api/features/status 的激活状态缓存（key → active）
+    _featureActive: null,
 
     /**
      * 登录后拉取功能状态，按启用情况显示/隐藏左侧菜单项
@@ -538,17 +581,36 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     applyFeatureMenuVisibility() {
         if (typeof apiGet !== 'function') return;
         const map = this._featureMenuMap;
+        const self = this;
         apiGet('/api/features/status')
             .then(res => {
                 if (!res || !res.success || !res.data) return;
+                const active = {};
                 (res.data.features || []).forEach(f => {
+                    active[f.key] = !!f.active;
                     const page = map[f.key];
                     if (!page) return;
                     const item = document.querySelector('.menu-item[data-page="' + page + '"]');
                     if (item) item.style.display = f.active ? '' : 'none';
                 });
+                self._featureActive = active;
+                // 协议页已加载时同步应用 Modbus tab 隐藏
+                self.applyProtocolFeatureGate();
             })
             .catch(() => { /* 静默：菜单保持默认可见 */ });
+    },
+
+    /**
+     * Modbus 功能禁用时隐藏协议页的 Modbus RTU 子项（仅保留已启用协议入口）。
+     * 协议页为懒加载 DOM，需在页面加载后与功能状态就绪后各调用一次。
+     */
+    applyProtocolFeatureGate() {
+        const active = this._featureActive;
+        if (!active || active.modbus !== false) return;
+        const tab = document.querySelector('#protocol-page .config-tab[data-tab="modbus-rtu"]');
+        if (tab) tab.style.display = 'none';
+        const content = document.getElementById('modbus-rtu');
+        if (content) content.style.display = 'none';
     },
 
     // ============ 页面切换 ============
@@ -559,6 +621,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         if (typeof window.apiAbortPageRequests === 'function') {
             window.apiAbortPageRequests();
         }
+        // 通知旧页面模块清理（定时器/轮询），避免切走后继续请求设备
+        this._firePageLifecycle(this._pageHideHandlers, 'page-hide');
 
         const pageAlias = { monitor: 'dashboard' };
         const normalizedPage = pageAlias[page] || page;
@@ -590,26 +654,29 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         const titleKey = `page-title-${normalizedPage}`;
         const titleEl = document.getElementById('page-title');
+        var _t = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t.bind(i18n) : function(k) { return k; };
         var _pageTitleMap = {
-            'page-title-dashboard': '设备监控仪表盘',
-            'page-title-protocol': '通信协议',
-            'page-title-network': '网络设置',
-            'page-title-device': '设备配置',
-            'page-title-data': '文件管理',
-            'page-title-system': '系统监控',
-            'page-title-logs': '设备日志',
-            'page-title-gpio': 'GPIO配置',
-            'page-title-peripheral': '外设配置',
-            'page-title-periph-exec': '外设执行',
-            'page-title-users': '用户管理',
-            'page-title-device-control': '设备大屏',
-            'page-title-rule-script': '规则脚本',
-            'page-title-admin': '用户管理',
-            'page-title-features': '功能配置'
+            'page-title-dashboard': _t('state-page-dashboard') !== 'state-page-dashboard' ? _t('state-page-dashboard') : '设备监控仪表盘',
+            'page-title-protocol': _t('state-page-protocol') !== 'state-page-protocol' ? _t('state-page-protocol') : '通信协议',
+            'page-title-network': _t('state-page-network') !== 'state-page-network' ? _t('state-page-network') : '网络设置',
+            'page-title-device': _t('state-page-device') !== 'state-page-device' ? _t('state-page-device') : '设备配置',
+            'page-title-data': _t('state-page-files') !== 'state-page-files' ? _t('state-page-files') : '文件管理',
+            'page-title-system': _t('state-page-system') !== 'state-page-system' ? _t('state-page-system') : '系统监控',
+            'page-title-logs': _t('state-page-logs') !== 'state-page-logs' ? _t('state-page-logs') : '设备日志',
+            'page-title-gpio': _t('state-page-gpio') !== 'state-page-gpio' ? _t('state-page-gpio') : 'GPIO配置',
+            'page-title-peripheral': _t('state-page-peripherals') !== 'state-page-peripherals' ? _t('state-page-peripherals') : '外设配置',
+            'page-title-periph-exec': _t('state-page-periph-exec') !== 'state-page-periph-exec' ? _t('state-page-periph-exec') : '外设执行',
+            'page-title-users': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
+            'page-title-device-control': _t('state-page-fullscreen') !== 'state-page-fullscreen' ? _t('state-page-fullscreen') : '设备大屏',
+            'page-title-rule-script': _t('state-page-rule-scripts') !== 'state-page-rule-scripts' ? _t('state-page-rule-scripts') : '规则脚本',
+            'page-title-admin': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
+            'page-title-features': _t('state-page-features') !== 'state-page-features' ? _t('state-page-features') : '功能配置'
         };
         if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;
 
         this.currentPage = normalizedPage;
+        // 通知新页面模块进入（与 _pageHideHandlers 对称的生命周期钩子）
+        this._firePageLifecycle(this._pageShowHandlers, 'page-show');
 
         // 模块名到页面的映射
         const pageModuleMap = this._getPageModuleMap();

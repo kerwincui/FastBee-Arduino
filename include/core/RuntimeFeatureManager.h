@@ -20,6 +20,8 @@
 
 namespace FastBee {
 
+class FeatureBudgetRegistry;  // recheck() 需同步 budgetPassed（见 FastBeeFramework.cpp）
+
 class RuntimeFeatureManager {
 public:
     static RuntimeFeatureManager& instance() {
@@ -34,7 +36,15 @@ public:
 
     // 三层判断: compiled AND userEnabled AND budgetPassed
     // 任一为 false 则功能不初始化
+    // 附加: requiresNetwork 的功能在网络子系统就绪前一律返回 false（错峰启动）
     bool shouldEnable(const char* featureName) const;
+
+    // ── 延迟初始化（deferred init）支持 ──
+    // 标记网络子系统已就绪（由 FastBeeFramework 在 network->initialize() 之后调用）。
+    // requiresNetwork=true 的功能在此之前被 shouldEnable() 门控为 false，
+    // 从而把重型外设/协议的内存分配错峰到 WiFi 启动之后，抬高启动期可用 DRAM。
+    void setNetworkReady(bool ready) { networkReady_ = ready; }
+    bool networkReady() const { return networkReady_; }
 
     // 获取所有功能的完整状态 (供 /api/features/status)
     // 返回每个功能: { key, name, group, compiled, userEnabled, active,
@@ -66,16 +76,23 @@ public:
         uint16_t flashKB;          // 预估 Flash 占用
         uint32_t ramB;             // 预估 RAM 占用
         bool compiled;             // 编译时是否编入 (FASTBEE_ENABLE_xxx)
-        bool defaultEnabled;       // 默认启用状态 (B 类=true, C/D 类=false)
+        bool defaultEnabled;       // 默认启用状态 (出厂统一为 false，按需手动启用)
         const char* hwDep;         // 硬件依赖描述 (可 nullptr)
         const char* dependsOn;     // 依赖的其他功能 key (可 nullptr)
         uint16_t minDramKB;        // 最低 DRAM 要求 (KB, 0=无要求)
+        bool requiresNetwork;      // 延迟初始化: true 则网络就绪前 shouldEnable() 返回 false
     };
 
-    static constexpr size_t kMaxFeatures = 28;  // 覆盖所有 B/C/D 类功能
+    static constexpr size_t kMaxFeatures = 32;  // 覆盖所有 A/B/C/D 类功能
 
     bool loaded() const { return loaded_; }
     size_t featureCount() const { return count_; }
+
+    // 按索引获取功能元数据（供 /api/system/status 等精简状态遍历使用）
+    // 返回 nullptr 表示索引越界
+    const FeatureMeta* getFeatureAt(size_t index) const {
+        return index < count_ ? &features_[index].meta : nullptr;
+    }
 
 private:
     struct FeatureState {
@@ -87,11 +104,13 @@ private:
     FeatureState features_[kMaxFeatures];
     size_t count_ = 0;
     bool loaded_ = false;
+    bool networkReady_ = false;    // 延迟初始化: 网络子系统就绪标志
 
     RuntimeFeatureManager() = default;
     void registerFeature(const FeatureMeta& meta);
     void generateDefaults();       // 注册所有功能并设置默认启用状态
     void syncBudgetState();        // 从 FeatureBudgetRegistry 同步 budgetPassed
+    friend class FeatureBudgetRegistry;
     FeatureState* findFeature(const char* key);
     const FeatureState* findFeature(const char* key) const;
     void buildConfigDoc(JsonDocument& doc) const;  // 序列化当前状态

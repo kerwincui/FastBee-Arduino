@@ -152,7 +152,6 @@ function addWhitelistAbsolute(files, absPath) {
 function shouldKeepProfilePeripheral(item) {
     const id = String((item && item.id) || '');
     // 硬件不支持的外设始终排除
-    if (id === 'modbus_tcp') return false;
     if (isLiteWebProfile() && (id === 'modbus_rtu' || id === 'ethernet')) return false;
     // 保留所有外设（包括 disabled），由设备 ResourceProfile 限制实际上限
     return true;
@@ -210,7 +209,7 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
 
     if (normalizedRel === 'config/protocol.json') {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        ['modbusTcp', 'http', 'coap', 'tcp'].forEach((key) => {
+        ['http', 'coap', 'tcp'].forEach((key) => {
             if (Object.prototype.hasOwnProperty.call(doc, key)) delete doc[key];
         });
         if (isLiteWebProfile() && Object.prototype.hasOwnProperty.call(doc, 'modbusRtu')) {
@@ -235,7 +234,7 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
     if (normalizedRel === 'config/periph_exec.json') {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
         const unsupportedActions = new Set([9, 20]); // OTA, legacy reserved action
-        const unsupportedProtocols = new Set([2, 3, 4, 5]); // Modbus TCP, HTTP, CoAP, TCP
+        const unsupportedProtocols = new Set([2, 3, 4, 5]); // Reserved, HTTP, CoAP, TCP
         const profilePeripheralIds = getProfilePeripheralIds();
         if (isLiteWebProfile()) {
             [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // Modbus control/poll
@@ -518,20 +517,44 @@ function deleteOriginals() {
     console.log(`  Deleted ${deleted} uncompressed originals`);
 }
 
-function getActiveEnvFromPlatformioIni() {
+function getActiveEnvFromPlatformioIni(targetEnvOverride = null) {
     const iniPath = path.join(__dirname, '..', 'platformio.ini');
     if (!fs.existsSync(iniPath)) {
         return 'esp32-F4R0';
     }
     const content = fs.readFileSync(iniPath, 'utf-8');
     const lines = content.split(/\r?\n/);
+    
+    // 如果提供了目标环境覆盖，优先使用
+    if (targetEnvOverride) {
+        const envLine = lines.find(line => line.trim() === `[env:${targetEnvOverride}]`);
+        if (envLine) {
+            console.log(`  Using target environment override: ${targetEnvOverride}`);
+            return targetEnvOverride;
+        }
+    }
+    
     let currentEnv = null;
     let activeEnv = null;
+    let defaultEnv = null;
+    
     for (const line of lines) {
         const trimmed = line.trim();
         const envMatch = trimmed.match(/^\[env:([^\]]+)\]$/);
         if (envMatch) {
             currentEnv = envMatch[1];
+            // 记录第一个 env 作为默认值
+            if (!defaultEnv) {
+                defaultEnv = currentEnv;
+            }
+            continue;
+        }
+        // 查找 [platformio] 下的 default_envs
+        if (trimmed.startsWith('default_envs') && !activeEnv) {
+            const match = trimmed.match(/default_envs\s*=\s*([\S]+)/);
+            if (match) {
+                defaultEnv = match[1].split(/\s+/)[0]; // 取第一个
+            }
             continue;
         }
         if (currentEnv && !activeEnv) {
@@ -541,7 +564,9 @@ function getActiveEnvFromPlatformioIni() {
             }
         }
     }
-    return activeEnv || 'esp32-F4R0';
+    
+    // 回退到 default_envs
+    return activeEnv || defaultEnv || 'esp32-F4R0';
 }
 
 function runPioCommand(args, label, options = {}) {
@@ -575,6 +600,15 @@ async function main() {
     const args = process.argv.slice(2);
     const noUpload = args.includes('--no-upload');
     const noMonitor = args.includes('--no-monitor');
+    
+    // 支持 --env 参数指定目标环境
+    let targetEnv = null;
+    for (const arg of args) {
+        if (arg.startsWith('--env=')) {
+            targetEnv = arg.slice(6);
+            break;
+        }
+    }
 
     console.log('========================================');
     console.log('  ESP32 Web Asset Gzip Tool');
@@ -626,7 +660,7 @@ async function main() {
         return;
     }
 
-    const envName = getActiveEnvFromPlatformioIni();
+    const envName = getActiveEnvFromPlatformioIni(targetEnv);
     console.log(`\n[Step 5] Uploading filesystem from staging dir (env: ${envName})...`);
     try {
         await runPioCommand(

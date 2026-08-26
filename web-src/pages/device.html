@@ -9,6 +9,7 @@
                 <div class="config-tab active" data-tab="dev-basic" data-i18n="dev-tab-basic">基本信息
                 </div>
                 <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
+                <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
                 <div class="config-tab" data-tab="dev-advanced" data-i18n="dev-tab-advanced">高级配置</div>
             </div>
 
@@ -225,6 +226,40 @@
                         </button>
                     </div>
                 </form>
+            </div>
+
+            <!-- OTA升级 tab（从高级配置迁移至此，功能逻辑不变） -->
+            <div id="dev-ota" class="config-content">
+                <!-- 固件升级（内联精简版，作为 device-ota 分片加载失败时的兜底；
+                     分片加载成功后由 device-config.js 隐藏本面板） -->
+                <div id="dev-ota-inline-panel" class="fb-panel">
+                    <div class="fb-card-body" style="padding:14px 18px">
+                        <h4 class="dev-mode-section-title">
+                            <span data-i18n="dev-ota-title">固件升级</span>
+                        </h4>
+                        <p class="dev-mode-section-desc" data-i18n="dev-ota-hint">选择 .bin 固件文件后点击上传，升级过程中请勿断电。</p>
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+                            <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-ota-file" style="margin:0;cursor:pointer">
+                                <span data-i18n="dev-ota-pick">选择固件</span>
+                            </label>
+                            <input type="file" id="dev-ota-file" accept=".bin" class="is-hidden">
+                            <button id="dev-ota-upload-btn" type="button" class="fb-btn fb-btn-primary fb-btn-compact" disabled>
+                                <span data-i18n="dev-ota-upload-btn">上传升级</span>
+                            </button>
+                            <span id="dev-ota-filename" style="font-size:12px;color:var(--text-secondary)"></span>
+                        </div>
+                        <div id="dev-ota-progress-wrap" class="is-hidden" style="margin-top:8px">
+                            <div style="background:var(--bg-gray,#eee);border-radius:4px;overflow:hidden;height:18px">
+                                <div id="dev-ota-progress-bar" style="width:0%;height:100%;background:var(--primary,#007bff);transition:width 0.3s"></div>
+                            </div>
+                            <span id="dev-ota-progress-text" style="font-size:12px;color:var(--text-secondary)">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 完整 OTA 升级分片容器（在线升级/本地上传，由 PageLoader 懒加载
+                     fragments/device-ota.html 并绑定 device-ota 模块） -->
+                <div id="device-ota-container"></div>
             </div>
 
             <!-- 高级配置 tab -->

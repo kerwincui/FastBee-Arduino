@@ -6,6 +6,17 @@
 
 #include <Arduino.h>
 #include <map>
+#include "utils/StaticPoolAllocator.h"
+
+// 传感器实例 map 节点池：96B/块 × 24 块 = 2.3KB DRAM 预分配。
+// 容纳最大节点 _Rb_tree_node<pair<uint8_t, ADC/NTCSensorInstance>>(~88B)，
+// 5 个实例 map 共享同一池；池耗尽优雅回退 malloc，功能不降级。
+// 传感器实例增删仅发生在配置变更/首读，池化后运行期零 malloc 碎片贡献。
+static constexpr size_t SENSOR_NODE_BLOCK_SIZE  = 96;
+static constexpr size_t SENSOR_NODE_BLOCK_COUNT = 24;
+
+template <typename T>
+using SensorNodeAllocator = FastBee::PooledAllocator<T, SENSOR_NODE_BLOCK_SIZE, SENSOR_NODE_BLOCK_COUNT>;
 
 /**
  * @brief 传感器驱动管理器
@@ -46,6 +57,21 @@ struct ADCSensorCalibration {
           ratio(1.0f), adcMax(4095) {}
 };
 
+// NTC 热敏电阻校准参数
+// 电路接法：VCC --[seriesResistor]-- ADC引脚 --[NTC]-- GND（NTC 接地端接法）
+struct NTCSensorCalibration {
+    float vRef;              // ADC 参考电压 (V)，默认 3.3
+    float seriesResistor;    // 串联定值电阻 (Ohm)，如 10000
+    float nominalResistance; // NTC 标称电阻 (Ohm)，如 10000 (25°C)
+    float nominalTempC;      // 标称电阻对应温度 (°C)，默认 25
+    float bCoefficient;      // B 值，如 3950
+    uint16_t adcMax;         // ADC 最大值，默认 4095 (12-bit)
+
+    NTCSensorCalibration()
+        : vRef(3.3f), seriesResistor(10000.0f), nominalResistance(10000.0f),
+          nominalTempC(25.0f), bCoefficient(3950.0f), adcMax(4095) {}
+};
+
 // 传感器类型
 enum class SensorDriverType : uint8_t {
     DHT11 = 0,
@@ -53,7 +79,8 @@ enum class SensorDriverType : uint8_t {
     DS18B20 = 2,
     ULTRASONIC = 3,   // HC-SR04 超声波
     CURRENT = 4,      // 电流型 (ACS712 等)
-    VOLTAGE = 5       // 电压型 (分压器 ADC)
+    VOLTAGE = 5,      // 电压型 (分压器 ADC)
+    NTC = 6           // NTC 热敏电阻 (B 参数法测温)
 };
 
 class SensorDriver {
@@ -102,6 +129,14 @@ public:
     float readVoltage(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration());
 
     /**
+     * @brief 读取 NTC 热敏电阻温度 (分压器 + B 参数法)
+     * @param pin ADC 引脚（NTC 与串联电阻分压中点）
+     * @param cal 校准参数（串联电阻/B值/标称电阻等）
+     * @return 温度值 (°C)，失败返回 NAN
+     */
+    float readNTC(uint8_t pin, const NTCSensorCalibration& cal = NTCSensorCalibration());
+
+    /**
      * @brief 释放指定引脚的传感器资源
      */
     void release(uint8_t pin);
@@ -123,7 +158,8 @@ private:
         SensorDriverType type;
         SensorReadResult lastRead;
     };
-    std::map<uint8_t, DHTInstance> _dhtInstances;
+    std::map<uint8_t, DHTInstance, std::less<uint8_t>,
+             SensorNodeAllocator<std::pair<const uint8_t, DHTInstance>>> _dhtInstances;
 
     // DS18B20 实例缓存 (key = pin)
     struct DS18B20Instance {
@@ -131,7 +167,8 @@ private:
         void* sensors;      // DallasTemperature*
         SensorReadResult lastRead;
     };
-    std::map<uint8_t, DS18B20Instance> _ds18b20Instances;
+    std::map<uint8_t, DS18B20Instance, std::less<uint8_t>,
+             SensorNodeAllocator<std::pair<const uint8_t, DS18B20Instance>>> _ds18b20Instances;
 
     // 超声波实例缓存 (key = trigPin)
     struct UltrasonicInstance {
@@ -140,7 +177,8 @@ private:
         bool initialized;
         SensorValueResult lastRead;
     };
-    std::map<uint8_t, UltrasonicInstance> _ultrasonicInstances;
+    std::map<uint8_t, UltrasonicInstance, std::less<uint8_t>,
+             SensorNodeAllocator<std::pair<const uint8_t, UltrasonicInstance>>> _ultrasonicInstances;
 
     // ADC 传感器实例缓存 (key = pin)
     struct ADCSensorInstance {
@@ -149,7 +187,17 @@ private:
         ADCSensorCalibration cal;  // 校准参数
         SensorValueResult lastRead;
     };
-    std::map<uint8_t, ADCSensorInstance> _adcSensorInstances;
+    std::map<uint8_t, ADCSensorInstance, std::less<uint8_t>,
+             SensorNodeAllocator<std::pair<const uint8_t, ADCSensorInstance>>> _adcSensorInstances;
+
+    // NTC 热敏电阻实例缓存 (key = pin)
+    struct NTCSensorInstance {
+        bool initialized;
+        NTCSensorCalibration cal;  // 校准参数
+        SensorValueResult lastRead;
+    };
+    std::map<uint8_t, NTCSensorInstance, std::less<uint8_t>,
+             SensorNodeAllocator<std::pair<const uint8_t, NTCSensorInstance>>> _ntcInstances;
 
     // DHT 最小读取间隔 (ms)
     static constexpr unsigned long DHT_MIN_INTERVAL = 2000;

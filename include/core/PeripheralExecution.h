@@ -50,7 +50,9 @@ enum class ExecActionType : uint8_t {
     ACTION_OLED_DISPLAY = 27,       // OLED 自定义多行显示（actionValue: 多行文本 + ${id.field} + $value 模板，首行 # 开头为居中标题）
     ACTION_RF_SEND = 28,            // 射频发送（RF模块，actionValue: 编码字符串）
     ACTION_UART_SEND = 29,          // 串口发送（UART，actionValue: 文本/数据）
-    ACTION_GPIO_TOGGLE = 30         // 电平翻转（读当前电平取反写入：HIGH↔LOW，等价于 CALL_PERIPHERAL "toggle" 命令，无需 actionValue）
+    ACTION_GPIO_TOGGLE = 30,        // 电平翻转（读当前电平取反写入：HIGH↔LOW，等价于 CALL_PERIPHERAL "toggle" 命令，无需 actionValue）
+    ACTION_FEATURE_ENABLE = 31,     // 启用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
+    ACTION_FEATURE_DISABLE = 32     // 禁用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
 };
 
 // 传感器类别枚举
@@ -65,7 +67,8 @@ enum class SensorCategory : uint8_t {
     SENSOR_CURRENT = 7,   // 电流型传感器 (ACS712 等，ADC + 线性校准)
     SENSOR_VOLTAGE = 8,   // 电压型传感器 (分压器 ADC + 比例校准)
     SENSOR_RADAR = 9,     // 雷达存在/运动检测 (RCWL-0516/5.8GHz OUT)
-    SENSOR_RF_LEVEL = 10  // 433MHz RF RX level monitor
+    SENSOR_RF_LEVEL = 10, // 433MHz RF RX level monitor
+    SENSOR_NTC = 11       // NTC 热敏电阻 (分压器 + B 参数法测温)
 };
 
 // 触发类型
@@ -94,7 +97,6 @@ enum class EventType : uint8_t {
     EVENT_NET_MODE_STA = 21,             // 网络模式切换为STA
     // 协议事件 (30-39)
     EVENT_MODBUS_RTU_ENABLED = 30,       // Modbus RTU启用
-    EVENT_MODBUS_TCP_ENABLED = 31,       // Modbus TCP启用
     // 系统服务事件 (40-49)
     EVENT_NTP_SYNCED = 40,               // NTP时间同步完成
     EVENT_OTA_START = 41,                // OTA升级开始
@@ -164,7 +166,6 @@ const EventDef* findStaticEvent(const char* id);
 enum class ExecProtocolType : uint8_t {
     PROTOCOL_MQTT = 0,
     PROTOCOL_MODBUS_RTU = 1,
-    PROTOCOL_MODBUS_TCP = 2,
     PROTOCOL_HTTP = 3,
     PROTOCOL_COAP = 4,
     PROTOCOL_TCP = 5

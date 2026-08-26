@@ -155,17 +155,15 @@ void SSERouteHandler::performMaintenance() {
     // 1. 清理超时 / 僵尸连接
     cleanupStaleConnections(now);
 
-    // 2. 发送心跳（已有逻辑）
+    // 2. 发送心跳
     if (now - _lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
         _lastHeartbeatMs = now;
         if (_events.count() > 0) {
             _events.send("ping", "heartbeat", _messageId++);
-            // 心跳成功发送 → 刷新所有在线客户端的活跃时间
-            for (auto& s : _slots) {
-                if (s.client && s.client->connected()) {
-                    s.lastActiveMs = now;
-                }
-            }
+            // 不再无条件刷新所有客户端的 lastActiveMs：全局心跳广播无法确认
+            // 每个客户端是否实际收到（TCP 缓冲可能已满）。客户端活跃时间仅由
+            // trackClient（新连接）和实际数据事件驱动，cleanupStaleConnections
+            // 会在 CLIENT_TIMEOUT_MS 后关闭真正无响应的客户端。
         }
         reportClientCount();
     }

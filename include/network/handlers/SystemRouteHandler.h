@@ -42,6 +42,7 @@ private:
 #endif
     void handleGetHealth(AsyncWebServerRequest* request);
     void handleSystemMetrics(AsyncWebServerRequest* request);
+    void handleDiagBundle(AsyncWebServerRequest* request);
     void handleWebRuntime(AsyncWebServerRequest* request);
     void handleGetCapabilities(AsyncWebServerRequest* request);
 };

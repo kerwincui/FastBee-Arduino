@@ -211,6 +211,13 @@
             if (n.indexOf('lux') !== -1 || n.indexOf('light') !== -1 || n.indexOf('光照') !== -1) return 'Lux';
             if (n.indexOf('pm') !== -1 || n.indexOf('颗粒') !== -1) return 'μg/m³';
             if (n.indexOf('wind') !== -1 || n.indexOf('风') !== -1) return 'm/s';
+            // 工业电量单位推断（配置 unit 优先，此处仅兜底）
+            if (n.indexOf('current') !== -1 || n.indexOf('电流') !== -1) return 'A';
+            if (n.indexOf('voltage') !== -1 || n.indexOf('电压') !== -1) return 'V';
+            if (n.indexOf('resist') !== -1 || n.indexOf('电阻') !== -1) return 'Ω';
+            if (n.indexOf('power') !== -1 || n.indexOf('功率') !== -1) return 'W';
+            if (n.indexOf('freq') !== -1 || n.indexOf('频率') !== -1) return 'Hz';
+            if (n.indexOf('ntc') !== -1 || n.indexOf('热敏') !== -1) return '°C';
             return '';
         },
 

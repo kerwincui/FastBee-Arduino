@@ -64,26 +64,10 @@ bool LCDManager::initialize(const PeripheralConfig& config)
             int sda = config.pins[0];
             int scl = config.pins[1];
             
-#if CONFIG_IDF_TARGET_ESP32S3
-            // ESP32-S3 有效 GPIO: 0-21, 33-48 (排除 22-32)
-            auto isValidGpio = [](int pin) {
-                return (pin >= 0 && pin <= 21) || (pin >= 33 && pin <= 48);
-            };
-            bool pinsValid = isValidGpio(sda) && isValidGpio(scl);
-#elif CONFIG_IDF_TARGET_ESP32C3
-            // ESP32-C3 有效 GPIO: 0-21
-            bool pinsValid = (sda >= 0 && sda <= 21) && (scl >= 0 && scl <= 21);
-#elif CONFIG_IDF_TARGET_ESP32C6
-            // ESP32-C6 有效 GPIO: 0-30
-            bool pinsValid = (sda >= 0 && sda <= 30) && (scl >= 0 && scl <= 30);
-#else
-            // ESP32 经典版 有效 GPIO: 0-19, 21-23, 25-27, 32-39
-            auto isValidGpioClassic = [](int pin) {
-                return (pin >= 0 && pin <= 19) || pin == 21 || pin == 22 || pin == 23 ||
-                       (pin >= 25 && pin <= 27) || (pin >= 32 && pin <= 39);
-            };
-            bool pinsValid = isValidGpioClassic(sda) && isValidGpioClassic(scl);
-#endif
+            // 验证引脚有效性后再初始化（芯片差异统一由 ChipConfig.h 提供，
+            // 禁止本地按 CONFIG_IDF_TARGET 派生；旧 C6 分支误认 GPIO24-30 有效已修复）
+            bool pinsValid = (sda >= 0 && sda <= CHIP_MAX_GPIO) &&
+                             (scl >= 0 && scl <= CHIP_MAX_GPIO);
             
             if (pinsValid) {
                 _sdaPin = sda;

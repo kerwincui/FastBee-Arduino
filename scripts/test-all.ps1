@@ -5,10 +5,8 @@ param(
 
     [string[]]$Environments = @(
         "esp32-F4R0",
-        "esp32-F8R4",
         "esp32c3-F4R0",
         "esp32c6-F4R0",
-        "esp32s3-F8R0",
         "esp32s3-F8R4",
         "esp32s3-F16R8"
     ),

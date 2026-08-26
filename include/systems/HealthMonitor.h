@@ -103,8 +103,11 @@ public:
     // 设置启动耗时（由 FastBeeFramework 在初始化完成后调用）
     void setBootTime(unsigned long bootMs);
 
-    // 返回完整指标 JSON 字符串
+    // 返回完整指标 JSON 字符串（兼容旧接口）
     String getMetricsJson();
+
+    // 填充完整指标 JSON 到外部 String 缓冲（零额外堆分配，推荐路径）
+    void fillMetricsJson(String& out);
 
     // ── 内存池统计注册（碎片预防监控）──
     struct PoolStatsEntry {
@@ -136,6 +139,9 @@ private:
 
     // 内存保护等级
     MemoryGuardLevel _currentLevel = MemoryGuardLevel::NORMAL;
+    // 迟滞防振荡：升级即时，降级需连续 3 次达标 + 4KB 迟滞带
+    MemoryGuardLevel _lastComputedLevel = MemoryGuardLevel::NORMAL;
+    uint8_t _consecutiveRecoverySamples = 0;
     bool _compactionTriggered = false;  // 碎片率紧凑化已触发标志
     void updateMemoryGuardLevel();  // 在 update() 中调用
     void applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);  // 降级/恢复措施
@@ -159,8 +165,17 @@ private:
     bool _modbusStoppedForMemory = false;    // Modbus 因内存不足被停止
     bool _periphExecPausedForMemory = false; // PeriphExec 因内存不足被暂停
     unsigned long _criticalStartTime = 0;    // CRITICAL 级别开始时间（0=未进入）
+    unsigned long _mqttsDowngradeTimeMs = 0;     // MQTTS 降级时间戳（诊断用）
+    unsigned long _mqttsRestoreCooldownMs = 0;    // MQTTS 恢复冷却到期时间戳（24h 防风暴）
     static constexpr unsigned long CRITICAL_MQTT_STOP_DELAY_MS = 30000;   // 30s 后禁用 MQTT
     static constexpr unsigned long CRITICAL_REBOOT_DELAY_MS    = 90000;   // 90s 后重启
+    unsigned long _guardCriticalSince = 0;   // MemGuard CRITICAL 开始时间（0=未进入）
+    static constexpr unsigned long GUARD_CRITICAL_STUCK_MS = 600000;  // CRITICAL 降载持续 10 分钟无自愈则重启
+    // 重启循环抑制窗口：若上次重启已是碎片压缩重启且开机未超此窗口又陷入
+    // CRITICAL，说明碎片由外部流量维持、重启无法根治，不再重启避免死循环
+    static constexpr unsigned long GUARD_REBOOT_LOOP_WINDOW_MS = 1800000;
+    unsigned long _emergencySince = 0;       // DRAM<4KB EMERGENCY 开始时间（0=未进入）
+    static constexpr unsigned long EMERGENCY_REBOOT_DELAY_MS = 5000;  // EMERGENCY 恢复无效持续 5s 则抢先优雅重启（防 OOM abort）
 
     void performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);
     void downgradeMqttsToMqtt();      // 将 scheme 从 mqtts 切换为 mqtt 并重启 MQTT

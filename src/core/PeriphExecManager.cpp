@@ -175,6 +175,27 @@ bool PeriphExecManager::initialize() {
         _workerPool.reset();  // 后续 dispatchAsync 检测 nullptr 走原同步降级路径
     }
 
+    // 注册 AsyncExecContext 对象池到 HealthMonitor（碎片预防监控）
+    {
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor) {
+            HealthMonitor::PoolStatsEntry poolEntry;
+            poolEntry.name = "async_ctx";
+            poolEntry.blockSize = sizeof(AsyncExecContext);
+            poolEntry.capacity = AsyncExecContextPool::POOL_SIZE;
+            poolEntry.getUsed = []() -> uint8_t {
+                return static_cast<uint8_t>(
+                    PeriphExecManager::getInstance().getContextPool().usedCount());
+            };
+            poolEntry.getExhaust = []() -> uint32_t {
+                return PeriphExecManager::getInstance().getContextPool().exhaustCount();
+            };
+            monitor->registerPool(poolEntry);
+            LOGGER.info("[PeriphExec] Context pool registered with HealthMonitor");
+        }
+    }
+
     // 配置加载后安全校验：检测并修正危险的任务数/轮询间隔组合
     if (loaded && _scheduler) {
         _scheduler->validateLoadedConfig();
@@ -1308,6 +1329,8 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
@@ -1336,6 +1359,8 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
@@ -1345,6 +1370,8 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
@@ -1361,6 +1388,8 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
 #if FASTBEE_ENABLE_OTA
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
 #endif
@@ -1446,7 +1475,9 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行（重启后无需触发完成事件）
     for (const auto& a : rule.actions) {
         if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET)) {
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE)) {
             LOGGER.infof("[PeriphExec] Sync execute (system action): '%s'", rule.name.c_str());
             executeAllActions(rule, receivedValue);
             return;

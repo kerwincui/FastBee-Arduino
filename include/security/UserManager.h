@@ -55,6 +55,11 @@ private:
     // 登录尝试记录
     std::map<String, uint8_t> loginAttempts;
 
+    // 登录异步化：users/loginAttempts 的递归互斥量。登录验证（PBKDF2）
+    // 在工作任务执行时与 lwIP 线程的用户查询/修改并发，所有触碰两张表
+    // 的方法必须持锁；PBKDF2 计算本身在锁外执行，避免持锁秒级阻塞
+    SemaphoreHandle_t _usersMutex = nullptr;
+
     // 审计 P1-2：仅对存在的用户计数，未知用户名失败请求只走聚合计数，
     // 防止未认证攻击者用随机用户名无限撑大 loginAttempts
     uint32_t unknownUserFailures = 0;
@@ -87,7 +92,11 @@ private:
     // 私有方法
     void initializeDefaultAdmin();
     String hashPassword(const String& password, const String& salt);
-    bool verifyPassword(const String& password, const String& hash, const String& salt);
+    bool verifyPassword(const String& password, const String& storedHash, const String& salt);
+    // PBKDF2-HMAC-SHA256 新格式：$fb2$<iterations>$<salt_hex>$<hash_hex>
+    String hashPasswordPbkdf2(const String& password);
+    bool verifyPasswordPbkdf2(const String& password, const String& storedHash);
+    bool verifyLegacyPassword(const String& password, const String& storedHash, const String& salt);
     String generateSalt();
     bool validatePasswordStrength(const String& password);
     void updateUserLastModified(const String& username);

@@ -770,10 +770,15 @@ static tcp_pcb *_tcp_listen_with_backlog(tcp_pcb *pcb, uint8_t backlog) {
   Async TCP Client
  */
 
+// FastBee patch: 服务端准入连接并发计数。lwIP 线程自增（tcp_accept），
+// async_tcp 任务/应用线程自减（~AsyncClient），32 位对齐读写在 xtensa
+// 上原子，计数仅作准入闸门近似值，无需互斥。
+volatile uint32_t AsyncClient::_fastbee_acceptedCount = 0;
+
 AsyncClient::AsyncClient(tcp_pcb *pcb)
   : _connect_cb(0), _connect_cb_arg(0), _discard_cb(0), _discard_cb_arg(0), _sent_cb(0), _sent_cb_arg(0), _error_cb(0), _error_cb_arg(0), _recv_cb(0),
     _recv_cb_arg(0), _pb_cb(0), _pb_cb_arg(0), _timeout_cb(0), _timeout_cb_arg(0), _poll_cb(0), _poll_cb_arg(0), _ack_pcb(true), _tx_last_packet(0),
-    _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0) {
+    _rx_timeout(0), _rx_last_ack(0), _ack_timeout(CONFIG_ASYNC_TCP_MAX_ACK_TIME), _connect_port(0), _serverAccepted(false) {
   _pcb = pcb;
   if (_pcb) {
     _rx_last_packet = millis();
@@ -782,6 +787,10 @@ AsyncClient::AsyncClient(tcp_pcb *pcb)
 }
 
 AsyncClient::~AsyncClient() {
+  // FastBee patch: 准入计数回退（仅服务端 accept 的连接计入）
+  if (_serverAccepted && _fastbee_acceptedCount > 0) {
+    _fastbee_acceptedCount--;
+  }
   if (_pcb) {
     _close();
   }
@@ -1563,7 +1572,8 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
     async_tcp_log_e("_accept failed: pcb is NULL");
     return ERR_ABRT;
   }
-  // FastBee patch: DRAM admission gate (2026-08-10 STA 并发雪崩修复)。
+  // FastBee patch: DRAM admission gate (2026-08-10 STA 并发雪崩修复，
+  // 2026-08-24 补强：blk8 维度 + 并发上限 + 日志限频)。
   // 浏览器首屏 6-10 个并发连接同时到达时，每条连接的 AsyncClient /
   // AsyncWebServerRequest / 响应对象 / lwIP pbuf 全部从 8BIT DRAM 分配，
   // 而 classic ESP32 稳态 free8 仅 ~28KB：连接风暴会抽干 DRAM，随后
@@ -1572,20 +1582,55 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
   // operator new FATAL）。DRAM 低于门限时直接 abort 新连接，浏览器端有
   // Retry-After/自动刷新页兜底，保护在途响应不被挤死。
   // 门限校准：静态文件服务门控 6KB + 连接对象余量 2KB = 8KB。
+  // 2026-08-24 补强背景：仅 free8 门控在持续负载下仍崩（new(40) FATAL
+  // blk8=28）——已准入连接的数据流/响应构建继续抽于水位，free8 达标
+  // 但碎片化（blk8 极小）时同样致命；且并发数无上限时 12 路并发即可
+  // 在门限之上把水位拖穿。三层闸门：free8 + blk8 + 并发数。
+  // 并发上限校准：sdkconfig TCP 缓冲按 4 连接场景裁剪（2xMSS），
+  // 每活跃连接最坏 ~6-8KB（snd_buf+rcv_wnd+对象），4 路 ~25KB
+  // 不超出稳态 free8；空闲 keep-alive 也占额度，浏览器 6 连接限制下
+  // 4 额度足够首屏加载。
 #ifndef FASTBEE_TCP_ACCEPT_MIN_FREE8
 #define FASTBEE_TCP_ACCEPT_MIN_FREE8 8192U
 #endif
-  if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < FASTBEE_TCP_ACCEPT_MIN_FREE8) {
-    async_tcp_log_e("_accept rejected: DRAM(8bit) free %u < %u",
-                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                    (unsigned)FASTBEE_TCP_ACCEPT_MIN_FREE8);
-    tcp_abort(pcb);
-    return ERR_ABRT;
+#ifndef FASTBEE_TCP_ACCEPT_MIN_BLK8
+#define FASTBEE_TCP_ACCEPT_MIN_BLK8 1536U
+#endif
+#ifndef FASTBEE_TCP_MAX_ACCEPTED
+#define FASTBEE_TCP_MAX_ACCEPTED 4U
+#endif
+  {
+    const uint32_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    const uint32_t blk8 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    bool reject = false;
+    if (free8 < FASTBEE_TCP_ACCEPT_MIN_FREE8 || blk8 < FASTBEE_TCP_ACCEPT_MIN_BLK8) {
+      reject = true;
+    } else if (AsyncClient::_fastbee_acceptedCount >= FASTBEE_TCP_MAX_ACCEPTED) {
+      reject = true;
+    }
+    if (reject) {
+      // 限频：负载风暴下每秒数十次拒绝，日志风暴本身占用 lwIP 线程
+      static uint32_t lastRejectLogMs = 0;
+      const uint32_t nowMs = millis();
+      if (nowMs - lastRejectLogMs >= 1000U) {
+        lastRejectLogMs = nowMs;
+        async_tcp_log_e("_accept rejected: free8=%u blk8=%u conn=%u (min %u/%u, max %u)",
+                        (unsigned)free8, (unsigned)blk8,
+                        (unsigned)AsyncClient::_fastbee_acceptedCount,
+                        (unsigned)FASTBEE_TCP_ACCEPT_MIN_FREE8,
+                        (unsigned)FASTBEE_TCP_ACCEPT_MIN_BLK8,
+                        (unsigned)FASTBEE_TCP_MAX_ACCEPTED);
+      }
+      tcp_abort(pcb);
+      return ERR_ABRT;
+    }
   }
   auto server = reinterpret_cast<AsyncServer *>(arg);
   if (server->_connect_cb) {
     AsyncClient *c = new (std::nothrow) AsyncClient(pcb);
     if (c && c->pcb()) {
+      c->_serverAccepted = true;
+      AsyncClient::_fastbee_acceptedCount++;
       c->setNoDelay(server->_noDelay);
 
       lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ACCEPT, c};
@@ -1601,6 +1646,11 @@ int8_t AsyncTCP_detail::tcp_accept(void *arg, tcp_pcb *pcb, int8_t err) {
       // We can't let the client object call in to close, as we're on the LWIP thread; it could deadlock trying to RPC to itself
       c->_pcb = nullptr;
       tcp_abort(pcb);
+      // FastBee patch: 此路径 c 不会走析构（上游泄漏对象），手动回退准入计数，
+      // 避免 OOM 反复触发时计数只增不减永久锁死 accept
+      if (AsyncClient::_fastbee_acceptedCount > 0) {
+        AsyncClient::_fastbee_acceptedCount--;
+      }
       async_tcp_log_e("_accept failed: couldn't accept client");
       return ERR_ABRT;
     }

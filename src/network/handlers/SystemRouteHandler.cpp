@@ -1,12 +1,14 @@
 #include "./network/handlers/SystemRouteHandler.h"
 #include "core/MemoryBudget.h"
 #include "core/FeatureBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "systems/HealthMonitor.h"
+#include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
@@ -19,6 +21,23 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+// 文件系统统计缓存（60s TTL，避免反复 LittleFS 元数据扫描）
+static size_t s_cachedFsTotal = 0;
+static size_t s_cachedFsUsed = 0;
+static unsigned long s_fsCacheTimeMs = 0;
+static void getCachedFsStats(size_t& total, size_t& used) {
+    unsigned long now = millis();
+    if (s_cachedFsTotal == 0 || now - s_fsCacheTimeMs > 60000UL) {
+        s_cachedFsTotal = LittleFS.totalBytes();
+        s_cachedFsUsed = LittleFS.usedBytes();
+        s_fsCacheTimeMs = now;
+    }
+    total = s_cachedFsTotal;
+    used = s_cachedFsUsed;
+}
 #include <memory>
 #include <ctype.h>
 
@@ -66,6 +85,7 @@ bool isIgnoredConfigImportFileName(const String& name) {
 // 配置导入白名单：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
 static const char* const kAllowedImportConfigFiles[] = {
     "device.json",
+    "features.json",
     "network.json",
     "peripherals.json",
     "periph_exec.json",
@@ -196,8 +216,8 @@ void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degrade
     JsonObject memory = data["memory"].to<JsonObject>();
     fillMemorySummary(memory);
 
-    size_t fsTotal = LittleFS.totalBytes();
-    size_t fsUsed = LittleFS.usedBytes();
+    size_t fsTotal, fsUsed;
+    getCachedFsStats(fsTotal, fsUsed);
     JsonObject filesystem = data["filesystem"].to<JsonObject>();
     filesystem["total"] = fsTotal;
     filesystem["used"] = fsUsed;
@@ -554,7 +574,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 白名单检查：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
         if (!isAllowedConfigImportFileName(name)) {
             ctx->sendError(request, 403,
-                ("不允许导入配置文件：" + name + "。允许的文件：device.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+                ("不允许导入配置文件：" + name + "。允许的文件：device.json, features.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
             return;
         }
         if (content.isEmpty()) {
@@ -574,8 +594,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (HandlerUtils::checkLowMemory(request, 24576)) return;
 
         // Flash 空间检查：确保有足够空间写入，防止存储空间耗尽
-        size_t freeSpace = LittleFS.totalBytes() > LittleFS.usedBytes()
-                         ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        size_t _fsTotal, _fsUsed;
+        getCachedFsStats(_fsTotal, _fsUsed);
+        size_t freeSpace = _fsTotal > _fsUsed ? _fsTotal - _fsUsed : 0;
         if (freeSpace < content.length() * 2 + 4096) {  // 2x 安全余量 + 4KB 缓冲
             ctx->sendError(request, 507,
                 ("Flash 存储空间不足（剩余 " + String(freeSpace) + " 字节），请先清理不需要的配置").c_str());
@@ -635,7 +656,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 白名单检查（与 inline import 一致）
         if (!isAllowedConfigImportFileName(name)) {
             ctx->sendError(request, 403,
-                ("不允许导入配置文件：" + name + "。允许的文件：device.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+                ("不允许导入配置文件：" + name + "。允许的文件：device.json, features.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
             return;
         }
         if (total <= 0 || total > kMaxConfigTransferChunks || index < 0 || index >= total) {
@@ -954,8 +975,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             return;
         }
         auto doc = FastBee::makeJsonDocument(2048);
-        size_t total = LittleFS.totalBytes();
-        size_t used  = LittleFS.usedBytes();
+        size_t total, used;
+        getCachedFsStats(total, used);
         doc["totalBytes"] = total;
         doc["usedBytes"]  = used;
         doc["freeBytes"]  = total > used ? total - used : 0;
@@ -1022,7 +1043,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
             "{\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
-            "\"modbusTcp\":{\"enabled\":false,\"server\":\"\",\"port\":502,\"slaveId\":1,\"timeout\":5000},"
             "\"mqtt\":{\"enabled\":false,\"scheme\":\"mqtt\",\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
             "\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"mqttSecret\":\"\",\"authCode\":\"\","
             "\"willTopic\":\"\",\"willPayload\":\"\",\"willQos\":0,\"willRetain\":false,"
@@ -1158,6 +1178,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/system/metrics", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleSystemMetrics(request); });
 
+    // 诊断包导出：一次请求聚合设备/重启/内存/文件系统/网络/最近日志快照
+    server->on("/api/system/diag-bundle", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleDiagBundle(request); });
+
     server->on("/api/system/web-runtime", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleWebRuntime(request); });
 
@@ -1258,8 +1282,8 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
                                     FastBee::SMALL_NODE_BLOCK_COUNT);
 #undef FB_FILL_POOL_STATS
 
-    size_t fsTotal = LittleFS.totalBytes();
-    size_t fsUsed = LittleFS.usedBytes();
+    size_t fsTotal, fsUsed;
+    getCachedFsStats(fsTotal, fsUsed);
     doc["data"]["filesystem"]["total"] = fsTotal;
     doc["data"]["filesystem"]["used"] = fsUsed;
     doc["data"]["filesystem"]["free"] = fsTotal - fsUsed;
@@ -1295,6 +1319,18 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     unsigned long now = millis();
+    // Stability: invalidate the cache when memory pressure has escalated to CRITICAL
+    // since the last build. Without this, the dashboard could see a stale "running"
+    // response for up to STATUS_CACHE_TTL (5s) while the device is actually OOM-
+    // fencing every heavy request. Re-checking the guard level is cheap (just reads
+    // the cached level from HealthMonitor) and keeps the cache honest under load.
+    if (_statusCache.valid) {
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor && monitor->getMemoryGuardLevel() >= MemoryGuardLevel::CRITICAL) {
+            _statusCache.valid = false;
+        }
+    }
     if (_statusCache.valid && (now - _statusCache.timestamp) < STATUS_CACHE_TTL) {
         AsyncWebServerResponse* response = request->beginResponse(200, "application/json", _statusCache.json);
         response->addHeader("Connection", "close");
@@ -1309,21 +1345,18 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     doc["uptime"]    = millis();
 
     // 功能运行时状态：disabled=编译禁用 / no-memory=预算拒绝自动降级 / active=正常启用
+    // 统一从 RuntimeFeatureManager 遍历全部已注册功能（2026-08 审计修复：覆盖 27/27 而非原 8/27）
     {
+        auto& rfm = FastBee::RuntimeFeatureManager::instance();
         auto& budgetReg = FastBee::FeatureBudgetRegistry::instance();
-        auto featureState = [&budgetReg](bool compiled, const char* key) -> const char* {
-            if (!compiled) return "disabled";
-            return budgetReg.isDenied(key) ? "no-memory" : "active";
-        };
         JsonObject features = doc["features"].to<JsonObject>();
-        features["modbus"]        = featureState(FASTBEE_ENABLE_MODBUS, "modbus");
-        features["ruleScript"]    = featureState(FASTBEE_ENABLE_RULE_SCRIPT, "ruleScript");
-        features["irRemote"]      = featureState(FASTBEE_ENABLE_IR_REMOTE, "irRemote");
-        features["rfid"]          = featureState(FASTBEE_ENABLE_RFID, "rfid");
-        features["i2cSensors"]    = featureState(FASTBEE_ENABLE_I2C_SENSORS, "i2cSensors");
-        features["lcd"]           = featureState(FASTBEE_ENABLE_LCD, "lcd");
-        features["neopixel"]      = featureState(FASTBEE_ENABLE_NEOPIXEL, "neopixel");
-        features["deviceControl"] = featureState(FASTBEE_ENABLE_DEVICE_CONTROL, "deviceControl");
+        for (size_t i = 0; i < rfm.featureCount(); ++i) {
+            const auto* meta = rfm.getFeatureAt(i);
+            if (!meta) break;
+            const char* state = (!meta->compiled) ? "disabled"
+                : (budgetReg.isDenied(meta->key) ? "no-memory" : "active");
+            features[meta->key] = state;
+        }
     }
 
     if (ctx->networkManager) {
@@ -1390,6 +1423,11 @@ void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
     response->addHeader("Connection", "close");
 
+    // NOTE: static savedDelay is shared across concurrent restart requests. Only the
+    // most recent request's delay wins, but SystemRebooter::scheduleReboot is itself
+    // idempotent (it refuses to re-schedule once armed), so there is no crash/UB.
+    // If per-request delay isolation is needed later, capture it via shared_ptr in
+    // the onDisconnect lambda instead of a file-scope static.
     static int savedDelay = 0;
     savedDelay = delaySeconds;
 
@@ -1570,6 +1608,143 @@ void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
     request->send(response);
 }
 
+void SystemRouteHandler::handleDiagBundle(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request)) return;
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Diag bundle", MemoryGuardLevel::SEVERE, 5)) return;
+    if (HandlerUtils::checkLowMemory(request, 16384)) return;
+
+    auto doc = FastBee::makeJsonDocument(20480);
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    const unsigned long now = millis();
+    data["timestamp"] = now;
+
+    // ── 设备信息 ─────────────────────────────────────────────────
+    JsonObject device = data["device"].to<JsonObject>();
+    device["chipModel"] = ESP.getChipModel();
+    device["chipRevision"] = ESP.getChipRevision();
+    device["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+    device["sdkVersion"] = ESP.getSdkVersion();
+    device["firmwareVersion"] = SystemInfo::VERSION;
+    device["flashSize"] = ESP.getFlashChipSize();
+    device["uptimeMs"] = now;
+    device["uptimeFormatted"] = ctx->formatUptime(now);
+
+    // ── 重启诊断（RestartDiagnostics，RTC_NOINIT 快照只读）──────────
+    JsonObject restart = data["restart"].to<JsonObject>();
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+    restart["resetReason"] = RestartDiagnostics::getResetReasonString(resetReason);
+    restart["resetReasonCode"] = static_cast<uint8_t>(resetReason);
+    restart["abnormalRestart"] = RestartDiagnostics::wasAbnormalRestart();
+    PreRestartSnapshot snapshot;
+    if (RestartDiagnostics::getLastSnapshot(snapshot)) {
+        restart["snapshotValid"] = true;
+        restart["lastRestartReason"] =
+            RestartDiagnostics::getRestartReasonString(static_cast<RestartReason>(snapshot.restartReason));
+        restart["lastRestartReasonCode"] = snapshot.restartReason;
+        restart["lastRestartContext"] = snapshot.restartContext;
+        restart["lastUptimeMs"] = snapshot.timestamp;
+        JsonObject pre = restart["preRestart"].to<JsonObject>();
+        pre["freeHeap"] = snapshot.freeHeap;
+        pre["minFreeHeap"] = snapshot.minFreeHeap;
+        pre["largestFreeBlock"] = snapshot.largestFreeBlock;
+        pre["heapFragmentation"] = snapshot.heapFragmentation;
+        pre["memGuardLevel"] = snapshot.memGuardLevel;
+        pre["loopTaskWatermark"] = snapshot.loopTaskWatermark;
+        pre["asyncTcpWatermark"] = snapshot.asyncTcpWatermark;
+        pre["wifiConnected"] = snapshot.wifiConnected != 0;
+        pre["wifiRssi"] = snapshot.wifiRssi;
+        pre["mqttQueueDepth"] = snapshot.mqttQueueDepth;
+        pre["sseClientCount"] = snapshot.sseClientCount;
+        pre["activeRuleCount"] = snapshot.activeRuleCount;
+    } else {
+        restart["snapshotValid"] = false;
+    }
+
+    // ── 内存快照（heap 汇总 + DRAM/PSRAM 分档 + HealthMonitor 守卫级）──
+    JsonObject memory = data["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor) {
+        const SystemHealth health = monitor->getHealthStatus();
+        memory["guardLevel"] = HandlerUtils::memoryGuardLevelName(monitor->getMemoryGuardLevel());
+        memory["critical"] = monitor->isMemoryCritical();
+        memory["dramFree"] = health.dramFreeHeap;
+        memory["dramLargestBlock"] = health.dramLargestBlock;
+        memory["heapFragmentation"] = health.heapFragmentation;
+        memory["cpuUsage"] = health.cpuUsage;
+    }
+
+    // ── 文件系统（LittleFS，仅读元数据）────────────────────────
+    JsonObject fs = data["filesystem"].to<JsonObject>();
+    size_t fsTotal, fsUsed;
+    getCachedFsStats(fsTotal, fsUsed);
+    fs["total"] = fsTotal;
+    fs["used"] = fsUsed;
+    fs["free"] = fsTotal > fsUsed ? fsTotal - fsUsed : 0;
+
+    // ── 网络状态 ─────────────────────────────────────────────────
+    if (ctx->networkManager) {
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+        WiFiConfig cfg = netMgr->getConfig();
+        JsonObject network = data["network"].to<JsonObject>();
+        const char* statusText = "unknown";
+        switch (info.status) {
+            case NetworkStatus::CONNECTED:         statusText = "connected";    break;
+            case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:        statusText = "connecting";   break;
+            case NetworkStatus::AP_MODE:           statusText = "ap_mode";      break;
+            case NetworkStatus::CONNECTION_FAILED: statusText = "failed";       break;
+            default: break;
+        }
+        const char* modeText = "unknown";
+        switch (cfg.mode) {
+            case NetworkMode::NETWORK_STA: modeText = "STA"; break;
+            case NetworkMode::NETWORK_AP:  modeText = "AP";  break;
+            default: break;
+        }
+        network["status"] = statusText;
+        network["mode"] = modeText;
+        network["networkType"] = static_cast<uint8_t>(cfg.networkType);
+        network["ipAddress"] = info.ipAddress;
+        network["ssid"] = info.ssid;
+        network["rssi"] = info.rssi;
+        network["macAddress"] = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
+        network["internetAvailable"] = info.internetAvailable;
+        network["apClientCount"] = info.apClientCount;
+    }
+
+    // ── 运行时：任务数与活跃连接（低成本只读）──────────────────────
+    JsonObject runtime = data["runtime"].to<JsonObject>();
+    runtime["taskCount"] = static_cast<uint32_t>(uxTaskGetNumberOfTasks());
+    WebConfigManager* webCfg = fw ? fw->getWebConfigManager() : nullptr;
+    if (webCfg) {
+        runtime["sseClients"] = webCfg->getSseClientCount();
+        runtime["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
+    }
+
+    // ── 最近日志（LoggerSystem 内存环形，最近 N 行）────────────────
+    JsonObject logs = data["logs"].to<JsonObject>();
+    constexpr size_t kDiagLogBufSize = 2048;  // 与日志环形缓冲同量级
+    char* logBuf = static_cast<char*>(malloc(kDiagLogBufSize));
+    if (logBuf) {
+        const size_t bytes = LOGGER.snapshotRecentLogs(logBuf, kDiagLogBufSize);
+        logs["content"] = logBuf;
+        logs["bytes"] = bytes;
+        free(logBuf);
+    } else {
+        logs["content"] = "[Low memory - recent logs unavailable]";
+        logs["bytes"] = 0;
+    }
+    logs["lines"] = LOGGER.recentLogLineCount();
+    logs["capacityLines"] = LoggerSystem::recentLogCapacity();
+
+    LOGGER.info("Diag bundle exported via web");
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
 void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
@@ -1648,6 +1823,9 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     if (webCfg && !compactRuntime) {
         data["web"]["sseClients"] = webCfg->getSseClientCount();
         data["web"]["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
+        // 内存护栏（无 PSRAM 机型低 DRAM/碎片化时拒新 API 请求，见 WebMemoryGuard）
+        data["web"]["memGuardActive"] = webCfg->isMemGuardActive();
+        data["web"]["memGuardRejected"] = webCfg->getMemGuardRejectedCount();
         if (SSERouteHandler* sseHandler = webCfg->getSseRouteHandler()) {
             SSEStatsSnapshot sseStats = sseHandler->getStats();
             JsonObject sseStatsJson = data["web"]["sseStats"].to<JsonObject>();

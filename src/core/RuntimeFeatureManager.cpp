@@ -54,50 +54,64 @@ const RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(co
     return nullptr;
 }
 
-// ── 功能注册表（B/C/D 类全量注册，compiled 由编译宏决定）────────────────
+// ── 功能注册表（A/B/C/D 类全量注册，compiled 由编译宏决定）────────────────
 
 void RuntimeFeatureManager::generateDefaults() {
     count_ = 0;
 
-    // ═══ B 类: 常用外设（编译启用时默认启用）═══
+    // 出厂默认策略：webServer/mdns 默认启用（管理入口），其余功能 defaultEnabled=false，
+    // 用户按实际需求在功能配置页手动启用，实现内存占用最小化与可控性。
+    // webServer 在 STA 生产模式下禁用时跳过启动（AP 配置模式豁免，避免失去配置入口）；
+    // mDNS 开关与网络模式无关，任何模式下均可启停；两者均支持通过外设执行规则
+    // （ACTION_FEATURE_ENABLE/DISABLE，MQTT/GPIO 触发）动态切换并自动重启生效。
+
+    // ═══ A 类: 核心 Web 服务（默认启用，可在功能配置页禁用省内存）═══
+    registerFeature({"webServer", "Web Server (HTTP/API)", "network", 60, 36864,
+                     FASTBEE_ENABLE_WEB_SERVER != 0, true,
+                     "AsyncWebServer + routes (~35KB DRAM)", nullptr, 30});
+    registerFeature({"mdns", "mDNS Discovery (.local)", "network", 5, 8192,
+                     FASTBEE_ENABLE_MDNS != 0, true,
+                     "mode-independent switch", nullptr, 8});
+
+    // ═══ B 类: 常用外设（出厂默认禁用，按需启用）═══
     registerFeature({"lcd", "OLED/LCD Display", "peripheral", 20, 1200,
-                     FASTBEE_ENABLE_LCD != 0, true,
+                     FASTBEE_ENABLE_LCD != 0, false,
                      "I2C SSD1306/SH1106", nullptr, 19});
     registerFeature({"neopixel", "NeoPixel LED", "peripheral", 12, 212,
-                     FASTBEE_ENABLE_NEOPIXEL != 0, true,
+                     FASTBEE_ENABLE_NEOPIXEL != 0, false,
                      "GPIO (WS2812)", nullptr, 18});
     registerFeature({"sevenSegment", "TM1637 Seven Segment", "peripheral", 3, 32,
-                     FASTBEE_ENABLE_SEVEN_SEGMENT != 0, true,
+                     FASTBEE_ENABLE_SEVEN_SEGMENT != 0, false,
                      "GPIO (2-wire)", nullptr, 0});
     registerFeature({"ds18b20", "DS18B20 Temperature", "peripheral", 5, 100,
-                     (FASTBEE_ENABLE_SENSOR_DRIVER != 0 && FASTBEE_ENABLE_DS18B20 != 0), true,
+                     (FASTBEE_ENABLE_SENSOR_DRIVER != 0 && FASTBEE_ENABLE_DS18B20 != 0), false,
                      "OneWire (not on C3/C6)", nullptr, 0});
     registerFeature({"modbus", "Modbus Protocol", "protocol", 20, 1024,
-                     FASTBEE_ENABLE_MODBUS != 0, true,
-                     "UART/RS485", nullptr, 20});
+                     FASTBEE_ENABLE_MODBUS != 0, false,
+                     "UART/RS485", nullptr, 20, true});
     registerFeature({"ruleScript", "Rule Script Engine", "system", 8, 2048,
-                     FASTBEE_ENABLE_RULE_SCRIPT != 0, true,
-                     nullptr, nullptr, 22});
+                     FASTBEE_ENABLE_RULE_SCRIPT != 0, false,
+                     nullptr, nullptr, 22, true});
 
-    // ═══ C 类: 高级外设（编译启用时默认禁用）═══
+    // ═══ C 类: 高级外设与系统功能（出厂默认禁用）═══
     registerFeature({"lcdGb2312", "GB2312 Chinese Font", "peripheral", 248, 0,
                      FASTBEE_ENABLE_LCD_GB2312 != 0, false,
                      nullptr, "lcd", 0});
     registerFeature({"ledScreen", "LED Screen (RMT)", "peripheral", 10, 6144,
                      FASTBEE_ENABLE_LED_SCREEN != 0, false,
-                     "ESP32 RMT", nullptr, 15});
+                     "ESP32 RMT", nullptr, 15, true});  // 设备大屏默认禁用
     registerFeature({"irRemote", "IR Remote Control", "peripheral", 8, 300,
                      FASTBEE_ENABLE_IR_REMOTE != 0, false,
-                     "IR receiver + GPIO", nullptr, 25});
+                     "IR receiver + GPIO", nullptr, 25, true});
     registerFeature({"rfid", "RFID MFRC522", "peripheral", 12, 200,
                      FASTBEE_ENABLE_RFID != 0, false,
-                     "SPI MFRC522", nullptr, 24});
+                     "SPI MFRC522", nullptr, 24, true});
     registerFeature({"i2cSensors", "I2C Advanced Sensors", "peripheral", 15, 500,
                      FASTBEE_ENABLE_I2C_SENSORS != 0, false,
-                     "I2C BMP280/MPU6050", nullptr, 23});
+                     "I2C BMP280/MPU6050", nullptr, 23, true});
     registerFeature({"rfLearn", "433MHz RF Learn", "peripheral", 4, 300,
                      FASTBEE_ENABLE_RF_LEARN != 0, false,
-                     "RF receiver + GPIO", nullptr, 0});
+                     "RF receiver + GPIO", nullptr, 12});
     registerFeature({"ds1302", "DS1302 RTC", "peripheral", 2, 100,
                      FASTBEE_ENABLE_DS1302 != 0, false,
                      "3-wire (CE/IO/SCLK)", nullptr, 0});
@@ -106,22 +120,29 @@ void RuntimeFeatureManager::generateDefaults() {
                      "I2C PCF8574", nullptr, 0});
     registerFeature({"modbusSlave", "Modbus Slave", "protocol", 10, 440,
                      (FASTBEE_ENABLE_MODBUS != 0 && FASTBEE_MODBUS_SLAVE_ENABLE != 0), false,
-                     nullptr, "modbus", 0});
+                     nullptr, "modbus", 18, true});
     registerFeature({"commandScript", "Command Script", "system", 3, 500,
                      FASTBEE_ENABLE_COMMAND_SCRIPT != 0, false,
-                     nullptr, "ruleScript", 0});
-    registerFeature({"deviceControl", "Device Control Panel", "system", 27, 108544,
+                     nullptr, "ruleScript", 20, true});
+    // MQTTS 随 MQTT 栈编入（mbedtls 已链接，Flash 增量为 0）；RAM 为 TLS
+    // 握手实测 ~42KB（16KB in + 16KB out + ~10KB 上下文），无 PSRAM 时
+    // 准入需 ~52KB 空闲（MemoryBudget::MQTTS_NO_PSRAM_MIN_DRAM_FREE）。
+    // 出厂默认禁用：scheme=mqtts 的用户需在功能配置页手动启用。
+    registerFeature({"mqtts", "MQTTS Encrypted Transport (TLS)", "protocol", 0, 43008,
+                     FASTBEE_ENABLE_MQTT != 0, false,
+                     "TLS handshake ~42KB DRAM (~52KB without PSRAM)", nullptr, 45});
+    registerFeature({"deviceControl", "Device Control Panel", "system", 27, 4096,
                      FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
-                     "PSRAM required", nullptr, 110});
+                     "PSRAM required (Web JS ~106KB browser-side)", nullptr, 110});  // 设备大屏控制面板默认禁用
     registerFeature({"ota", "OTA Update", "system", 10, 1024,
                      FASTBEE_ENABLE_OTA != 0, false,
-                     "Dual partition (8MB+)", nullptr, 0});
+                     "Dual partition (8MB+)", nullptr, 20});
     registerFeature({"otaFs", "OTA Filesystem", "system", 3, 500,
                      FASTBEE_ENABLE_OTA_FS != 0, false,
                      nullptr, "ota", 0});
     registerFeature({"fileManager", "File Manager", "system", 5, 1024,
                      FASTBEE_ENABLE_FILE_MANAGER != 0, false,
-                     nullptr, nullptr, 0});
+                     nullptr, nullptr, 18});
     registerFeature({"logViewer", "Log Viewer", "system", 4, 500,
                      FASTBEE_ENABLE_LOG_VIEWER != 0, false,
                      nullptr, nullptr, 0});
@@ -135,7 +156,7 @@ void RuntimeFeatureManager::generateDefaults() {
                      FASTBEE_ENABLE_I18N != 0, false,
                      nullptr, nullptr, 0});
 
-    // ═══ D 类: 网络扩展（编译启用时默认禁用）═══
+    // ═══ D 类: 网络扩展（出厂默认禁用，以太网/4G 需按硬件配置手动启用）═══
     registerFeature({"ble", "BLE Bluetooth", "network", 80, 10240,
                      FASTBEE_ENABLE_BLE != 0, false,
                      "NimBLE-Arduino", nullptr, 35});
@@ -183,9 +204,14 @@ void RuntimeFeatureManager::buildConfigDoc(JsonDocument& doc) const {
         doc["updatedAt"] = ts;
     }
     JsonObject features = doc["features"].to<JsonObject>();
+    
+    // WP-93: 稀疏覆盖 - 只保存用户显式修改的项，不写入默认值
     for (size_t i = 0; i < count_; ++i) {
-        JsonObject entry = features[features_[i].meta.key].to<JsonObject>();
-        entry["enabled"] = features_[i].userEnabled;
+        // 只有当 userEnabled 与 defaultEnabled 不同时才写入
+        if (features_[i].userEnabled != features_[i].meta.defaultEnabled) {
+            JsonObject entry = features[features_[i].meta.key].to<JsonObject>();
+            entry["enabled"] = features_[i].userEnabled;
+        }
     }
 }
 
@@ -270,6 +296,26 @@ bool RuntimeFeatureManager::loadConfig() {
         }
     }
 
+    // 升级兼容迁移：旧版固件的 features.json 不含 webServer/mdns 键（当时无此开关，
+    // Web 服务常驻）。若直接套用新默认值（禁用），升级后的 STA 设备将失去 Web 入口
+    // 且无法通过页面重新启用。因此旧配置文件缺失这两个键时保持启用，
+    // 并回写文件完成迁移；全新部署（无文件）仍遵循出厂全禁用策略。
+    if (features["webServer"].isNull() || features["mdns"].isNull()) {
+        const char* legacyKeys[] = {"webServer", "mdns"};
+        for (const char* key : legacyKeys) {
+            if (features[key].isNull()) {
+                auto* f = findFeature(key);
+                if (f) f->userEnabled = true;
+            }
+        }
+        loaded_ = true;
+        syncBudgetState();
+        applyDependencyRules();
+        LOGGER.info("[FeatureCfg] Migrated legacy config: webServer/mdns kept enabled");
+        saveCurrentConfig();
+        return true;
+    }
+
     loaded_ = true;
     syncBudgetState();
     applyDependencyRules();
@@ -291,6 +337,9 @@ bool RuntimeFeatureManager::shouldEnable(const char* key) const {
     const auto* f = findFeature(key);
     if (!f) return false;
     if (!(f->meta.compiled && f->userEnabled && f->budgetPassed)) return false;
+    // 延迟初始化门控: requiresNetwork 的功能在网络子系统就绪前不激活，
+    // 把重型外设/协议的内存分配错峰到 WiFi 启动之后（抬高启动期可用 DRAM）
+    if (f->meta.requiresNetwork && !networkReady_) return false;
     // 依赖链检查: 父功能必须同样处于激活状态
     if (f->meta.dependsOn) {
         const auto* parent = findFeature(f->meta.dependsOn);
@@ -382,6 +431,8 @@ void RuntimeFeatureManager::getStatusJson(JsonVariant dst) const {
         obj["ramB"] = st.meta.ramB;
         if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
         if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
+        // 延迟初始化标记：true 表示该功能在网络就绪后才激活（错峰启动）
+        if (st.meta.requiresNetwork) obj["deferred"] = true;
         if (!st.meta.compiled) {
             obj["locked"] = true;
             obj["lockReason"] = "Not compiled into firmware";

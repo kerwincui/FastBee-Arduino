@@ -1,0 +1,135 @@
+# Instructions
+
+- Following Playwright test failed.
+- Explain why, be concise, respect Playwright best practices.
+- Provide a snippet of code with the fix, if possible.
+
+# Test info
+
+- Name: 17-perf.spec.ts >> Suite-17: Web流畅性与性能测试 >> PERF-001: 登录页首次加载时间 < 5秒 @quick
+- Location: suites\17-perf.spec.ts:7:7
+
+# Error details
+
+```
+TimeoutError: page.goto: Timeout 45000ms exceeded.
+Call log:
+  - navigating to "http://192.168.5.40/", waiting until "load"
+
+```
+
+# Test source
+
+```ts
+  1   | import { test, expect, waitForDevice, env } from '../fixtures/base.fixture';
+  2   | 
+  3   | test.describe('Suite-17: Web流畅性与性能测试', () => {
+  4   | 
+  5   |   // ========== 场景A：页面加载性能 ==========
+  6   | 
+  7   |   test('PERF-001: 登录页首次加载时间 < 5秒 @quick', async ({ page }) => {
+  8   |     await page.context().clearCookies();
+  9   |     const start = Date.now();
+> 10  |     await page.goto('/', { waitUntil: 'load' });
+      |                ^ TimeoutError: page.goto: Timeout 45000ms exceeded.
+  11  |     const loadTime = Date.now() - start;
+  12  |     console.log(`登录页加载时间: ${loadTime}ms`);
+  13  |     expect(loadTime).toBeLessThan(5000);
+  14  |     await expect(page.locator('#login-page')).toBeVisible();
+  15  |   });
+  16  | 
+  17  |   test('PERF-002: 仪表盘加载时间 < 3秒', async ({ authPage }) => {
+  18  |     const start = Date.now();
+  19  |     await authPage.click('.menu-item[data-page="dashboard"]');
+  20  |     await authPage.waitForLoadState('networkidle');
+  21  |     const loadTime = Date.now() - start;
+  22  |     console.log(`仪表盘加载时间: ${loadTime}ms`);
+  23  |     expect(loadTime).toBeLessThan(3000);
+  24  |   });
+  25  | 
+  26  |   test('PERF-003: Service Worker缓存后加载 < 2秒', async ({ authPage }) => {
+  27  |     // 1. 先访问所有页面让SW缓存
+  28  |     const menuPages = ['dashboard', 'device', 'network', 'peripheral', 'protocol', 'logs'];
+  29  |     for (const p of menuPages) {
+  30  |       await authPage.click(`.menu-item[data-page="${p}"]`);
+  31  |       await authPage.waitForLoadState('networkidle', { timeout: 8_000 });
+  32  |     }
+  33  | 
+  34  |     // 2. 检查SW注册状态
+  35  |     const swStatus = await authPage.evaluate(async () => {
+  36  |       if ('serviceWorker' in navigator) {
+  37  |         const reg = await navigator.serviceWorker.getRegistration();
+  38  |         return reg ? { registered: true, scope: reg.scope } : { registered: false };
+  39  |       }
+  40  |       return { registered: false, reason: 'no SW API' };
+  41  |     });
+  42  |     console.log(`SW状态: ${JSON.stringify(swStatus)}`);
+  43  | 
+  44  |     // 3. 重新访问各页面，验证加载时间
+  45  |     for (const p of menuPages) {
+  46  |       const start = Date.now();
+  47  |       await authPage.click(`.menu-item[data-page="${p}"]`);
+  48  |       await authPage.waitForLoadState('networkidle', { timeout: 8_000 });
+  49  |       const loadTime = Date.now() - start;
+  50  |       console.log(`SW缓存后 ${p}: ${loadTime}ms`);
+  51  |       // 缓存后应该更快，放宽到 < 3秒
+  52  |       expect(loadTime).toBeLessThan(3000);
+  53  |     }
+  54  |   });
+  55  | 
+  56  |   test('PERF-004: 各页面加载时间基准 < 4秒', async ({ authPage }) => {
+  57  |     const menuPages = [
+  58  |       'dashboard', 'device', 'network', 'peripheral', 'periph-exec',
+  59  |       'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'
+  60  |     ];
+  61  |     for (const menuPage of menuPages) {
+  62  |       const start = Date.now();
+  63  |       await authPage.click(`.menu-item[data-page="${menuPage}"]`);
+  64  |       await authPage.waitForLoadState('networkidle', { timeout: 10_000 });
+  65  |       const loadTime = Date.now() - start;
+  66  |       console.log(`${menuPage}: ${loadTime}ms`);
+  67  |       expect(loadTime).toBeLessThan(4000);
+  68  |     }
+  69  |   });
+  70  | 
+  71  |   test('PERF-005: API响应时间基准 < 2秒', async ({ authPage }) => {
+  72  |     const apis = ['/api/health', '/api/system/health', '/api/network/status', '/api/mqtt/status'];
+  73  |     for (const api of apis) {
+  74  |       const start = Date.now();
+  75  |       const ok = await authPage.evaluate(async (url: string) => {
+  76  |         try {
+  77  |           const r = await fetch(url);
+  78  |           return r.ok || r.status < 500;
+  79  |         } catch { return false; }
+  80  |       }, api);
+  81  |       const elapsed = Date.now() - start;
+  82  |       console.log(`${api}: ${elapsed}ms (ok=${ok})`);
+  83  |       expect(ok).toBeTruthy();
+  84  |       expect(elapsed).toBeLessThan(2000);
+  85  |     }
+  86  |   });
+  87  | 
+  88  |   test('PERF-006: 慢网络下页面加载(模拟3G)', async ({ page }) => {
+  89  |     // 模拟3G网络限速
+  90  |     await page.context().setOffline(false);
+  91  |     // Playwright CDP 限速
+  92  |     const client = await page.context().newCDPSession(page);
+  93  |     await client.send('Network.emulateNetworkConditions', {
+  94  |       offline: false,
+  95  |       downloadThroughput: (750 * 1024) / 8,  // 750 kbps
+  96  |       uploadThroughput: (250 * 1024) / 8,     // 250 kbps
+  97  |       latency: 200                             // 200ms RTT
+  98  |     });
+  99  | 
+  100 |     // 登录(使用环境凭据, 旧代码硬编码 admin 密码错误导致登录失败)
+  101 |     await page.goto('/', { waitUntil: 'load', timeout: 30_000 });
+  102 |     await page.fill('#username', env.auth.username);
+  103 |     await page.fill('#password', env.auth.password);
+  104 |     await page.click('#login-button');
+  105 |     await page.waitForSelector('#app-container', { state: 'visible', timeout: 30_000 });
+  106 | 
+  107 |     // 访问各页面
+  108 |     const menuPages = ['dashboard', 'device', 'network', 'protocol', 'logs'];
+  109 |     for (const p of menuPages) {
+  110 |       const start = Date.now();
+```

@@ -315,6 +315,15 @@ public:
     // emitCallback: 是否触发 dataCallback 回调（默认 true 保持向后兼容）
     //   PeriphExec 轮询时传 false 避免重复分发，直接轮询时保持 true
     String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries, bool emitCallback = true);
+
+    // 批量轮询（相邻寄存器合并读优化）：
+    //   同一从站+同一功能码、地址间隔 ≤ MODBUS_MERGE_MAX_GAP 的读请求合并为一次范围读，
+    //   读回后按原任务切片分发；合并读失败时回退为逐条重试一次。
+    //   仅用于主站轮询路径；外部 API 显式直读仍使用 readRegistersOnce，不参与合并。
+    //   返回合并后的 JSON 数组字符串（各任务映射结果的并集）
+    String executePollTaskBatch(const uint8_t* taskIdxList, uint8_t idxCount,
+                                uint16_t timeout, uint8_t retries,
+                                uint16_t interDelayMs, bool emitCallback = false);
     
     // ========== 轮询统计接口（用于运行状态显示）==========
     // 单个轮询任务的缓存数据
@@ -423,6 +432,26 @@ private:
     // 一次性操作通用发送/接收辅助（提取自readRegistersOnce的通用逻辑）
     OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
                                       uint8_t expectedSlaveAddr);
+
+    // 原始帧事务（返回原始响应字节，供合并范围读解析，避免 OneShotResult 缓冲限制）
+    OneShotError _executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
+                                               uint8_t expectedSlaveAddr,
+                                               uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                               uint8_t& exceptionCode);
+    OneShotError _sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
+                                         uint8_t expectedSlaveAddr,
+                                         uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                         uint8_t& exceptionCode);
+
+    // 合并读专用：范围读并解析到寄存器值缓冲（qty ≤ MODBUS_MAX_REGISTERS_PER_READ）
+    OneShotError _readRangeInto(uint8_t slaveAddress, uint8_t functionCode,
+                                uint16_t startAddress, uint16_t quantity,
+                                uint16_t* outBuf, uint16_t outCap);
+
+    // 轮询后处理（统计/缓存/自适应/hash去重/死区/心跳/JSON生成）
+    // countStats: 是否计入轮询统计（批量合并路径按事务统一计数，成员传 false）
+    String _finalizePollResult(uint8_t taskIdx, const OneShotResult& result,
+                               bool emitCallback, bool countStats);
     
     // 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
     OneShotResult _executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
@@ -456,6 +485,11 @@ private:
     static constexpr unsigned long COOLDOWN_DURATION_MS = 30000;    // 冷却时长 30 秒
     
     PollTaskCache _taskCache[Protocols::MODBUS_MAX_POLL_TASKS];
+
+    // 合并读静态缓冲区（受限大小：125 寄存器 = 250 字节数据 + 256 字节原始响应帧）
+    // OneShot 事务由信号量串行化，成员缓冲不会并发冲突
+    uint16_t _mergeReadBuf[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
+    uint8_t  _mergeRespBuf[Protocols::MODBUS_BUFFER_SIZE];
     
 #if FASTBEE_MODBUS_SLAVE_ENABLE
     // 寄存器模拟存储（从站模式使用）

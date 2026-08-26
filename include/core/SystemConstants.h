@@ -254,6 +254,10 @@ namespace Protocols {
     constexpr uint8_t  MODBUS_DEVICE_NAME_MAX_LEN   = 32;   // 设备名称最大长度
     constexpr uint8_t  MODBUS_DEVICE_TYPE_MAX_LEN   = 16;   // 设备类型最大长度("relay","pwm","pid","motor")
 
+    // Modbus 主站相邻寄存器合并读优化（仅作用于轮询路径，显式直读不合并）
+    constexpr bool     MODBUS_MERGE_READS_ENABLED   = true; // 合并读开关（默认开启）
+    constexpr uint8_t  MODBUS_MERGE_MAX_GAP         = 8;    // 允许合并的最大地址间隔（寄存器数）
+
     // 协议缓冲区大小（各协议独立值，无重复）
     constexpr uint16_t MQTT_BUFFER_SIZE   = 1024;
     constexpr uint16_t MODBUS_BUFFER_SIZE = 256;

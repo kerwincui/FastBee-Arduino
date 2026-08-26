@@ -77,6 +77,9 @@ public:
     // 获取调度器
     PeriphExecScheduler* getScheduler() { return _scheduler.get(); }
 
+    // 获取异步执行上下文对象池（用于 HealthMonitor 池统计注册）
+    AsyncExecContextPool& getContextPool() { return _contextPool; }
+
     // MQTT 消息处理入口（由 ProtocolManager messageCallback 调用）
     void handleMqttMessage(const String& topic, const String& message);
 

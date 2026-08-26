@@ -3,6 +3,9 @@
  * 包含外设列表、新增/编辑/删除外设、类型参数配置
  */
 (function() {
+    function t(key, fallback) {
+        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
+    }
     AppState.registerModule('peripherals', {
 
         // ============ 状态变量 ============
@@ -110,7 +113,7 @@
             if (locked) {
                 btn.setAttribute('data-resource-locked', 'true');
                 btn.disabled = true;
-                btn.title = '当前资源档位外设数量已达上限';
+                btn.title = t('peri-capacity-full', '当前资源档位外设数量已达上限');
             } else {
                 btn.removeAttribute('data-resource-locked');
                 if (this.isDeveloperModeEnabled()) {
@@ -134,7 +137,7 @@
         _refreshPeripheralList() {
             var btn = document.getElementById('peripheral-refresh-btn');
             if (btn && btn.disabled) return;
-            if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
+            if (btn) { btn.disabled = true; btn.textContent = t('common-loading', '加载中...'); }
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/peripherals');
             }
@@ -152,7 +155,7 @@
             // Show/hide developer mode hint banner
             var devHint = document.getElementById('peripheral-dev-mode-hint');
             if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
-            this.renderEmptyTableRow(tbody, 6, '加载中...');
+            this.renderEmptyTableRow(tbody, 6, t('common-loading', '加载中...'));
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var params = {
                 page: this._periphCurrentPage,
@@ -163,7 +166,7 @@
                 .then(res => {
                     if (!res || !res.success) {
                         var detail = (res && res.message) ? ' (' + res.message + ')' : '';
-                        this.renderEmptyTableRow(tbody, 6, '加载失败' + detail, 'u-empty-cell u-text-danger');
+                        this.renderEmptyTableRow(tbody, 6, t('peri-load-fail', '加载失败') + detail, 'u-empty-cell u-text-danger');
                         this._renderPeriphPagination(0, 1, 10);
                         return;
                     }
@@ -174,7 +177,7 @@
                     this._setPeripheralCapacity(res.profile || null);
                     const peripherals = res.data || [];
                     if (peripherals.length === 0) {
-                        this.renderEmptyTableRow(tbody, 6, '暂无外设配置');
+                        this.renderEmptyTableRow(tbody, 6, t('peri-no-data', '暂无外设配置'));
                         this._renderPeriphPagination(total, page, pageSize);
                         return;
                     }
@@ -182,18 +185,18 @@
                     peripherals.forEach(periph => {
                         const statusBadgeClasses = { 0: 'badge-info', 1: 'badge-warning', 2: 'badge-success', 3: 'badge-primary', 4: 'badge-danger' };
                         const statusNames = {
-                            0: '已禁用', 1: '已启用',
-                            2: '已初始化', 3: '运行中',
-                            4: '错误'
+                            0: t('common-disabled', '已禁用'), 1: t('common-enabled', '已启用'),
+                            2: t('peri-status-init', '已初始化'), 3: t('common-running', '运行中'),
+                            4: t('peri-status-error', '错误')
                         };
-                        const statusName = statusNames[periph.status] || '未知';
+                        const statusName = statusNames[periph.status] || t('common-unknown', '未知');
                         const statusBadgeClass = statusBadgeClasses[periph.status] || 'badge-info';
                         const safeId = escapeHtml(periph.id);
                         const safeName = escapeHtml(periph.name);
                         const safeType = escapeHtml(periph.typeName || periph.type || '--');
                                                 const typeVal = Number(periph.type || 0);
                                                 const unimplTypes = [4, 5, 37, 39, 40, 43]; // CAN, USB, SDIO, CAMERA, ETHERNET, ENCODER
-                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
+                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">' + t('peri-status-pending', '待驱动') + '</span>' : '';
                         const pinsStr = escapeHtml(periph.pins ? periph.pins.join(', ') : '--');
                         html += '<tr>' +
                             '<td>' + safeId + '</td>' +
@@ -202,9 +205,9 @@
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
                             '<td class="u-cell-nowrap"><div class="u-table-action-row">' +
-                                this._renderPeripheralActionButton('edit', periph.id, '编辑', 'fb-btn-primary') +
-                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? '禁用' : '启用', periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
-                                this._renderPeripheralActionButton('delete', periph.id, '删除', 'fb-btn-danger') +
+                                this._renderPeripheralActionButton('edit', periph.id, t('common-edit', '编辑'), 'fb-btn-primary') +
+                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? t('common-disable', '禁用') : t('common-enable', '启用'), periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
+                                this._renderPeripheralActionButton('delete', periph.id, t('common-delete', '删除'), 'fb-btn-danger') +
                             '</div></td></tr>';
                     });
                     tbody.innerHTML = html;
@@ -214,7 +217,7 @@
                 .catch(err => {
                     // 页面切换导致的请求中止属预期行为，静默返回不渲染错误行
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
-                    var msg = '加载失败';
+                    var msg = t('peri-load-fail', '加载失败');
                     if (err && err.status) msg += ' (HTTP ' + err.status + ')';
                     else if (err && err.message) msg += ' (' + err.message + ')';
                     console.error('Load peripherals failed:', err);
@@ -243,7 +246,7 @@
         openPeripheralModal(isEdit = false, peripheralId = null) {
             if (!this.guardDeveloperModeAction()) return;
             if (!isEdit && this._periphProfile && Number(this._periphProfile.remaining) <= 0) {
-                Notification.warning('当前资源档位外设数量已达上限', '外设配置');
+                Notification.warning(t('peri-capacity-full', '当前资源档位外设数量已达上限'), '外设配置');
                 return;
             }
             const modal = document.getElementById('peripheral-modal');
@@ -257,10 +260,10 @@
             this.clearInlineError('peripheral-error');
             document.querySelectorAll('.peripheral-params-group').forEach(el => this.hideElement(el));
             if (isEdit && peripheralId) {
-                title.textContent = '编辑外设';
+                title.textContent = t('peri-modal-title-edit', '编辑外设');
                 this.loadPeripheralForEdit(peripheralId);
             } else {
-                title.textContent = '新增外设';
+                title.textContent = t('peri-modal-title-add', '新增外设');
                 document.getElementById('peripheral-original-id').value = '';
                 document.getElementById('peripheral-id-input').disabled = false;
                 // 新增外设默认禁用（向导式：先保存再测试再启用）
@@ -305,6 +308,10 @@
                 if (gpioParams) {
                     this.showElement(gpioParams);
                     gpioParams.querySelectorAll('.pwm-only').forEach(el => {
+                        (type === 17 || type === 16) ? this.showElement(el) : this.hideElement(el);
+                    });
+                    // AO 模拟量输出选项：仅 PWM/模拟输出类型可见
+                    gpioParams.querySelectorAll('.ao-only').forEach(el => {
                         (type === 17 || type === 16) ? this.showElement(el) : this.hideElement(el);
                     });
                     gpioParams.querySelectorAll('.input-only').forEach(el => {
@@ -471,6 +478,13 @@
                             if (data.params.mode !== undefined) document.getElementById('spi-mode').value = data.params.mode;
                             if (data.params.resolution !== undefined) document.getElementById('adc-resolution').value = data.params.resolution;
                             if (data.params.attenuation !== undefined) document.getElementById('adc-attenuation').value = data.params.attenuation;
+                            // ADC 工业滤波参数（旧配置缺字段时保持默认：单次采样）
+                            { const el = document.getElementById('adc-sample-count'); if (el && data.params.sampleCount !== undefined) el.value = String(data.params.sampleCount); }
+                            { const el = document.getElementById('adc-filter-mode'); if (el && data.params.filterMode !== undefined) el.value = String(data.params.filterMode); }
+                            // AO 模拟量输出模式回显
+                            { const el = document.getElementById('gpio-ao-mode'); if (el) el.checked = !!data.params.aoMode; }
+                            { const el = document.getElementById('gpio-ao-min-pct'); if (el && data.params.aoMinPct !== undefined) el.value = data.params.aoMinPct; }
+                            { const el = document.getElementById('gpio-ao-max-pct'); if (el && data.params.aoMaxPct !== undefined) el.value = data.params.aoMaxPct; }
                             if (data.params.defaultDuty !== undefined) { const el = document.getElementById('gpio-default-duty'); if (el) el.value = data.params.defaultDuty; }
                             if (data.params.debounceMs !== undefined) { const el = document.getElementById('gpio-debounce-ms'); if (el) el.value = data.params.debounceMs; }
                             if (data.params.defaultValue !== undefined) { const el = document.getElementById('dac-default-value'); if (el) el.value = data.params.defaultValue; }
@@ -504,12 +518,12 @@
                             if (data.params.sdcard && data.params.sdcard.frequency !== undefined) { const el = document.getElementById('sdcard-frequency'); if (el) el.value = data.params.sdcard.frequency; }
                         }
                     } else {
-                        Notification.error('加载失败', '外设配置');
+                        Notification.error(t('peri-load-fail', '加载失败'), '外设配置');
                     }
                 })
                 .catch(err => {
                     console.error('Load peripheral for edit failed:', err);
-                    Notification.error('加载失败', '外设配置');
+                    Notification.error(t('peri-load-fail', '加载失败'), '外设配置');
                 });
         },
 
@@ -553,7 +567,7 @@
                 .then(function(res) {
                     if (!hintEl) return;
                     if (!res || !res.success) {
-                        hintEl.innerHTML = '<span class="u-text-danger">校验请求失败</span>';
+                        hintEl.innerHTML = '<span class="u-text-danger">' + t('peri-validate-fail', '校验请求失败') + '</span>';
                         return;
                     }
                     if (!res.pins || res.pins.length === 0) {
@@ -566,7 +580,7 @@
                         else if (p.warning) msgs.push('GPIO' + p.pin + ': ' + p.warning);
                     });
                     if (msgs.length === 0) {
-                        hintEl.innerHTML = '<span style="color:var(--success)">\u2713 引脚可用</span>';
+                        hintEl.innerHTML = '<span style="color:var(--success)">\u2713 ' + t('peri-pin-available', '引脚可用') + '</span>';
                     } else {
                         var cls = res.allValid ? 'u-text-warning' : 'u-text-danger';
                         hintEl.innerHTML = '<span class="' + cls + '">' + msgs.map(function(m) { return escapeHtml(m); }).join('<br>') + '</span>';
@@ -587,7 +601,7 @@
             const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
             const errEl = document.getElementById('peripheral-error');
             if (!name || !type || (!pinsStr && parseInt(type) !== 60 && parseInt(type) !== 51)) {
-                this.showInlineError(errEl, '请填写外设ID和名称');
+                this.showInlineError(errEl, t('peri-validate-empty', '请填写外设ID和名称'));
                 return;
             }
             this.clearInlineError(errEl);
@@ -601,6 +615,13 @@
                     data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
                     data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
                     data.defaultDuty = document.getElementById('gpio-default-duty')?.value || '0';
+                    // AO 模拟量输出模式：勾选后 PWM 按 0-100% 百分比映射
+                    if (document.getElementById('gpio-ao-mode')?.checked) {
+                        data.aoMode = true;
+                        data.aoMinPct = parseInt(document.getElementById('gpio-ao-min-pct')?.value || '0') || 0;
+                        data.aoMaxPct = parseInt(document.getElementById('gpio-ao-max-pct')?.value || '100');
+                        if (isNaN(data.aoMaxPct)) data.aoMaxPct = 100;
+                    }
                 }
                 if (typeNum === 12 && (document.getElementById('gpio-action-mode')?.value === '2')) {
                     data.passive = true;
@@ -624,6 +645,12 @@
             } else if (typeNum === 26) {
                 data.resolution = document.getElementById('adc-resolution')?.value || '12';
                 data.attenuation = document.getElementById('adc-attenuation')?.value || '3';
+                // 工业滤波参数：默认 1 次采样保持向后兼容原行为
+                var sampleCount = parseInt(document.getElementById('adc-sample-count')?.value || '1');
+                if (!isNaN(sampleCount) && sampleCount > 1) {
+                    data.sampleCount = sampleCount;
+                    data.filterMode = parseInt(document.getElementById('adc-filter-mode')?.value || '0') || 0;
+                }
             } else if (typeNum === 27) {
                 data.defaultValue = document.getElementById('dac-default-value')?.value || '0';
             } else if (typeNum === 47) {
@@ -660,7 +687,7 @@
             }
             const saveBtn = document.getElementById('save-peripheral-btn');
             const origText = saveBtn?.textContent;
-            if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+            if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = t('peri-saving', '保存中...'); }
             const url = isEdit ? '/api/peripherals/update' : '/api/peripherals';
             apiPost(url, data)
                 .then(res => {
@@ -671,14 +698,14 @@
                             window.apiInvalidateCache('/api/peripherals');
                         }
                         this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
-                        Notification.success(isEdit ? '外设更新成功' : '外设添加成功', '外设配置');
+                        Notification.success(isEdit ? t('peri-save-success-update', '外设更新成功') : t('peri-save-success-add', '外设添加成功'), '外设配置');
                     } else {
-                        this.showInlineError(errEl, res?.error || '保存失败，请检查连接');
+                        this.showInlineError(errEl, res?.error || t('peri-save-fail', '保存失败，请检查连接'));
                     }
                 })
                 .catch(err => {
                     console.error('Save peripheral failed:', err);
-                    this.showInlineError(errEl, err?.data?.error || err?.data?.message || '保存失败，请检查连接');
+                    this.showInlineError(errEl, err?.data?.error || err?.data?.message || t('peri-save-fail', '保存失败，请检查连接'));
                 })
                 .finally(() => {
                     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = origText; }
@@ -692,22 +719,22 @@
 
         deletePeripheral(id) {
             if (!this.guardDeveloperModeAction()) return;
-            if (!confirm('确定要删除外设 ' + id + ' 吗？')) return;
+            if (!confirm(t('peri-delete-confirm', '确定要删除外设') + ' ' + id + ' 吗？')) return;
             apiDelete('/api/peripherals/', { id: id })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('外设已删除', '外设配置');
+                        Notification.success(t('peri-delete-success', '外设已删除'), '外设配置');
                         if (typeof window.apiInvalidateCache === 'function') {
                             window.apiInvalidateCache('/api/peripherals');
                         }
                         this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                     } else {
-                        Notification.error(res?.error || '删除失败，请检查连接', '外设配置');
+                        Notification.error(res?.error || t('peri-delete-fail', '删除失败，请检查连接'), '外设配置');
                     }
                 })
                 .catch(err => {
                     console.error('Delete peripheral failed:', err);
-                    Notification.error('删除失败，请检查连接', '外设配置');
+                    Notification.error(t('peri-delete-fail', '删除失败，请检查连接'), '外设配置');
                 });
         },
 
@@ -719,7 +746,7 @@
             apiPost('/api/peripherals/toggle', { id: id })
                 .then(res => {
                     if (res && res.success) {
-                        var msg = res.enabled ? '外设已启用' : '外设已禁用';
+                        var msg = res.enabled ? t('peri-toggle-enabled', '外设已启用') : t('peri-toggle-disabled', '外设已禁用');
                         Notification.success(msg, '外设配置');
                         if (typeof window.apiInvalidateCache === 'function') {
                             window.apiInvalidateCache('/api/peripherals');
@@ -728,7 +755,7 @@
                     } else if (res && res.status === 404) {
                         this._togglePeripheralLegacy(id);
                     } else {
-                        Notification.error(res?.error || '状态切换失败', '外设配置');
+                        Notification.error(res?.error || t('peri-toggle-fail', '状态切换失败'), '外设配置');
                     }
                 })
                 .catch(err => {
@@ -736,7 +763,7 @@
                         this._togglePeripheralLegacy(id);
                     } else {
                         console.error('Toggle peripheral failed:', err);
-                        Notification.error('状态切换失败', '外设配置');
+                        Notification.error(t('peri-toggle-fail', '状态切换失败'), '外设配置');
                     }
                 });
         },
@@ -751,24 +778,24 @@
                         apiPost(url, { id: id })
                             .then(res2 => {
                                 if (res2 && res2.success) {
-                                    Notification.success(isEnabled ? '外设已禁用' : '外设已启用', '外设配置');
+                                    Notification.success(isEnabled ? t('peri-toggle-disabled', '外设已禁用') : t('peri-toggle-enabled', '外设已启用'), '外设配置');
                                     if (typeof window.apiInvalidateCache === 'function') {
                                         window.apiInvalidateCache('/api/peripherals');
                                     }
                                     this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                                 } else {
-                                    Notification.error(res2?.error || '状态切换失败', '外设配置');
+                                    Notification.error(res2?.error || t('peri-toggle-fail', '状态切换失败'), '外设配置');
                                 }
                             })
                             .catch(err => {
                                 console.error('Toggle peripheral failed:', err);
-                                Notification.error('状态切换失败', '外设配置');
+                                Notification.error(t('peri-toggle-fail', '状态切换失败'), '外设配置');
                             });
                     }
                 })
                 .catch(err => {
                     console.error('Get peripheral status failed:', err);
-                    Notification.error('状态切换失败', '外设配置');
+                    Notification.error(t('peri-toggle-fail', '状态切换失败'), '外设配置');
                 });
         }
     });

@@ -64,8 +64,9 @@
                             data-i18n-placeholder="password-placeholder" required>
 
                         <label class="fb-checkbox fb-my-3">
-                            <input type="checkbox" id="remember" checked>
-                            <span id="remember-label" data-i18n="remember-label">记住密码</span>
+                            <input type="checkbox" id="remember"> <!-- WP-13: 默认不勾选，提升安全性 -->
+                            <span id="remember-label" data-i18n="remember-label">保持登录</span>
+                            <small style="color:var(--text-secondary);font-size:11px;margin-left:4px;">WP-13 安全加固：不再保存明文密码</small>
                         </label>
 
                         <button type="submit" class="fb-btn fb-btn-primary fb-u-1" id="login-button" data-i18n="login-button">
@@ -290,7 +291,7 @@
                     if (remember) {
                         localStorage.setItem('remember', 'true');
                         localStorage.setItem('username', username);
-                        localStorage.setItem('password', password);
+                        // WP-13: 不再保存密码到 localStorage
                     } else {
                         ['remember', 'username', 'password'].forEach(function(key) {
                             localStorage.removeItem(key);
@@ -320,7 +321,12 @@
             }, 150);
         }
 
-        var bootLoginWaitMs = 2500;
+        // 2026-08-13: 2500→15000ms。串行 boot chunk 加载需 3~6s（ESP32 单连接
+        // 逐文件传输），旧 2.5s 截止使登录几乎必走 inline fallback → 整页
+        // location.replace 重载 → boot 从头再来，形成重复加载放大设备压力。
+        // 等待 boot 完成后走 AppState.handleLogin（无刷新登录）体验最佳；
+        // chunk 彻底失败（4 次重试耗尽约 17s）时仍会进入 fallback 兜底。
+        var bootLoginWaitMs = 15000;
 
         function installLoginBootGuard() {
             var loginForm = document.getElementById('login-form');

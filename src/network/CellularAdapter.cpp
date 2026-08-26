@@ -11,6 +11,7 @@
 
 #include "systems/LoggerSystem.h"
 #include "core/MemoryBudget.h"
+#include "core/ChipConfig.h"
 #include <SSLClient.h>
 #include <ctype.h>
 #include <new>
@@ -673,8 +674,13 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
     // 上电（EC801E-CN PWRKEY 低电平有效，需要脉冲触发）
     powerOn();
 
-    // 初始化串口 (UART2)
+    // 初始化串口：有 UART2 的芯片（经典 ESP32 / C6 等）优先 Serial2；
+    // C3/S3 等仅有 UART0/1 的芯片回退 Serial1（UART0 被日志/USB 占用）
+#if CHIP_UART_COUNT >= 3
     _serial = &Serial2;
+#else
+    _serial = &Serial1;
+#endif
     _serial->begin(_pinConfig.baudRate, SERIAL_8N1, _pinConfig.rxPin, _pinConfig.txPin);
 
     // 等待模块启动（EC801E 上电后需要约 5-8 秒完成初始化）

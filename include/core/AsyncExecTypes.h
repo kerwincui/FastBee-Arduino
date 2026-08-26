@@ -139,7 +139,7 @@ class AsyncExecContextPool {
 public:
     static constexpr size_t POOL_SIZE = 4;  // 最多4个并发异步任务
 
-    AsyncExecContextPool() : _mutex(nullptr) {
+    AsyncExecContextPool() : _mutex(nullptr), _exhaustCount(0) {
         for (size_t i = 0; i < POOL_SIZE; i++) {
             _inUse[i] = false;
         }
@@ -162,6 +162,7 @@ public:
     AsyncExecContext* acquire() {
         MutexGuard lock(_mutex, pdMS_TO_TICKS(100));
         if (!lock.isLocked()) {
+            _exhaustCount++;
             return nullptr;  // 无法获取锁
         }
 
@@ -172,6 +173,7 @@ public:
                 return &_pool[i];
             }
         }
+        _exhaustCount++;
         return nullptr;  // 池满
     }
 
@@ -201,6 +203,9 @@ public:
         return count;
     }
 
+    // 获取累计耗尽次数
+    uint32_t exhaustCount() const { return _exhaustCount; }
+
     // 获取池大小
     static constexpr size_t poolSize() { return POOL_SIZE; }
 
@@ -208,6 +213,7 @@ private:
     AsyncExecContext _pool[POOL_SIZE];
     bool _inUse[POOL_SIZE];
     SemaphoreHandle_t _mutex;
+    uint32_t _exhaustCount;  // 累计耗尽次数（acquire 返回 nullptr）
 };
 
 #endif // ASYNC_EXEC_TYPES_H
