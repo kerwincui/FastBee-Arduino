@@ -98,23 +98,62 @@ pio build -e esp32s3-F8R4 --backend keepalive
 
 ### 配置文件说明
 
-已为您创建完整的 ECM50-A 配置文件：`docs/ecm50a-full-config.json`
+**重要提示**: FastBee-Arduino v2.0 采用**统一架构**,不再区分产品档位配置文件。
 
-该配置包含以下部分:
-1. **Device Config**: 设备基本信息、NTP、时区
-2. **Network Config**: 三模联网 (Wi-Fi/4G/以太网)
-3. **MQTT Config**: 云平台对接
-4. **Peripherals Config**: 
-   - 2×AI 模拟输入 (GPIO6/7)
-   - 2×DI 数字输入 (GPIO4/5)
-   - 2×继电器输出 (GPIO15/16)
-5. **Modbus Subdevices**: 
-   - DHT11 温湿度传感器 (Modbus RTU)
-   - 双通道继电器模块
-6. **Polling Tasks**: 60 秒轮询周期
-7. **Protocol Config**: MQTT + Modbus 联合配置
+#### ❌ 过时的概念 (已废弃):
+- ~~`ecm50a-full-config.json`~~ - 不存在所谓的“full”配置模板
+- ~~基于档位的差异化配置~~ - 所有设备使用相同的配置结构
 
-### 配置导入流程
+#### ✅ 正确做法 (推荐):
+
+FastBee-Arduino 通过运行时动态功能开关控制特性启用状态：
+
+```json
+{
+  "version": 1,
+  "device": {
+    "name": "ecm50-device",
+    "timezone": "Asia/Shanghai",
+    "ntpServer": "pool.ntp.org"
+  },
+  "network": {
+    "mode": 1,  // STA (WiFi Station)
+    "staSSID": "your_wifi_ssid",
+    "staPassword": "your_wifi_password"
+  },
+  "protocol": {
+    "mqtt": {
+      "server": "iot.example.com",
+      "port": 8883,
+      "clientId": "fastbee-{sn}"
+    }
+  },
+  "peripherals": [
+    {
+      "type": "analog-input",
+      "gpio": 6,
+      "enabled": true
+    }
+  ],
+  "features": {
+    "lcd": { "enabled": false },           // 根据实际硬件决定
+    "ruleScript": { "enabled": true },     // 根据需求启用
+    "mqtt": { "enabled": true },
+    "modbus": { "enabled": true }
+  }
+}
+```
+
+**关键原则**:
+1. **不区分档位配置文件**: 不存在专用的"full"或"lite"配置模板
+2. **按需启用功能**: 通过 `features.json` 动态开关，而非切换配置文件
+3. **SN 唯一标识**: MQTT clientId 中的 `{sn}` 会自动替换为设备序列号
+
+参考 `/api/files` REST API 文档进行配置管理。
+
+---
+
+### 配置文件导入流程
 
 #### 方式一：Web 界面批量导入（推荐）
 
