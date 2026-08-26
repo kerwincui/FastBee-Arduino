@@ -1,3 +1,28 @@
+# FastBee-Arduino
+
+> **Unified Architecture v2.0**: 单一固件形态，无产品档位区分
+
+## 架构概述
+
+FastBee-Arduino 是面向 ESP32 系列的**零代码 Web 物联网固件框架**。自 v2.0 起，项目全面升级为**统一架构 (Unified Architecture)**,特点如下:
+
+- **单一固件制品**: 所有芯片型号 (esp32/c3/c6/s3) 使用统一的构建配置 (`unified_flags`)
+- **无产品档位**: 不再区分 lite/standard/full 档位概念，所有功能默认编入固件
+- **灵活功能开关**: 通过 `data/config/features.json` 动态启用/禁用功能模块
+- **智能内存保护**: `FeatureBudget` 机制在启动时检测 DRAM 水位，自动降级内存密集型功能
+- **简化维护成本**: 一套构建流水线、一套 E2E 测试套件、一套文档体系
+
+### 架构演进时间线
+
+| 版本 | 发布时间 | 架构特征 | 备注 |
+|------|---------|---------|------|
+| v1.x | 2024-Q1 | 三档位分离 (lite/standard/full) | 已废弃 |
+| v2.0 | 2026-08 | 统一架构 (Unified Architecture) | **当前版本** |
+
+📚 **迁移指南**: 如需了解从 v1.x 升级到 v2.0 的差异，请查阅 [`docs/architecture/unified-v2-migration.md`](file:docs/architecture/unified-v2-migration.md).
+
+---
+
 # 🏁 FastBee-Arduino 项目执行 - 最终归档与完成确认 (v1.0)
 
 ## 📋 项目状态宣告
@@ -269,7 +294,7 @@ git status; git add .; git commit -m "feat: WP-70~WP-96 架构优化与稳定性
 ### Path 2: 启动 Soak 测试 (质量验证)
 
 ```powershell
-.\scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100 -IntervalSec 30
+.".scripts\soak-test-device.ps1" -BaseUrl http://192.168.5.116 -Rounds 100 -IntervalSec 30
 ```
 
 **预计耗时**: 72 小时 (自动运行)  
