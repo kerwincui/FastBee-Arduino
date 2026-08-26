@@ -1,88 +1,82 @@
-'use strict';
+/**
+ * @file web-profile.js
+ * @brief Web UI profile 配置判定模块
+ * 
+ * FastBee Arduino 统一架构 (Unified Architecture v2.0):
+ * **单一固件、单一镜像**,不再有任何版本区分!
+ * 所有功能模块通过 C++ 编译宏 FASTBEE_ENABLE_* 控制。
+ * 
+ * ========== DEPRECATED UNIFIED ARCHITECTURE v2.0 ==========
+ * 以下废弃函数仅用于保持与旧构建链的兼容性
+ * 建议新代码直接使用 isFullWebProfile()
+ * ===========================================================
+ */
 
-function readArgValue(prefixes) {
-    for (const arg of process.argv.slice(2)) {
-        for (const prefix of prefixes) {
-            if (arg.startsWith(prefix)) {
-                return arg.slice(prefix.length);
-            }
-        }
-    }
-    return '';
-}
+const WEB_PROFILE = 'full';
 
-function normalizeWebProfile(value) {
-    const profile = String(value || '').trim().toLowerCase();
-    if (!profile) return 'full';
-    if (profile === 'prod' || profile === 'production') return 'lite';
-    if (profile === 'lite') return 'lite';
-    if (profile === 'std' || profile === 'standard') return 'standard';
-    if (profile === 'full') return 'full';
-    return 'full';
-}
-
+/**
+ * 获取当前 Web profile
+ * @returns {'full'} Always returns 'full'
+ */
 function getWebProfile() {
-    if (
-        process.argv.includes('--web-lite') ||
-        process.argv.includes('--lite') ||
-        process.argv.includes('--web-prod') ||
-        process.argv.includes('--prod')
-    ) {
-        return 'lite';
-    }
-    if (
-        process.argv.includes('--web-standard') ||
-        process.argv.includes('--standard')
-    ) {
-        return 'standard';
-    }
-    if (
-        process.argv.includes('--web-full') ||
-        process.argv.includes('--full')
-    ) {
-        return 'full';
-    }
-    const fromArg = readArgValue(['--web-profile=', '--profile=']);
-    const fromEnv = process.env.FASTBEE_WEB_PROFILE || process.env.WEB_PROFILE || '';
-    return normalizeWebProfile(fromArg || fromEnv || 'full');
+    return WEB_PROFILE;
 }
 
-function isLiteWebProfile() {
-    return getWebProfile() === 'lite';
-}
-
-function isStandardWebProfile() {
-    return getWebProfile() === 'standard';
-}
-
+/**
+ * 是否 compact profile（已废弃）
+ * @deprecated Unified Architecture v2.0 不区分 profile 版本
+ *     Please use isFullWebProfile() instead
+ * @returns {false} Always returns false
+ * @see isFullWebProfile
+ */
 function isCompactWebProfile() {
-    return isLiteWebProfile() || isStandardWebProfile();
+    return false;
 }
 
-function isProdWebProfile() {
-    return isLiteWebProfile();
+/**
+ * 是否 lite profile（已废弃）
+ * @deprecated Unified Architecture v2.0 不区分 profile 版本
+ *     Please use isFullWebProfile() instead
+ * @returns {false} Always returns false
+ * @see isFullWebProfile
+ */
+function isLiteWebProfile() {
+    return false;
 }
 
+/**
+ * 是否 standard profile（已废弃）
+ * @deprecated Unified Architecture v2.0 不区分 profile 版本
+ *     Please use isFullWebProfile() instead
+ * @returns {false} Always returns false
+ * @see isFullWebProfile
+ */
+function isStandardWebProfile() {
+    return false;
+}
+
+/**
+ * 是否 full profile
+ */
 function isFullWebProfile() {
-    return getWebProfile() === 'full';
+    return WEB_PROFILE === 'full';
 }
 
-// 设备大屏（FASTBEE_ENABLE_DEVICE_CONTROL）：解压需 ~106KB DRAM，
-// 仅 PSRAM 设备（full）承载；lite 永远不含；standard 由 CLI/环境变量显式开启
+/**
+ * 是否启用设备控制大屏功能
+ * 
+ * 统一版本：始终由编译宏 FASTBEE_ENABLE_DEVICE_CONTROL 控制
+ */
 function hasDeviceControl() {
-    if (isLiteWebProfile()) return false;
-    if (isFullWebProfile()) return true;
-    return process.argv.includes('--device-control')
-        || (process.env.FASTBEE_DEVICE_CONTROL === '1');
+    const enableDC = process.env.FASTBEE_ENABLE_DEVICE_CONTROL === '1';
+    return enableDC;
 }
 
 module.exports = {
     getWebProfile,
-    normalizeWebProfile,
-    isLiteWebProfile,
-    isStandardWebProfile,
-    isCompactWebProfile,
-    isProdWebProfile,
+    isCompactWebProfile,      // DEPRECATED - Use isFullWebProfile()
+    isLiteWebProfile,         // DEPRECATED - Use isFullWebProfile()
+    isStandardWebProfile,     // DEPRECATED - Use isFullWebProfile()
     isFullWebProfile,
     hasDeviceControl
 };
