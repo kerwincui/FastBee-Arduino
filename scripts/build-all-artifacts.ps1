@@ -1,4 +1,34 @@
-﻿[CmdletBinding()]
+﻿# FastBee-Arduino: Build All Artifacts Script
+# ==========================================
+# Unified Architecture v2.0 - Single Firmware Variant
+#
+# BUILD MATRIX (All environments use unified full profile):
+#   • esp32-F4R0       → ESP32 Classic, 4MB Flash, no PSRAM
+#   • esp32c3-F4R0     → ESP32-C3, 4MB Flash, no PSRAM
+#   • esp32c6-F4R0     → ESP32-C6, 4MB Flash, no PSRAM
+#   • esp32s3-F8R4     → ESP32-S3, 8MB Flash + 4MB PSRAM
+#   • esp32s3-F16R8    → ESP32-S3, 16MB Flash + 8MB PSRAM
+#
+# DEPRECATED: No longer distinguish lite/standard/full product tiers
+#              All features compile into single firmware; runtime budget control via FeatureBudget
+#
+# USAGE:
+#   powershell scripts\build-all-artifacts.ps1                    # Build all 5 variants
+#   powershell scripts\build-all-artifacts.ps1 -Env s3,F4R0       # Build specific env(s)
+#
+# OUTPUT:
+#   dist\firmware\all-latest\manifest.json
+#   dist\firmware\all-latest\fastbee-{chip}-{config}.bin
+#
+# ARTIFACT NAMING SCHEME:
+#   fastbee-esp32-F4R0.bin
+#   fastbee-esp32c3-F4R0.bin
+#   fastbee-esp32c6-F4R0.bin
+#   fastbee-esp32s3-F8R4.bin
+#   fastbee-esp32s3-F16R8.bin
+#
+
+[CmdletBinding()]
 param(
     [string[]]$Environments = @(
         "esp32-F4R0",
@@ -24,7 +54,7 @@ function Kill-StaleProcesses {
     $procNames = @('esptool', 'python', 'xtensa-esp-elf-gcc', 'xtensa-esp-elf-g++', 'xtensa-esp-elf-ar', 'xtensa-esp-elf-ld')
     foreach ($name in $procNames) {
         Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($name -eq 'python' -and ($_.Path -notlike '*\.platformio\*')) { return }
+            if ($name -eq 'python' -and ($_.Path -notlike '*.platformio\*')) { return }
             Write-Host "  Killing stale $name (PID $($_.Id))" -ForegroundColor Yellow
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             $killed++
@@ -38,14 +68,6 @@ function Kill-StaleProcesses {
 
 Write-Host "[Pre-Build] Checking for stale processes..." -ForegroundColor Cyan
 Kill-StaleProcesses
-# 2026-08 Web 镜像统一化：出厂环境一律 full 档（全量页面，运行时功能门控）
-$ProfileByEnv = @{
-    "esp32c3-F4R0"   = "full"
-    "esp32c6-F4R0"   = "full"
-    "esp32-F4R0"     = "full"
-    "esp32s3-F8R4"   = "full"
-    "esp32s3-F16R8"  = "full"
-}
 # Release naming: fastbee-{chip}-F{flash}R{psram}.bin
 # Examples: fastbee-esp32-F4R0.bin, fastbee-esp32s3-F16R8.bin
 $OutputNameByEnv = @{
@@ -259,18 +281,14 @@ $ReleaseManifest = [ordered]@{
 }
 
 foreach ($EnvName in $Environments) {
-    if (-not $ProfileByEnv.ContainsKey($EnvName)) {
-        throw "Unknown build environment: $EnvName"
-    }
-
-    $Profile = $ProfileByEnv[$EnvName]
+    # 所有环境统一编译 Full profile (无 Profile 概念了)
     $ReleaseName = [string]$OutputNameByEnv[$EnvName]
     if ([string]::IsNullOrWhiteSpace($ReleaseName)) {
         throw "Missing release file name mapping for $EnvName"
     }
 
     Write-Host ""
-    Write-Host "=== FastBee $EnvName ($Profile) ===" -ForegroundColor Green
+    Write-Host "=== FastBee $EnvName ===" -ForegroundColor Green
 
     if (-not $SkipBuild) {
         Test-BuildCacheIntegrity -BuildEnv $EnvName
