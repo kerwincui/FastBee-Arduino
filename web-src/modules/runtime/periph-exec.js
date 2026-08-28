@@ -4,10 +4,6 @@
  * 子模块: periph-exec-modbus.js (Modbus专用), periph-exec-form.js (表单)
  */
 (function() {
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
-
     AppState.registerModule('periph-exec', {
 
         // ============ 状态变量 ============
@@ -123,7 +119,7 @@
         openPeriphExecModal(editId) {
             if (!this.guardDeveloperModeAction()) return;
             if (!editId && this._isPeriphExecCapacityFull()) {
-                Notification.warning(t('pe-capacity-full', '当前资源档位执行规则数量已达上限'), t('pe-enter-value-title', '外设执行'));
+                Notification.warning('当前资源档位执行规则数量已达上限', '外设执行');
                 return;
             }
             if (!this._isPeriphExecEditorReady()) {
@@ -133,7 +129,7 @@
                     .catch(function(err) {
                         console.error('Failed to load periph exec editor:', err);
                         if (typeof Notification !== 'undefined') {
-                            Notification.error(t('pe-editor-load-fail', '加载执行规则编辑器失败'));
+                            Notification.error('加载执行规则编辑器失败');
                         }
                     });
             }
@@ -144,9 +140,9 @@
             document.getElementById('periph-exec-original-id').value = safeId;
             this.clearInlineError('periph-exec-error');
             if (safeId) {
-                if (titleEl) titleEl.textContent = t('pe-modal-title-edit', '编辑外设执行');
+                if (titleEl) titleEl.textContent = '编辑外设执行';
             } else {
-                if (titleEl) titleEl.textContent = t('pe-modal-title-add', '新增外设执行');
+                if (titleEl) titleEl.textContent = '新增外设执行';
                 document.getElementById('periph-exec-form').reset();
             }
             const triggersContainer = document.getElementById('periph-exec-triggers');
@@ -383,7 +379,7 @@
                 if (fallbackValue === null) return Promise.resolve(null);
                 var normalizedValue = String(fallbackValue || '').trim();
                 if (!normalizedValue.length) {
-                    Notification.warning(t('pe-enter-value', '请输入要设置的值'), t('pe-enter-value-title', '外设执行'));
+                    Notification.warning('请输入要设置的值', '外设执行');
                     return Promise.resolve(null);
                 }
                 return Promise.resolve(normalizedValue);
@@ -783,10 +779,10 @@
                 .then(res => {
                     if (res && res.success) {
                         this._invalidatePeriphExecRuntimeCaches();
-                        Notification.success(t('pe-delete-success', '规则已删除'), t('pe-enter-value-title', '外设执行'));
+                        Notification.success('规则已删除', '外设执行');
                         if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                     } else {
-                        Notification.error(res?.error || t('pe-delete-fail', '删除失败'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error(res?.error || '删除失败', '外设执行');
                     }
                 })
                 .catch(err => {
@@ -800,9 +796,9 @@
                         ))
                     );
                     if (isNetworkError) {
-                        Notification.error(t('common-device-offline', '设备离线或不可达，请检查网络连接'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error('设备离线或不可达，请检查网络连接', '外设执行');
                     } else {
-                        Notification.error(t('pe-delete-fail', '删除失败'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error('删除失败', '外设执行');
                     }
                 });
         },
@@ -816,7 +812,7 @@
                         this._invalidatePeriphExecRuntimeCaches();
                         if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                     } else {
-                        Notification.error(res?.error || t('pe-toggle-fail', '状态切换失败'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error(res?.error || '状态切换失败', '外设执行');
                     }
                 })
                 .catch(err => {
@@ -832,7 +828,7 @@
                     if (isNetworkError) {
                         Notification.error(t('common-device-offline', '设备离线或不可达，请检查网络连接'), t('pe-enter-value-title', '外设执行'));
                     } else {
-                        Notification.error(t('pe-toggle-fail', '状态切换失败'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error('状态切换失败', '外设执行');
                     }
                 });
         },
@@ -845,10 +841,10 @@
                 apiPost('/api/periph-exec/run', payload)
                     .then(res => {
                         if (res && res.success) {
-                            Notification.success(t('pe-exec-submitted', '执行已提交'), t('pe-enter-value-title', '外设执行'));
+                            Notification.success('执行已提交', '外设执行');
                             if (self.currentPage === 'periph-exec') self.loadPeriphExecPage();
                         } else {
-                            Notification.error(res?.error || t('pe-exec-fail', '规则执行失败'), t('pe-enter-value-title', '外设执行'));
+                            Notification.error(res?.error || '规则执行失败', '外设执行');
                         }
                     })
                     .catch(err => {

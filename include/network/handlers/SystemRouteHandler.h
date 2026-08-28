@@ -45,7 +45,7 @@ private:
     void handleDiagBundle(AsyncWebServerRequest* request);
     void handleWebRuntime(AsyncWebServerRequest* request);
     void handleGetCapabilities(AsyncWebServerRequest* request);
-    void handleGetMemoryProfile(AsyncWebServerRequest* request);
+    // void handleGetMemoryProfile(AsyncWebServerRequest* request);  // Disabled
 };
 
 #endif // SYSTEM_ROUTE_HANDLER_H

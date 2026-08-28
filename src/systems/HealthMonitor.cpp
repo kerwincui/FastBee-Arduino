@@ -32,8 +32,8 @@
 #if FASTBEE_WEB_MEM_GUARD
 #include "network/WebConfigManager.h"
 #endif
-// === Phase B Task B.3: MemoryProfileDB 集成 ===
-#include "core/MemoryProfile.h"
+// === Phase B Task B.3: MemoryProfileDB 集成 === (Disabled)
+// #include "core/MemoryProfile.h"
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
@@ -97,12 +97,12 @@ void HealthMonitor::update() {
         }
 #endif
         
-        // === Phase B Task B.3: 功能内存剖绘采样器 (30 秒间隔) ===
-        static unsigned long lastSampleTime = 0;
-        if (currentTime - lastSampleTime >= 30000UL) {
-            FastBee::FunctionMemoryProfiler::instance().runFullScan();
-            lastSampleTime = currentTime;
-        }
+        // === Phase B Task B.3: 功能内存剖绘采样器 (30 秒间隔) === (Disabled)
+        // static unsigned long lastSampleTime = 0;
+        // if (currentTime - lastSampleTime >= 30000UL) {
+        //     FastBee::FunctionMemoryProfiler::instance().runFullScan();
+        //     lastSampleTime = currentTime;
+        // }
         
         lastCheckTime = currentTime;
     }

@@ -4,10 +4,6 @@
  *       最终 registerModule 调用由入口 protocol.js 在所有子模块加载完成后执行
  */
 (function() {
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
-
     Object.assign(AppState, {
 
         // ============ 状态变量 ============
@@ -93,11 +89,11 @@
                         var f = Array.isArray(feats) ? feats.find(function(x) { return x.key === 'mqtts'; }) : null;
                         if (!f) return;
                         if (!f.compiled) {
-                            Notification.warning(t('proto-mqtts-not-compiled', 'MQTTS 未编入当前固件，无法使用'), 'MQTTS');
+                            Notification.warning('MQTTS 未编入当前固件，无法使用', 'MQTTS');
                         } else if (!f.active) {
-                            Notification.warning(t('proto-mqtts-mem-hint', 'TLS 需约 42KB 内存：请先到功能配置页启用「MQTTS 加密传输」，否则设备将拒绝连接'), 'MQTTS');
+                            Notification.warning('TLS 需约 42KB 内存：请先到功能配置页启用「MQTTS 加密传输」，否则设备将拒绝连接', 'MQTTS');
                         } else {
-                            Notification.info(t('proto-mqtts-enabled-hint', 'MQTTS 已启用：TLS 握手约占用 42KB 内存'), 'MQTTS');
+                            Notification.info('MQTTS 已启用：TLS 握手约占用 42KB 内存', 'MQTTS');
                         }
                     }).catch(function() { /* 状态查询失败不阻断配置流程 */ });
                 }
@@ -149,7 +145,7 @@
             if (loading) {
                 if (!button.dataset.fbOriginalText) button.dataset.fbOriginalText = button.textContent || '';
                 button.disabled = true;
-                button.textContent = t('common-loading', '加载中...');
+                button.textContent = '加载中...';
                 return;
             }
             if (button.dataset.fbOriginalText) {
@@ -165,7 +161,7 @@
                 return;
             }
             if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') {
-                Notification.error(t('common-load-fail-retry', '加载失败，请刷新重试'));
+                Notification.error('加载失败，请刷新重试');
                 return;
             }
 
@@ -250,7 +246,7 @@
             if (!fragInfo) return;
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
-            var title = t('common-loading', '加载中...');
+            var title = '加载中...';
             container.innerHTML = '<div class="fb-loading-placeholder protocol-loading-placeholder">' +
                 '<div class="fb-loading-placeholder-title">' + title + '</div>' +
                 '</div>';
@@ -262,7 +258,7 @@
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
             container.innerHTML = '<div class="message message-error">' +
-                escapeHtml(message || t('common-load-fail-retry', '加载失败，请刷新重试')) +
+                escapeHtml(message || '加载失败，请刷新重试') +
                 '</div>';
         },
 

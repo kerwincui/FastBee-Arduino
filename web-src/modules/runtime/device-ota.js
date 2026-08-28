@@ -6,11 +6,6 @@
 (function () {
     'use strict';
 
-    // i18n 助手：翻译引擎不可用或未加载键时回退中文
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
-
     function getEl(id) {
         return document.getElementById(id);
     }

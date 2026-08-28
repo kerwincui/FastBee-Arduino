@@ -4,9 +4,6 @@
  * 依赖: periph-exec.js (核心) 和 periph-exec-modbus.js 先加载
  */
 (function() {
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
     Object.assign(AppState, {
 
         // ============ Trigger/action element creation ============

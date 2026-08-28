@@ -3,9 +3,6 @@
  * 包含外设列表、新增/编辑/删除外设、类型参数配置
  */
 (function() {
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
     AppState.registerModule('peripherals', {
 
         // ============ 状态变量 ============
@@ -113,7 +110,7 @@
             if (locked) {
                 btn.setAttribute('data-resource-locked', 'true');
                 btn.disabled = true;
-                btn.title = t('peri-capacity-full', '当前资源档位外设数量已达上限');
+                btn.title = '当前资源档位外设数量已达上限';
             } else {
                 btn.removeAttribute('data-resource-locked');
                 if (this.isDeveloperModeEnabled()) {
@@ -137,7 +134,7 @@
         _refreshPeripheralList() {
             var btn = document.getElementById('peripheral-refresh-btn');
             if (btn && btn.disabled) return;
-            if (btn) { btn.disabled = true; btn.textContent = t('common-loading', '加载中...'); }
+            if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/peripherals');
             }
@@ -155,7 +152,7 @@
             // Show/hide developer mode hint banner
             var devHint = document.getElementById('peripheral-dev-mode-hint');
             if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
-            this.renderEmptyTableRow(tbody, 6, t('common-loading', '加载中...'));
+            this.renderEmptyTableRow(tbody, 6, '加载中...');
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var params = {
                 page: this._periphCurrentPage,
@@ -166,7 +163,7 @@
                 .then(res => {
                     if (!res || !res.success) {
                         var detail = (res && res.message) ? ' (' + res.message + ')' : '';
-                        this.renderEmptyTableRow(tbody, 6, t('peri-load-fail', '加载失败') + detail, 'u-empty-cell u-text-danger');
+                        this.renderEmptyTableRow(tbody, 6, '加载失败' + detail, 'u-empty-cell u-text-danger');
                         this._renderPeriphPagination(0, 1, 10);
                         return;
                     }
@@ -177,7 +174,7 @@
                     this._setPeripheralCapacity(res.profile || null);
                     const peripherals = res.data || [];
                     if (peripherals.length === 0) {
-                        this.renderEmptyTableRow(tbody, 6, t('peri-no-data', '暂无外设配置'));
+                        this.renderEmptyTableRow(tbody, 6, '暂无外设配置');
                         this._renderPeriphPagination(total, page, pageSize);
                         return;
                     }
@@ -185,18 +182,18 @@
                     peripherals.forEach(periph => {
                         const statusBadgeClasses = { 0: 'badge-info', 1: 'badge-warning', 2: 'badge-success', 3: 'badge-primary', 4: 'badge-danger' };
                         const statusNames = {
-                            0: t('common-disabled', '已禁用'), 1: t('common-enabled', '已启用'),
-                            2: t('peri-status-init', '已初始化'), 3: t('common-running', '运行中'),
-                            4: t('peri-status-error', '错误')
+                            0: '已禁用', 1: '已启用',
+                            2: '已初始化', 3: '运行中',
+                            4: '错误'
                         };
-                        const statusName = statusNames[periph.status] || t('common-unknown', '未知');
+                        const statusName = statusNames[periph.status] || '未知';
                         const statusBadgeClass = statusBadgeClasses[periph.status] || 'badge-info';
                         const safeId = escapeHtml(periph.id);
                         const safeName = escapeHtml(periph.name);
                         const safeType = escapeHtml(periph.typeName || periph.type || '--');
                                                 const typeVal = Number(periph.type || 0);
                                                 const unimplTypes = [4, 5, 37, 39, 40, 43]; // CAN, USB, SDIO, CAMERA, ETHERNET, ENCODER
-                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">' + t('peri-status-pending', '待驱动') + '</span>' : '';
+                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
                         const pinsStr = escapeHtml(periph.pins ? periph.pins.join(', ') : '--');
                         html += '<tr>' +
                             '<td>' + safeId + '</td>' +
@@ -205,9 +202,9 @@
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
                             '<td class="u-cell-nowrap"><div class="u-table-action-row">' +
-                                this._renderPeripheralActionButton('edit', periph.id, t('common-edit', '编辑'), 'fb-btn-primary') +
-                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? t('common-disable', '禁用') : t('common-enable', '启用'), periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
-                                this._renderPeripheralActionButton('delete', periph.id, t('common-delete', '删除'), 'fb-btn-danger') +
+                                this._renderPeripheralActionButton('edit', periph.id, '编辑', 'fb-btn-primary') +
+                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? '禁用' : '启用', periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
+                                this._renderPeripheralActionButton('delete', periph.id, '删除', 'fb-btn-danger') +
                             '</div></td></tr>';
                     });
                     tbody.innerHTML = html;
@@ -217,7 +214,7 @@
                 .catch(err => {
                     // 页面切换导致的请求中止属预期行为，静默返回不渲染错误行
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
-                    var msg = t('peri-load-fail', '加载失败');
+                    var msg = '加载失败';
                     if (err && err.status) msg += ' (HTTP ' + err.status + ')';
                     else if (err && err.message) msg += ' (' + err.message + ')';
                     console.error('Load peripherals failed:', err);

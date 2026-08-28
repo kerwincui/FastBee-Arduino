@@ -40,7 +40,7 @@ static void getCachedFsStats(size_t& total, size_t& used) {
 }
 #include <memory>
 #include <ctype.h>
-#include "core/MemoryProfile.h"
+// #include "core/MemoryProfile.h"  // Not needed - MemoryProfile feature disabled
 #include "systems/ConfigStorage.h"
 
 namespace {
@@ -1952,13 +1952,14 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     HandlerUtils::sendJsonStream(request, doc);
 }
 
-void SystemRouteHandler::handleGetMemoryProfile(AsyncWebServerRequest* request) {
-    FastBee::MemoryProfileDB& db = FastBee::MemoryProfileDB::instance();
-    String json = db.toJson();
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"].set(serialized(json));  // 嵌套一层避免解析问题
-    
-    HandlerUtils::sendJsonStream(request, doc);
-}
+// Memory profile feature disabled - not registered in routes
+// void SystemRouteHandler::handleGetMemoryProfile(AsyncWebServerRequest* request) {
+//     FastBee::MemoryProfileDB& db = FastBee::MemoryProfileDB::instance();
+//     String json = db.toJson();
+//     
+//     JsonDocument doc;
+//     doc["success"] = true;
+//     doc["data"].set(serialized(json));
+//     
+//     HandlerUtils::sendJsonStream(request, doc);
+// }

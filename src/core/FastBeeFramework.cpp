@@ -291,7 +291,7 @@ bool FastBeeFramework::initialize() {
     // === Phase C Task C.3: 初始化 TLS 内存预留池 (步骤 2.5) ===
     stepStart = millis();
     Serial.println("[STEP2.5] Initializing TLS Memory Pool...");
-    if (!TlsMemoryPool::instance().initialize()) {
+    if (!FastBee::TlsMemoryPool::instance().initialize()) {
         Serial.println("[FATAL] Failed to initialize TLS memory pool!");
         return false;
     }

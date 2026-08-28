@@ -3,15 +3,11 @@
 // 运行时功能开关管理：调用 /api/features/* 端点
 // ============================================================
 (function() {
-    function t(key, fallback) {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : fallback;
-    }
-
     var GROUP_NAMES = {
-        peripheral: t('fc-cat-peripheral', '外设'),
-        protocol: t('fc-cat-protocol', '通信协议'),
-        network: t('fc-cat-network', '网络'),
-        system: t('fc-cat-system', '系统')
+        peripheral: '外设',
+        protocol: '通信协议',
+        network: '网络',
+        system: '系统'
     };
 
     function formatRam(bytes) {
@@ -40,7 +36,7 @@
         loadFeatureStatus() {
             var list = document.getElementById('features-list');
             var summary = document.getElementById('features-summary');
-            if (list) list.innerHTML = '<div class="u-fs-13 u-text-secondary">' + t('common-loading', '加载中...') + '</div>';
+            if (list) list.innerHTML = '<div class="u-fs-13 u-text-secondary">加载中...</div>';
             var self = this;
             return apiGet('/api/features/status')
                 .then(function(res) {
@@ -53,7 +49,7 @@
                     if (saveBtn) saveBtn.disabled = true;
                 })
                 .catch(function() {
-                    if (list) list.innerHTML = '<div class="message message-error">' + t('fc-load-fail', '功能状态加载失败，请刷新重试') + '</div>';
+                    if (list) list.innerHTML = '<div class="message message-error">功能状态加载失败，请刷新重试</div>';
                     if (summary) summary.textContent = '';
                 });
         },
@@ -91,7 +87,7 @@
             }
             hint.style.display = allCompiled ? '' : 'none';
             hint.textContent = allCompiled
-                ? t('fc-unified-note', '当前固件已编入全部功能（统一镜像）：Flash 占用已固定，表中 Flash 列仅为编译参考；开关功能只影响运行时 RAM 占用。')
+                ? '当前固件已编入全部功能（统一镜像）：Flash 占用已固定，表中 Flash 列仅为编译参考；开关功能只影响运行时 RAM 占用。'
                 : '';
 
             list.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
@@ -125,7 +121,7 @@
             Object.keys(groups).sort().forEach(function(g) {
                 html += '<h3 class="u-fs-14" style="margin:12px 0 6px;">' + (GROUP_NAMES[g] || g) + '</h3>';
                 html += '<table class="fb-table fb-table-bordered"><thead><tr>'
-                    + '<th>' + t('fc-th-feature', '功能') + '</th><th>' + t('fc-th-flash', 'Flash') + '</th><th>' + t('fc-th-ram', 'RAM') + '</th><th>' + t('fc-th-depends', '依赖') + '</th><th style="width:70px;">' + t('fc-th-enabled', '启用') + '</th>'
+                    + '<th>功能</th><th>Flash</th><th>RAM</th><th>依赖</th><th style="width:70px;">启用</th>'
                     + '</tr></thead><tbody>';
                 groups[g].forEach(function(f) {
                     html += self.buildFeatureRow(f);
@@ -143,11 +139,11 @@
             var rowStyle = locked ? ' style="opacity:0.5;"' : '';
             var dep = '';
             if (f.hwDep) dep += escapeHtml(f.hwDep);
-            if (f.dependsOn) dep += (dep ? ' / ' : '') + t('fc-depends-prefix', '依赖') + ' ' + escapeHtml(f.dependsOn);
+            if (f.dependsOn) dep += (dep ? ' / ' : '') + '依赖 ' + escapeHtml(f.dependsOn);
             return '<tr' + rowStyle + ' data-feature-key="' + escapeHtml(f.key) + '">'
                 + '<td>' + escapeHtml(f.name)
                 + '<div class="u-fs-12 u-text-secondary">' + escapeHtml(f.key)
-                + (locked ? ' · ' + t('fc-not-compiled', '未编译入固件') : '') + '</div></td>'
+                + (locked ? ' · 未编译入固件' : '') + '</div></td>'
                 + '<td>' + (f.flashKB || 0) + 'KB</td>'
                 + '<td>' + formatRam(f.ramB) + '</td>'
                 + '<td class="u-fs-12">' + (dep || '-') + '</td>'
@@ -161,11 +157,11 @@
         buildZeroRamSection(features) {
             return '<div class="mqtt-collapsible-section" style="margin-top:16px;">'
                 + '<div class="mqtt-collapsible-header" data-zero-ram-toggle>'
-                + '<h4 style="margin:0;font-size:14px;">' + t('fc-optional-title', '可选功能 · 零 DRAM 占用') + '（' + features.length + '）</h4>'
+                + '<h4 style="margin:0;font-size:14px;">可选功能 · 零 DRAM 占用（' + features.length + '）</h4>'
                 + '<span class="mqtt-collapse-icon" id="features-zero-ram-body-icon">&#9654;</span>'
                 + '</div>'
                 + '<div id="features-zero-ram-body" class="mqtt-collapsible-body fb-hidden">'
-                + '<p class="u-fs-12 u-text-secondary" style="margin:8px 0;">' + t('fc-optional-note', '以下功能运行时不占用 DRAM（字模/文案存储于 Flash），开关仅影响功能行为或渲染方式，不影响内存水位，可按需启用。') + '</p>'
+                + '<p class="u-fs-12 u-text-secondary" style="margin:8px 0;">以下功能运行时不占用 DRAM（字模/文案存储于 Flash），开关仅影响功能行为或渲染方式，不影响内存水位，可按需启用。</p>'
                 + this.renderGroupTables(features)
                 + '</div>'
                 + '</div>';
@@ -222,20 +218,20 @@
             });
             var summary = document.getElementById('features-summary');
             if (summary) {
-                summary.textContent = t('fc-summary-flash', '预估启用资源: Flash') + ' ' + flashKB + 'KB | RAM ' + formatRam(ramB)
+                summary.textContent = '预估启用资源: Flash' + ' ' + flashKB + 'KB | RAM ' + formatRam(ramB)
                     + (this._baselineSummary || '');
             }
         },
 
         updateFeatureSummary(summary) {
             if (!summary) return;
-            var text = t('fc-active-flash', '已启用: Flash') + ' ' + (summary.activeFlashKB || 0) + 'KB | RAM '
+            var text = '已启用: Flash' + ' ' + (summary.activeFlashKB || 0) + 'KB | RAM '
                 + formatRam(summary.activeRamB);
             if (typeof summary.free8KB === 'number') {
-                text += '    ' + t('fc-dram-available', '可用 DRAM:') + ' ' + summary.free8KB + t('fc-dram-free', 'KB free /') + ' '
-                    + (summary.largest8KB || 0) + t('fc-dram-max-block', 'KB 最大块');
+                text += '    ' + '可用 DRAM:' + ' ' + summary.free8KB + ' KB free /' + '\n'
+                    + (summary.largest8KB || 0) + ' KB 最大块';
             }
-            this._baselineSummary = '    ' + t('fc-dram-current', '(当前') + text + ')';
+            this._baselineSummary = '    (当前' + text + ')';
             var el = document.getElementById('features-summary');
             if (el) el.textContent = text;
             // 填充 RAM 监控卡片

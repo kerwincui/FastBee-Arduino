@@ -1131,7 +1131,13 @@
                 }
             }
 
-            document.getElementById('wifi-mode-display').textContent = data.mode || '--';
+            // 网络模式翻译：后端返回 "STA"/"AP" → 前端显示 "STA 模式"/"AP 模式"
+            const modeTextMap = {
+                'STA': 'STA 模式',
+                'AP': 'AP 模式',
+                'unknown': '--'
+            };
+            document.getElementById('wifi-mode-display').textContent = modeTextMap[data.mode] || data.mode || '--';
             document.getElementById('wifi-ssid-display').textContent = data.ssid || data.staSSID || '--';
             document.getElementById('wifi-ip-display').textContent = data.ipAddress || '--';
             

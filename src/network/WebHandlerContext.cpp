@@ -641,20 +641,20 @@ void WebHandlerContext::serveGzippedFile(AsyncWebServerRequest* request, const S
 }
 
 String WebHandlerContext::getContentType(const String& filename) {
-    if (filename.endsWith(".html")) return "text/html";
-    if (filename.endsWith(".css")) return "text/css";
-    if (filename.endsWith(".js")) return "application/javascript";
+    if (filename.endsWith(".html")) return "text/html; charset=utf-8";
+    if (filename.endsWith(".css")) return "text/css; charset=utf-8";
+    if (filename.endsWith(".js")) return "application/javascript; charset=utf-8";
     if (filename.endsWith(".png")) return "image/png";
     if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
     if (filename.endsWith(".gif")) return "image/gif";
     if (filename.endsWith(".ico")) return "image/x-icon";
     if (filename.endsWith(".svg")) return "image/svg+xml";
-    if (filename.endsWith(".json")) return "application/json";
-    if (filename.endsWith(".xml")) return "application/xml";
+    if (filename.endsWith(".json")) return "application/json; charset=utf-8";
+    if (filename.endsWith(".xml")) return "application/xml; charset=utf-8";
     if (filename.endsWith(".pdf")) return "application/pdf";
     if (filename.endsWith(".zip")) return "application/zip";
     if (filename.endsWith(".gz")) return "application/x-gzip";
-    if (filename.endsWith(".txt")) return "text/plain";
+    if (filename.endsWith(".txt")) return "text/plain; charset=utf-8";
     return "application/octet-stream";
 }
 
