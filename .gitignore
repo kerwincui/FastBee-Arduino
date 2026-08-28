@@ -1,2 +1,88 @@
-.pio.qoderignore.qoder.cursor.vscode.codex.codex-logsdist/node_modules/# Python*.pyc__pycache__/# Logs*.logcompile_commands.jsonupload_log.txtnultmp/test-results/logs/tools/logs/# Build & deploy logsbuild_log*.txtbuild_only_log.txtdeploy_log.txt# Binary dumpspartitions_dump.bin# Test reports# Generated test/soak reportsdocs/soak-report-*.htmldocs/soak-summary-*.jsondocs/test-report.mdtest/browser/test-regression-output.txt# Playwright runtime output & ad-hoc debug artifacts at repo rootplaywright-report/test-results/ck-*.txtbody*.txt/s*.json# ESP-IDF sdkconfig generated filessdkconfig*# Web frontend: source lives in web-src/, build artifacts are generated per-profile (lite/standard/full).# Run `node scripts/gzip-www.js` or use `deploy.ps1` (auto-generates if missing).# All files in data/www are dynamically generated except assets directorydata/www/!data/www/assets/!data/www/assets/**
-node_modules
+# ==============================================================================
+# FastBee-Arduino - Git Ignore Rules
+# ==============================================================================
+
+# PlatformIO build directories
+.pio/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE/Editor configurations
+.vscode/
+.idea/
+.qoder/
+.cursor/
+.codex/
+.codex-logs/
+*.swp
+*.swo
+*~
+
+# Qoder AI assistant config
+.qoderignore
+
+# Node.js dependencies
+node_modules/
+
+# Python logging and configuration
+*.log
+Logs/
+logs/
+
+# Build artifacts (all platforms)
+build_log*.txt
+build_only_log.txt
+deploy_log.txt
+upload_log.txt
+upload.log
+compile_commands.json
+
+# Binary dumps and test reports
+partitions_dump.bin
+
+# Test reports and coverage
+test/browser/test-results/
+test/browser/test-regression-output.txt
+playwright-report/
+tmp/test-results/
+body*.txt
+s*.json
+docs/soak-report-*.html
+docs/soak-summary-*.json
+docs/test-report.md
+
+# ESP-IDF sdkconfig generated files
+sdkconfig*
+sdkconfig.*.local
+
+# Web frontend: source lives in web-src/, build artifacts are generated per-profile (lite/standard/full).
+# Run `node scripts/gzip-www.js` or use `deploy.ps1` (auto-generates if missing).
+# All files in data/www are dynamically generated except assets directory
+data/www/
+!data/www/assets/
+!data/www/assets/**
+
+# Temporary files
+temp-web-update.zip
+tmp-file-list.csv
+*.tmp
+*.temp
+
+# Backup files
+*.backup*
+*.bak*
+platformio.ini.backup*
+
+# OS/system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Windows file locks
+$RECYCLE.BIN/
