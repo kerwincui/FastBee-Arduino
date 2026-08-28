@@ -1,9 +1,9 @@
 """
-PlatformIO hook for FastBee filesystem profiles and release artifacts.
+PlatformIO hook for FastBee filesystem and release artifacts.
 
 Responsibilities:
-1. Map each PlatformIO environment to a filesystem profile (unified: all full).
-2. Build a clean profile-specific staging directory before buildfs/uploadfs.
+1. Build web fileystem images (all full, no profile distinction).
+2. Build a clean staging directory before buildfs/uploadfs.
 3. Copy the latest per-environment binaries into dist/firmware/<env>/.
 4. Generate merged factory images with esptool when the required pieces exist.
 """
@@ -20,18 +20,8 @@ from SCons.Script import COMMAND_LINE_TARGETS  # type: ignore
 Import("env")  # type: ignore[name-defined]
 
 
-# Web 镜像统一化：所有设备使用统一的 full 档
-# Flash 空间充足（LittleFS = 1MB, web ~320KB），无需按 profile 裁剪
-# 内存压力通过 runtime TCP queue optimization 解决
-ENV_TO_PROFILE = {
-    "esp32c3-F4R0": "full",   # All devices use unified full web image
-    "esp32c6-F4R0": "full",
-    "esp32-F4R0": "full",     # Classic ESP32 uses full (TCP queue 32→8)
-    "esp32s3-F8R4": "full",
-    "esp32s3-F16R8": "full",
-}
-
-# No more lite/standard profiles - all unified
+# Unified web image: all devices use full profile (runtime feature gating)
+# Flash space is sufficient; memory pressure is managed via TCP queue optimization
 
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}
 
@@ -44,8 +34,7 @@ def pio_env_name():
     return env.subst("$PIOENV")
 
 
-def profile_for_env():
-    return ENV_TO_PROFILE.get(pio_env_name(), "full")
+
 
 
 def get_build_flag_value(flag_name, default="0"):
@@ -151,7 +140,7 @@ def prepare_filesystem_staging():
     if env.get("__FASTBEE_FS_STAGE_READY"):
         return
 
-    profile = profile_for_env()
+    profile = "full"  # No longer distinguishes profiles
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     stage_dir = os.path.join(
         project_dir(),
@@ -165,14 +154,14 @@ def prepare_filesystem_staging():
         script,
         "--no-upload",
         "--no-monitor",
-        "--web-profile={}".format(profile),
+        "--web-profile=full",  # Single unified profile now
         "--stage-dir={}".format(stage_dir),
     ]
     # 设备大屏随 FASTBEE_ENABLE_DEVICE_CONTROL 编译开关门控（standard 默认不含）
     if get_build_flag_value("FASTBEE_ENABLE_DEVICE_CONTROL", "0") == "1":
         cmd.append("--device-control")
 
-    print("[FastBee] Preparing {} filesystem staging for {}...".format(profile, pio_env_name()))
+    print("[FastBee] Preparing filesystem staging for {}...".format(pio_env_name()))
     subprocess.check_call(cmd, cwd=project_dir())
     env.Replace(PROJECT_DATA_DIR=stage_dir)
     env.Replace(__FASTBEE_FS_STAGE_READY=True)
@@ -264,7 +253,6 @@ def merge_factory(output_path, firmware_path, include_fs=False):
 def write_manifest(out_dir):
     manifest = {
         "environment": pio_env_name(),
-        "filesystemProfile": profile_for_env(),
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "partitionTable": project_relative_path(partition_table_path()),
         "appOffset": env.subst("$ESP32_APP_OFFSET"),
@@ -302,7 +290,7 @@ def archive_filesystem(target, source, env):
     out_dir = build_dist_dir()
     archive_common_outputs(out_dir)
     copy_if_exists(fs_path, out_dir, "littlefs.bin")
-    copy_if_exists(fs_path, out_dir, "{}-littlefs.bin".format(profile_for_env()))
+    copy_if_exists(fs_path, out_dir, "factory-littlefs.bin")
     write_manifest(out_dir)
 
     firmware_path = os.path.join(normalize_path(env.subst("$BUILD_DIR")), "{}.bin".format(env.subst("$PROGNAME")))

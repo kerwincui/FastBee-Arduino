@@ -1,7 +1,9 @@
-# FastBee-ESP32 Web Browser Automation Test Suite
-# Requires: Selenium WebDriver + Chrome/Edge driver
-# Install: npm install -g selenium-standalone chromedriver
-# Run: node scripts/web-browser-test.js
+/**
+ * FastBee-ESP32 Web Browser Automation Test Suite
+ * Requires: Selenium WebDriver + Chrome/Edge driver
+ * Install: npm install -g selenium-standalone chromedriver
+ * Run: node scripts/web-browser-test.js
+ */
 
 const {Builder, By, until, Keys} = require('selenium-webdriver');
 const chrome = require('selenium-webdriver/chrome');
@@ -15,6 +17,16 @@ const DEVICES = [
     {name: 'C6', ip: '192.168.1.102', expectedLoadTime: 2000, optional: true}, // May be offline
     {name: 'S3', ip: '192.168.1.200', expectedLoadTime: 3000, optional: true}   // May be offline
 ];
+
+// 支持单设备测试模式：node web-browser-test.js --device=192.168.5.85
+const args = process.argv.slice(2);
+const deviceArg = args.find(arg => arg.startsWith('--device='));
+if (deviceArg) {
+    const singleIp = deviceArg.split('=')[1];
+    DEVICES.length = 0;
+    DEVICES.push({name: 'Target', ip: singleIp, expectedLoadTime: 3000});
+    console.log(`\nℹ️  Single device mode: testing ${singleIp}\n`);
+}
 
 const HEADLESS = process.env.HEADLESS === 'true'; // Set to false for visual debugging
 const VERBOSE = process.env.VERBOSE === 'true';
@@ -162,29 +174,36 @@ async function runTests() {
             console.log(`\n[${device.name}] Testing http://${device.ip}/...`);
             console.log('-----------------------------------------');
             
-            const result = await measurePagePerformance(driver, `http://${device.ip}/`, device.name);
-            
-            // Add device metadata
-            result.device = device.name;
-            result.targetIP = device.ip;
-            result.expectedLoadTime = device.expectedLoadTime;
-            
-            results.push(result);
-            
-            // Display immediate results
-            if (result.success) {
-                const icon = result.hasErrors ? '⚠️' : '✅';
-                console.log(`${icon} ${device.name}: First Paint: ${result.firstPaintMs}ms | Full Load: ${result.fullLoadTime}ms`);
+            try {
+                const result = await measurePagePerformance(driver, `http://${device.ip}/`, device.name);
                 
-                if (result.hasErrors) {
-                    console.log(`   ⚠️ Warning: ${result.consoleErrorCount} JS console error(s)`);
-                }
+                // Add device metadata
+                result.device = device.name;
+                result.targetIP = device.ip;
+                result.expectedLoadTime = device.expectedLoadTime;
                 
-                if (!HEADLESS) {
-                    console.log(`   ℹ️ Page loaded in browser window`);
+                results.push(result);
+                
+                // Display immediate results
+                if (result.success) {
+                    const icon = result.hasErrors ? '⚠️' : '✅';
+                    console.log(`${icon} ${device.name}: First Paint: ${result.firstPaintMs}ms | Full Load: ${result.fullLoadTime}ms`);
+                    
+                    if (result.hasErrors) {
+                        console.log(`   ⚠️ Warning: ${result.consoleErrorCount} JS console error(s)`);
+                    }
+                    
+                    if (!HEADLESS) {
+                        console.log(`   ℹ️ Page loaded in browser window`);
+                    }
+                } else {
+                    console.log(`❌ ${device.name} FAILED: ${result.error}`);
                 }
-            } else {
-                console.log(`❌ ${device.name} FAILED: ${result.error}`);
+            } catch (error) {
+                console.log(`⚠️ ${device.name} skipped: ${error.message}`);
+                if (device.optional) {
+                    console.log(`   (Optional device, continuing...`);
+                }
             }
         }
         

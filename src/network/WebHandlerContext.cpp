@@ -561,17 +561,25 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     // 最大的存储形态（单文件可达数十 KB），必须占槽。
     const bool bypassInFlightCap = !isCompressible && ext != ".gz";
 
-    // 2026-08-04 fix: acquire the in-flight slot AFTER a successful open.
-    // Previously the slot was taken before probing the filesystem, so a
-    // missing file (gz miss + raw miss -> 404 fallback) leaked the slot and
-    // every later compressible request got 503 until the 12s watchdog reset.
-    // Open the file first (gz preferred for html/js/css), then take the slot.
+    // Open file: prefer uncompressed for JS/CSS (browser compatibility fix)
     File openFile;
-    if (isCompressible) {
-        openFile = LittleFS.open(path + ".gz", "r");
-    }
-    if (!openFile) {
+    bool sentGzippedContent = false;  // 标记是否返回了 gzip 压缩的内容
+    if (isCompressible && ext != ".html") {
+        // For JS/CSS: try uncompressed first, fall back to gz
         openFile = LittleFS.open(path, "r");
+        if (!openFile) {
+            openFile = LittleFS.open(path + ".gz", "r");
+            if (openFile) sentGzippedContent = true;
+        }
+    } else {
+        // For HTML: prefer gz version
+        if (isCompressible) {
+            openFile = LittleFS.open(path + ".gz", "r");
+            if (openFile) sentGzippedContent = true;
+        }
+        if (!openFile) {
+            openFile = LittleFS.open(path, "r");
+        }
     }
     if (!openFile) {
         return false;  // 404 fallback; no slot was taken
@@ -604,6 +612,11 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     }
 
     AsyncWebServerResponse *response = new AsyncFileResponse(openFile, path, contentType, false);
+
+    // Add Content-Encoding header if serving gzipped content
+    if (sentGzippedContent) {
+        response->addHeader("Content-Encoding", "gzip");
+    }
 
     // Keep the service worker uncached so clients can recover.
     if (isServiceWorker) {

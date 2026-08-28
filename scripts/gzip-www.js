@@ -16,12 +16,7 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
-const {
-    getWebProfile,
-    isCompactWebProfile,
-    isLiteWebProfile,
-    isStandardWebProfile
-} = require('./web-profile');
+const { getWebProfile, isFullWebProfile } = require('./web-profile');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const WWW_DIR = path.join(DATA_DIR, 'www');
@@ -86,11 +81,8 @@ function resolveStageDir() {
 }
 
 function shouldSkipProdDataPath(relPath) {
-    if (!isCompactWebProfile()) return false;
-    const normalized = normalizeRelativePath(relPath);
-    return normalized === 'config/users.json'
-        || normalized === 'config/auth.json'
-        || normalized.startsWith('logs/');
+    // 统一架构：始终返回 false（不跳过任何路径）
+    return false;
 }
 
 function relativeFromWww(filePath) {
@@ -150,10 +142,7 @@ function addWhitelistAbsolute(files, absPath) {
 }
 
 function shouldKeepProfilePeripheral(item) {
-    const id = String((item && item.id) || '');
-    // 硬件不支持的外设始终排除
-    if (isLiteWebProfile() && (id === 'modbus_rtu' || id === 'ethernet')) return false;
-    // 保留所有外设（包括 disabled），由设备 ResourceProfile 限制实际上限
+    // 统一架构：保留所有外设（包括 disabled），由设备 ResourceProfile 限制实际上限
     return true;
 }
 
@@ -205,87 +194,7 @@ function scriptPeripheralRefsAreKept(action, profilePeripheralIds) {
 }
 
 function transformProdConfigFile(sourcePath, normalizedRel) {
-    if (!isCompactWebProfile()) return null;
-
-    if (normalizedRel === 'config/protocol.json') {
-        const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        ['http', 'coap', 'tcp'].forEach((key) => {
-            if (Object.prototype.hasOwnProperty.call(doc, key)) delete doc[key];
-        });
-        if (isLiteWebProfile() && Object.prototype.hasOwnProperty.call(doc, 'modbusRtu')) {
-            delete doc.modbusRtu;
-        }
-        if (doc.mqtt) {
-            const keepTopic = (topic) => {
-                const topicType = Number(topic && topic.topicType);
-                const topicText = String((topic && topic.topic) || '').toLowerCase();
-                return topicType !== 5 && topicType !== 6 && topicText.indexOf('upgrade') < 0;
-            };
-            if (Array.isArray(doc.mqtt.publishTopics)) {
-                doc.mqtt.publishTopics = doc.mqtt.publishTopics.filter(keepTopic);
-            }
-            if (Array.isArray(doc.mqtt.subscribeTopics)) {
-                doc.mqtt.subscribeTopics = doc.mqtt.subscribeTopics.filter(keepTopic);
-            }
-        }
-        return JSON.stringify(doc, null, 2) + '\n';
-    }
-
-    if (normalizedRel === 'config/periph_exec.json') {
-        const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        const unsupportedActions = new Set([9, 20]); // OTA, legacy reserved action
-        const unsupportedProtocols = new Set([2, 3, 4, 5]); // Reserved, HTTP, CoAP, TCP
-        const profilePeripheralIds = getProfilePeripheralIds();
-        if (isLiteWebProfile()) {
-            [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // Modbus control/poll
-            unsupportedProtocols.add(1); // Modbus RTU
-        }
-        const rules = Array.isArray(doc.rules) ? doc.rules : [];
-        doc.rules = rules
-            .map((rule) => {
-                const ruleId = String((rule && rule.id) || '');
-                // 保留所有规则（包括 disabled），由设备 ResourceProfile 限制实际上限
-                // if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
-                if (unsupportedProtocols.has(Number(rule.protocolType))) return null;
-                const actions = Array.isArray(rule.actions)
-                    ? rule.actions.filter((action) => {
-                        if (unsupportedActions.has(Number(action.actionType))) return false;
-                        if (isLiteWebProfile() && String(action.targetPeriphId || '').indexOf('modbus') === 0) return false;
-                        if (!scriptPeripheralRefsAreKept(action, profilePeripheralIds)) return false;
-                        if (actionTargetRequiresPeripheral(action) &&
-                            !profilePeripheralIds.has(String(action.targetPeriphId || ''))) {
-                            return false;
-                        }
-                        return true;
-                    })
-                    : [];
-                if (actions.length === 0) return null;
-                const next = { ...rule, actions };
-                delete next.scriptContent;
-                return next;
-            })
-            .filter(Boolean);
-        return JSON.stringify(doc, null, 2) + '\n';
-    }
-
-    if (normalizedRel === 'config/peripherals.json') {
-        const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        if (Array.isArray(doc.peripherals)) {
-            doc.peripherals = doc.peripherals.filter(shouldKeepProfilePeripheral);
-        }
-        return JSON.stringify(doc, null, 2) + '\n';
-    }
-
-    if (normalizedRel === 'config/network.json') {
-        const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        if (isLiteWebProfile()) {
-            doc.networkType = 0;
-            delete doc.ethernet;
-            delete doc.cellular;
-        }
-        return JSON.stringify(doc, null, 2) + '\n';
-    }
-
+    // 统一架构：不转换配置文件，直接返回 null（保持原文件）
     return null;
 }
 
@@ -363,6 +272,20 @@ function stagePublishArtifacts(buildResult) {
         const compressedPath = `${sourcePath}.gz`;
         const stageRelPath = `www/${relPath}`;
 
+        const ext = path.extname(relPath).toLowerCase();
+        
+        // For JS/CSS: include BOTH uncompressed and gzipped versions!
+        if (ext === '.js' || ext === '.css') {
+            if (fs.existsSync(sourcePath)) {
+                copyFileToStage(sourcePath, stageRelPath, stageState);
+            }
+            if (fs.existsSync(compressedPath)) {
+                copyFileToStage(compressedPath, `${stageRelPath}.gz`, stageState);
+            }
+            return;
+        }
+        
+        // For HTML and other compressible files: prefer gzipped version
         if (isCompressiblePath(relPath) && fs.existsSync(compressedPath)) {
             copyFileToStage(compressedPath, `${stageRelPath}.gz`, stageState);
             return;
@@ -502,6 +425,15 @@ function deleteOriginals() {
     walkDir(WWW_DIR, (filePath) => {
         if (filePath.startsWith(ASSETS_DIR + path.sep) || filePath.startsWith(ASSETS_DIR)) return;
         const ext = path.extname(filePath).toLowerCase();
+        
+        // Keep uncompressed .js and .css files for browser compatibility!
+        // Only delete .html originals since browsers handle them differently.
+        if (ext === '.js' || ext === '.css') {
+            console.log(`  Skipped delete (kept uncompressed): ${path.relative(WWW_DIR, filePath)}`);
+            return;
+        }
+        
+        if (ext !== '.html') return;
         if (!COMPRESS_EXTENSIONS.has(ext)) return;
         if (!shouldTouchWwwFile(filePath)) return;
         if (fs.existsSync(filePath + '.gz')) {
@@ -634,16 +566,7 @@ async function main() {
     console.log('\n[Step 1] Generating SW manifest...');
     generateManifest();
 
-    // 精简版不部署 SW，移除 generateManifest 产生的 sw.js
-    if (isLiteWebProfile()) {
-        const swFile = path.join(WWW_DIR, 'sw.js');
-        if (fs.existsSync(swFile)) fs.unlinkSync(swFile);
-    }
-
-    if (isCompactWebProfile()) {
-        activeWwwWhitelist = collectStageWhitelist(buildResult);
-        console.log(`  ${getWebProfile()} compression whitelist: ${activeWwwWhitelist.size} web file(s)`);
-    }
+    // 统一架构：始终生成 SW（无精简版模式）
 
     deleteOldGzFiles();
     compressAllFiles();

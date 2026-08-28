@@ -1815,11 +1815,15 @@ bool FBNetworkManager::connectToWiFiBlocking() {
             break;
         }
 
-        // 重试前短暂等待
+        // 重试前使用指数退避策略（固定间隔会耗尽 DRAM）
+        // 5s → 10s → 20s → 40s，最大 60s 封顶
         if (attempt < MAX_WIFI_RETRIES) {
-            Serial.printf("[NET] WiFi attempt %d failed, retrying...\n", attempt);
+            Serial.printf("[NET] WiFi attempt %d failed, exponential backoff retry...\n", attempt);
             WiFi.disconnect(false);
-            delay(1000);
+            
+            // 计算退避时间：base * 2^(attempt-1)，最大 60s
+            uint32_t backoffMs = min(60000UL, 5000UL << (attempt - 1));
+            delay(backoffMs);
         }
     }
 

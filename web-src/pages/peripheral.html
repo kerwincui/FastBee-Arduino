@@ -2,25 +2,24 @@
 <div id="peripheral-page" class="page page-layout-flat">
     <div class="fb-card">
         <div class="fb-card-header fb-card-header-toolbar">
-            <h2 class="fb-card-title" data-i18n="peripheral-title">外设配置</h2>
+            <h2 class="fb-card-title">外设配置</h2>
             <div class="u-toolbar-sm">
                 <select id="peripheral-filter-type" class="u-select-auto">
-                    <option value="" data-i18n="peripheral-filter-all">全部外设</option>
-                    <option value="communication" data-i18n="peripheral-filter-comm">通信接口</option>
-                    <option value="gpio" data-i18n="peripheral-filter-gpio">GPIO接口</option>
-                    <option value="analog" data-i18n="peripheral-filter-analog">模拟信号</option>
+                    <option value="">全部外设</option>
+                    <option value="communication">通信接口</option>
+                    <option value="gpio">GPIO接口</option>
+                    <option value="analog">模拟信号</option>
                     <!-- 调试接口过滤器已隐藏（JTAG/SWD未实现驱动） -->
-                    <option value="special" data-i18n="peripheral-filter-special">专用外设</option>
+                    <option value="special">专用外设</option>
                 </select>
-                                <button class="fb-btn fb-btn-refresh" id="peripheral-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
-                <button class="fb-btn fb-btn-primary" id="add-peripheral-btn"
-                    data-i18n="add-peripheral-btn-text">
-                    <span data-i18n="add-peripheral-btn">新增外设</span>
+                                <button class="fb-btn fb-btn-refresh" id="peripheral-refresh-btn"><span>刷新</span></button>
+                <button class="fb-btn fb-btn-primary" id="add-peripheral-btn">
+                    <span>新增外设</span>
                 </button>
             </div>
         </div>
         <div id="peripheral-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none;margin:0 16px;padding:8px 12px;">
-            <span data-i18n="dev-mode-disabled-tip">开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
+            <span>开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
         </div>
         <div class="fb-card-body">
             <!-- 外设列表表格 -->
@@ -28,18 +27,17 @@
                 <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
-                            <th data-i18n="peripheral-id-col">ID</th>
-                            <th data-i18n="peripheral-name-col">名称</th>
-                            <th data-i18n="peripheral-type-col">类型</th>
-                            <th data-i18n="peripheral-pins-col">引脚</th>
-                            <th data-i18n="peripheral-status-col" style="width:104px;">状态</th>
-                            <th data-i18n="peripheral-actions-col">操作</th>
+                            <th>ID</th>
+                            <th>名称</th>
+                            <th>类型</th>
+                            <th>引脚</th>
+                            <th style="width:104px;">状态</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="peripheral-table-body">
                         <tr>
-                            <td colspan="6" class="u-empty-cell"
-                                data-i18n="peripheral-loading">加载中...</td>
+                            <td colspan="6" class="u-empty-cell">加载中...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -55,43 +53,42 @@
 <div id="periph-exec-page" class="page page-layout-flat">
     <div class="fb-card">
         <div class="fb-card-header u-header-between-wrap">
-            <h2 class="fb-card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
+            <h2 class="fb-card-title">外设执行管理</h2>
             <div class="u-toolbar-sm">
                 <select id="periph-exec-filter-periph" class="u-select-auto"
                     data-change-action="loadPeriphExecPage">
-                    <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
-                    <option value="trigger:1" data-i18n="periph-exec-trigger-timer">定时触发</option>
-                    <option value="trigger:4" data-i18n="periph-exec-trigger-event">事件触发</option>
-                    <option value="trigger:5" data-i18n="periph-exec-trigger-poll">轮询触发</option>
-                    <option value="trigger:0" data-i18n="periph-exec-trigger-platform">平台触发</option>
-                    <option value="trigger:6" data-i18n="periph-exec-trigger-periph-exec">规则联动</option>
+                    <option value="">全部规则</option>
+                    <option value="trigger:1">定时触发</option>
+                    <option value="trigger:4">事件触发</option>
+                    <option value="trigger:5">轮询触发</option>
+                    <option value="trigger:0">平台触发</option>
+                    <option value="trigger:6">规则联动</option>
                 </select>
-                                <button class="fb-btn fb-btn-refresh" id="periph-exec-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
+                                <button class="fb-btn fb-btn-refresh" id="periph-exec-refresh-btn"><span>刷新</span></button>
                 <button class="fb-btn fb-btn-primary" id="periph-exec-page-add-btn"
                     data-action="openPeriphExecModalStandalone">
-                    <span data-i18n="periph-exec-add-btn">新增规则</span>
+                    <span>新增规则</span>
                 </button>
             </div>
         </div>
         <div id="periph-exec-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none;margin:0 16px;padding:8px 12px;">
-            <span data-i18n="dev-mode-disabled-tip">开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
+            <span>开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
         </div>
         <div class="fb-card-body">
             <div class="u-table-wrap">
                 <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
-                            <th data-i18n="periph-exec-col-name">名称</th>
-                            <th data-i18n="periph-exec-col-status" style="width:92px;">状态</th>
-                            <th data-i18n="periph-exec-col-flow">执行流程</th>
-                            <th data-i18n="periph-exec-col-stats" style="width:80px;">触发</th>
-                            <th data-i18n="periph-exec-col-ops">操作</th>
+                            <th>名称</th>
+                            <th style="width:92px;">状态</th>
+                            <th>执行流程</th>
+                            <th style="width:80px;">触发</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="periph-exec-table-body">
                         <tr>
-                            <td colspan="5" class="u-empty-cell"
-                                data-i18n="periph-exec-loading">加载中...</td>
+                            <td colspan="5" class="u-empty-cell">加载中...</td>
                         </tr>
                     </tbody>
                 </table>

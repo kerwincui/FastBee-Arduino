@@ -5,23 +5,11 @@
  * @date 2025-12-02
  * 
  * 通过条件编译控制各功能的启用/禁用，优化 Flash 占用。
- * 可在platformio.ini 的 build_flags 中配置，或在此修改默认值。
+ * 所有功能默认全量编入，运行时通过 Web UI 功能配置页面开关控制。
  */
 
 #ifndef FEATURE_FLAGS_H
 #define FEATURE_FLAGS_H
-
-#ifndef FASTBEE_PROFILE_LITE
-#define FASTBEE_PROFILE_LITE 0
-#endif
-
-#ifndef FASTBEE_PROFILE_STANDARD
-#define FASTBEE_PROFILE_STANDARD 0
-#endif
-
-#ifndef FASTBEE_PROFILE_FULL
-#define FASTBEE_PROFILE_FULL 0
-#endif
 
 // ============================================================================
 // 协议功能开关

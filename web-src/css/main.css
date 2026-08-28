@@ -804,12 +804,6 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .protocol-chip.is-on { background: #e6f7e6; color: #4CAF50; }
 
 /* ============================================
-   20. File Manager
-   ============================================ */
-.fs-btn-sm { padding: 3px var(--space-2); font-size: 12px; line-height: 1.4; height: 26px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded-sm); color: var(--text-secondary); cursor: pointer; }
-.fs-btn-sm:hover { background: var(--slate-50); border-color: var(--slate-300); }
-
-/* ============================================
    21. Footer
    ============================================ */
 .app-footer {  padding-top: var(--space-5); text-align: center; color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
@@ -1320,21 +1314,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 .periph-exec-config-item select:focus,
 .periph-exec-config-item textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22,119,255,0.08); }
 
-.fs-layout { display: flex; height: 600px; gap: 10px; }
-.fs-sidebar { width: 300px; min-width: 250px; border: 1px solid var(--border); border-radius: 4px; overflow-y: auto; background: color-mix(in srgb, var(--bg-card) 92%, var(--gray-4) 8%); }
-.fs-sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 15px; background: color-mix(in srgb, var(--bg-card) 88%, var(--gray-4) 12%); border-bottom: 1px solid var(--border); font-weight: 700; }
-.fs-sidebar-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.fs-current-dir { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fs-tree { padding: 10px; font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 13px; }
-.fs-tree-empty { color: var(--text-muted); }
-.fs-editor { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 4px; display: flex; flex-direction: column; }
-.fs-editor-header { padding: 10px; background: color-mix(in srgb, var(--bg-card) 88%, var(--gray-4) 12%); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
-.fs-editor-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 13px; color: var(--text-secondary); }
-.fs-editor-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.fs-editor-textarea { flex: 1; border: none; padding: 10px; resize: none; font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 13px; background: transparent; color: var(--text-primary); }
-.fs-status { padding: 5px 10px; background: color-mix(in srgb, var(--bg-card) 90%, var(--gray-4) 10%); border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
-.log-content { min-height: 420px; max-height: 62vh; overflow: auto; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--rounded-md); background: color-mix(in srgb, var(--bg-card) 88%, var(--gray-11) 12%); color: var(--text-primary); font: 12px/1.55 Consolas, Monaco, 'Courier New', monospace; white-space: pre-wrap; word-break: break-word; }
-.file-tree-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: background-color 0.15s ease, color 0.15s ease; }
+/* File Manager removed - no longer in use */
 .file-tree-item:hover { background: var(--primary-light); }
 .file-tree-item.is-active { background: color-mix(in srgb, var(--primary-light) 72%, var(--bg-card) 28%); color: var(--text-primary); }
 .file-tree-icon-dir { color: #e6a23c; flex-shrink: 0; }

@@ -2,7 +2,7 @@
 <div id="wifi-modal" class="modal">
     <div class="modal-content u-modal-content-560">
         <div class="modal-header">
-            <h2 class="modal-title" data-i18n="wifi-modal-title">选择WiFi网络</h2>
+            <h2 class="modal-title">选择WiFi网络</h2>
             <button id="close-wifi-modal" class="modal-close-btn">×</button>
         </div>
         <div class="modal-body modal-body-compact">
@@ -17,38 +17,37 @@
 <div id="change-password-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h2 class="modal-title" id="change-password-title" data-i18n="change-password-title">修改密码</h2>
+            <h2 class="modal-title" id="change-password-title">修改密码</h2>
             <button id="close-password-modal" class="modal-close-btn">×</button>
         </div>
         <div class="modal-body">
             <form id="change-password-form" class="fb-form">
                 <fieldset>
                     <div class="fb-form-group">
-                        <label for="current-password-input" id="current-password-label" data-i18n="current-password-label">当前密码</label>
+                        <label for="current-password-input" id="current-password-label">当前密码</label>
                         <input type="password" id="current-password-input" class=""
                             placeholder="请输入当前密码" required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="new-password-input" id="new-password-label" data-i18n="new-password-label">新密码</label>
+                        <label for="new-password-input" id="new-password-label">新密码</label>
                         <input type="password" id="new-password-input" class="" placeholder="请输入新密码"
                             required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="confirm-password-input" id="confirm-password-label" data-i18n="confirm-password-label">确认新密码</label>
+                        <label for="confirm-password-input" id="confirm-password-label">确认新密码</label>
                         <input type="password" id="confirm-password-input" class=""
                             placeholder="请再次输入新密码" required>
                     </div>
 
-                    <div id="password-error" class="message message-error is-hidden" data-i18n="password-error"></div>
+                    <div id="password-error" class="message message-error is-hidden"></div>
                 </fieldset>
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-password-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="confirm-password-btn" type="button"
-                data-i18n="confirm-change">确认修改</button>
+            <button class="fb-btn" id="cancel-password-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="confirm-password-btn" type="button">确认修改</button>
         </div>
     </div>
 </div>
@@ -57,8 +56,7 @@
 <div id="peripheral-modal" class="modal">
     <div class="modal-content modal-content-wide">
         <div class="modal-header">
-            <h2 class="modal-title" id="peripheral-modal-title"
-                data-i18n="peripheral-add-modal-title">新增外设</h2>
+            <h2 class="modal-title" id="peripheral-modal-title">新增外设</h2>
             <button id="close-peripheral-modal" class="modal-close-btn">×</button>
         </div>
         <div class="modal-body">
@@ -70,25 +68,24 @@
                         <!-- 左列：基本配置 -->
                         <div class="config-form-column">
                             <div class="fb-form-group">
-                                <label for="peripheral-id-input" data-i18n="peripheral-id-label">外设ID</label>
+                                <label for="peripheral-id-input">外设ID</label>
                                 <input type="text" id="peripheral-id-input" class=""
-                                    placeholder="留空自动生成" data-i18n-placeholder="peripheral-id-hint">
+                                    placeholder="留空自动生成">
                             </div>
                             <div class="fb-form-group">
-                                <label for="peripheral-name-input" data-i18n="peripheral-name-label">名称</label>
+                                <label for="peripheral-name-input">名称</label>
                                 <input type="text" id="peripheral-name-input" class=""
-                                    placeholder="例如: LED、UART1" required
-                                    data-i18n-placeholder="peripheral-name-hint">
+                                    placeholder="例如: LED、UART1" required>
                             </div>
                             <div class="fb-form-group">
-                                <label for="peripheral-type-input" data-i18n="peripheral-type-label">外设类型</label>
+                                <label for="peripheral-type-input">外设类型</label>
                                 <select id="peripheral-type-input" class="" required>
-                                    <optgroup label="通信接口" data-i18n-label="peripheral-cat-comm">
+                                    <optgroup label="通信接口">
                                         <option value="1">UART</option>
                                         <option value="2">I2C</option>
                                         <option value="3">SPI</option>
                                     </optgroup>
-                                    <optgroup label="GPIO接口" data-i18n-label="peripheral-cat-gpio">
+                                    <optgroup label="GPIO接口">
                                         <option value="11">数字输入</option>
                                         <option value="12">数字输出</option>
                                         <option value="13">数字输入(上拉)</option>
@@ -101,33 +98,32 @@
                                         <option value="20">中断(变化)</option>
                                         <option value="21">触摸</option>
                                     </optgroup>
-                                    <optgroup label="模拟信号" data-i18n-label="peripheral-cat-analog">
+                                    <optgroup label="模拟信号">
                                         <option value="26">ADC</option>
                                         <option value="27">DAC</option>
                                     </optgroup>
                                     <!-- 调试接口分类已隐藏（JTAG/SWD未实现驱动） -->
-                                    <optgroup label="专用外设" data-i18n-label="peripheral-cat-special">
-                                        <option value="36" data-i18n="peripheral-type-lcd">LCD/OLED 显示屏</option>
+                                    <optgroup label="专用外设">
+                                        <option value="36">LCD/OLED 显示屏</option>
                                         <option value="37">SDIO</option>
-                                        <option value="38" data-i18n="periph-opt-generic-sensor">通用传感器</option>
+                                        <option value="38">通用传感器</option>
                                         <option value="41">舵机</option>
-                                        <option value="42" data-i18n="periph-opt-stepper">步进电机</option>
+                                        <option value="42">步进电机</option>
                                         <option value="43">编码器</option>
                                         <option value="44">单总线</option>
-                                        <option value="45" data-i18n="periph-opt-neopixel">WS2812B 灯珠</option>
-                                        <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
-                                        <option value="48" data-i18n="periph-opt-rf-module">433MHz 射频模块</option>
-                                        <option value="49" data-i18n="periph-opt-radar-sensor">雷达感应模块</option>
-<option value="50" data-i18n="periph-opt-ds1302">DS1302 实时时钟</option>
-<option value="52" data-i18n="periph-opt-lcd1602">LCD1602 字符液晶</option>
-<option value="53" data-i18n="periph-opt-ir-receiver">红外接收头</option>
-                                        <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
+                                        <option value="45">WS2812B 灯珠</option>
+                                        <option value="47">TM1637 数码管</option>
+                                        <option value="48">433MHz 射频模块</option>
+                                        <option value="49">雷达感应模块</option>
+<option value="50">DS1302 实时时钟</option>
+<option value="52">LCD1602 字符液晶</option>
+<option value="53">红外接收头</option>
+                                        <option value="60">设备事件</option>
                                     </optgroup>
                                 </select>
                             </div>
                             <div class="fb-form-group">
-                                <label for="peripheral-enabled-input"
-                                    data-i18n="peripheral-enabled-label">启用</label>
+                                <label for="peripheral-enabled-input">启用</label>
                                 <label class="toggle-switch">
                                     <input type="checkbox" id="peripheral-enabled-input" checked>
                                     <span class="toggle-slider"></span>
@@ -139,104 +135,101 @@
                         <div class="config-form-column">
                             <!-- 设备事件提示信息 -->
                             <div id="device-event-hint" class="u-hint-bar u-hint-bar-info" style="display:none">
-                                <div class="u-hint-bar-title" data-i18n="device-event-hint-title">📡 设备事件外设说明</div>
+                                <div class="u-hint-bar-title">📡 设备事件外设说明</div>
                                 <ul>
-                                    <li data-i18n="device-event-hint-1">无GPIO引脚，纯逻辑虚拟外设</li>
-                                    <li data-i18n="device-event-hint-2">用于触发系统事件（启动/重启/恢复出厂等）</li>
-                                    <li data-i18n="device-event-hint-3">可在"外设执行"中配置规则触发MQTT广播</li>
-                                    <li data-i18n="device-event-hint-4">适合作为平台触发源，联动其他设备</li>
+                                    <li>无GPIO引脚，纯逻辑虚拟外设</li>
+                                    <li>用于触发系统事件（启动/重启/恢复出厂等）</li>
+                                    <li>可在"外设执行"中配置规则触发MQTT广播</li>
+                                    <li>适合作为平台触发源，联动其他设备</li>
                                 </ul>
                             </div>
                                                     
                             <!-- 通用传感器提示信息 -->
                             <div id="generic-sensor-hint" class="u-hint-bar u-hint-bar-info-alt" style="display:none">
-                                <div class="u-hint-bar-title" data-i18n="generic-sensor-hint-title">🔌 通用传感器容器说明</div>
+                                <div class="u-hint-bar-title">🔌 通用传感器容器说明</div>
                                 <ul>
-                                    <li data-i18n="generic-sensor-hint-1">逻辑数据源，用于外部传感器或虚拟传感器</li>
-                                    <li data-i18n="generic-sensor-hint-2">不代表具体物理传感器驱动</li>
-                                    <li data-i18n="generic-sensor-hint-3">具体传感器请使用专用类型（DHT11/DS18B20/SHT31等）</li>
-                                    <li data-i18n="generic-sensor-hint-4">可在"外设执行"中配置数据读取和上报规则</li>
+                                    <li>逻辑数据源，用于外部传感器或虚拟传感器</li>
+                                    <li>不代表具体物理传感器驱动</li>
+                                    <li>具体传感器请使用专用类型（DHT11/DS18B20/SHT31等）</li>
+                                    <li>可在"外设执行"中配置数据读取和上报规则</li>
                                 </ul>
                             </div>
 
                             <!-- DS1302 实时时钟提示信息 -->
 <div id="ds1302-hint" class="u-hint-bar u-hint-bar-warning" style="display:none">
-<div class="u-hint-bar-title" data-i18n="ds1302-hint-title">⏰ DS1302 实时时钟说明</div>
+<div class="u-hint-bar-title">⏰ DS1302 实时时钟说明</div>
                                 <ul>
-<li data-i18n="ds1302-hint-1">3线接口（CE/IO/SCLK），非标准SPI</li>
-<li data-i18n="ds1302-hint-2">支持时间读取/设置，断电后由纽扣电池维持计时</li>
-<li data-i18n="ds1302-hint-3">支持涓流充电（可给超级电容充电）</li>
-<li data-i18n="ds1302-hint-4">内置31字节用户RAM可存储少量配置数据</li>
+<li>3线接口（CE/IO/SCLK），非标准SPI</li>
+<li>支持时间读取/设置，断电后由纽扣电池维持计时</li>
+<li>支持涓流充电（可给超级电容充电）</li>
+<li>内置31字节用户RAM可存储少量配置数据</li>
                                 </ul>
                             </div>
 
                             <!-- LCD1602 字符液晶提示信息 -->
 <div id="lcd1602-hint" class="u-hint-bar u-hint-bar-success" style="display:none">
-<div class="u-hint-bar-title" data-i18n="lcd1602-hint-title">📺 LCD1602 字符液晶说明</div>
+<div class="u-hint-bar-title">📺 LCD1602 字符液晶说明</div>
                                 <ul>
-<li data-i18n="lcd1602-hint-1">I2C接口（通过PCF8574/PCF8574A扩展板）</li>
-<li data-i18n="lcd1602-hint-2">支持16x2和20x4字符液晶</li>
-<li data-i18n="lcd1602-hint-3">仅支持ASCII字符，不支持中文</li>
-<li data-i18n="lcd1602-hint-4">常见I2C地址：0x27（PCF8574）或0x3F（PCF8574A）</li>
+<li>I2C接口（通过PCF8574/PCF8574A扩展板）</li>
+<li>支持16x2和20x4字符液晶</li>
+<li>仅支持ASCII字符，不支持中文</li>
+<li>常见I2C地址：0x27（PCF8574）或0x3F（PCF8574A）</li>
                                 </ul>
                             </div>
 
                             <div class="fb-form-group" id="peripheral-pins-group">
-                                <label for="peripheral-pins-input" data-i18n="peripheral-pins-label">引脚配置</label>
+                                <label for="peripheral-pins-input">引脚配置</label>
                                 <input type="text" id="peripheral-pins-input" class=""
-                                    placeholder="例如: 2,4,5 (逗号分隔)" required
-                                    data-i18n-placeholder="peripheral-pins-hint">
+                                    placeholder="例如: 2,4,5 (逗号分隔)" required>
                                 <small id="peripheral-pins-validation-hint" class="field-hint"></small>
                                 <small id="peripheral-pins-recommend" class="field-hint" style="color:var(--text-muted);display:none"></small>
-                                <small id="uart-pin-direction-hint" class="field-hint is-hidden"
-                                    data-i18n="peripheral-uart-pin-hint">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
+                                <small id="uart-pin-direction-hint" class="field-hint is-hidden">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
                             </div>
 
                             <!-- 动态参数区域 -->
                             <div id="peripheral-params-container">
                                 <!-- GPIO参数 -->
                                 <div id="gpio-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="gpio-params-title">GPIO参数</h4>
+                                    <h4 class="u-mb-10">GPIO参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="gpio-initial-state" data-i18n="gpio-initial-label">初始状态</label>
+                                        <label for="gpio-initial-state">初始状态</label>
                                         <select id="gpio-initial-state" class="">
-                                            <option value="0" selected data-i18n="gpio-state-low">低电平</option>
-                                            <option value="1" data-i18n="gpio-state-high">高电平</option>
+                                            <option value="0" selected>低电平</option>
+                                            <option value="1">高电平</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group pwm-only is-hidden">
-                                        <label for="gpio-pwm-freq" data-i18n="gpio-pwm-freq-label">PWM频率
+                                        <label for="gpio-pwm-freq">PWM频率
                                             (Hz)</label>
                                         <input type="number" id="gpio-pwm-freq" class="" value="1000"
                                             min="1" max="40000000">
                                     </div>
                                     <div class="fb-form-group pwm-only is-hidden">
-                                        <label for="gpio-pwm-resolution" data-i18n="gpio-pwm-res-label">PWM分辨率
+                                        <label for="gpio-pwm-resolution">PWM分辨率
                                             (位)</label>
                                         <input type="number" id="gpio-pwm-resolution" class="" value="8"
                                             min="1" max="16">
                                     </div>
                                     <div class="fb-form-group pwm-only is-hidden">
-                                        <label for="gpio-default-duty" data-i18n="gpio-duty-label">默认占空比</label>
+                                        <label for="gpio-default-duty">默认占空比</label>
                                         <input type="number" id="gpio-default-duty" class="" value="0"
                                             min="0" max="65535">
-                                        <small
-                                            data-i18n="gpio-duty-help">根据分辨率计算，8位=0~255</small>
+                                        <small>根据分辨率计算，8位=0~255</small>
                                     </div>
                                     <div class="fb-form-group ao-only is-hidden">
                                         <label class="fb-checkbox fb-m-0">
                                             <input type="checkbox" id="gpio-ao-mode">
-                                            <span data-i18n="gpio-ao-mode-label">AO 模拟量输出模式</span>
+                                            <span>AO 模拟量输出模式</span>
                                         </label>
-                                        <small data-i18n="gpio-ao-mode-help">启用后 PWM 按 0-100% 百分比映射输出（无 DAC 芯片的工业 AO 方案）</small>
+                                        <small>启用后 PWM 按 0-100% 百分比映射输出（无 DAC 芯片的工业 AO 方案）</small>
                                     </div>
                                     <div class="fb-form-group ao-only is-hidden">
-                                        <label for="gpio-ao-min-pct" data-i18n="gpio-ao-min-label">AO 最小百分比</label>
+                                        <label for="gpio-ao-min-pct">AO 最小百分比</label>
                                         <input type="number" id="gpio-ao-min-pct" class="" value="0"
                                             min="0" max="100">
                                     </div>
                                     <div class="fb-form-group ao-only is-hidden">
-                                        <label for="gpio-ao-max-pct" data-i18n="gpio-ao-max-label">AO 最大百分比</label>
+                                        <label for="gpio-ao-max-pct">AO 最大百分比</label>
                                         <input type="number" id="gpio-ao-max-pct" class="" value="100"
                                             min="0" max="100">
                                     </div>
@@ -244,9 +237,9 @@
 
                                 <!-- UART参数 -->
                                 <div id="uart-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="uart-params-title">UART参数</h4>
+                                    <h4 class="u-mb-10">UART参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="uart-baudrate" data-i18n="uart-baudrate-label">波特率</label>
+                                        <label for="uart-baudrate">波特率</label>
                                         <select id="uart-baudrate" class="">
                                             <option value="1200">1200</option>
                                             <option value="2400">2400</option>
@@ -262,7 +255,7 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="uart-databits" data-i18n="uart-databits-label">数据位</label>
+                                        <label for="uart-databits">数据位</label>
                                         <select id="uart-databits" class="">
                                             <option value="5">5</option>
                                             <option value="6">6</option>
@@ -271,14 +264,14 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="uart-stopbits" data-i18n="uart-stopbits-label">停止位</label>
+                                        <label for="uart-stopbits">停止位</label>
                                         <select id="uart-stopbits" class="">
                                             <option value="1" selected>1</option>
                                             <option value="2">2</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="uart-parity" data-i18n="uart-parity-label">校验位</label>
+                                        <label for="uart-parity">校验位</label>
                                         <select id="uart-parity" class="">
                                             <option value="0" selected>无</option>
                                             <option value="1">奇校验</option>
@@ -289,16 +282,16 @@
 
                                 <!-- I2C参数 -->
                                 <div id="i2c-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="i2c-params-title">I2C参数</h4>
+                                    <h4 class="u-mb-10">I2C参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="i2c-frequency" data-i18n="i2c-freq-label">频率 (Hz)</label>
+                                        <label for="i2c-frequency">频率 (Hz)</label>
                                         <select id="i2c-frequency" class="">
                                             <option value="100000" selected>100kHz (标准模式)</option>
                                             <option value="400000">400kHz (快速模式)</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="i2c-address" data-i18n="i2c-addr-label">从机地址 (0=主机模式)</label>
+                                        <label for="i2c-address">从机地址 (0=主机模式)</label>
                                         <input type="number" id="i2c-address" class="" value="0" min="0"
                                             max="127">
                                     </div>
@@ -306,14 +299,14 @@
 
                                 <!-- SPI参数 -->
                                 <div id="spi-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="spi-params-title">SPI参数</h4>
+                                    <h4 class="u-mb-10">SPI参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="spi-frequency" data-i18n="spi-freq-label">频率 (Hz)</label>
+                                        <label for="spi-frequency">频率 (Hz)</label>
                                         <input type="number" id="spi-frequency" class="" value="1000000"
                                             min="1000" max="80000000">
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="spi-mode" data-i18n="spi-mode-label">模式</label>
+                                        <label for="spi-mode">模式</label>
                                         <select id="spi-mode" class="">
                                             <option value="0" selected>模式0 (CPOL=0, CPHA=0)</option>
                                             <option value="1">模式1 (CPOL=0, CPHA=1)</option>
@@ -325,9 +318,9 @@
 
                                 <!-- ADC参数 -->
                                 <div id="adc-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="adc-params-title">ADC参数</h4>
+                                    <h4 class="u-mb-10">ADC参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="adc-resolution" data-i18n="adc-res-label">分辨率 (位)</label>
+                                        <label for="adc-resolution">分辨率 (位)</label>
                                         <select id="adc-resolution" class="">
                                             <option value="9">9位 (0-511)</option>
                                             <option value="10">10位 (0-1023)</option>
@@ -336,7 +329,7 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="adc-attenuation" data-i18n="adc-att-label">衰减系数</label>
+                                        <label for="adc-attenuation">衰减系数</label>
                                         <select id="adc-attenuation" class="">
                                             <option value="0">0dB (0-1.1V)</option>
                                             <option value="1">2.5dB (0-1.5V)</option>
@@ -345,17 +338,17 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="adc-sample-count" data-i18n="adc-sample-count-label">采样次数 (滤波)</label>
+                                        <label for="adc-sample-count">采样次数 (滤波)</label>
                                         <select id="adc-sample-count" class="">
                                             <option value="1" selected>1次 (单次采样)</option>
                                             <option value="4">4次</option>
                                             <option value="8">8次 (推荐)</option>
                                             <option value="16">16次</option>
                                         </select>
-                                        <small data-i18n="adc-sample-count-help">多次采样滤波可抑制工业噪声，默认 1 次保持原行为</small>
+                                        <small>多次采样滤波可抑制工业噪声，默认 1 次保持原行为</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="adc-filter-mode" data-i18n="adc-filter-mode-label">滤波模式</label>
+                                        <label for="adc-filter-mode">滤波模式</label>
                                         <select id="adc-filter-mode" class="">
                                             <option value="0" selected>均值滤波</option>
                                             <option value="1">中值滤波 (抗尖峰)</option>
@@ -365,9 +358,9 @@
 
                                 <!-- DAC参数 -->
                                 <div id="dac-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="dac-params-title">DAC参数</h4>
+                                    <h4 class="u-mb-10">DAC参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="dac-default-value" data-i18n="dac-value-label">默认输出值
+                                        <label for="dac-default-value">默认输出值
                                             (0-255)</label>
                                         <input type="number" id="dac-default-value" class="" value="0"
                                             min="0" max="255">
@@ -376,162 +369,162 @@
 
                                 <!-- TM1637 数码管参数 -->
                                 <div id="segment-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="segment-params-title">数码管参数</h4>
+                                    <h4 class="u-mb-10">数码管参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="segment-brightness" data-i18n="segment-brightness-label">亮度 (0-7)</label>
+                                        <label for="segment-brightness">亮度 (0-7)</label>
                                         <input type="number" id="segment-brightness" class="" value="3"
                                             min="0" max="7">
-                                        <small data-i18n="segment-brightness-help">0=最暗，7=最亮，默认 3</small>
+                                        <small>0=最暗，7=最亮，默认 3</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="segment-pin-hint">引脚顺序：引脚1=CLK, 引脚2=DIO</small>
+                                        <small>引脚顺序：引脚1=CLK, 引脚2=DIO</small>
                                     </div>
                                 </div>
 
                                 <!-- 步进电机参数 -->
                                 <div id="stepper-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="stepper-params-title">步进电机参数</h4>
+                                    <h4 class="u-mb-10">步进电机参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="stepper-steps-per-rev" data-i18n="stepper-steps-label">每圈步数</label>
+                                        <label for="stepper-steps-per-rev">每圈步数</label>
                                         <input type="number" id="stepper-steps-per-rev" class="" value="2048"
                                             min="1" max="4096">
-                                        <small data-i18n="stepper-steps-help">28BYJ-48 + ULN2003 常用 2048 半步/圈</small>
+                                        <small>28BYJ-48 + ULN2003 常用 2048 半步/圈</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="stepper-speed" data-i18n="stepper-speed-label">默认转速 (RPM)</label>
+                                        <label for="stepper-speed">默认转速 (RPM)</label>
                                         <input type="number" id="stepper-speed" class="" value="8"
                                             min="1" max="30">
-                                        <small data-i18n="stepper-speed-help">建议 1-15 RPM，过高容易丢步或发热</small>
+                                        <small>建议 1-15 RPM，过高容易丢步或发热</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="stepper-pin-hint">引脚顺序：IN1, IN2, IN3, IN4；ULN2003 示例为 11,10,9,13</small>
+                                        <small>引脚顺序：IN1, IN2, IN3, IN4；ULN2003 示例为 11,10,9,13</small>
                                     </div>
                                 </div>
 
                                 <!-- 编码器参数 -->
                                 <div id="encoder-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="encoder-params-title">编码器参数</h4>
+                                    <h4 class="u-mb-10">编码器参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="encoder-resolution" data-i18n="encoder-resolution-label">每转脉冲数</label>
+                                        <label for="encoder-resolution">每转脉冲数</label>
                                         <input type="number" id="encoder-resolution" class="" value="1024"
                                             min="1" max="65535">
-                                        <small data-i18n="encoder-resolution-help">常用值：600, 1024, 2048, 4096</small>
+                                        <small>常用值：600, 1024, 2048, 4096</small>
                                     </div>
                                     <div class="fb-form-group">
                                         <label class="fb-checkbox fb-m-0">
                                             <input type="checkbox" id="encoder-use-interrupt" checked>
-                                            <span data-i18n="encoder-interrupt-label">使用硬件中断</span>
+                                            <span>使用硬件中断</span>
                                         </label>
-                                        <small data-i18n="encoder-interrupt-help">中断模式可提高采样精度</small>
+                                        <small>中断模式可提高采样精度</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="encoder-pin-hint">引脚顺序：A相, B相；例如 GPIO4, GPIO5</small>
+                                        <small>引脚顺序：A相, B相；例如 GPIO4, GPIO5</small>
                                     </div>
                                 </div>
 
                                 <!-- SD卡参数 -->
                                 <div id="sdcard-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="sdcard-params-title">SD卡参数</h4>
+                                    <h4 class="u-mb-10">SD卡参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="sdcard-interface" data-i18n="sdcard-interface-label">接口模式</label>
+                                        <label for="sdcard-interface">接口模式</label>
                                         <select id="sdcard-interface" class="">
                                             <option value="1" selected>SPI 模式</option>
                                             <option value="0">SDMMC 模式 (仅部分ESP32)</option>
                                         </select>
-                                        <small data-i18n="sdcard-interface-help">SPI模式兼容性更好，SDMMC速度更快</small>
+                                        <small>SPI模式兼容性更好，SDMMC速度更快</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="sdcard-frequency" data-i18n="sdcard-frequency-label">通信频率 (Hz)</label>
+                                        <label for="sdcard-frequency">通信频率 (Hz)</label>
                                         <input type="number" id="sdcard-frequency" class="" value="20000000"
                                             min="100000" max="40000000" step="100000">
-                                        <small data-i18n="sdcard-frequency-help">SPI常用 20MHz，SDMMC可达 40MHz</small>
+                                        <small>SPI常用 20MHz，SDMMC可达 40MHz</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small id="sdcard-pin-hint-spi" data-i18n="sdcard-pin-hint-spi">SPI引脚顺序：CLK, MOSI, MISO, CS</small>
-                                        <small id="sdcard-pin-hint-sdmmc" class="is-hidden" data-i18n="sdcard-pin-hint-sdmmc">SDMMC引脚顺序：CMD, CLK, D0, D1, D2, D3</small>
+                                        <small id="sdcard-pin-hint-spi">SPI引脚顺序：CLK, MOSI, MISO, CS</small>
+                                        <small id="sdcard-pin-hint-sdmmc" class="is-hidden">SDMMC引脚顺序：CMD, CLK, D0, D1, D2, D3</small>
                                     </div>
                                 </div>
 
                                 <!-- WS2812B / NeoPixel 参数 -->
                                 <div id="neopixel-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="neopixel-params-title">WS2812B 灯珠参数</h4>
+                                    <h4 class="u-mb-10">WS2812B 灯珠参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="neopixel-count" data-i18n="neopixel-count-label">灯珠数量</label>
+                                        <label for="neopixel-count">灯珠数量</label>
                                         <input type="number" id="neopixel-count" class="" value="1"
                                             min="1" max="64">
-                                        <small data-i18n="neopixel-count-help">建议 ESP32 精简版先使用 1-16 颗，最大限制 64 颗</small>
+                                        <small>建议 ESP32 精简版先使用 1-16 颗，最大限制 64 颗</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="neopixel-brightness" data-i18n="neopixel-brightness-label">默认亮度 (0-255)</label>
+                                        <label for="neopixel-brightness">默认亮度 (0-255)</label>
                                         <input type="number" id="neopixel-brightness" class="" value="64"
                                             min="0" max="255">
-                                        <small data-i18n="neopixel-brightness-help">亮度越高耗电越大，测试建议 32-96</small>
+                                        <small>亮度越高耗电越大，测试建议 32-96</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="neopixel-pin-hint">引脚顺序：只填 1 个数据引脚 DIN，例如 GPIO4</small>
+                                        <small>引脚顺序：只填 1 个数据引脚 DIN，例如 GPIO4</small>
                                     </div>
                                 </div>
 
                                 <!-- 433MHz RF 参数 -->
                                 <div id="rf-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="rf-params-title">433MHz 射频参数</h4>
+                                    <h4 class="u-mb-10">433MHz 射频参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="rf-mode" data-i18n="rf-mode-label">模式</label>
+                                        <label for="rf-mode">模式</label>
                                         <select id="rf-mode" class="">
-                                            <option value="0" selected data-i18n="rf-mode-tx">发射</option>
-                                            <option value="1" data-i18n="rf-mode-rx">接收(学习)</option>
+                                            <option value="0" selected>发射</option>
+                                            <option value="1">接收(学习)</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="rf-bit-length" data-i18n="rf-bit-length-label">编码位数</label>
+                                        <label for="rf-bit-length">编码位数</label>
                                         <input type="number" id="rf-bit-length" class="" value="24" min="1" max="32">
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="rf-pulse-width" data-i18n="rf-pulse-width-label">脉宽 (us)</label>
+                                        <label for="rf-pulse-width">脉宽 (us)</label>
                                         <input type="number" id="rf-pulse-width" class="" value="350" min="100" max="2000">
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="rf-repeat" data-i18n="rf-repeat-label">重复次数</label>
+                                        <label for="rf-repeat">重复次数</label>
                                         <input type="number" id="rf-repeat" class="" value="8" min="1" max="20">
                                     </div>
                                     <div class="fb-form-group">
                                         <label class="fb-checkbox fb-m-0">
                                             <input type="checkbox" id="rf-active-high" checked>
-                                            <span data-i18n="rf-active-high-label">高电平有效</span>
+                                            <span>高电平有效</span>
                                         </label>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="rf-pin-hint">引脚顺序：DATA，发射模块接 DIN/ATAD，接收模块接 DATA/OUT</small>
+                                        <small>引脚顺序：DATA，发射模块接 DIN/ATAD，接收模块接 DATA/OUT</small>
                                     </div>
                                 </div>
 
                                 <!-- 雷达感应参数 -->
                                 <div id="radar-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="radar-params-title">雷达感应参数</h4>
+                                    <h4 class="u-mb-10">雷达感应参数</h4>
                                     <div class="fb-form-group">
                                         <label class="fb-checkbox fb-m-0">
                                             <input type="checkbox" id="radar-active-high" checked>
-                                            <span data-i18n="radar-active-high-label">OUT 高电平表示检测到</span>
+                                            <span>OUT 高电平表示检测到</span>
                                         </label>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="radar-debounce-ms" data-i18n="radar-debounce-label">去抖时间 (ms)</label>
+                                        <label for="radar-debounce-ms">去抖时间 (ms)</label>
                                         <input type="number" id="radar-debounce-ms" class="" value="50" min="0" max="5000">
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="radar-hold-ms" data-i18n="radar-hold-label">保持时间 (ms)</label>
+                                        <label for="radar-hold-ms">保持时间 (ms)</label>
                                         <input type="number" id="radar-hold-ms" class="" value="2000" min="0" max="60000">
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="radar-pin-hint">引脚顺序：OUT；RCWL-0516 可用 3V3 或 VIN 供电，GND 共地</small>
+                                        <small>引脚顺序：OUT；RCWL-0516 可用 3V3 或 VIN 供电，GND 共地</small>
                                     </div>
                                 </div>
 
                                 <!-- OLED/LCD 显示屏参数 -->
                                 <div id="lcd-params" class="peripheral-params-group is-hidden">
-                                    <h4 class="u-mb-10" data-i18n="lcd-params-title">显示屏参数</h4>
+                                    <h4 class="u-mb-10">显示屏参数</h4>
                                     <div class="fb-form-group">
-                                        <label for="lcd-width" data-i18n="lcd-width-label">屏幕宽度 (px)</label>
+                                        <label for="lcd-width">屏幕宽度 (px)</label>
                                         <select id="lcd-width" class="">
                                             <option value="128" selected>128</option>
                                             <option value="72">72</option>
@@ -539,7 +532,7 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="lcd-height" data-i18n="lcd-height-label">屏幕高度 (px)</label>
+                                        <label for="lcd-height">屏幕高度 (px)</label>
                                         <select id="lcd-height" class="">
                                             <option value="64" selected>64</option>
                                             <option value="40">40</option>
@@ -548,19 +541,19 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="lcd-interface" data-i18n="lcd-interface-label">接口类型</label>
+                                        <label for="lcd-interface">接口类型</label>
                                         <select id="lcd-interface" class="">
                                             <option value="2" selected>I2C</option>
                                             <option value="1">SPI</option>
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
-                                        <label for="lcd-contrast" data-i18n="lcd-contrast-label">对比度 (1-255)</label>
+                                        <label for="lcd-contrast">对比度 (1-255)</label>
                                         <input type="number" id="lcd-contrast" class="" value="255" min="0" max="255">
-                                        <small data-i18n="lcd-contrast-help">默认 255（最亮）。屏幕出现上亮下暗时可降到 180-200 试试；填 0 等同于 255</small>
+                                        <small>默认 255（最亮）。屏幕出现上亮下暗时可降到 180-200 试试；填 0 等同于 255</small>
                                     </div>
                                     <div class="fb-form-group">
-                                        <small data-i18n="lcd-pin-hint-i2c">I2C 引脚顺序：SDA, SCL。ESP32-C3 示例：5, 6</small>
+                                        <small>I2C 引脚顺序：SDA, SCL。ESP32-C3 示例：5, 6</small>
                                     </div>
                                 </div>
                             </div>
@@ -569,42 +562,37 @@
 
                     <!-- 红外遥控管理（仅 type=53 时显示） -->
                     <div id="ir-manage-section" class="peripheral-params-group is-hidden">
-                        <h4 class="u-mb-10" data-i18n="ir-manage-title">红外遥控管理</h4>
+                        <h4 class="u-mb-10">红外遥控管理</h4>
                         <!-- 新增外设提示 -->
-                        <div id="ir-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none"
-                            data-i18n="ir-manage-hint-new">保存外设后，即可在此进行对码学习和按键管理。</div>
+                        <div id="ir-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none">保存外设后，即可在此进行对码学习和按键管理。</div>
                         <!-- 管理内容（编辑已有外设时显示） -->
                         <div id="ir-manage-content" style="display:none">
-                            <div id="ir-remote-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none"
-                                data-i18n="ir-remote-not-ready">红外接收头尚未初始化，请先启用该外设。</div>
+                            <div id="ir-remote-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none">红外接收头尚未初始化，请先启用该外设。</div>
                             <!-- 对码行 -->
                             <div class="config-form-grid ir-compact-row">
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="ir-learn-timeout" data-i18n="ir-learn-timeout">学习超时(秒)</label>
+                                    <label for="ir-learn-timeout">学习超时(秒)</label>
                                     <input type="number" id="ir-learn-timeout" value="10" min="3" max="60" style="width:64px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="ir-learn-start-btn" type="button"
-                                        data-i18n="ir-learn-start">开始学习</button>
-                                    <button class="fb-btn fb-btn-sm" id="ir-learn-stop-btn" type="button" style="display:none"
-                                        data-i18n="ir-learn-stop">取消学习</button>
+                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="ir-learn-start-btn" type="button">开始学习</button>
+                                    <button class="fb-btn fb-btn-sm" id="ir-learn-stop-btn" type="button" style="display:none">取消学习</button>
                                 </div>
                             </div>
                             <div id="ir-learn-status" class="pe-help-text" style="min-height:1.2em;margin:2px 0"></div>
                             <!-- 捕获行 -->
                             <div id="ir-learn-captured" class="config-form-grid ir-compact-row" style="display:none">
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="ir-key-name-input" data-i18n="ir-key-name">按键名称</label>
+                                    <label for="ir-key-name-input">按键名称</label>
                                     <input type="text" id="ir-key-name-input" maxlength="32" placeholder="power / vol_up"
                                         style="width:120px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="ir-key-code-input" data-i18n="ir-key-code">编码</label>
+                                    <label for="ir-key-code-input">编码</label>
                                     <input type="text" id="ir-key-code-input" readonly style="width:130px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="ir-key-save-btn" type="button"
-                                        data-i18n="ir-key-save">保存按键</button>
+                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="ir-key-save-btn" type="button">保存按键</button>
                                 </div>
                             </div>
                             <!-- 按键库 -->
@@ -612,66 +600,60 @@
                                 <table class="fb-table fb-table-bordered u-table-fill">
                                     <thead>
                                         <tr>
-                                            <th data-i18n="ir-key-name">按键名称</th>
-                                            <th data-i18n="ir-key-code">编码</th>
-                                            <th data-i18n="ir-key-protocol">协议</th>
-                                            <th style="width:64px" data-i18n="action">操作</th>
+                                            <th>按键名称</th>
+                                            <th>编码</th>
+                                            <th>协议</th>
+                                            <th style="width:64px">操作</th>
                                         </tr>
                                     </thead>
                                     <tbody id="ir-keys-table-body"></tbody>
                                 </table>
                             </div>
                             <div style="margin-top:6px;text-align:right">
-                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="ir-keys-clear-btn" type="button"
-                                    data-i18n="ir-keys-clear">清除全部</button>
+                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="ir-keys-clear-btn" type="button">清除全部</button>
                             </div>
                         </div>
                     </div>
 
                     <!-- 433MHz RF 遥控管理（仅 type=48 且 mode=RX 时显示） -->
                     <div id="rf-manage-section" class="peripheral-params-group is-hidden">
-                        <h4 class="u-mb-10" data-i18n="rf-manage-title">RF 遥控管理</h4>
-                        <div id="rf-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none"
-                            data-i18n="rf-manage-hint-new">保存外设后，即可在此进行对码学习和按键管理。</div>
+                        <h4 class="u-mb-10">RF 遥控管理</h4>
+                        <div id="rf-manage-hint-new" class="u-hint-bar u-hint-bar-info" style="display:none">保存外设后，即可在此进行对码学习和按键管理。</div>
                         <div id="rf-manage-content" style="display:none">
-                            <div id="rf-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none"
-                                data-i18n="rf-not-ready">RF接收器尚未初始化，请先将模式设为 RX 并启用该外设。</div>
+                            <div id="rf-not-ready" class="u-hint-bar u-hint-bar-warning" style="display:none">RF接收器尚未初始化，请先将模式设为 RX 并启用该外设。</div>
                             <!-- 对码行 -->
                             <div class="config-form-grid ir-compact-row">
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="rf-learn-timeout" data-i18n="rf-learn-timeout">学习超时(秒)</label>
+                                    <label for="rf-learn-timeout">学习超时(秒)</label>
                                     <input type="number" id="rf-learn-timeout" value="10" min="3" max="60" style="width:64px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="rf-learn-start-btn" type="button"
-                                        data-i18n="rf-learn-start">开始学习</button>
-                                    <button class="fb-btn fb-btn-sm" id="rf-learn-stop-btn" type="button" style="display:none"
-                                        data-i18n="rf-learn-stop">取消学习</button>
+                                    <button class="fb-btn fb-btn-sm fb-btn-primary" id="rf-learn-start-btn" type="button">开始学习</button>
+                                    <button class="fb-btn fb-btn-sm" id="rf-learn-stop-btn" type="button" style="display:none">取消学习</button>
                                 </div>
                             </div>
                             <div id="rf-learn-status" class="pe-help-text" style="min-height:1.2em;margin:2px 0"></div>
                             <!-- 捕获行 -->
                             <div id="rf-learn-captured" class="config-form-grid ir-compact-row" style="display:none">
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="rf-key-name-input" data-i18n="rf-key-name">按键名称</label>
+                                    <label for="rf-key-name-input">按键名称</label>
                                     <input type="text" id="rf-key-name-input" maxlength="32" placeholder="btn_a / gate"
                                         style="width:110px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <label for="rf-key-code-input" data-i18n="rf-key-code">编码</label>
+                                    <label for="rf-key-code-input">编码</label>
                                     <input type="text" id="rf-key-code-input" readonly style="width:100px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <label data-i18n="rf-key-bits">位长</label>
+                                    <label>位长</label>
                                     <input type="text" id="rf-key-bits-input" readonly style="width:40px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <label data-i18n="rf-key-pulse">脉宽</label>
+                                    <label>脉宽</label>
                                     <input type="text" id="rf-key-pulse-input" readonly style="width:56px">
                                 </div>
                                 <div class="fb-form-group fb-inline-group">
-                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="rf-key-save-btn" type="button"
-                                        data-i18n="rf-key-save">保存按键</button>
+                                    <button class="fb-btn fb-btn-sm fb-btn-success" id="rf-key-save-btn" type="button">保存按键</button>
                                 </div>
                             </div>
                             <!-- 按键库 -->
@@ -679,19 +661,18 @@
                                 <table class="fb-table fb-table-bordered u-table-fill">
                                     <thead>
                                         <tr>
-                                            <th data-i18n="rf-key-name">按键名称</th>
-                                            <th data-i18n="rf-key-code">编码</th>
-                                            <th data-i18n="rf-key-bits">位长</th>
-                                            <th data-i18n="rf-key-pulse">脉宽</th>
-                                            <th style="width:64px" data-i18n="action">操作</th>
+                                            <th>按键名称</th>
+                                            <th>编码</th>
+                                            <th>位长</th>
+                                            <th>脉宽</th>
+                                            <th style="width:64px">操作</th>
                                         </tr>
                                     </thead>
                                     <tbody id="rf-keys-table-body"></tbody>
                                 </table>
                             </div>
                             <div style="margin-top:6px;text-align:right">
-                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="rf-keys-clear-btn" type="button"
-                                    data-i18n="rf-keys-clear">清除全部</button>
+                                <button class="fb-btn fb-btn-sm fb-btn-danger" id="rf-keys-clear-btn" type="button">清除全部</button>
                             </div>
                         </div>
                     </div>
@@ -701,9 +682,8 @@
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-peripheral-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button"
-                data-i18n="save">保存</button>
+            <button class="fb-btn" id="cancel-peripheral-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button">保存</button>
         </div>
     </div>
 </div>
@@ -712,8 +692,7 @@
 <div id="periph-exec-modal" class="modal">
     <div class="modal-content u-modal-content-900">
         <div class="modal-header">
-            <h2 class="modal-title" id="periph-exec-modal-title"
-                data-i18n="periph-exec-add-modal-title">新增外设执行</h2>
+            <h2 class="modal-title" id="periph-exec-modal-title">新增外设执行</h2>
             <button id="close-periph-exec-modal" class="modal-close-btn">&times;</button>
         </div>
         <div class="modal-body">
@@ -724,21 +703,21 @@
                     <!-- 第一部分：基础配置 -->
                     <div class="pe-base-grid">
                         <div class="fb-form-group pe-base-name">
-                            <label for="periph-exec-name" data-i18n="periph-exec-name-label">规则名称</label>
+                            <label for="periph-exec-name">规则名称</label>
                             <input type="text" id="periph-exec-name" class=""
-                                placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
+                                placeholder="例如: 温度过高报警" required>
                         </div>
                         <div class="pe-base-checks">
                             <div class="fb-form-group fb-mb-0">
                                 <label class="fb-checkbox fb-m-0 fb-font-medium">
                                     <input type="checkbox" id="periph-exec-report" checked>
-                                    <span data-i18n="periph-exec-report-label">上报数据</span>
+                                    <span>上报数据</span>
                                 </label>
                             </div>
                             <div class="fb-form-group fb-mb-0">
                                 <label class="fb-checkbox fb-m-0 fb-font-medium">
                                     <input type="checkbox" id="periph-exec-enabled" checked>
-                                    <span data-i18n="periph-exec-enabled-label">启用</span>
+                                    <span>启用</span>
                                 </label>
                             </div>
                         </div>
@@ -747,9 +726,9 @@
                     <!-- 第二部分：触发配置 (动态多组) -->
                     <div id="periph-exec-risk-note" class="u-note-card u-note-card-warning u-mb-15 is-hidden"></div>
                     <div class="section-title section-title-actions">
-                        <span data-i18n="periph-exec-section-trigger">触发配置</span>
+                        <span>触发配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecTrigger">
-                            <span data-i18n="periph-exec-add-trigger">添加触发</span>
+                            <span>添加触发</span>
                         </button>
                     </div>
                     <div id="periph-exec-triggers">
@@ -758,9 +737,9 @@
 
                     <!-- 第三部分：执行动作配置 (动态多组) -->
                     <div class="section-title section-title-actions">
-                        <span data-i18n="periph-exec-section-action">执行动作配置</span>
+                        <span>执行动作配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecAction">
-                            <span data-i18n="periph-exec-add-action">添加动作</span>
+                            <span>添加动作</span>
                         </button>
                     </div>
                     <div id="periph-exec-actions">
@@ -772,8 +751,8 @@
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
+            <button class="fb-btn" id="cancel-periph-exec-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-periph-exec-btn" type="button">保存</button>
         </div>
     </div>
 </div>
@@ -782,7 +761,7 @@
 <div id="rule-script-modal" class="modal">
     <div class="modal-content u-modal-content-700">
         <div class="modal-header">
-            <h2 class="modal-title" id="rule-script-modal-title" data-i18n="rule-script-add-title">
+            <h2 class="modal-title" id="rule-script-modal-title">
                 新增规则脚本</h2>
             <button id="close-rule-script-modal" class="modal-close-btn">&times;</button>
         </div>
@@ -791,55 +770,51 @@
                 <fieldset>
                     <input type="hidden" id="rule-script-original-id" value="">
                     <div class="fb-form-group">
-                        <label for="rule-script-name" data-i18n="rule-script-name-label">规则名称</label>
+                        <label for="rule-script-name">规则名称</label>
                         <input type="text" id="rule-script-name" class="" placeholder="例如: 数据格式转换"
                             required>
                     </div>
                     <div class="fb-form-group">
-                        <label data-i18n="rule-script-enabled-label">启用</label>
+                        <label>启用</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="rule-script-enabled" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
                     <div class="fb-form-group">
-                        <label for="rule-script-trigger-type"
-                            data-i18n="rule-script-trigger-type-label">触发类型</label>
+                        <label for="rule-script-trigger-type">触发类型</label>
                         <select id="rule-script-trigger-type" class="">
-                            <option value="0" data-i18n="rule-script-trigger-receive">数据接收</option>
-                            <option value="1" data-i18n="rule-script-trigger-report">数据上报</option>
+                            <option value="0">数据接收</option>
+                            <option value="1">数据上报</option>
                         </select>
                     </div>
                     <div class="fb-form-group">
-                        <label for="rule-script-protocol-type"
-                            data-i18n="rule-script-protocol-type-label">协议类型</label>
+                        <label for="rule-script-protocol-type">协议类型</label>
                         <select id="rule-script-protocol-type" class="">
-                            <option value="0" data-i18n="rule-script-protocol-mqtt">MQTT</option>
-                            <option value="1" data-i18n="rule-script-protocol-modbus-rtu">Modbus RTU</option>
+                            <option value="0">MQTT</option>
+                            <option value="1">Modbus RTU</option>
                         </select>
                     </div>
                     <div id="rule-script-topic-fields" style="display:none;">
                         <div class="fb-form-group">
-                            <label for="rule-script-source-topic"
-                                data-i18n="rule-script-source-topic-label">源主题</label>
+                            <label for="rule-script-source-topic">源主题</label>
                             <input type="text" id="rule-script-source-topic" class=""
                                 placeholder="例如: /device/sensor/data 或 /device/+/data">
-                            <small data-i18n="rule-script-source-topic-help">留空匹配所有 MQTT 消息，支持 + (单级) / # (多级) 通配符</small>
+                            <small>留空匹配所有 MQTT 消息，支持 + (单级) / # (多级) 通配符</small>
                         </div>
                         <div class="fb-form-group">
-                            <label for="rule-script-target-topic"
-                                data-i18n="rule-script-target-topic-label">目标主题</label>
+                            <label for="rule-script-target-topic">目标主题</label>
                             <input type="text" id="rule-script-target-topic" class=""
                                 placeholder="例如: /cloud/telemetry">
-                            <small data-i18n="rule-script-target-topic-help">留空不重定向，转换后发布到此主题</small>
+                            <small>留空不重定向，转换后发布到此主题</small>
                         </div>
                     </div>
                     <div class="fb-form-group">
-                        <label for="rule-script-content" data-i18n="rule-script-content-label">脚本内容</label>
+                        <label for="rule-script-content">脚本内容</label>
                         <textarea id="rule-script-content" class="textarea-code"
                             maxlength="2048"
                             placeholder='{"temp": ${temperature}, "humi": ${humidity}}'></textarea>
-                        <small data-i18n="rule-script-content-help">使用 ${key} 引用输入数据中的值，例如
+                        <small>使用 ${key} 引用输入数据中的值，例如
                             ${temperature}</small>
                     </div>
                     <div id="rule-script-error" class="message message-error is-hidden"></div>
@@ -847,9 +822,8 @@
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-rule-script-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button"
-                data-i18n="save">保存</button>
+            <button class="fb-btn" id="cancel-rule-script-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button">保存</button>
         </div>
     </div>
 </div>
@@ -858,7 +832,7 @@
 <div id="gpio-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h2 class="modal-title" id="gpio-modal-title" data-i18n="gpio-add-modal-title">新增GPIO
+            <h2 class="modal-title" id="gpio-modal-title">新增GPIO
             </h2>
             <button id="close-gpio-modal" class="modal-close-btn">×</button>
         </div>
@@ -868,35 +842,35 @@
                     <input type="hidden" id="gpio-original-pin" value="">
 
                     <div class="fb-form-group">
-                        <label for="gpio-pin-input" data-i18n="gpio-pin-label">引脚号 (0-39)</label>
+                        <label for="gpio-pin-input">引脚号 (0-39)</label>
                         <input type="number" id="gpio-pin-input" class="" min="0" max="39"
                             placeholder="请输入GPIO引脚号" required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="gpio-name-input" data-i18n="gpio-name-label">名称</label>
+                        <label for="gpio-name-input">名称</label>
                         <input type="text" id="gpio-name-input" class="" placeholder="例如: LED、Relay"
                             required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="gpio-mode-input" data-i18n="gpio-mode-label">模式</label>
+                        <label for="gpio-mode-input">模式</label>
                         <select id="gpio-mode-input" class="">
-                            <option value="1" data-i18n="gpio-mode-1">数字输入</option>
-                            <option value="2" data-i18n="gpio-mode-2">数字输出</option>
-                            <option value="3" data-i18n="gpio-mode-3">数字输入(上拉)</option>
-                            <option value="4" data-i18n="gpio-mode-4">数字输入(下拉)</option>
-                            <option value="5" data-i18n="gpio-mode-5">模拟输入</option>
-                            <option value="6" data-i18n="gpio-mode-6">模拟输出</option>
-                            <option value="7" data-i18n="gpio-mode-7">PWM输出</option>
+                            <option value="1">数字输入</option>
+                            <option value="2">数字输出</option>
+                            <option value="3">数字输入(上拉)</option>
+                            <option value="4">数字输入(下拉)</option>
+                            <option value="5">模拟输入</option>
+                            <option value="6">模拟输出</option>
+                            <option value="7">PWM输出</option>
                         </select>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="gpio-default-input" data-i18n="gpio-default-label">初始值</label>
+                        <label for="gpio-default-input">初始值</label>
                         <select id="gpio-default-input" class="">
-                            <option value="0" data-i18n="gpio-default-low">低电平 (LOW)</option>
-                            <option value="1" data-i18n="gpio-default-high">高电平 (HIGH)</option>
+                            <option value="0">低电平 (LOW)</option>
+                            <option value="1">高电平 (HIGH)</option>
                         </select>
                     </div>
 
@@ -905,9 +879,8 @@
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button"
-                data-i18n="save">保存</button>
+            <button class="fb-btn" id="cancel-gpio-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button">保存</button>
         </div>
     </div>
 </div>
@@ -916,44 +889,42 @@
 <div id="add-user-modal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h2 class="modal-title" id="add-user-title" data-i18n="add-user-title">添加用户</h2>
+            <h2 class="modal-title" id="add-user-title">添加用户</h2>
             <button id="close-add-user-modal" class="modal-close-btn">×</button>
         </div>
         <div class="modal-body">
             <form id="add-user-form" class="fb-form">
                 <fieldset>
                     <div class="fb-form-group">
-                        <label for="add-username-input" id="add-username-label" data-i18n="add-username-label">用户名</label>
+                        <label for="add-username-input" id="add-username-label">用户名</label>
                         <input type="text" id="add-username-input" class="" placeholder="请输入用户名"
                             required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="add-password-input" id="add-password-label" data-i18n="add-password-label">密码</label>
+                        <label for="add-password-input" id="add-password-label">密码</label>
                         <input type="password" id="add-password-input" class="" placeholder="请输入密码"
                             required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="add-confirm-password-input" id="add-confirm-password-label" data-i18n="add-confirm-password-label">确认密码</label>
+                        <label for="add-confirm-password-input" id="add-confirm-password-label">确认密码</label>
                         <input type="password" id="add-confirm-password-input" class=""
                             placeholder="请再次输入密码" required>
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="add-description-input" id="add-description-label" data-i18n="add-description-label">描述</label>
+                        <label for="add-description-input" id="add-description-label">描述</label>
                         <input type="text" id="add-description-input" class=""
-                            placeholder="可选，最多64字符" maxlength="64"
-                            data-i18n-placeholder="add-description-placeholder">
+                            placeholder="可选，最多64字符" maxlength="64">
                     </div>
                     <div id="add-user-error" class="message message-error is-hidden"></div>
                 </fieldset>
             </form>
         </div>
         <div class="modal-footer">
-            <button class="fb-btn" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button"
-                data-i18n="add-user-confirm">添加</button>
+            <button class="fb-btn" id="cancel-add-user-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button">添加</button>
         </div>
     </div>
 </div>

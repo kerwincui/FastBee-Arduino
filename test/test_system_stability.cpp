@@ -870,7 +870,8 @@ void test_source_code_c3_tcp_budget() {
 
 /**
  * @brief 源码回归：验证 platformio.ini 中 C3 的 AsyncTCP 配置
- * C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS 应为 4（与 TCP_TOTAL_BUDGET 一致）
+ * C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS 应为 4（与 TCP_TOTAL_BUDGET 一致），
+ * 环境段使用统一标志集 [unified_flags]（Unified Architecture v2.0）。
  */
 void test_source_code_c3_platformio_config() {
     TestLog::testStart("Source: C3 platformio.ini AsyncTCP config");
@@ -880,21 +881,45 @@ void test_source_code_c3_platformio_config() {
         "Failed to read platformio.ini");
     TestLog::step("File loaded");
 
-    // C3 运行时标志中 CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6（从 4 提升至 6，支持 2+ tab 浏览）
+    // C3 运行时标志：4 连接 / 4 队列（与 TCP_TOTAL_BUDGET 一致）
+    size_t rtPos = content.find("[esp32c3_runtime_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(rtPos != std::string::npos,
+        "platformio.ini must have [esp32c3_runtime_flags] section");
+    size_t rtEnd = content.find("\n[", rtPos + 1);
+    std::string rtSection = content.substr(rtPos,
+        rtEnd == std::string::npos ? std::string::npos : rtEnd - rtPos);
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6") != std::string::npos,
-        "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 6 (SSE + multi-tab support)");
-    TestLog::step("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6 confirmed");
+        rtSection.find("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4") != std::string::npos,
+        "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 4 (matches TCP_TOTAL_BUDGET)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        rtSection.find("CONFIG_ASYNC_TCP_QUEUE_SIZE=4") != std::string::npos,
+        "C3 CONFIG_ASYNC_TCP_QUEUE_SIZE must be 4");
+    TestLog::step("C3 runtime: 4 connections / 4 queue");
 
-    // C3 环境使用 lite 配置
+    // 环境整合后 lite_flags 已删除，C3 环境改用统一标志集（全功能编译+运行时门控）
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("lite_flags") != std::string::npos,
-        "C3 must use lite_flags (resource-constrained)");
-    TestLog::step("lite_flags confirmed for C3");
+        content.find("[lite_flags]") == std::string::npos,
+        "[lite_flags] was removed by env consolidation");
+    size_t c3Pos = content.find("[env:esp32c3-F4R0]");
+    TEST_ASSERT_TRUE_MESSAGE(c3Pos != std::string::npos,
+        "platformio.ini must have [env:esp32c3-F4R0]");
+    size_t c3End = content.find("\n[env:", c3Pos + 1);
+    std::string c3Section = content.substr(c3Pos,
+        c3End == std::string::npos ? std::string::npos : c3End - c3Pos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        c3Section.find("unified_flags.build_flags") != std::string::npos,
+        "C3 must use unified_flags (Unified Architecture v2.0)");
+    TestLog::step("C3 env uses unified_flags");
+
+    // 无 PSRAM：C3 必须显式关闭 OTA（4MB 单 app 分区）
+    TEST_ASSERT_TRUE_MESSAGE(
+        c3Section.find("-DFASTBEE_ENABLE_OTA=0") != std::string::npos,
+        "C3 must explicitly disable OTA (no PSRAM, single app partition)");
+    TestLog::step("C3 OTA disabled explicitly");
 
     // C3 必须忽略 NimBLE（不支持经典蓝牙）
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("lib_ignore = NimBLE-Arduino") != std::string::npos,
+        c3Section.find("lib_ignore = NimBLE-Arduino") != std::string::npos,
         "C3 must ignore NimBLE-Arduino (no classic BT)");
     TestLog::step("NimBLE-Arduino ignored for C3");
 

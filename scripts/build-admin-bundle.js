@@ -13,25 +13,26 @@
 const fs = require('fs');
 const path = require('path');
 const { minifyJS } = require('./minify-js');
-const { isFullWebProfile, isStandardWebProfile } = require('./web-profile');
+/**
+ * Build admin bundle for Unified Architecture v2.0 (full Web UI).
+ * Note: Device control feature gate by FASTBEE_ENABLE_DEVICE_CONTROL env var.
+ */
+const { isFullWebProfile } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
 const PUBLISH_MODULE_DIR = path.join(ROOT_DIR, 'data', 'www', 'js', 'modules');
 const OUTPUT_FILE = path.join(PUBLISH_MODULE_DIR, 'admin-bundle.js');
-const ALL_SOURCE_FILES = [
+// Unified full profile: keep only existing source files
+const UNIFIED_SOURCE_FILES = [
     'logs.js',
     'users.js',
-    'files.js',
     'rule-script.js'
 ];
-const STANDARD_SOURCE_FILES = ['rule-script.js'];
-const PROD_SOURCE_FILES = [];
 
 function getSourceFiles() {
-    if (isFullWebProfile()) return ALL_SOURCE_FILES;
-    if (isStandardWebProfile()) return STANDARD_SOURCE_FILES;
-    return PROD_SOURCE_FILES;
+    // Unified full profile always returns all available source files
+    return UNIFIED_SOURCE_FILES;
 }
 
 function readSourceFile(fileName) {
@@ -93,8 +94,7 @@ module.exports = {
     SOURCE_DIR,
     PUBLISH_MODULE_DIR,
     OUTPUT_FILE,
-    SOURCE_FILES: getSourceFiles(),
-    ALL_SOURCE_FILES,
-    PROD_SOURCE_FILES,
+    SOURCE_FILES: UNIFIED_SOURCE_FILES,
+    UNIFIED_SOURCE_FILES,
     getSourceFiles
 };

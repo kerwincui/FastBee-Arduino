@@ -140,9 +140,6 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"otaFs", "OTA Filesystem", "system", 3, 500,
                      FASTBEE_ENABLE_OTA_FS != 0, false,
                      nullptr, "ota", 0});
-    registerFeature({"fileManager", "File Manager", "system", 5, 1024,
-                     FASTBEE_ENABLE_FILE_MANAGER != 0, false,
-                     nullptr, nullptr, 18});
     registerFeature({"logViewer", "Log Viewer", "system", 4, 500,
                      FASTBEE_ENABLE_LOG_VIEWER != 0, false,
                      nullptr, nullptr, 0});

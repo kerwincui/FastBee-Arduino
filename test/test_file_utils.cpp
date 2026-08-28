@@ -12,7 +12,6 @@
  *  - 目录创建/删除
  *  - 行读写 (readLines, writeLines)
  *  - 文件哈希 (calculateFileHash, verifyFileIntegrity)
- *  - 备份恢复 (backupFile, restoreBackup)
  *  - 存储空间信息
  */
 

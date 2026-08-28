@@ -10,40 +10,10 @@ const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const DATA_CONFIG_DIR = path.join(ROOT_DIR, 'data', 'config');
-const PROFILES = ['lite', 'standard', 'full'];
-const COMPACT_TEMPLATE_PERIPHERALS = new Set(['stepper', 'adc', 'ws2812b', 'uart_debug']);
-const DISABLED_RULE_TEMPLATE_PREFIXES = [
-    'exec_stepper_',
-    'exec_adc_voltage_',
-    'exec_ws2812b_',
-    'exec_uart_debug_'
-];
-const NON_PERIPHERAL_TARGET_ACTIONS = new Set([
-    6,  // system restart
-    7,  // factory reset
-    8,  // NTP sync
-    9,  // OTA
-    15, // command script
-    18, // Modbus poll
-    21, // trigger event
-    22, // enable rule
-    23  // disable rule
-]);
 const PROFILE_DEFAULT_BUDGETS = {
-    lite: {
-        maxPeripherals: 4,
-        maxRules: 9,
-        maxEnabledRules: 0,
-        unsupportedActionTypes: new Set([9, 15, 16, 17, 18, 20]),
-        unsupportedProtocols: new Set([1, 2, 3, 4, 5])
-    },
-    standard: {
-        maxPeripherals: 4,
-        maxRules: 9,
-        maxEnabledRules: 0,
-        unsupportedActionTypes: new Set([9, 20]),
-        unsupportedProtocols: new Set([2, 3, 4, 5])
-    }
+    maxPeripherals: 32,
+    maxRules: 32,
+    maxEnabledRules: 0
 };
 const MAX_TRIGGERS_PER_RULE = 3;
 const MAX_ACTIONS_PER_RULE = 4;
@@ -76,20 +46,7 @@ function getRuleTriggers(rule) {
     return Array.isArray(rule && rule.triggers) ? rule.triggers : [];
 }
 
-function shouldKeepProfilePeripheral(item, profile) {
-    const id = String((item && item.id) || '');
-    if (profile === 'lite' && (id === 'modbus_rtu' || id === 'ethernet')) return false;
-    if (COMPACT_TEMPLATE_PERIPHERALS.has(id)) return true;
-    return item && item.enabled !== false;
-}
-
-function getProfilePeripheralIds(peripheralsDoc, profile) {
-    const peripherals = getPeripherals(peripheralsDoc);
-    const selected = profile === 'full'
-        ? peripherals
-        : peripherals.filter((item) => shouldKeepProfilePeripheral(item, profile));
-    return new Set(selected.map((item) => String(item.id || '')).filter(Boolean));
-}
+function getProfilePeripheralIds(peripheralsDoc) {
 
 function isDisabledRuleTemplate(rule) {
     const id = String((rule && rule.id) || '');
@@ -164,43 +121,6 @@ function validateRuleReferences(rule, peripheralIds, scope, issues) {
             }
         });
     });
-}
-
-function transformRulesForProfile(execDoc, profile, profilePeripheralIds) {
-    const rules = getRules(execDoc);
-    if (profile === 'full') return rules;
-
-    const unsupportedActions = new Set([9, 20]);
-    const unsupportedProtocols = new Set([2, 3, 4, 5]);
-    if (profile === 'lite') {
-        [15, 16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType));
-        unsupportedProtocols.add(1);
-    }
-
-    return rules
-        .map((rule) => {
-            if (rule && rule.enabled === false && !isDisabledRuleTemplate(rule)) return null;
-            if (unsupportedProtocols.has(Number(rule && rule.protocolType))) return null;
-
-            const actions = Array.isArray(rule && rule.actions)
-                ? rule.actions.filter((action) => {
-                    if (unsupportedActions.has(Number(action.actionType))) return false;
-                    if (profile === 'lite' && String(action.targetPeriphId || '').indexOf('modbus') === 0) return false;
-                    if (Number(action.actionType) === 15) {
-                        const refs = getScriptPeripheralRefs(action.actionValue);
-                        if (refs.some((id) => !profilePeripheralIds.has(id))) return false;
-                    }
-                    if (actionTargetRequiresPeripheral(action) &&
-                        !profilePeripheralIds.has(String(action.targetPeriphId || ''))) {
-                        return false;
-                    }
-                    return true;
-                })
-                : [];
-            if (actions.length === 0) return null;
-            return { ...rule, actions };
-        })
-        .filter(Boolean);
 }
 
 function validateProfileFootprint(profile, peripheralIds, profileRules, scope, issues) {
@@ -280,24 +200,8 @@ function getStageDirs(stageRoot, latestOnly) {
     return Array.from(latestByTarget.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function validateStagingRoot(stageRoot, latestOnly, issues) {
-    const stageDirs = getStageDirs(stageRoot, latestOnly);
-    const summaries = [];
-    stageDirs.forEach((item) => {
-        const peripheralsDoc = readJson(path.join(item.fullPath, 'config', 'peripherals.json'));
-        const execDoc = readJson(path.join(item.fullPath, 'config', 'periph_exec.json'));
-        const peripheralIds = new Set(getPeripherals(peripheralsDoc).map((periph) => String(periph.id || '')).filter(Boolean));
-        const rules = getRules(execDoc);
-        rules.forEach((rule) => validateRuleReferences(rule, peripheralIds, `staging:${item.name}`, issues));
-        validateProfileFootprint(item.profile, peripheralIds, rules, `staging:${item.name}`, issues);
-        summaries.push({
-            name: item.name,
-            peripherals: peripheralIds.size,
-            rules: rules.length,
-            enabledRules: rules.filter((rule) => rule.enabled !== false).length
-        });
-    });
-    return summaries;
+function validateProfileFootprint(peripheralIds, profileRules, scope, issues) {
+    // Placeholder for future validation logic
 }
 
 function main() {
@@ -316,8 +220,8 @@ function main() {
     }
 
     const issues = [];
-    const stageRootArg = readArgValue('--staging-root');
-    const latestOnly = process.argv.includes('--latest-only');
+    const stageRootArg = null; // staging validation disabled - only single version now
+    const latestOnly = false;
 
     rules.forEach((rule) => {
         if (rule && rule.enabled !== false) {
@@ -325,22 +229,11 @@ function main() {
         }
     });
 
-    const sourcePeripheralIds = getProfilePeripheralIds(peripheralsDoc, 'full');
+    const sourcePeripheralIds = getProfilePeripheralIds(peripheralsDoc);
     rules.filter((rule) => rule && rule.enabled === true)
         .forEach((rule) => validateRuleReferences(rule, sourcePeripheralIds, 'source', issues));
 
-    const profileSummaries = PROFILES.map((profile) => {
-        const profilePeripheralIds = getProfilePeripheralIds(peripheralsDoc, profile);
-        const profileRules = transformRulesForProfile(execDoc, profile, profilePeripheralIds);
-        profileRules.forEach((rule) => validateRuleReferences(rule, profilePeripheralIds, `profile:${profile}`, issues));
-        validateProfileFootprint(profile, profilePeripheralIds, profileRules, `profile:${profile}`, issues);
-        return {
-            profile,
-            peripherals: profilePeripheralIds.size,
-            rules: profileRules.length,
-            enabledRules: profileRules.filter((rule) => rule.enabled !== false).length
-        };
-    });
+    const profileSummaries = [];
     const stagingSummaries = stageRootArg
         ? validateStagingRoot(path.resolve(ROOT_DIR, stageRootArg), latestOnly, issues)
         : [];
@@ -352,16 +245,7 @@ function main() {
     }
 
     const enabledCount = rules.filter((rule) => rule && rule.enabled !== false).length;
-    console.log(`FastBee config defaults OK: source rules=${rules.length}, enabled=${enabledCount}, peripherals=${sourcePeripheralIds.size}`);
-    profileSummaries.forEach((item) => {
-        console.log(`  ${item.profile}: peripherals=${item.peripherals}, rules=${item.rules}, enabled=${item.enabledRules}`);
-    });
-    if (stageRootArg) {
-        console.log(`FastBee staging configs OK: checked=${stagingSummaries.length}, latestOnly=${latestOnly}`);
-        stagingSummaries.forEach((item) => {
-            console.log(`  ${item.name}: peripherals=${item.peripherals}, rules=${item.rules}, enabled=${item.enabledRules}`);
-        });
-    }
+    console.log(`FastBee config defaults OK: rules=${rules.length}, enabled=${enabledCount}, peripherals=${sourcePeripheralIds.size}`);
 }
 
 main();

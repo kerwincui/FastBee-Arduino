@@ -127,10 +127,10 @@ if ($isRecoveredNeeded -or $args.Contains("--force-recover")) {
     Write-Output "  INITIATING RECOVERY PROCEDURE" -ForegroundColor Red
     Write-Host "=========================================\n" -ForegroundColor Red
     
-    # Generate lite filesystem image
-    Write-Output "Step 6.1: Generating clean lite filesystem..." -ForegroundColor Yellow
-    Write-Output "Command: node scripts/gzip-www.js --web-lite --no-upload --no-monitor" -ForegroundColor Gray
-    $gzipResult = node scripts/gzip-www.js --web-lite --no-upload --no-monitor 2>&1
+    # Generate full filesystem image (Unified Architecture v2.0)
+    Write-Output "Step 6.1: Generating clean full filesystem (Unified)..." -ForegroundColor Yellow
+    Write-Output "Command: node scripts/gzip-www.js --no-upload --no-monitor" -ForegroundColor Gray
+    $gzipResult = node scripts/gzip-www.js --no-upload --no-monitor 2>&1
     if ($gzipResult -match "Staging package ready") {
         Write-Output "✓ Filesystem generation complete" -ForegroundColor Green
         $stagingDir = Select-String -Input $gzipResult -Pattern "\.pio/fs-staging/[^\s]+" | ForEach-Object { $_.Matches.Value } | Select-Object -Last 1

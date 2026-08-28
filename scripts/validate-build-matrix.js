@@ -8,111 +8,81 @@ const PLATFORMIO_PATH = path.join(ROOT_DIR, 'platformio.ini');
 const TEST_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'test-all.ps1');
 const BUILD_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'build-all-artifacts.ps1');
 const COLLECT_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'collect-artifacts.ps1');
-const FASTBEE_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'fastbee-artifacts.py');
 const GZIP_WWW_PATH = path.join(ROOT_DIR, 'scripts', 'gzip-www.js');
 const README_PATHS = [
     path.join(ROOT_DIR, 'README.md'),
     path.join(ROOT_DIR, 'README.en.md'),
     path.join(ROOT_DIR, 'scripts', 'README.md')
 ];
-const PROFILES = new Set(['lite', 'standard', 'full']);
 const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);
 const LEGACY_ENV_NAMES = ['esp32-full', 'esp32s3-full'];
-// 专用验证环境（不进发布产物矩阵）：esp32c3-ble 仅供蓝牙配网验证/生产烧录，
-// 命名不符合 fastbee-{chip}-F{flash}R{psram}.bin 发布规范，豁免脚本清单覆盖检查
-const SPECIAL_PURPOSE_ENVS = ['esp32c3-ble'];
 
-// 2026-08 Web 镜像统一化：出厂环境一律 full 档（全量页面/样式，运行时由
-// FeatureBudget + /api/features/status 菜单门控），profile 字段仅作历史兼容保留
+// Unified Architecture v2.0：所有出厂环境统一编译全部源码，运行时 FeatureBudget 门控。
+// OTA 策略：跟随硬件能力——有 PSRAM + 双 app 分区（8MB/16MB）才开启，无 PSRAM 一律关闭。
+// ENV_EXPECTATIONS 不再使用 profile 字段。
 const ENV_EXPECTATIONS = {
-    'esp32c3-F4R0': {
-        profile: 'full',
-        board: 'esp32-c3-devkitm-1',
-        partition: 'partitions/fastbee.csv',
-        psram: false,
-        buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0', '-DFASTBEE_USE_PSRAM=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
-        libIgnore: ['NimBLE-Arduino']
-    },
-    'esp32c6-F4R0': {
-        profile: 'full',
-        board: 'esp32-c6-devkitc-1',
-        // 2026-08：实测目标板为 8MB Flash，改用 8MB 分片表（含 app1 OTA 分片）支持固件 OTA
-        partition: 'partitions/fastbee-8MB.csv',
-        flashSize: '8MB',
-        psram: false,
-        buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0', '-DFASTBEE_USE_PSRAM=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
-        libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
-    },
     'esp32-F4R0': {
-        profile: 'full',
         board: 'esp32dev',
         mcu: 'esp32',
         partition: 'partitions/fastbee.csv',
         psram: false,
-        buildFlags: ['${esp32_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=0'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}'],
+        ota: false,
         libIgnore: ['NimBLE-Arduino']
     },
-    'esp32s3-F8R4': {
-        profile: 'full',
+    'esp32-F8R4': {
+        board: 'esp32dev',
+        mcu: 'esp32',
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
+        psram: true,
+        ota: true
+    },
+    'esp32c3-F4R0': {
+        board: 'esp32-c3-devkitm-1',
+        partition: 'partitions/fastbee.csv',
+        psram: false,
+        ota: false,
+        libIgnore: ['NimBLE-Arduino']
+    },
+    'esp32s3-F8R0': {
         board: 'esp32-s3-devkitc-1',
         partition: 'partitions/fastbee-8MB.csv',
         flashSize: '8MB',
         psram: true,
-        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}']
+        ota: true
+    },
+    'esp32c6-F4R0': {
+        board: 'esp32-c6-devkitc-1',
+        partition: 'partitions/fastbee.csv',
+        // devkitc-1 默认 8MB，实际模组 4MB，通过 board_upload.flash_size 显式覆盖
+        uploadFlashSize: '4MB',
+        psram: false,
+        ota: false,
+        libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
+    },
+    'esp32s3-F8R4': {
+        board: 'esp32-s3-devkitc-1',
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
+        psram: true,
+        ota: true,
+        libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino']
     },
     'esp32s3-F16R8': {
-        profile: 'full',
         board: 'esp32-s3-devkitc1-n16r8',
         partition: 'partitions/fastbee-16MB.csv',
         flashSize: '16MB',
         psram: true,
-        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_unified_flags.build_flags}', '-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'],
-        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}', '${full_flags.build_flags}']
+        ota: true,
+        libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino']
     }
 };
 
+// 非出厂环境：开发/参考板，不进发布产物流水线（test-all/build-all-artifacts 不覆盖）。
+// 其 platformio.ini 配置仍受 ENV_EXPECTATIONS 校验。
+const SPECIAL_PURPOSE_ENVS = ['esp32-F8R4', 'esp32s3-F8R0'];
+
 const FLAG_SECTION_REQUIREMENTS = {
-    lite_flags: [
-        '-DFASTBEE_PROFILE_LITE=1',
-        '-DFASTBEE_USE_PSRAM=0',
-        '-DFASTBEE_ENABLE_MODBUS=0',
-        '-DFASTBEE_ENABLE_OTA=0',
-        '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
-        '-DFASTBEE_ENABLE_COMMAND_SCRIPT=0',
-        '-DFASTBEE_ENABLE_USER_ADMIN=0',
-        '-DFASTBEE_ENABLE_FILE_MANAGER=0',
-        '-DFASTBEE_ENABLE_BLE=0',
-        '-DFASTBEE_ENABLE_I2C_SENSORS=0',
-        '-DFASTBEE_ENABLE_RFID=0',
-        '-DFASTBEE_ENABLE_IR_REMOTE=0'
-    ],
-    standard_flags: [
-        '-DFASTBEE_PROFILE_STANDARD=1',
-        '-DFASTBEE_USE_PSRAM=0',
-        '-DFASTBEE_ENABLE_MODBUS=0',
-        '-DFASTBEE_ENABLE_COMMAND_SCRIPT=1',
-        '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
-        '-DFASTBEE_ENABLE_USER_ADMIN=0',
-        '-DFASTBEE_ENABLE_FILE_MANAGER=0'
-    ],
-    full_flags: [
-        '-DFASTBEE_PROFILE_FULL=1',
-        '-DFASTBEE_USE_PSRAM=1',
-        '-DBOARD_HAS_PSRAM',
-        '-DFASTBEE_ENABLE_MODBUS=1',
-        '-DFASTBEE_MODBUS_SLAVE_ENABLE=1',
-        '-DFASTBEE_ENABLE_OTA=1',
-        '-DFASTBEE_ENABLE_OTA_FS=1',
-        '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
-        '-DFASTBEE_ENABLE_USER_ADMIN=1',
-        '-DFASTBEE_ENABLE_FILE_MANAGER=1',
-        '-DFASTBEE_ENABLE_BLE=0',
-        '-DFASTBEE_ENABLE_I18N=1'
-    ],
     esp32c3_runtime_flags: [
         '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=4',
@@ -121,17 +91,26 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32c6_runtime_flags: [
-        // 2026-08 TCP 连接预算调优：C6 预算 4 连接（与 esp32c3 对齐，见 ResourceProfile.h）
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
+        // 2026-08 TCP 连接预算：C6 与 ESP32 Classic 对齐为 6 连接（见 ResourceProfile.h）
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=8',
         '-DARDUINO_LOOP_STACK_SIZE=12288',
         '-DSCRIPT_TASK_STACK=6144',
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
+        // 浏览器每 host 最多 6 连接，上限过高会在并发连接风暴下抽干 DRAM
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
         // 8->32: MQTT TLS 事件突发时队列水位更高才丢弃/节流 poll 事件（2026-08-05 登录页停滞修复）
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=32',
+        '-DARDUINO_LOOP_STACK_SIZE=16384',
+        '-DSCRIPT_TASK_STACK=8192',
+        '-DSIMPLE_TASK_STACK=6144'
+    ],
+    esp32s3_runtime_flags: [
+        // S3：8 连接（浏览器每 host 6 + SSE 长连接），队列 24 支撑多标签页并发
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=8',
+        '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=24',
         '-DARDUINO_LOOP_STACK_SIZE=16384',
         '-DSCRIPT_TASK_STACK=8192',
         '-DSIMPLE_TASK_STACK=6144'
@@ -141,10 +120,13 @@ const FLAG_SECTION_REQUIREMENTS = {
 /**
  * Feature flag -> source files that must NOT be excluded when flag is enabled.
  * Ensures build_src_filter does not accidentally strip files for active features.
+ *
+ * NOTE: FASTBEE_ENABLE_OTA is NOT listed here — under Unified Architecture v2.0
+ * OTA sources are compiled in every environment and gated at runtime; OTA
+ * enablement is enforced by validateEnvExpectations (flag value + partition).
  */
 const FEATURE_FLAG_TO_SOURCES = {
     FASTBEE_ENABLE_RULE_SCRIPT: ['core/RuleScriptManager.cpp', 'network/handlers/RuleScriptRouteHandler.cpp'],
-    FASTBEE_ENABLE_OTA: ['network/OTAManager.cpp', 'network/handlers/OTARouteHandler.cpp'],
     FASTBEE_ENABLE_CELLULAR: ['network/CellularAdapter.cpp'],
     FASTBEE_ENABLE_ETHERNET: ['network/EthernetAdapter.cpp']
     // NOTE: FASTBEE_ENABLE_USER_ADMIN / FASTBEE_ENABLE_ROLE_ADMIN removed —
@@ -154,9 +136,13 @@ const FEATURE_FLAG_TO_SOURCES = {
 /**
  * Feature flag -> lib_deps tokens that must NOT appear when flag is disabled (=0).
  * Prevents PlatformIO LDF from scanning unused third-party libraries.
+ *
+ * NOTE: CELLULAR keeps an empty list on purpose — unified environments declare
+ * TinyGSM/SSLClient in lib_deps so the runtime feature-config page can enable
+ * cellular later; sources are still excluded via build_src_filter where set.
  */
 const FEATURE_FLAG_FORBID_LIBS = {
-    FASTBEE_ENABLE_CELLULAR: ['TinyGSM', 'SSLClient'],
+    FASTBEE_ENABLE_CELLULAR: [],
     FASTBEE_ENABLE_ETHERNET: []
 };
 
@@ -252,6 +238,8 @@ function extractIniList(text, sectionName, key) {
 
         for (let j = i + 1; j < lines.length; j += 1) {
             const line = lines[j];
+            // PlatformIO 多行值内的空行不终止列表（如 [unified_flags] 内的分组空行）
+            if (line.trim() === '') continue;
             if (!/^\s+/.test(line)) break;
             const cleaned = stripIniComment(line);
             if (cleaned) values.push(...cleaned.split(/[,\s]+/).filter(Boolean));
@@ -303,21 +291,6 @@ function extractPowerShellHashtable(text, variableName) {
     return entries;
 }
 
-function extractPythonStringDict(text, variableName) {
-    const regex = new RegExp(`^${escapeRegex(variableName)}\\s*=\\s*\\{([\\s\\S]*?)^\\}`, 'm');
-    const match = regex.exec(text);
-    if (!match) return new Map();
-
-    const entries = new Map();
-    const entryRegex = /^\s*"([^"]+)"\s*:\s*"([^"]*)"/gm;
-    let entry = entryRegex.exec(match[1]);
-    while (entry) {
-        entries.set(entry[1], entry[2]);
-        entry = entryRegex.exec(match[1]);
-    }
-    return entries;
-}
-
 function validateNoDuplicates(label, values, issues) {
     findDuplicates(values).forEach((value) => {
         issues.push(`${label}: duplicate ${value}`);
@@ -344,7 +317,7 @@ function validateMapCoverage(label, map, expectedKeys, issues) {
     validateSameSet(label, Array.from(map.keys()), expectedKeys, issues);
 }
 
-function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByEnv, issues) {
+function validateEnvExpectations(platformioText, issues) {
     Object.entries(ENV_EXPECTATIONS).forEach(([envName, expectation]) => {
         const sectionName = `env:${envName}`;
         const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
@@ -382,6 +355,13 @@ function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByE
             issues.push(`${label}: 4MB environment should not override board_build.flash_size`);
         }
 
+        if (expectation.uploadFlashSize) {
+            const uploadFlashSize = resolveIniValue(platformioText, sectionName, 'board_upload.flash_size');
+            if (uploadFlashSize !== expectation.uploadFlashSize) {
+                issues.push(`${label}: expected board_upload.flash_size '${expectation.uploadFlashSize}', got '${uploadFlashSize || '(missing)'}'`);
+            }
+        }
+
         const psram = resolveIniValue(platformioText, sectionName, 'board_build.psram');
         if (expectation.psram && psram !== 'enabled') {
             issues.push(`${label}: PSRAM board must set board_build.psram = enabled`);
@@ -391,8 +371,8 @@ function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByE
         }
 
         const buildFlags = extractIniList(platformioText, sectionName, 'build_flags');
-        requireTokens(`${label} build_flags`, buildFlags, expectation.buildFlags, issues);
-        forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags, issues);
+        requireTokens(`${label} build_flags`, buildFlags, expectation.buildFlags || [], issues);
+        forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags || [], issues);
 
         const resolvedBuildFlags = resolveIniBuildFlags(platformioText, sectionName);
         if (expectation.psram) {
@@ -401,31 +381,21 @@ function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByE
             forbidTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DBOARD_HAS_PSRAM'], issues);
         }
 
+        // OTA 策略：跟随硬件能力。开启必须解析到 =1，关闭必须解析到 =0，
+        // 且关闭时要求 env 段自身显式声明（不依赖 unified_flags 默认值）
+        if (expectation.ota) {
+            requireTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DFASTBEE_ENABLE_OTA=1', '-DFASTBEE_ENABLE_OTA_FS=1'], issues);
+        } else {
+            requireTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'], issues);
+            requireTokens(`${label} direct build_flags`, buildFlags, ['-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'], issues);
+        }
+
         const libIgnore = extractIniList(platformioText, sectionName, 'lib_ignore');
         requireTokens(`${label} lib_ignore`, libIgnore, expectation.libIgnore || [], issues);
-
-        const buildAllProfile = profileByEnv.get(envName);
-        if (buildAllProfile !== expectation.profile) {
-            issues.push(`${rel(BUILD_ALL_PATH)} ProfileByEnv[${envName}]: expected '${expectation.profile}', got '${buildAllProfile || '(missing)'}'`);
-        }
-
-        const hookProfile = fastbeeProfileByEnv.get(envName);
-        if (hookProfile !== expectation.profile) {
-            issues.push(`${rel(FASTBEE_ARTIFACTS_PATH)} ENV_TO_PROFILE[${envName}]: expected '${expectation.profile}', got '${hookProfile || '(missing)'}'`);
-        }
     });
 }
 
-function validateFlagSectionRequirements(platformioText, issues) {
-    Object.entries(FLAG_SECTION_REQUIREMENTS).forEach(([sectionName, requiredFlags]) => {
-        const flags = extractIniList(platformioText, sectionName, 'build_flags');
-        if (flags.length === 0) {
-            issues.push(`${rel(PLATFORMIO_PATH)} [${sectionName}] build_flags: missing or empty`);
-            return;
-        }
-        requireTokens(`${rel(PLATFORMIO_PATH)} [${sectionName}] build_flags`, flags, requiredFlags, issues);
-    });
-}
+
 
 function resolveIniBuildFlags(platformioText, sectionName, stack = []) {
     if (stack.includes(sectionName)) {
@@ -509,10 +479,15 @@ function validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, is
         if (envName === 'native') return;
         const sectionName = `env:${envName}`;
         const flags = resolveIniBuildFlags(platformioText, sectionName);
-        const excluded = extractExcludedSources(platformioText, sectionName);
         const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
+        // Unified Architecture v2.0：未声明 build_src_filter 的环境编译全部源码，
+        // 功能关闭仅靠运行时门控，不要求编译期排除源文件；
+        // 声明了 build_src_filter 的环境（如 lite_src_filter）才检查一致性。
+        const hasSrcFilter = extractIniValue(platformioText, sectionName, 'build_src_filter') !== '';
+        const excluded = hasSrcFilter ? extractExcludedSources(platformioText, sectionName) : null;
 
         Object.entries(FEATURE_FLAG_TO_SOURCES).forEach(([flagName, sourceFiles]) => {
+            if (!excluded) return;
             const flagMatch = flags.find((flag) => {
                 const m = flag.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
                 return m;
@@ -663,6 +638,14 @@ function validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNam
             }
         });
 
+        // -unified 后缀环境已于 2026-08-27 并入同名基础环境，文档不得再引用
+        const unifiedRegex = /\b[A-Za-z0-9]+-F\d+R\d+-unified\b/g;
+        let unifiedMatch = unifiedRegex.exec(text);
+        while (unifiedMatch) {
+            issues.push(`${label}:${lineNumberAt(text, unifiedMatch.index)}: removed environment '${unifiedMatch[0]}' (merged into base environment)`);
+            unifiedMatch = unifiedRegex.exec(text);
+        }
+
         extractReadmeScriptReferences(text).forEach((refInfo) => {
             const normalizedRef = refInfo.value.replace(/\\/g, path.sep).replace(/\//g, path.sep);
             const fullPath = path.join(ROOT_DIR, normalizedRef);
@@ -742,8 +725,8 @@ function validatePartitionTables(platformioText, issues) {
     const nonOtaEnvs = new Set();
 
     partitionEnvs.forEach(([envName, exp]) => {
-        // OTA 能力由 Flash 规格决定（≥8MB 双槽分区），与 Web profile 无关
-        if (exp.flashSize) {
+        // OTA 能力跟随硬件配置：有 PSRAM + 8MB/16MB 双槽分区才开启（见 ENV_EXPECTATIONS.ota）
+        if (exp.ota) {
             otaEnvs.add(envName);
         } else {
             nonOtaEnvs.add(envName);
@@ -837,8 +820,25 @@ function validatePartitionTables(platformioText, issues) {
     nonOtaEnvs.forEach((envName) => {
         const partition = ENV_EXPECTATIONS[envName].partition;
         if (partition.includes('8MB') || partition.includes('16MB')) {
-            // Non-full environments using 8MB/16MB is OK
+            issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: non-OTA environment should use single-slot partition table`);
         }
+    });
+}
+
+/**
+ * Runtime parameter sections (TCP connections / task stacks) must keep their
+ * tuned values — accidental edits here silently change device behavior.
+ */
+function validateRuntimeFlagSections(platformioText, issues) {
+    Object.entries(FLAG_SECTION_REQUIREMENTS).forEach(([sectionName, requiredFlags]) => {
+        const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
+        const section = extractIniSection(platformioText, sectionName);
+        if (!section) {
+            issues.push(`${label}: missing runtime flags section`);
+            return;
+        }
+        const flags = resolveIniBuildFlags(platformioText, sectionName);
+        requireTokens(`${label} build_flags`, flags, requiredFlags, issues);
     });
 }
 
@@ -847,20 +847,18 @@ function main() {
     const testAllText = readText(TEST_ALL_PATH);
     const buildAllText = readText(BUILD_ALL_PATH);
     const collectArtifactsText = readText(COLLECT_ARTIFACTS_PATH);
-    const fastbeeArtifactsText = readText(FASTBEE_ARTIFACTS_PATH);
     const gzipWwwText = readText(GZIP_WWW_PATH);
     const issues = [];
 
     const allPlatformioEnvs = extractPlatformioEnvNames(platformioText);
-    const firmwareEnvs = allPlatformioEnvs.filter((envName) => envName !== 'native' && !SPECIAL_PURPOSE_ENVS.includes(envName));
+    const firmwareEnvs = allPlatformioEnvs.filter((envName) => envName !== 'native');
+    const releaseEnvs = firmwareEnvs.filter((envName) => !SPECIAL_PURPOSE_ENVS.includes(envName));
     const defaultEnvs = extractIniList(platformioText, 'platformio', 'default_envs');
     const testAllEnvs = extractPowerShellStringArray(testAllText, 'Environments');
     const buildAllEnvs = extractPowerShellStringArray(buildAllText, 'Environments');
-    const profileByEnv = extractPowerShellHashtable(buildAllText, 'ProfileByEnv');
     const outputNameByEnv = extractPowerShellHashtable(buildAllText, 'OutputNameByEnv');
     const hardwareByEnv = extractPowerShellHashtable(buildAllText, 'HardwareByEnv');
     const collectEnvMap = extractPowerShellHashtable(collectArtifactsText, 'EnvMap');
-    const fastbeeProfileByEnv = extractPythonStringDict(fastbeeArtifactsText, 'ENV_TO_PROFILE');
 
     if (allPlatformioEnvs.length === 0) {
         issues.push(`${rel(PLATFORMIO_PATH)}: no [env:*] sections found`);
@@ -869,6 +867,7 @@ function main() {
         issues.push(`${rel(PLATFORMIO_PATH)}: missing [env:native] for host tests`);
     }
     validateNoDuplicates(`${rel(PLATFORMIO_PATH)} env sections`, allPlatformioEnvs, issues);
+    validateSameSet('ENV_EXPECTATIONS coverage', Object.keys(ENV_EXPECTATIONS), firmwareEnvs, issues);
 
     if (defaultEnvs.length === 0) {
         issues.push(`${rel(PLATFORMIO_PATH)}: [platformio] default_envs is empty`);
@@ -879,41 +878,30 @@ function main() {
         }
     });
 
+    // 发布流水线脚本只覆盖出厂环境（不含开发/参考板）
     validateNoDuplicates(`${rel(TEST_ALL_PATH)} default Environments`, testAllEnvs, issues);
     validateNoDuplicates(`${rel(BUILD_ALL_PATH)} default Environments`, buildAllEnvs, issues);
-    validateSameSet(`${rel(TEST_ALL_PATH)} default Environments`, testAllEnvs, firmwareEnvs, issues);
-    validateSameSet(`${rel(BUILD_ALL_PATH)} default Environments`, buildAllEnvs, firmwareEnvs, issues);
+    validateSameSet(`${rel(TEST_ALL_PATH)} default Environments`, testAllEnvs, releaseEnvs, issues);
+    validateSameSet(`${rel(BUILD_ALL_PATH)} default Environments`, buildAllEnvs, releaseEnvs, issues);
+    validateMapCoverage(`${rel(BUILD_ALL_PATH)} OutputNameByEnv`, outputNameByEnv, releaseEnvs, issues);
+    validateMapCoverage(`${rel(BUILD_ALL_PATH)} HardwareByEnv`, hardwareByEnv, releaseEnvs, issues);
+    validateMapCoverage(`${rel(COLLECT_ARTIFACTS_PATH)} EnvMap`, collectEnvMap, releaseEnvs, issues);
 
-    validateMapCoverage(`${rel(BUILD_ALL_PATH)} ProfileByEnv`, profileByEnv, firmwareEnvs, issues);
-    validateMapCoverage(`${rel(BUILD_ALL_PATH)} OutputNameByEnv`, outputNameByEnv, firmwareEnvs, issues);
-    validateMapCoverage(`${rel(BUILD_ALL_PATH)} HardwareByEnv`, hardwareByEnv, firmwareEnvs, issues);
-    validateMapCoverage(`${rel(COLLECT_ARTIFACTS_PATH)} EnvMap`, collectEnvMap, firmwareEnvs, issues);
-    validateMapCoverage(`${rel(FASTBEE_ARTIFACTS_PATH)} ENV_TO_PROFILE`, fastbeeProfileByEnv, firmwareEnvs, issues);
-
-    profileByEnv.forEach((profile, envName) => {
-        if (!PROFILES.has(profile)) {
-            issues.push(`${rel(BUILD_ALL_PATH)} ProfileByEnv[${envName}]: unsupported profile '${profile}'`);
-        }
-        const hookProfile = fastbeeProfileByEnv.get(envName);
-        if (hookProfile && hookProfile !== profile) {
-            issues.push(`${rel(FASTBEE_ARTIFACTS_PATH)} ENV_TO_PROFILE[${envName}]: '${hookProfile}' does not match build-all-artifacts.ps1 '${profile}'`);
-        }
-    });
     hardwareByEnv.forEach((hardware, envName) => {
         if (!hardware.trim()) {
             issues.push(`${rel(BUILD_ALL_PATH)} HardwareByEnv[${envName}]: hardware description is empty`);
         }
     });
 
-    validateOutputNames(outputNameByEnv, collectEnvMap, firmwareEnvs, issues);
-    validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByEnv, issues);
-    validateFlagSectionRequirements(platformioText, issues);
-    validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues);
-    validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues);
-    validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
-    validatePartitionTables(platformioText, issues);
+    validateEnvExpectations(platformioText, issues);
     validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs, issues);
     validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, issues);
+    validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues);
+    validateRuntimeFlagSections(platformioText, issues);
+    validateOutputNames(outputNameByEnv, collectEnvMap, releaseEnvs, issues);
+    validateReadmeScriptExamples(releaseEnvs, allPlatformioEnvs, outputNameByEnv, issues);
+    validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
+    validatePartitionTables(platformioText, issues);
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');
@@ -921,7 +909,7 @@ function main() {
         process.exit(1);
     }
 
-    console.log(`FastBee build matrix OK: firmwareEnvs=${firmwareEnvs.length}, default=${defaultEnvs.join(',')}`);
+    console.log(`FastBee build matrix OK: firmwareEnvs=${firmwareEnvs.length}, releaseEnvs=${releaseEnvs.length}, default=${defaultEnvs.join(',')}`);
 }
 
 main();

@@ -13,7 +13,7 @@
     .login-page{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--space-5);background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%)}
     .app-container.fb-hidden{display:none}
     .login-card{width:100%;max-width:400px;background:rgba(255,255,255,.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:0;border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow)}
-    .login-lang-switch{display:flex;justify-content:flex-end;padding:8px 12px 0}.login-lang-switch select,.header-actions select{padding:3px 6px;font-size:12px;border:1px solid var(--border);border-radius:var(--rounded-md);background:#fff;color:var(--text-secondary);max-width:80px}
+    /* Single language (zh-CN) only - removed language selector styles */
     .login-header{text-align:center;padding:var(--space-4) var(--space-5) 0}.login-logo-img{display:inline-block;width:48px;height:48px;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(22,119,255,.22))}.login-body{padding:var(--space-4) var(--space-8) var(--space-6)}.login-body fieldset{border:0;margin:0;padding:0;min-width:0}
     .fb-form input[type=text],.fb-form input[type=password],.fb-btn{box-sizing:border-box}
     .fb-form input[type=text],.fb-form input[type=password]{width:100%;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:var(--rounded-md)}
@@ -40,13 +40,6 @@
     <!-- 登录页面 -->
     <div id="login-page" class="login-page">
         <div class="login-card">
-            <div class="login-lang-switch">
-                <select id="login-language-select" title="语言/Language">
-                    <option value="zh-CN" selected>中文</option>
-                    <option value="en">English</option>
-                </select>
-            </div>
-
             <div class="login-header">
                 <img class="login-logo-img" src="/assets/logo.png" alt="FastBee Logo">
                 <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title" data-i18n="login-title">FastBee Arduino</h1>
@@ -64,9 +57,8 @@
                             data-i18n-placeholder="password-placeholder" required>
 
                         <label class="fb-checkbox fb-my-3">
-                            <input type="checkbox" id="remember"> <!-- WP-13: 默认不勾选，提升安全性 -->
+                            <input type="checkbox" id="remember">
                             <span id="remember-label" data-i18n="remember-label">保持登录</span>
-                            <small style="color:var(--text-secondary);font-size:11px;margin-left:4px;">WP-13 安全加固：不再保存明文密码</small>
                         </label>
 
                         <button type="submit" class="fb-btn fb-btn-primary fb-u-1" id="login-button" data-i18n="login-button">
@@ -117,9 +109,6 @@
                     <a href="#" class="menu-item" data-page="logs">
                         <span class="menu-icon">📜</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="data">
-                        <span class="menu-icon">📁</span> <span id="menu-data" data-i18n="menu-data">文件管理</span>
-                    </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
                     </a>
@@ -138,12 +127,8 @@
                         <button id="sidebar-toggle" class="sidebar-toggle">☰</button>
                         <h1 class="page-title" id="page-title">设备监控仪表盘</h1>
                     </div>
+                    <!-- Single language (zh-CN) only - no language selector -->
                     <div class="header-actions">
-                        <!-- 语言切换（仅Full版本显示，由capabilities API控制） -->
-                        <select id="language-select" class="fb-hidden" title="语言/Language">
-                            <option value="zh-CN" selected>中文</option>
-                            <option value="en">English</option>
-                        </select>
                         <!-- 用户下拉菜单 -->
                         <div class="user-dropdown">
                             <button class="user-dropdown-toggle" id="user-dropdown-btn">
@@ -197,11 +182,9 @@
     <script>
     (function() {
         var bootChunks = [
-            './js/chunk-1-core-a.js',
-            './js/chunk-2-core-b.js',
-            './js/chunk-3-i18n-engine.js',
-            './js/chunk-8-state-1.js',
-            './js/chunk-9-state-2.js'
+            './js/chunk-1-core.js',
+            './js/chunk-2-app.js',
+            './js/chunk-3-state.js'
         ];
         var started = false;
         var CHUNK_MAX_RETRY = 4; // 弱网/退化链路下单次加载失败率高，重试大幅提升成功率

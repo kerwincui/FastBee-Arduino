@@ -2,15 +2,15 @@
 <div id="device-page" class="page page-layout-flat">
     <div class="fb-card">
         <div class="fb-card-header">
-            <h2 class="fb-card-title" data-i18n="device-config-title">设备配置</h2>
+            <h2 class="fb-card-title">设备配置</h2>
         </div>
         <div class="fb-card-body">
             <div class="config-tabs">
-                <div class="config-tab active" data-tab="dev-basic" data-i18n="dev-tab-basic">基本信息
+                <div class="config-tab active" data-tab="dev-basic">基本信息
                 </div>
-                <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
-                <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
-                <div class="config-tab" data-tab="dev-advanced" data-i18n="dev-tab-advanced">高级配置</div>
+                <div class="config-tab" data-tab="dev-ntp">NTP时间</div>
+                <div class="config-tab" data-tab="dev-ota">OTA升级</div>
+                <div class="config-tab" data-tab="dev-advanced">高级配置</div>
             </div>
 
             <!-- 基本信息 tab -->
@@ -20,7 +20,7 @@
                     <div class="fb-panel fb-border-default fb-mb-3">
                         <div class="fb-card-header fb-p-2 fb-bg-gray">
                             <h4 class="fb-m-0 fb-text-sm">
-                                <span data-i18n="dev-sys-hw-title">硬件信息</span>
+                                <span>硬件信息</span>
                             </h4>
                         </div>
                         <div class="fb-card-body fb-panel-body">
@@ -29,18 +29,15 @@
                                     <table class="fb-table fb-w-full fb-fs-13">
                                         <tbody>
                                             <tr>
-                                                <td class="u-table-label-cell"
-                                                    data-i18n="dev-sys-chip-label">芯片型号</td>
+                                                <td class="u-table-label-cell">芯片型号</td>
                                                 <td id="dev-sys-chip">--</td>
                                             </tr>
                                             <tr>
-                                                <td class="u-text-secondary"
-                                                    data-i18n="dev-sys-cpu-label">CPU频率</td>
+                                                <td class="u-text-secondary">CPU频率</td>
                                                 <td id="dev-sys-cpu">--</td>
                                             </tr>
                                             <tr>
-                                                <td class="u-text-secondary"
-                                                    data-i18n="dev-sys-heap-label">空闲堆栈</td>
+                                                <td class="u-text-secondary">空闲堆栈</td>
                                                 <td id="dev-sys-heap">--</td>
                                             </tr>
                                         </tbody>
@@ -50,18 +47,15 @@
                                     <table class="fb-table fb-w-full fb-fs-13">
                                         <tbody>
                                             <tr>
-                                                <td class="u-table-label-cell"
-                                                    data-i18n="dev-sys-flash-label">Flash大小</td>
+                                                <td class="u-table-label-cell">Flash大小</td>
                                                 <td id="dev-sys-flash">--</td>
                                             </tr>
                                             <tr>
-                                                <td class="u-text-secondary"
-                                                    data-i18n="dev-sys-sdk-label">SDK版本</td>
+                                                <td class="u-text-secondary">SDK版本</td>
                                                 <td id="dev-sys-sdk">--</td>
                                             </tr>
                                             <tr>
-                                                <td class="u-text-secondary"
-                                                    data-i18n="dev-sys-fw-label">固件版本</td>
+                                                <td class="u-text-secondary">固件版本</td>
                                                 <td id="dev-sys-fw">--</td>
                                             </tr>
                                         </tbody>
@@ -74,58 +68,51 @@
                     <div class="config-form-grid">
                         <div class="config-form-column">
                             <div class="fb-form-group">
-                                <label for="dev-name" data-i18n="dev-name-label">设备名称</label>
+                                <label for="dev-name">设备名称</label>
                                 <input type="text" id="dev-name" class=""
-                                    placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
+                                    placeholder="输入设备名称">
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
+                                <label for="dev-user-id">用户ID</label>
                                 <input type="text" id="dev-user-id" class=""
-                                    placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
+                                    placeholder="输入用户ID">
                             </div>
                         </div>
 
                         <div class="config-form-column">
                             <div class="fb-form-group">
-                                <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
+                                <label for="dev-id">设备编号</label>
                                 <input type="text" id="dev-id" class=""
-                                    placeholder="留空则使用系统默认值(FBE+MAC)"
-                                    data-i18n-placeholder="dev-id-placeholder" maxlength="32">
+                                    placeholder="留空则使用系统默认值(FBE+MAC)" maxlength="32">
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-product-number"
-                                    data-i18n="dev-product-number-label">产品编号</label>
+                                <label for="dev-product-number">产品编号</label>
                                 <input type="number" id="dev-product-number" class=""
-                                    placeholder="输入产品编号"
-                                    data-i18n-placeholder="dev-product-number-label" min="0">
+                                    placeholder="输入产品编号" min="0">
                             </div>
                         </div>
                     </div>
                     <div class="dev-basic-footer-row">
                         <div class="fb-form-group">
-                            <label for="dev-log-level" data-i18n="dev-log-level-label">日志级别</label>
+                            <label for="dev-log-level">日志级别</label>
                             <select id="dev-log-level">
-                                <option value="DEBUG" data-i18n="log-level-debug">DEBUG (调试)</option>
-                                <option value="INFO" selected data-i18n="log-level-info">INFO (信息)</option>
-                                <option value="WARNING" data-i18n="log-level-warning">WARNING (警告)</option>
-                                <option value="ERROR" data-i18n="log-level-error">ERROR (错误)</option>
+                                <option value="DEBUG">DEBUG (调试)</option>
+                                <option value="INFO" selected>INFO (信息)</option>
+                                <option value="WARNING">WARNING (警告)</option>
+                                <option value="ERROR">ERROR (错误)</option>
                             </select>
                         </div>
                         <div class="fb-form-group dev-basic-footer-field">
-                            <label for="dev-description"
-                                data-i18n="dev-description-label">设备描述</label>
+                            <label for="dev-description">设备描述</label>
                             <textarea id="dev-description" class="" rows="1"
-                                placeholder="输入设备描述"
-                                data-i18n-placeholder="dev-description-label"></textarea>
+                                placeholder="输入设备描述"></textarea>
                         </div>
                     </div>
-                    <div class="message message-success is-hidden u-mt-15" id="dev-basic-success"
-                        data-i18n="dev-basic-save-ok">
+                    <div class="message message-success is-hidden u-mt-15" id="dev-basic-success">
                         设备信息保存成功！</div>
                     <div class="u-mt-20 u-mb-20 device-form-actions">
                         <button type="submit" class="fb-btn fb-btn-primary fb-btn-action">
-                            <span
-                                data-i18n="dev-basic-save-btn">保存信息</span>
+                            <span>保存信息</span>
                         </button>
                     </div>
 
@@ -137,27 +124,25 @@
                 <!-- 当前时间显示 -->
                 <div class="fb-panel">
                     <div class="fb-card-header fb-panel-header u-header-between-wrap">
-                        <h4 class="fb-panel-title"><span
-                                data-i18n="dev-time-title">当前时间</span></h4>
+                        <h4 class="fb-panel-title"><span>当前时间</span></h4>
                         <button id="dev-time-refresh-btn" class="fb-btn fb-btn-sm fb-btn-refresh">
-                            <span data-i18n="dev-time-refresh">刷新</span>
+                            <span>刷新</span>
                         </button>
                     </div>
                     <div class="fb-card-body fb-panel-body">
                         <table class="fb-table fb-w-full fb-fs-13">
                             <tbody>
                                 <tr>
-                                    <td class="fb-text-gray fb-w-120"
-                                        data-i18n="dev-time-datetime-label">日期时间</td>
+                                    <td class="fb-text-gray fb-w-120">日期时间</td>
                                     <td><strong id="dev-time-datetime" class="u-value-lg">--</strong></td>
                                 </tr>
                                 <tr>
-                                    <td class="u-text-secondary" data-i18n="dev-time-synced-label">
+                                    <td class="u-text-secondary">
                                         NTP同步状态</td>
                                     <td id="dev-time-synced">--</td>
                                 </tr>
                                 <tr>
-                                    <td class="u-text-secondary" data-i18n="dev-time-uptime-label">
+                                    <td class="u-text-secondary">
                                         设备运行时间</td>
                                     <td id="dev-time-uptime">--</td>
                                 </tr>
@@ -171,94 +156,60 @@
                     <div class="config-form-grid">
                         <div class="config-form-column">
                             <div class="fb-form-group">
-                                <label for="dev-ntp-enable"
-                                    data-i18n="dev-ntp-enable-label">NTP同步</label>
+                                <label for="dev-ntp-enable">NTP同步</label>
                                 <select id="dev-ntp-enable" class="">
-                                    <option value="1" selected data-i18n="wifi-enable">启用</option>
-                                    <option value="0" data-i18n="wifi-disable">禁用</option>
+                                    <option value="1" selected>启用</option>
+                                    <option value="0">禁用</option>
                                 </select>
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-ntp-server1"
-                                    data-i18n="dev-ntp-server1-label">NTP服务器1</label>
+                                <label for="dev-ntp-server1">NTP服务器1</label>
                                 <input type="text" id="dev-ntp-server1" class=""
                                     placeholder="pool.ntp.org">
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-ntp-server2"
-                                    data-i18n="dev-ntp-server2-label">NTP服务器2</label>
+                                <label for="dev-ntp-server2">NTP服务器2</label>
                                 <input type="text" id="dev-ntp-server2" class=""
                                     placeholder="time.nist.gov">
                             </div>
                         </div>
                         <div class="config-form-column">
                             <div class="fb-form-group">
-                                <label for="dev-timezone" data-i18n="dev-timezone-label">时区</label>
+                                <label for="dev-timezone">时区</label>
                                 <select id="dev-timezone" class="">
-                                    <option value="CST-8" selected data-i18n="tz-china">中国标准时间
+                                    <option value="CST-8" selected>中国标准时间
                                         (UTC+8)</option>
-                                    <option value="UTC0" data-i18n="tz-utc">UTC (UTC+0)</option>
-                                    <option value="JST-9" data-i18n="tz-japan">日本标准时间 (UTC+9)
+                                    <option value="UTC0">UTC (UTC+0)</option>
+                                    <option value="JST-9">日本标准时间 (UTC+9)
                                     </option>
-                                    <option value="EST5EDT" data-i18n="tz-us-east">美国东部时间 (UTC-5)
+                                    <option value="EST5EDT">美国东部时间 (UTC-5)
                                     </option>
-                                    <option value="PST8PDT" data-i18n="tz-us-west">美国西部时间 (UTC-8)
+                                    <option value="PST8PDT">美国西部时间 (UTC-8)
                                     </option>
-                                    <option value="CET-1CEST" data-i18n="tz-europe">中欧时间 (UTC+1)
+                                    <option value="CET-1CEST">中欧时间 (UTC+1)
                                     </option>
                                 </select>
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-sync-interval"
-                                    data-i18n="dev-sync-interval-label">同步间隔 (秒)</label>
+                                <label for="dev-sync-interval">同步间隔 (秒)</label>
                                 <input type="number" id="dev-sync-interval" class=""
                                     value="3600" min="60" max="86400">
                             </div>
                         </div>
                     </div>
-                    <div class="message message-success is-hidden u-mt-15" id="dev-ntp-success"
-                        data-i18n="dev-ntp-save-ok">
+                    <div class="message message-success is-hidden u-mt-15" id="dev-ntp-success">
                         NTP配置保存成功！</div>
                     <div class="u-mt-20 device-form-actions">
                         <button type="submit" class="fb-btn fb-btn-primary fb-btn-action fb-btn-action-wide">
-                            <span
-                                data-i18n="dev-ntp-save-btn">保存NTP配置</span>
+                            <span>保存NTP配置</span>
                         </button>
                     </div>
                 </form>
             </div>
 
-            <!-- OTA升级 tab（从高级配置迁移至此，功能逻辑不变） -->
+            <!-- OTA 升级 tab（使用统一的 device-ota 分片模块） -->
             <div id="dev-ota" class="config-content">
-                <!-- 固件升级（内联精简版，作为 device-ota 分片加载失败时的兜底；
-                     分片加载成功后由 device-config.js 隐藏本面板） -->
-                <div id="dev-ota-inline-panel" class="fb-panel">
-                    <div class="fb-card-body" style="padding:14px 18px">
-                        <h4 class="dev-mode-section-title">
-                            <span data-i18n="dev-ota-title">固件升级</span>
-                        </h4>
-                        <p class="dev-mode-section-desc" data-i18n="dev-ota-hint">选择 .bin 固件文件后点击上传，升级过程中请勿断电。</p>
-                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-                            <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-ota-file" style="margin:0;cursor:pointer">
-                                <span data-i18n="dev-ota-pick">选择固件</span>
-                            </label>
-                            <input type="file" id="dev-ota-file" accept=".bin" class="is-hidden">
-                            <button id="dev-ota-upload-btn" type="button" class="fb-btn fb-btn-primary fb-btn-compact" disabled>
-                                <span data-i18n="dev-ota-upload-btn">上传升级</span>
-                            </button>
-                            <span id="dev-ota-filename" style="font-size:12px;color:var(--text-secondary)"></span>
-                        </div>
-                        <div id="dev-ota-progress-wrap" class="is-hidden" style="margin-top:8px">
-                            <div style="background:var(--bg-gray,#eee);border-radius:4px;overflow:hidden;height:18px">
-                                <div id="dev-ota-progress-bar" style="width:0%;height:100%;background:var(--primary,#007bff);transition:width 0.3s"></div>
-                            </div>
-                            <span id="dev-ota-progress-text" style="font-size:12px;color:var(--text-secondary)">0%</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 完整 OTA 升级分片容器（在线升级/本地上传，由 PageLoader 懒加载
-                     fragments/device-ota.html 并绑定 device-ota 模块） -->
+                <!-- OTA 升级分片容器（包含固件信息、在线升级、本地上传） -->
                 <div id="device-ota-container"></div>
             </div>
 
@@ -270,15 +221,14 @@
                     <div class="fb-panel u-flex-1-min-280 dev-developer-panel">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 class="dev-mode-section-title">
-                                <span data-i18n="dev-mode-title">开发环境功能</span>
+                                <span>开发环境功能</span>
                                 <strong id="dev-mode-status" style="margin-left:8px;font-size:13px">--</strong>
                             </h4>
-                            <p class="dev-mode-section-desc" data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
+                            <p class="dev-mode-section-desc">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
-                                <input type="password" id="dev-mode-password" class="u-input-w-100"
-                                    data-i18n-placeholder="password-placeholder" placeholder="请输入密码">
+                                <input type="password" id="dev-mode-password" class="u-input-w-100" placeholder="请输入密码">
                                 <button id="dev-mode-toggle-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <span data-i18n="dev-mode-disable-btn">禁用开发环境</span>
+                                    <span>禁用开发环境</span>
                                 </button>
                             </div>
                         </div>
@@ -288,11 +238,11 @@
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 class="dev-mode-section-title">
-                                <span data-i18n="dev-sys-restart-title">重启设备</span>
+                                <span>重启设备</span>
                             </h4>
-                            <p class="dev-mode-section-desc" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                            <p class="dev-mode-section-desc">重启设备将会断开所有连接，配置数据将保留。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
-                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-restart-delay">延迟：</label>
+                                <label style="font-size:12px;white-space:nowrap">延迟：</label>
                                 <select id="dev-restart-delay">
                                     <option value="1">1秒</option>
                                     <option value="3" selected>3秒</option>
@@ -300,7 +250,7 @@
                                     <option value="10">10秒</option>
                                 </select>
                                 <button id="dev-restart-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <span data-i18n="dev-sys-restart-btn">立即重启</span>
+                                    <span>立即重启</span>
                                 </button>
                             </div>
                         </div>
@@ -313,24 +263,24 @@
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 class="dev-mode-section-title">
-                                <span data-i18n="dev-cache-title">缓存管理</span>
+                                <span>缓存管理</span>
                             </h4>
-                            <p class="dev-mode-section-desc" data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
+                            <p class="dev-mode-section-desc">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
                                 <label style="font-size:12px;white-space:nowrap">有效期：</label>
                                 <select id="dev-cache-duration">
-                                    <option value="3600" data-i18n="dev-cache-1h">1小时</option>
-                                    <option value="21600" data-i18n="dev-cache-6h">6小时</option>
-                                    <option value="43200" data-i18n="dev-cache-12h">12小时</option>
-                                    <option value="86400" selected data-i18n="dev-cache-24h">24小时</option>
-                                    <option value="172800" data-i18n="dev-cache-48h">48小时</option>
-                                    <option value="259200" data-i18n="dev-cache-72h">72小时</option>
+                                    <option value="3600">1小时</option>
+                                    <option value="21600">6小时</option>
+                                    <option value="43200">12小时</option>
+                                    <option value="86400" selected>24小时</option>
+                                    <option value="172800">48小时</option>
+                                    <option value="259200">72小时</option>
                                 </select>
                                 <button type="button" class="fb-btn fb-btn-warning fb-btn-compact" data-action="saveCacheDuration">
-                                    <span data-i18n="dev-cache-save-btn">保存</span>
+                                    <span>保存</span>
                                 </button>
                                 <button type="button" class="fb-btn fb-btn-warning fb-btn-compact" data-action="clearBrowserCache">
-                                    <span data-i18n="dev-cache-clear-btn">清除缓存</span>
+                                    <span>清除缓存</span>
                                 </button>
                             </div>
                         </div>
@@ -340,20 +290,20 @@
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 class="dev-mode-section-title">
-                                <span data-i18n="dev-config-transfer-title">配置导入/导出</span>
+                                <span>配置导入/导出</span>
                             </h4>
-                            <p style="margin:0 0 6px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-config-transfer-hint">选择需要导入或导出的配置文件。</p>
-                            <p style="margin:0 0 10px;font-size:11px;color:var(--text-tertiary,--text-secondary);opacity:0.8" data-i18n="dev-config-transfer-batch-hint">提示：配置文件较大时可分多次选择不同文件依次导入。</p>
+                            <p style="margin:0 0 6px;font-size:12px;color:var(--text-secondary)">选择需要导入或导出的配置文件。</p>
+                            <p style="margin:0 0 10px;font-size:11px;color:var(--text-tertiary,--text-secondary);opacity:0.8">提示：配置文件较大时可分多次选择不同文件依次导入。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
                                 <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file" style="margin:0;cursor:pointer">
-                                    <span data-i18n="dev-config-import-pick">选择文件</span>
+                                    <span>选择文件</span>
                                 </label>
                                 <input type="file" id="dev-config-import-file" accept="application/json,.json" class="is-hidden" multiple>
                                 <button id="dev-config-import-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <span data-i18n="dev-config-import-btn">导入</span>
+                                    <span>导入</span>
                                 </button>
                                 <button id="dev-config-export-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <span data-i18n="dev-config-export-btn">导出</span>
+                                    <span>导出</span>
                                 </button>
                             </div>
                             <div id="dev-config-transfer-status" style="font-size:12px;color:var(--text-secondary)">--</div>
@@ -367,39 +317,38 @@
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 class="dev-mode-section-title">
-                                <span data-i18n="dev-sec-title">安全策略</span>
+                                <span>安全策略</span>
                             </h4>
                             <form id="device-security-form" class="fb-form" style="margin:0">
                                 <div class="config-form-grid">
                                     <div class="config-form-column">
                                         <div class="fb-form-group">
-                                            <label for="dev-sec-max-attempts" data-i18n="dev-sec-max-attempts">最大登录尝试次数</label>
+                                            <label for="dev-sec-max-attempts">最大登录尝试次数</label>
                                             <input type="number" id="dev-sec-max-attempts" min="1" max="10" value="5">
                                         </div>
                                         <div class="fb-form-group">
-                                            <label for="dev-sec-lockout-time" data-i18n="dev-sec-lockout-time">锁定时长（秒）</label>
+                                            <label for="dev-sec-lockout-time">锁定时长（秒）</label>
                                             <input type="number" id="dev-sec-lockout-time" min="60" max="3600" value="300" step="60">
                                         </div>
                                     </div>
                                     <div class="config-form-column">
                                         <div class="fb-form-group">
-                                            <label for="dev-sec-min-pwd-len" data-i18n="dev-sec-min-pwd-len">最小密码长度</label>
+                                            <label for="dev-sec-min-pwd-len">最小密码长度</label>
                                             <input type="number" id="dev-sec-min-pwd-len" min="4" max="32" value="6">
                                         </div>
                                         <div class="fb-form-group">
-                                            <label for="dev-sec-require-strong" data-i18n="dev-sec-require-strong">要求强密码</label>
+                                            <label for="dev-sec-require-strong">要求强密码</label>
                                             <select id="dev-sec-require-strong">
-                                                <option value="0" selected data-i18n="wifi-disable">禁用</option>
-                                                <option value="1" data-i18n="wifi-enable">启用</option>
+                                                <option value="0" selected>禁用</option>
+                                                <option value="1">启用</option>
                                             </select>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="message message-success is-hidden u-mt-15" id="dev-sec-success"
-                                    data-i18n="dev-sec-save-ok">安全策略保存成功！</div>
+                                <div class="message message-success is-hidden u-mt-15" id="dev-sec-success">安全策略保存成功！</div>
                                 <div class="u-mt-15 device-form-actions">
                                     <button type="submit" class="fb-btn fb-btn-primary fb-btn-action fb-btn-action-wide">
-                                        <span data-i18n="dev-sec-save-btn">保存安全策略</span>
+                                        <span>保存安全策略</span>
                                     </button>
                                 </div>
                             </form>
@@ -410,14 +359,14 @@
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
                             <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
-                                <span data-i18n="dev-sys-factory-title">恢复出厂设置</span>
+                                <span>恢复出厂设置</span>
                             </h4>
-                            <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-factory-confirm-label">输入“RESET”确认：</label>
+                                <label style="font-size:12px;white-space:nowrap">输入“RESET”确认：</label>
                                 <input type="text" id="dev-factory-confirm" placeholder="RESET" style="width:72px">
                                 <button id="dev-factory-btn" type="button" class="fb-btn fb-btn-danger fb-btn-compact">
-                                    <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                    <span>恢复出厂设置</span>
                                 </button>
                             </div>
                         </div>

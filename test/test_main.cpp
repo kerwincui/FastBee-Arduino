@@ -65,6 +65,13 @@ extern void test_peripheral_manager_opt_group();
 extern void test_profile_consistency_group();
 extern void test_runtime_feature_manager_group();
 extern void test_feature_budget_group();
+extern void test_network_config_additional_group();  // Added: LittleFS & network.json config tests
+
+// Phase A→D 新功能测试组
+extern void test_fragmentation_aware_scheduler_group();
+extern void test_tls_memory_pool_group();
+extern void test_feature_toggle_group();
+extern void test_memory_profile_db_group();
 
 // 测试夹具
 void setUp() {
@@ -108,6 +115,9 @@ void setup() {
     // 运行测试组
     Serial.println("\n[TEST] Running Network Configuration Tests...");
     test_network_config_group();
+
+    Serial.println("\n[TEST] Running Additional Network Config Tests (LittleFS, power loss recovery)...");
+    test_network_config_additional_group();  // NEW: Added LittleFS and WiFi transition tests
 
     Serial.println("\n[TEST] Running Multi-Network Mode Tests...");
     test_multi_network_mode_group();
@@ -264,6 +274,19 @@ void setup() {
 
     Serial.println("\n[TEST] Running FeatureBudget Tests...");
     test_feature_budget_group();
+
+    // Phase A→D 新功能测试
+    Serial.println("\n[TEST] Running Fragmentation-aware Scheduler Tests...");
+    test_fragmentation_aware_scheduler_group();
+
+    Serial.println("\n[TEST] Running TLS Memory Pool Tests...");
+    test_tls_memory_pool_group();
+
+    Serial.println("\n[TEST] Running FeatureToggle Engine Tests...");
+    test_feature_toggle_group();
+
+    Serial.println("\n[TEST] Running MemoryProfileDB Tests...");
+    test_memory_profile_db_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

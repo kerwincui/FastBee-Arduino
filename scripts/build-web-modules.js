@@ -16,13 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { buildAdminBundle, SOURCE_FILES: ADMIN_SOURCE_FILES } = require('./build-admin-bundle');
-const {
-    getWebProfile,
-    isCompactWebProfile,
-    isLiteWebProfile,
-    isFullWebProfile,
-    hasDeviceControl
-} = require('./web-profile');
+const { getWebProfile, isFullWebProfile, hasDeviceControl } = require('./web-profile');
 const {
     buildAppBundle,
     BUNDLE_SOURCES: APP_BUNDLE_SOURCES,
@@ -61,14 +55,8 @@ const DIRECT_RUNTIME_MODULES = [
     'device-ota.js',
     'network.js',
     'feature-config.js'
-].concat(hasDeviceControl() ? ['device-control.js'] : [])
- .concat(isFullWebProfile() ? ['dashboard-fullscreen.js'] : []);
-const I18N_MODULES = isCompactWebProfile()
-    ? []
-    : [
-        { file: 'i18n-zh-CN.js', minify: false },
-        { file: 'i18n-en.js', minify: false, optional: true, fallbackPublish: true }
-    ];
+].concat(hasDeviceControl() ? ['device-control.js'] : []);
+const I18N_MODULES = [];  // i18n support removed - all translations are now hardcoded in HTML/JS
 const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
@@ -89,9 +77,7 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'users.js',
     'dashboard-fullscreen.js'
 ]);
-const STANDALONE_ROOT_JS = isFullWebProfile()
-    ? [{ file: 'notification.js', minify: true }]
-    : [];
+const STANDALONE_ROOT_JS = [{ file: 'notification.js', minify: true }];
 const STANDALONE_ROOT_JS_SET = new Set(STANDALONE_ROOT_JS.map((item) => item.file));
 const APP_CHUNK_FILES = new Set(APP_CHUNK_GROUPS.map((chunk) => chunk.outName));
 
@@ -120,9 +106,8 @@ function removeGeneratedFile(filePath) {
 }
 
 function shouldSkipStaticAsset(relPath) {
-    const normalized = normalizePath(relPath);
-    return (isCompactWebProfile() && COMPACT_STATIC_SKIP.has(normalized))
-        || (isLiteWebProfile() && LITE_STATIC_SKIP.has(normalized));
+    // 统一架构：不跳过任何静态资源
+    return false;
 }
 
 function stripSection(content, startMarker, endMarker) {
@@ -179,37 +164,8 @@ function stripProdOnlyCssRules(content) {
         /^\[data-theme="dark"\]\s+\.ota-/
     ];
 
-    // 精简版额外移除：rule-script 样式、暗黑主题、device-control、Modbus UI 相关样式
-    if (isLiteWebProfile()) {
-        dropSelectors.push(
-            /^\.rule-script-/,
-            /^\[data-theme="dark"\]\s+\.rule-script-/
-        );
-        dropSelectors.push(
-            /^\[data-theme="dark"\]/,           // 所有暗黑主题规则
-            /^\/\*\s*Dark\s/,                    // Dark Theme 注释行
-            /^\.modbus-/                          // Modbus UI 样式（lite 无 Modbus）
-        );
-    }
-
-    // 无设备大屏（lite / standard 未开 DEVICE_CONTROL）：移除设备大屏专属样式。
-    // 注意：.modbus- 仅在 lite 移除，standard 的 Modbus RTU 配置页仍依赖这些类。
-    if (isLiteWebProfile() || !hasDeviceControl()) {
-        dropSelectors.push(
-            /^\.dc-/,                             // device-control 样式
-            /^\.fullscreen-mode\s+\.dc-/,        // fullscreen 下的 dc 样式
-            /^\.coil-/,                            // 继电器线圈卡片
-            /^\.pwm-/,                             // PWM 通道
-            /^\.sensor-grid/,                      // 传感器网格
-            /^\.sensor-card/,                      // 传感器卡片
-            /^\.sensor-ch-/,                       // 传感器通道配置
-            /^\.pid-/,                             // PID 控制器
-            /^\.motor-/,                           // 电机控制面板
-            /^#master-data-grid/,                   // Modbus 采集数据网格（设备大屏）
-            /^\.master-data-/,                     // Modbus 采集数据项（设备大屏）
-            /^#dc-zoom-reset-btn/                   // device-control 缩放按钮
-        );
-    }
+    // 统一架构：不移除任何样式（保留全部资源）
+    
 
     return content
         .split(/\r?\n/)
@@ -221,84 +177,7 @@ function stripProdOnlyCssRules(content) {
 }
 
 function transformStaticAssetContent(relPath, content) {
-    if (!isCompactWebProfile()) return content;
-
-    const normalized = normalizePath(relPath);
-    if (normalized === 'pages/modals.html') {
-        let next = content;
-        const configTransferMarker = '<!-- 配置导入/导出选择弹窗 -->';
-        if (isLiteWebProfile()) {
-            next = stripSection(next, '<!-- 规则脚本模态窗 -->', '<!-- 兼容旧版：GPIO配置模态窗 -->');
-        }
-        next = stripSection(next, '<!-- 添加用户模态窗 -->', configTransferMarker);
-        if (isLiteWebProfile()) {
-            // 精简版移除兼容旧版GPIO配置模态窗（已被新外设配置系统替代）
-            next = stripSection(next, '<!-- 兼容旧版：GPIO配置模态窗 -->', configTransferMarker);
-        }
-        return next;
-    }
-
-    if (normalized === 'index.html') {
-        let next = ['logs', 'data', 'users']
-            .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
-        if (isLiteWebProfile()) {
-            next = stripMenuItemByPage(next, 'rule-script');
-            // 移除主题切换按钮（精简版无暗黑主题）
-            next = next.replace(/\s*<button\s+class="dropdown-item"\s+id="theme-toggle-item"[\s\S]*?<\/button>/g, '');
-            // 移除 Service Worker 注册代码块
-            next = next.replace(/\s*<!-- Service Worker 注册 -->\s*<script>[\s\S]*?serviceWorker[\s\S]*?<\/script>/g, '');
-        }
-        if (isLiteWebProfile() || !hasDeviceControl()) {
-            // 无设备大屏时移除菜单项（lite 及 standard 未开 DEVICE_CONTROL）
-            next = stripMenuItemByPage(next, 'device-control');
-        }
-        next = stripDivByClass(next, 'login-lang-switch');
-        if (!isFullWebProfile()) {
-            next = stripSelectById(next, 'language-select');
-            next = next.replace(/\.login-lang-switch\{[^}]*\}\.login-lang-switch select,\s*\.header-actions select\{[^}]*\}/g, '');
-        } else {
-            // Full版本保留 .header-actions select 样式，仅移除 .login-lang-switch
-            next = next.replace(/\.login-lang-switch\{[^}]*\}/g, '');
-            next = next.replace(/\.login-lang-switch select,\s*/g, '');
-        }
-        return next;
-    }
-
-    if (normalized === 'pages/protocol.html' && isLiteWebProfile()) {
-        let next = content;
-        next = next.replace(/\s*<div class="config-tab" data-tab="modbus-rtu">[\s\S]*?<\/div>/g, '');
-        next = next.replace(
-            /\s*<!-- Modbus RTU 配置[\s\S]*?-->\s*<div id="modbus-rtu" class="config-content">[\s\S]*?<div id="modbus-rtu-fragment-container">[\s\S]*?<\/div>\s*<\/div>/,
-            ''
-        );
-        return next;
-    }
-
-    if (normalized === 'css/main.css') {
-        let css = stripProdOnlyCssRules(content)
-            .replace(/@media\s*\(max-width:\s*768px\)\s*\{[^{}]*\.ota-inline-action-row[^{}]*\}/g, '')
-            .replace(/@media\s*\(max-width:\s*768px\)\s*\{[^{}]*\.fs-[^{}]*\}/g, '')
-            .replace(/\.ota-inline-action-row\s*\{[^}]*\}/g, '')
-            .replace(/\.ota-inline-input-wrap\s*\{[^}]*\}/g, '')
-            .replace(/\.ota-inline-action-row\s+\.fb-btn\s*\{[^}]*\}/g, '')
-            .replace(/\.log-content\s*\{[^}]*\}/g, '');
-        if (isLiteWebProfile()) {
-            css = css.replace(/\.rule-script-stats-cell\s*\{[^}]*\}/g, '');
-            // 移除暗黑主题变量声明块（多行: [data-theme="dark"] { ... }）
-            css = css.replace(/\/\*\s*Dark Theme[\s\S]*?\n\}/g, '');
-            // 移除 fullscreen-mode 内的 dc 样式块
-            css = css.replace(/\.fullscreen-mode\s+\.dc-[^{]*\{[^}]*\}/g, '');
-            // 移除 @media 内 device-control / modbus 相关规则
-            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.motor-[^{}]*\}/g, '');
-            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.modbus-[^{}]*\}/g, '');
-        } else if (!hasDeviceControl()) {
-            // standard 无设备大屏：仅移除设备大屏专属多行规则块（.modbus- 保留给配置页）
-            css = css.replace(/\.fullscreen-mode\s+\.dc-[^{]*\{[^}]*\}/g, '');
-            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.motor-[^{}]*\}/g, '');
-        }
-        return css;
-    }
-
+    // 统一架构：不转换静态资源内容
     return content;
 }
 
@@ -314,9 +193,7 @@ function syncDirectRuntimeModules() {
     const noMinify = process.argv.includes('--no-minify');
 
     // 1. Sync top-level entry files
-    if (isCompactWebProfile()) {
-        removeGeneratedFile(path.join(PUBLISH_MODULE_DIR, 'dashboard-fullscreen.js'));
-    }
+    // 统一架构：始终发布所有顶层模块
 
     DIRECT_RUNTIME_MODULES.forEach((fileName) => {
         if (BUNDLED_ENTRY_FILES.has(fileName) || BUNDLED_SIBLING_FILES.has(fileName)) {
@@ -404,18 +281,9 @@ function syncI18nModules() {
         }
 
         const noMinify = process.argv.includes('--no-minify');
-        let content;
-
-        if (isCompactWebProfile() && file === 'i18n-zh-CN.js') {
-            const filtered = filterProdI18nTranslations(extractZhTranslations());
-            content = `(function(){if(typeof i18n==='undefined')return;i18n.addTranslations('zh-CN',${JSON.stringify(filtered)});i18n._zhLoaded=true;})();\n`;
-            if (shouldMinify && !noMinify) {
-                content = minifyJS(content);
-            }
-        } else {
-            const raw = fallbackContent !== null ? fallbackContent : readUtf8(sourceFile);
-            content = (shouldMinify && !noMinify) ? minifyJS(raw) : raw;
-        }
+        // 统一架构：所有 i18n 模块都直接发布
+        let raw = fallbackContent !== null ? fallbackContent : readUtf8(sourceFile);
+        let content = (shouldMinify && !noMinify) ? minifyJS(raw) : raw;
 
         writeUtf8(publishFile, content);
 
@@ -442,7 +310,8 @@ function syncStaticAssets() {
         { src: 'index.html', dest: 'index.html' },
         { src: 'setup.html', dest: 'setup.html' },
         { src: '404.html', dest: '404.html' },
-    ].concat(isLiteWebProfile() ? [] : [{ src: 'sw.js', dest: 'sw.js' }]);
+        { src: 'sw.js', dest: 'sw.js' },  // 统一架构：始终包含 SW
+    ];
 
     // Copy individual root-level files
     syncMappings.forEach(({ src, dest }) => {
@@ -524,9 +393,7 @@ function syncStaticAssets() {
         if (!fs.existsSync(jsDestDir)) {
             fs.mkdirSync(jsDestDir, { recursive: true });
         }
-        if (isCompactWebProfile()) {
-            removeGeneratedFile(path.join(jsDestDir, 'notification.js'));
-        }
+        // 统一架构：始终发布 notification.js
         const noMinify = process.argv.includes('--no-minify');
         STANDALONE_ROOT_JS.forEach(({ file, minify: shouldMinify }) => {
             const srcFile = path.join(jsSrcDir, file);
@@ -590,7 +457,8 @@ function validateSourceCoverage() {
     const ignoredProdOrphans = [];
     const orphaned = actualFiles.filter((f) => {
         if (f === 'i18n-engine.js' || expectedFiles.has(f)) return false;
-        if (isCompactWebProfile() && PROD_IGNORED_ORPHAN_MODULES.has(f)) {
+        // 统一架构：不再忽略任何孤儿文件
+        if (false && PROD_IGNORED_ORPHAN_MODULES.has(f)) {
             ignoredProdOrphans.push(f);
             return false;
         }
@@ -846,26 +714,8 @@ function cleanObsoleteRootJs() {
 }
 
 function cleanProdObsoleteModules() {
-    const removed = [];
-    if (!isCompactWebProfile()) return removed;
-    const fileNames = new Set(PROD_IGNORED_ORPHAN_MODULES);
-    if (isLiteWebProfile()) {
-        fileNames.add('protocol-modbus-rtu.js');
-        fileNames.add('protocol-modbus-control.js');
-        fileNames.add('rule-script.js');
-    }
-    if (isLiteWebProfile() || !hasDeviceControl()) {
-        // 无设备大屏时清理旧 bundle（standard 上次构建可能带过设备大屏）
-        fileNames.add('device-control.js');
-        fileNames.add('device-control-view.js');
-        fileNames.add('device-control-modbus.js');
-    }
-    fileNames.forEach((fileName) => {
-        const targetPath = path.join(PUBLISH_MODULE_DIR, fileName);
-        removeGeneratedFile(targetPath);
-        removed.push(fileName);
-    });
-    return removed;
+    // 统一架构：不再清理任何模块
+    return [];
 }
 
 function buildWebModules() {

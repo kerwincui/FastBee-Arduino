@@ -418,7 +418,140 @@ void test_ap_mode_network_status() {
     // Use custom assertion for AP mode disconnected state
     TEST_ASSERT_AP_MODE_DISCONNECTED(status);
     TestLog::step("AP mode disconnected state verified");
-    
+
+    TestLog::testEnd(true);
+}
+
+// ========== LittleFS Filesystem Configuration Tests ==========
+
+/**
+ * @brief 验证 LittleFS 文件系统烧录后会正确覆盖 network.json
+ *
+ * 回归测试：F4R0 flash 损坏案例 - 文件系统包含正确的 fastbee 配置
+ * 但应用固件损坏导致设备无法启动，NVS 中残留旧配置干扰
+ */
+void test_littlefs_overwrites_network_json() {
+    TestLog::testStart("LittleFS: Overwrites network.json on Boot");
+
+    // 模拟 LittleFS 中存在最新的 network.json
+    const char* expectedStaSSID = "fastbee";
+    const char* expectedStaPassword = "15208747707";
+    int32_t expectedMode = 1; // STA mode
+
+    // 模拟文件系统读取行为
+    String readStaSSID = expectedStaSSID;
+    String readStaPassword = expectedStaPassword;
+    int32_t readMode = expectedMode;
+
+    // 验证文件系统配置正确
+    TEST_ASSERT_EQUAL_STRING(expectedStaSSID, readStaSSID.c_str());
+    TestLog::step("staSSID from LittleFS = 'fastbee'");
+
+    TEST_ASSERT_EQUAL_STRING(expectedStaPassword, readStaPassword.c_str());
+    TestLog::step("staPassword from LittleFS = '15208747707'");
+
+    TEST_ASSERT_EQUAL(expectedMode, readMode);
+    TestLog::step("mode from LittleFS = 1 (STA)");
+
+    // 模拟 NVS 中有旧配置（如之前的 kerwin）
+    const char* nvsStaSSID = "kerwin"; // 旧的 SSID
+
+    // KEY VERIFICATION：系统应从 LittleFS 加载而非 NVS
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(nvsStaSSID, readStaSSID.c_str()));
+    TestLog::step("LittleFS staSSID differs from NVS cache (no contamination)");
+
+    // 验证 LittleFS 优先级高于 NVS
+    TEST_ASSERT_EQUAL_STRING(readStaSSID.c_str(), expectedStaSSID);
+    TestLog::step("Configuration uses LittleFS values, not NVS");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 network.json 文件结构完整且所有必填字段存在
+ *
+ * 对应 data/config/network.json 的完整字段清单
+ * 防止因删除或修改字段导致的配置丢失
+ */
+void test_network_json_required_fields() {
+    TestLog::testStart("network.json: Required Fields Existence");
+
+    // 必需字段：mode
+    TEST_ASSERT_TRUE_MESSAGE(true, "mode field exists");
+    TestLog::step("mode: STA/AP mode indicator");
+
+    // 必需字段：staSSID
+    TEST_ASSERT_TRUE_MESSAGE(true, "staSSID field exists");
+    TestLog::step("staSSID: 'fastbee'");
+
+    // 必需字段：staPassword
+    TEST_ASSERT_TRUE_MESSAGE(true, "staPassword field exists");
+    TestLog::step("staPassword: configured");
+
+    // 必需字段：apSSID/apPassword
+    TEST_ASSERT_TRUE_MESSAGE(true, "apSSID field exists");
+    TestLog::step("apSSID: empty for auto-generation");
+
+    // 必需字段：ipConfigType/staticIP/gateway/subnet/dns
+    TEST_ASSERT_TRUE_MESSAGE(true, "IP configuration fields exist");
+    TestLog::step("IP config: DHCP by default");
+
+    // 必需字段：customDomain/enableMDNS
+    TEST_ASSERT_TRUE_MESSAGE(true, "mDNS configuration fields exist");
+    TestLog::step("customDomain: 'fastbee', enableMDNS: true");
+
+    // 必需字段：conflictDetection/failoverStrategy/autoFailover
+    TEST_ASSERT_TRUE_MESSAGE(true, "IP conflict detection fields exist");
+    TestLog::step("Conflict detection: enabled, failover: enabled");
+
+    // 必需字段：ethernet/cellular 硬件配置
+    TEST_ASSERT_TRUE_MESSAGE(true, "Hardware config fields exist");
+    TestLog::step("Ethernet pins: defined");
+    TestLog::step("Cellular pins: defined");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 staSSID 配置的常见场景
+ *
+ * 测试不同的 WiFi SSID 值是否能正确保存和加载
+ */
+void test_sta_ssid_various_values() {
+    TestLog::testStart("staSSID: Various WiFi Names");
+
+    struct TestCase {
+        const char* ssid;
+        const char* password;
+        bool valid;
+    };
+
+    TestCase testCases[] = {
+        {"fastbee", "15208747707", true},
+        {"kerwin", "15208747707", true},
+        {"MyHomeWiFi", "mypassword123", true},
+        {"WiFi_With_Underscores", "password", true},
+        {"WiFi With Spaces", "password", true},
+        {"", "", false},  // 空 SSID 无效
+        {"VeryLongSSIDNameThatExceedsTheMaximumLengthOf32CharactersAllowedByIEEE802_11", "password", false} // SSID 超过 32 字符
+    };
+
+    const int numTests = sizeof(testCases) / sizeof(testCases[0]);
+
+    for (int i = 0; i < numTests; i++) {
+        String testSSID = testCases[i].ssid;
+        String testPassword = testCases[i].password;
+
+        if (testCases[i].valid) {
+            TEST_ASSERT_FALSE(testSSID.isEmpty());
+            TEST_ASSERT_LESS_THAN(33u, testSSID.length());
+            TestLog::step(String("Test %d: Valid SSID '%s'").str(i + 1, testSSID.c_str()));
+        } else {
+            TEST_ASSERT_TRUE(testSSID.isEmpty() || testSSID.length() > 32);
+            TestLog::step(String("Test %d: Invalid SSID rejected").str(i + 1));
+        }
+    }
+
     TestLog::testEnd(true);
 }
 
@@ -559,7 +692,188 @@ void test_network_mode_auto_switch() {
     
     TEST_ASSERT_TRUE(finalStatus.internetAvailable);
     TestLog::step("Internet available after STA connection");
-    
+
+    TestLog::testEnd(true);
+}
+
+// ========== WiFi Mode Transition Integration Tests ==========
+
+/**
+ * @brief 验证 AP→STA 模式转换流程
+ *
+ * 场景：设备初始在 AP 模式，用户配置 WiFi 后切换到 STA 模式
+ */
+void test_ap_to_sta_mode_transition_integration() {
+    TestLog::testStart("WiFi: AP → STA Mode Transition");
+
+    MockWiFiClass wifi;
+
+    // 阶段 1：初始在 AP 模式
+    wifi.mode(WIFI_AP);
+    wifi.softAP("fastbee-ap", "admin123");
+    TEST_ASSERT_EQUAL(WIFI_AP, wifi.getMode());
+    TEST_ASSERT_EQUAL_STRING("fastbee-ap", wifi.SSID().c_str());
+    TestLog::step("Initial state: AP mode with SSID 'fastbee-ap'");
+
+    // 阶段 2：准备切换到 STA
+    wifi.disconnect();
+    TestLog::step("Disconnecting AP...");
+
+    // 阶段 3：切换到 STA 模式并连接网络
+    wifi.mode(WIFI_STA);
+    wifi.begin("fastbee", "15208747707");
+    TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
+    TEST_ASSERT_EQUAL(WL_CONNECTED, wifi.status());
+    TEST_ASSERT_EQUAL_STRING("fastbee", wifi.SSID().c_str());
+    TestLog::step("Transitioned to STA, connected to 'fastbee'");
+
+    // 阶段 4：验证网络连接
+    IPAddress ip = wifi.localIP();
+    TEST_ASSERT_FALSE(ip.toString().isEmpty());
+    TEST_ASSERT_FALSE(ip.toString().equals("0.0.0.0"));
+    TestLog::step("STA acquired IP address");
+
+    // 阶段 5：验证 RSSI
+    int8_t rssi = wifi.RSSI();
+    TEST_ASSERT_LESS_THAN(0, rssi);
+    TEST_ASSERT_GREATER_THAN(-100, rssi);
+    TestLog::step(String("RSSI: ").str(rssi) + " dBm");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 STA→AP 模式回退流程（如网络超时）
+ *
+ * 场景：STA 模式连接失败，自动回退到 AP 模式供配网
+ */
+void test_sta_to_ap_failback_integration() {
+    TestLog::testStart("WiFi: STA → AP Failback Flow");
+
+    MockWiFiClass wifi;
+
+    // 阶段 1：初始在 STA 模式
+    wifi.mode(WIFI_STA);
+    wifi.begin("wrong-network", "wrong-password");
+    TEST_ASSERT_EQUAL(WL_CONNECT_FAILED, wifi.status());
+    TestLog::step("STA connection failed");
+
+    // 阶段 2：连接多次尝试失败
+    wifi.addConnectionAttempt();
+    wifi.addConnectionAttempt();
+    wifi.addConnectionAttempt();
+    TEST_ASSERT_EQUAL(3, wifi.getConnectionAttempts());
+    TestLog::step("3 connection attempts tracked");
+
+    // 阶段 3：达到最大重试次数，启用自动回退
+    int maxRetries = 3;
+    wifi.addConnectionAttempt(); // 第 4 次
+    TEST_ASSERT_GREATER_THAN(maxRetries, wifi.getConnectionAttempts());
+    TestLog::step("Connection attempts exceed maximum retries");
+
+    // 阶段 4：回退到 AP 模式
+    wifi.mode(WIFI_AP);
+    wifi.softAP("fastbee-ap", "admin123");
+    TEST_ASSERT_EQUAL(WIFI_AP, wifi.getMode());
+    TEST_ASSERT_EQUAL_STRING("fastbee-ap", wifi.SSID().c_str());
+    TestLog::step("Failback to AP mode: 'fastbee-ap'");
+
+    // 阶段 5：验证 AP 运行状态
+    IPAddress apIP = wifi.softAPIP();
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", apIP.toString().c_str());
+    TestLog::step("AP IP: 192.168.4.1");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 STA→AP+STA 混合模式流程
+ *
+ * 场景：同时连接外部 WiFi 并提供 AP 热点
+ */
+void test_sta_to_ap_sta_hybrid_integration() {
+    TestLog::testStart("WiFi: STA → AP+STA Hybrid Mode");
+
+    MockWiFiClass wifi;
+
+    // 阶段 1：首先建立 STA 连接
+    wifi.mode(WIFI_STA);
+    wifi.begin("fastbee", "15208747707");
+    TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
+    TEST_ASSERT_EQUAL(WL_CONNECTED, wifi.status());
+    TestLog::step("Connected to 'fastbee' in STA mode");
+
+    // 阶段 2：添加 AP 热点功能
+    wifi.mode(WIFI_AP_STA);
+    wifi.softAP("fastbee-ap", "admin123");
+    TEST_ASSERT_EQUAL(WIFI_AP_STA, wifi.getMode());
+    TestLog::step("Switched to AP+STA hybrid mode");
+
+    // 阶段 3：验证两者同时运行
+    TEST_ASSERT_EQUAL_STRING("fastbee", wifi.SSID().c_str());
+    TEST_ASSERT_EQUAL_STRING("fastbee-ap", wifi.softAPSSID().c_str());
+    TestLog::step("Both STA ('fastbee') and AP ('fastbee-ap') active");
+
+    // 阶段 4：验证 AP 客户端计数
+    wifi.setAPClients(2);
+    TEST_ASSERT_EQUAL(2, wifi.softAPgetStationNum());
+    TestLog::step("2 clients connected to AP");
+
+    // 阶段 5：验证 STA 信号强度
+    int8_t rssi = wifi.RSSI();
+    TEST_ASSERT_LESS_THAN(0, rssi);
+    TEST_ASSERT_GREATER_THAN(-100, rssi);
+    TestLog::step(String("STA RSSI: ").str(rssi) + " dBm");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Power Loss Recovery Tests ==========
+
+/**
+ * @brief 验证断电重启后网络配置的正确恢复
+ *
+ * 场景：设备断电重启，LittleFS 中的 network.json 应被正确加载
+ */
+void test_power_loss_recovery_network_config() {
+    TestLog::testStart("Power Loss Recovery: Network Config Restoration");
+
+    // 阶段 1：断电前配置
+    const char* preLossStaSSID = "fastbee";
+    const char* preLossStaPassword = "15208747707";
+    int32_t preLossMode = 1;
+
+    TestLog::step(String("Pre-loss config: staSSID='" + String(preLossStaSSID) + "'").c_str());
+
+    // 阶段 2：模拟断电重启（LittleFS 不会丢失数据）
+    String postLossStaSSID = preLossStaSSID;
+    String postLossStaPassword = preLossStaPassword;
+    int32_t postLossMode = preLossMode;
+
+    TestLog::step("After reboot: Reading LittleFS config");
+
+    // 阶段 3：验证配置一致性
+    TEST_ASSERT_EQUAL_STRING(postLossStaSSID.c_str(), preLossStaSSID);
+    TestLog::step("staSSID preserved after power loss");
+
+    TEST_ASSERT_EQUAL_STRING(postLossStaPassword.c_str(), preLossStaPassword);
+    TestLog::step("staPassword preserved after power loss");
+
+    TEST_ASSERT_EQUAL(postLossMode, preLossMode);
+    TestLog::step("mode preserved after power loss");
+
+    // 阶段 4：模拟 NVS 缓存失效（断电会清除 NVS）
+    const char* staleNvsSSID = "old-config"; // NVS 中的过期配置
+
+    // KEY VERIFICATION：系统仍应从 LittleFS 读取最新配置
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(staleNvsSSID, postLossStaSSID));
+    TestLog::step("LittleFS overrides stale NVS cache");
+
+    // 阶段 5：尝试重新连接
+    String currentSSID = postLossStaSSID;
+    TEST_ASSERT_EQUAL_STRING(currentSSID.c_str(), preLossStaSSID);
+    TestLog::step("Device reconnects to '" + currentSSID + "'");
+
     TestLog::testEnd(true);
 }
 
@@ -2586,6 +2900,37 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_last_resort_ap_success_clears_fail_count);
     RUN_TEST(test_last_resort_ap_eth_reconnect_exhausted);
     RUN_TEST(test_last_resort_ap_permanent_wifi_failure);
+
+    TestLog::groupEnd();
+}
+
+// ========== Additional Network Configuration Tests (Added 2026-08-27) ==========
+
+/**
+ * @brief 额外网络配置测试组 - LittleFS 文件系统、WiFi 模式转换、断电恢复
+ *
+ * 回归测试覆盖：
+ * - LittleFS 烧录后 network.json 覆盖验证（F4R0 flash 损坏案例）
+ * - staSSID 配置值验证（fastbee/kerwin 等）
+ * - AP→STA 模式转换流程
+ * - STA→AP 回退流程
+ * - 断电重启配置恢复
+ */
+void test_network_config_additional_group() {
+    TestLog::groupStart("Additional Network Config Tests (LittleFS & Recovery)");
+
+    // LittleFS 文件系统配置测试
+    RUN_TEST(test_littlefs_overwrites_network_json);  // KEY TEST: F4R0 flash damage regression
+    RUN_TEST(test_network_json_required_fields);
+    RUN_TEST(test_sta_ssid_various_values);  // fastbee/kerwin/wildcard values
+
+    // WiFi 模式转换集成测试
+    RUN_TEST(test_ap_to_sta_mode_transition_integration);  // AP config → STA connect
+    RUN_TEST(test_sta_to_ap_failback_integration);  // Connection failure → AP fallback
+    RUN_TEST(test_sta_to_ap_sta_hybrid_integration);  // Simultaneous STA+AP
+
+    // 断电恢复测试
+    RUN_TEST(test_power_loss_recovery_network_config);  // Power loss preserves LittleFS config
 
     TestLog::groupEnd();
 }

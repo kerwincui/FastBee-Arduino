@@ -55,6 +55,7 @@ struct SystemHealth {
     // ── DRAM 专项字段（排除 PSRAM，用于 WiFi/MQTT/SSL 内存保护决策）──
     uint32_t     dramFreeHeap;       // DRAM 内部空闲（MALLOC_CAP_INTERNAL）
     uint32_t     dramLargestBlock;   // DRAM 内部最大连续块（MALLOC_CAP_INTERNAL）
+    uint8_t      fragmentationSeverity;  // 碎片率严重度 (0-3, Phase A Task A.5)
 };
 
 class HealthMonitor {
@@ -136,6 +137,10 @@ private:
     uint32_t      consecutiveLowMemCount;  // 连续低内存计数
     uint32_t      consecutiveFragmentationCriticalCount;  // sustained fragmentation counter
     bool          running;
+    
+    // 内存阈值（根据 DRAM 总量动态计算）
+    uint32_t criticalThreshold;
+    uint32_t warningThreshold;
 
     // 内存保护等级
     MemoryGuardLevel _currentLevel = MemoryGuardLevel::NORMAL;

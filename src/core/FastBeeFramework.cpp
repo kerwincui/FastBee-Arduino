@@ -9,6 +9,7 @@
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
 #include "core/FeatureFlags.h"
+#include "core/FeatureToggle.h"  // Phase D Task D.1: FeatureToggle
 #include "core/MemoryBudget.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
@@ -41,6 +42,7 @@
 #include "systems/SystemRebooter.h"
 #include "security/UserManager.h"
 #include "security/AuthManager.h"
+#include "security/TlsMemoryPool.h"  // Phase C Task C.3: TLS 内存池
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
 #include "utils/TimeUtils.h"
@@ -114,9 +116,6 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #endif
 #if FASTBEE_ENABLE_OTA
     {"ota", 20},           // OTA 流式缓冲 1KB + 下载临时块
-#endif
-#if FASTBEE_ENABLE_FILE_MANAGER
-    {"fileManager", 18},   // 文件列表/读写 API 响应序列化
 #endif
 #if FASTBEE_ENABLE_RF_LEARN
     {"rfLearn", 12},       // 脉冲捕获缓冲 300B + 中断处理
@@ -279,7 +278,27 @@ bool FastBeeFramework::initialize() {
     unsigned long fileUtilsMs = millis() - stepStart;
     Serial.printf("[Boot] FileUtils: %lu ms\n", fileUtilsMs);
 
-    // 步骤2: 初始化日志系统（之后统一用 LOG 宏）
+    // === Phase D Task D.1: 初始化 FeatureToggle Engine (步骤 2.6) ===
+    stepStart = millis();
+    Serial.println("[STEP2.6] Initializing FeatureToggle Engine...");
+    if (!FastBee::FeatureToggleEngine::instance().initialize()) {
+        Serial.println("[FATAL] Failed to initialize FeatureToggle!");
+        return false;
+    }
+    unsigned long featureToggleMs = millis() - stepStart;
+    Serial.printf("[Boot] FeatureToggle: %lu ms\n", featureToggleMs);
+    
+    // === Phase C Task C.3: 初始化 TLS 内存预留池 (步骤 2.5) ===
+    stepStart = millis();
+    Serial.println("[STEP2.5] Initializing TLS Memory Pool...");
+    if (!TlsMemoryPool::instance().initialize()) {
+        Serial.println("[FATAL] Failed to initialize TLS memory pool!");
+        return false;
+    }
+    unsigned long tlsPoolMs = millis() - stepStart;
+    Serial.printf("[Boot] TLSPool: %lu ms\n", tlsPoolMs);
+        
+    // 步骤 2: 初始化日志系统（之后统一用 LOG 宏）
     stepStart = millis();
     Serial.println("[STEP2] Initializing Logger System...");
     if (!LOGGER.initialize()) {

@@ -32,6 +32,8 @@
 #if FASTBEE_WEB_MEM_GUARD
 #include "network/WebConfigManager.h"
 #endif
+// === Phase B Task B.3: MemoryProfileDB 集成 ===
+#include "core/MemoryProfile.h"
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
@@ -94,6 +96,14 @@ void HealthMonitor::update() {
             if (guard) guard->maintain();
         }
 #endif
+        
+        // === Phase B Task B.3: 功能内存剖绘采样器 (30 秒间隔) ===
+        static unsigned long lastSampleTime = 0;
+        if (currentTime - lastSampleTime >= 30000UL) {
+            FastBee::FunctionMemoryProfiler::instance().runFullScan();
+            lastSampleTime = currentTime;
+        }
+        
         lastCheckTime = currentTime;
     }
     // 任务栈水位日志：每 60 秒输出一次
@@ -167,6 +177,19 @@ void HealthMonitor::performHealthCheck() {
 
     // CPU 占用估算（暂简化为 0，实际需基于空闲任务计数器）
     currentHealth.cpuUsage = 0;
+    
+    // === Phase C Task C.2: 碎片率严重度评估 ===
+    float fragRatio = (float)currentHealth.dramLargestBlock / 
+                      (float)currentHealth.dramFreeHeap;
+    
+    currentHealth.fragmentationSeverity = 0;  // 健康
+    if (fragRatio < CHIP_FRAGMENTATION_CRITICAL_RATIO) {
+        currentHealth.fragmentationSeverity = 3;  // 危急
+    } else if (fragRatio < CHIP_FRAGMENTATION_SUSPEND_RATIO) {
+        currentHealth.fragmentationSeverity = 2;  // 警告
+    } else if (fragRatio < 0.50f) {
+        currentHealth.fragmentationSeverity = 1;  // 轻微
+    }
 }
 
 // 写入 char 缓冲区，零 String 对象
@@ -204,28 +227,31 @@ void HealthMonitor::checkCriticalMemory() {
     // WiFi/MQTT/SSL 都不能用 PSRAM，使用 DRAM 空闲来评估真实风险
     const uint32_t checkHeap = currentHealth.dramFreeHeap;
 
-    // 根据 PSRAM 容量动态调整阈值
-    // F8R0 (无 PSRAM): DRAM 总量 ~200KB，8KB 临界合理
-    // F8R4 (4MB PSRAM): DRAM 总量 ~320KB，10KB 临界更宽松
-    // F16R8 (8MB PSRAM): DRAM 总量 ~320KB，12KB 临界更宽松
-    static uint32_t criticalThreshold = 0;
-    static uint32_t warningThreshold = 0;
-    if (criticalThreshold == 0) {
-        // 仅在首次调用时计算一次（PSRAM 大小在运行时不会变化）
+    // === Phase A Task A.2: 动态内存阈值 (基于芯片 DRAM 总量) ===
+    static bool thresholdsInitialized = false;
+    if (!thresholdsInitialized) {
+        uint32_t dramTotalKb = chipGetDramTotalKb();
         size_t psramSize = ESP.getPsramSize();
+            
+        LOGGER.info(String("[THRESHOLD] Initializing for ") + CHIP_NAME + String(" with PSRAM=") + (unsigned long)(psramSize / 1024) + "KB");
+            
         if (psramSize >= 8 * 1024 * 1024) {
-            // 8MB PSRAM (F16R8): DRAM 压力较轻，阈值更宽松
-            criticalThreshold = 12288;  // 12KB
-            warningThreshold  = 24576;  // 24KB
+            criticalThreshold = dramTotalKb * 1024 * 0.04f;  // 4%
+            warningThreshold  = dramTotalKb * 1024 * 0.08f;  // 8%
         } else if (psramSize >= 4 * 1024 * 1024) {
-            // 4MB PSRAM (F8R4): 中等阈值
-            criticalThreshold = 10240;  // 10KB
-            warningThreshold  = 20480;  // 20KB
+            criticalThreshold = dramTotalKb * 1024 * 0.05f;  // 5%
+            warningThreshold  = dramTotalKb * 1024 * 0.10f;  // 10%
         } else {
-            // 无 PSRAM (F8R0): 保守阈值
-            criticalThreshold = 8192;   // 8KB
-            warningThreshold  = 16384;  // 16KB
+            criticalThreshold = dramTotalKb * 1024 * 0.06f;  // 6%
+            warningThreshold  = dramTotalKb * 1024 * 0.12f;  // 12%
         }
+            
+        // 硬限制：最低 4KB,最高 16KB
+        criticalThreshold = constrain(criticalThreshold, 4096U, 16384U);
+        warningThreshold  = constrain(warningThreshold,  8192U, 32768U);
+            
+        LOGGER.info(String("[THRESHOLD] Initialized: critical=") + (unsigned int)(criticalThreshold / 1024) + "KB, warn=" + (unsigned int)(warningThreshold / 1024) + "KB");
+        thresholdsInitialized = true;
     }
 
     // ── 紧急兜底：DRAM < 4KB，系统随时可能 crash，不等计时立即执行所有恢复 ──

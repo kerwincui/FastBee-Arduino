@@ -58,11 +58,6 @@ public:
     static size_t getTotalSpace();
     static float getSpaceUsage();
     
-    // 备份管理
-    static String backupFile(const String& sourcePath, const String& backupDir);
-    static bool restoreBackup(const String& backupPath, const String& restorePath);
-    static int cleanupOldBackups(const String& backupDir, int keepCount);
-    
     // 文件完整性
     static String calculateFileHash(const String& path);
     static bool verifyFileIntegrity(const String& path, const String& expectedHash);

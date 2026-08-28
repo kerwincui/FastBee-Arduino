@@ -2161,10 +2161,11 @@ static void test_regression_mdns_async_restart() {
 // ============================================================
 
 /**
- * @brief 非 Cellular/Ethernet 环境的 src_filter 必须排除对应 .cpp 文件
+ * @brief 声明了 src_filter 的环境必须排除未启用网络适配器的 .cpp 文件
  *
- * 当 FASTBEE_ENABLE_CELLULAR=0 和 FASTBEE_ENABLE_ETHERNET=0 时，
- * lite/standard 的 src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp，
+ * Unified Architecture v2.0 后，未声明 build_src_filter 的环境编译全部源码，
+ * 功能关闭靠运行时门控；只有引用 [lite_src_filter] 的环境（C3/C6）在编译期
+ * 排除 CellularAdapter.cpp 和 EthernetAdapter.cpp，
  * 防止 PlatformIO LDF 扫描并拉入 TinyGSM/SSLClient 等不必要的库依赖。
  */
 void test_regression_src_filter_excludes_unused_adapters() {
@@ -2178,8 +2179,9 @@ void test_regression_src_filter_excludes_unused_adapters() {
         pio.find("[lite_src_filter]") != std::string::npos,
         "platformio.ini must have [lite_src_filter] section");
     auto litePos = pio.find("[lite_src_filter]");
-    auto liteEnd = pio.find("[", litePos + 1);
-    std::string liteSection = pio.substr(litePos, liteEnd - litePos);
+    auto liteEnd = pio.find("\n[", litePos + 1);
+    std::string liteSection = pio.substr(litePos,
+        liteEnd == std::string::npos ? std::string::npos : liteEnd - litePos);
     TEST_ASSERT_TRUE_MESSAGE(
         liteSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
         "lite_src_filter must exclude CellularAdapter.cpp");
@@ -2188,33 +2190,14 @@ void test_regression_src_filter_excludes_unused_adapters() {
         "lite_src_filter must exclude EthernetAdapter.cpp");
     TestLog::step("lite_src_filter excludes CellularAdapter + EthernetAdapter");
 
-    // standard_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
-    auto stdPos = pio.find("[standard_src_filter]");
-    TEST_ASSERT_TRUE_MESSAGE(stdPos != std::string::npos,
-        "platformio.ini must have [standard_src_filter] section");
-    auto stdEnd = pio.find("[", stdPos + 1);
-    std::string stdSection = pio.substr(stdPos, stdEnd - stdPos);
+    // 2026-08-27 环境整合后，多档 src_filter 段已删除，不得复活（双份配置漂移源）
     TEST_ASSERT_TRUE_MESSAGE(
-        stdSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
-        "standard_src_filter must exclude CellularAdapter.cpp");
+        pio.find("[standard_src_filter]") == std::string::npos,
+        "[standard_src_filter] was removed by env consolidation");
     TEST_ASSERT_TRUE_MESSAGE(
-        stdSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
-        "standard_src_filter must exclude EthernetAdapter.cpp");
-    TestLog::step("standard_src_filter excludes CellularAdapter + EthernetAdapter");
-
-    // standard_ota_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
-    auto otaPos = pio.find("[standard_ota_src_filter]");
-    TEST_ASSERT_TRUE_MESSAGE(otaPos != std::string::npos,
-        "platformio.ini must have [standard_ota_src_filter] section");
-    auto otaEnd = pio.find("[", otaPos + 1);
-    std::string otaSection = pio.substr(otaPos, otaEnd - otaPos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        otaSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
-        "standard_ota_src_filter must exclude CellularAdapter.cpp");
-    TEST_ASSERT_TRUE_MESSAGE(
-        otaSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
-        "standard_ota_src_filter must exclude EthernetAdapter.cpp");
-    TestLog::step("standard_ota_src_filter excludes CellularAdapter + EthernetAdapter");
+        pio.find("[standard_ota_src_filter]") == std::string::npos,
+        "[standard_ota_src_filter] was removed by env consolidation");
+    TestLog::step("legacy multi-tier src_filter sections stay removed");
 
     TestLog::testEnd(true);
 }
@@ -3320,62 +3303,48 @@ void test_regression_static_max_inflight_at_least_3() {
 
 /**
  * @brief 源码回归：platformio.ini 中 FASTBEE_ENABLE_RULE_SCRIPT 宏值一致性
- * lite_flags=0（禁用）、standard_flags=1、full_flags=1。
- * 根因：esp32-F4R0 使用 lite_flags 编译，如果宏值被误改为 1，固件会编译
- * RuleScript 模块但 lite 文件系统不含菜单/页面，导致功能错位。
+ * Unified Architecture v2.0：[unified_flags] 统一设 1，所有出厂环境编入规则脚本，
+ * 运行时 FeatureBudget 门控。原 lite/standard/full 预设段已于 2026-08-27 删除。
  */
 void test_regression_rule_script_feature_flag_consistency() {
-    TestLog::testStart("Source: FASTBEE_ENABLE_RULE_SCRIPT flag consistency across profiles");
+    TestLog::testStart("Source: FASTBEE_ENABLE_RULE_SCRIPT flag consistency (unified)");
 
     std::string ini = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(ini.empty(), "cannot read platformio.ini");
 
-    // lite_flags 区块
-    size_t litePos = ini.find("[lite_flags]");
-    TEST_ASSERT_TRUE_MESSAGE(litePos != std::string::npos,
-        "[lite_flags] section not found in platformio.ini");
-    size_t liteEnd = ini.find("\n[", litePos + 1);
-    std::string liteBlock = ini.substr(litePos,
-        liteEnd == std::string::npos ? std::string::npos : liteEnd - litePos);
+    // unified_flags 区块：规则脚本默认编入（匹配行首段头，避免命中注释）
+    size_t uniPos = ini.find("\n[unified_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(uniPos != std::string::npos,
+        "[unified_flags] section not found in platformio.ini");
+    uniPos += 1;
+    size_t uniEnd = ini.find("\n[", uniPos + 1);
+    std::string uniBlock = ini.substr(uniPos,
+        uniEnd == std::string::npos ? std::string::npos : uniEnd - uniPos);
     TEST_ASSERT_TRUE_MESSAGE(
-        liteBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=0") != std::string::npos,
-        "lite_flags must set FASTBEE_ENABLE_RULE_SCRIPT=0 (rule-script disabled in lite)");
-    TestLog::step("lite_flags: FASTBEE_ENABLE_RULE_SCRIPT=0");
+        uniBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
+        "unified_flags must set FASTBEE_ENABLE_RULE_SCRIPT=1");
+    TestLog::step("unified_flags: FASTBEE_ENABLE_RULE_SCRIPT=1");
 
-    // standard_flags 区块
-    size_t stdPos = ini.find("[standard_flags]");
-    TEST_ASSERT_TRUE_MESSAGE(stdPos != std::string::npos,
-        "[standard_flags] section not found");
-    size_t stdEnd = ini.find("\n[", stdPos + 1);
-    std::string stdBlock = ini.substr(stdPos,
-        stdEnd == std::string::npos ? std::string::npos : stdEnd - stdPos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        stdBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
-        "standard_flags must set FASTBEE_ENABLE_RULE_SCRIPT=1");
-    TestLog::step("standard_flags: FASTBEE_ENABLE_RULE_SCRIPT=1");
-
-    // full_flags 区块
-    size_t fullPos = ini.find("[full_flags]");
-    TEST_ASSERT_TRUE_MESSAGE(fullPos != std::string::npos,
-        "[full_flags] section not found");
-    size_t fullEnd = ini.find("\n[", fullPos + 1);
-    std::string fullBlock = ini.substr(fullPos,
-        fullEnd == std::string::npos ? std::string::npos : fullEnd - fullPos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        fullBlock.find("FASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
-        "full_flags must set FASTBEE_ENABLE_RULE_SCRIPT=1");
-    TestLog::step("full_flags: FASTBEE_ENABLE_RULE_SCRIPT=1");
+    // 已删除的预设段不得复活（避免双份配置漂移）
+    TEST_ASSERT_TRUE_MESSAGE(ini.find("[lite_flags]") == std::string::npos,
+        "[lite_flags] was removed by env consolidation");
+    TEST_ASSERT_TRUE_MESSAGE(ini.find("[standard_flags]") == std::string::npos,
+        "[standard_flags] was removed by env consolidation");
+    TEST_ASSERT_TRUE_MESSAGE(ini.find("[full_flags]") == std::string::npos,
+        "[full_flags] was removed by env consolidation");
+    TestLog::step("legacy profile flag sections stay removed");
 
     TestLog::testEnd(true);
 }
 
 /**
- * @brief 源码回归：lite_src_filter 必须排除 RuleScriptManager.cpp 和
- * RuleScriptRouteHandler.cpp，否则 lite 固件会编译进 rule-script 代码，
- * 增加 ~15KB flash 占用并可能暴露无前端对应的 API 端点。
+ * @brief 源码回归：lite_src_filter 统一编译范围守卫。
+ * Unified Architecture v2.0：lite_src_filter 以 +<*> 编入全部源码（含
+ * RuleScriptManager），仅排除未启用的网络适配器；规则脚本由运行时门控，
+ * Web 镜像统一 full 档，前端页面始终存在，不再需要编译期裁剪。
  */
 void test_regression_lite_src_filter_excludes_rule_script() {
-    TestLog::testStart("Source: lite_src_filter excludes rule-script source files");
+    TestLog::testStart("Source: lite_src_filter unified compile scope");
 
     std::string ini = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(ini.empty(), "cannot read platformio.ini");
@@ -3388,14 +3357,20 @@ void test_regression_lite_src_filter_excludes_rule_script() {
         filterEnd == std::string::npos ? std::string::npos : filterEnd - filterPos);
 
     TEST_ASSERT_TRUE_MESSAGE(
-        filterBlock.find("-<core/RuleScriptManager.cpp>") != std::string::npos,
-        "lite_src_filter must exclude core/RuleScriptManager.cpp");
-    TestLog::step("RuleScriptManager.cpp excluded from lite build");
+        filterBlock.find("+<*>") != std::string::npos,
+        "lite_src_filter must include all sources (+<*>) under unified architecture");
+    TestLog::step("lite_src_filter includes all sources (+<*>)");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        filterBlock.find("-<network/handlers/RuleScriptRouteHandler.cpp>") != std::string::npos,
-        "lite_src_filter must exclude network/handlers/RuleScriptRouteHandler.cpp");
-    TestLog::step("RuleScriptRouteHandler.cpp excluded from lite build");
+        filterBlock.find("-<core/RuleScriptManager.cpp>") == std::string::npos,
+        "lite_src_filter must NOT exclude RuleScriptManager.cpp (unified compile)");
+    TestLog::step("RuleScriptManager.cpp compiled in unified build");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        filterBlock.find("-<network/CellularAdapter.cpp>") != std::string::npos &&
+        filterBlock.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
+        "lite_src_filter must keep excluding unused network adapters");
+    TestLog::step("unused network adapters still excluded");
 
     TestLog::testEnd(true);
 }
@@ -3454,56 +3429,49 @@ void test_regression_rule_script_gated_in_firmware() {
 }
 
 /**
- * @brief 源码回归：构建脚本在 lite profile 下裁剪 rule-script 前端资源
- * （菜单项、HTML 页面、JS 模块），防止固件/文件系统不匹配导致菜单点击无响应。
+ * @brief 源码回归：统一 Web 镜像（full 档）始终包含 rule-script 前端资源。
+ * Unified Architecture v2.0：web-profile 固定为 full，已移除 lite/standard/cpact 等
+ * profile 分支判定；admin bundle 使用 UNIFIED_SOURCE_FILES 全量构建，保证
+ * 所有设备的菜单/页面一致。
  */
-void test_regression_lite_web_strips_rule_script() {
-    TestLog::testStart("Source: lite web profile strips rule-script frontend resources");
+void test_regression_unified_web_bundles_rule_script() {
+    TestLog::testStart("Source: unified web image bundles rule-script resources");
 
-    // build-web-modules.js: LITE_STATIC_SKIP 包含 rule-script.html，
-    // stripMenuItemByPage('rule-script') 在 lite profile 下被调用
+    // web-profile.js: WEB_PROFILE 固定 'full'，已移除 isCompact/isLite/isStandard 废弃函数
+    std::string webProfile = readRegressionSrcFile("scripts/web-profile.js");
+    TEST_ASSERT_FALSE_MESSAGE(webProfile.empty(), "cannot read web-profile.js");
+    TEST_ASSERT_TRUE_MESSAGE(
+        webProfile.find("const WEB_PROFILE = 'full'") != std::string::npos,
+        "web-profile.js must pin WEB_PROFILE to 'full'");
+    TEST_ASSERT_FALSE_MESSAGE(
+        webProfile.find("function isLiteWebProfile()") == std::string::npos &&
+        webProfile.find("function isCompactWebProfile()") == std::string::npos &&
+        webProfile.find("function isStandardWebProfile()") == std::string::npos,
+        "deprecated profile guard functions must be removed");
+    TestLog::step("web-profile pinned to full and guards removed");
+
+    // build-web-modules.js: rule-script menu stripping 已从 isLiteWebProfile() 分支下移除
     std::string webMod = readRegressionSrcFile("scripts/build-web-modules.js");
     TEST_ASSERT_FALSE_MESSAGE(webMod.empty(), "cannot read build-web-modules.js");
+    size_t liteGuard = webMod.find("isLiteWebProfile()");
+    TEST_ASSERT_TRUE_MESSAGE(liteGuard == std::string::npos,
+        "build-web-modules.js must not use isLiteWebProfile() anymore");
+    TestLog::step("rule-script stripping code fully removed from build-web-modules");
 
-    TEST_ASSERT_TRUE_MESSAGE(
-        webMod.find("pages/rule-script.html") != std::string::npos,
-        "build-web-modules.js must reference rule-script.html in LITE_STATIC_SKIP");
-    TestLog::step("rule-script.html listed in LITE_STATIC_SKIP");
-
-    TEST_ASSERT_TRUE_MESSAGE(
-        webMod.find("stripMenuItemByPage") != std::string::npos &&
-        webMod.find("'rule-script'") != std::string::npos,
-        "build-web-modules.js must call stripMenuItemByPage('rule-script') for lite profile");
-    TestLog::step("stripMenuItemByPage('rule-script') present for lite profile");
-
-    // build-admin-bundle.js: PROD_SOURCE_FILES 为空（lite 不构建 rule-script.js），
-    // STANDARD_SOURCE_FILES 仅含 rule-script.js
+    // build-admin-bundle.js: UNIFIED_SOURCE_FILES 全量构建（含 rule-script.js），
+    // 旧的分档列表不得复活。
     std::string adminB = readRegressionSrcFile("scripts/build-admin-bundle.js");
     TEST_ASSERT_FALSE_MESSAGE(adminB.empty(), "cannot read build-admin-bundle.js");
-
     TEST_ASSERT_TRUE_MESSAGE(
-        adminB.find("PROD_SOURCE_FILES") != std::string::npos,
-        "build-admin-bundle.js must define PROD_SOURCE_FILES");
-    // PROD_SOURCE_FILES = [] 表示 lite 不构建任何 admin 模块
-    size_t prodPos = adminB.find("PROD_SOURCE_FILES");
-    size_t prodLineEnd = adminB.find('\n', prodPos);
-    std::string prodLine = adminB.substr(prodPos, prodLineEnd - prodPos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        prodLine.find("[]") != std::string::npos,
-        "PROD_SOURCE_FILES must be empty array (lite builds no admin modules)");
-    TestLog::step("PROD_SOURCE_FILES = [] (lite: no admin modules)");
-
-    TEST_ASSERT_TRUE_MESSAGE(
-        adminB.find("STANDARD_SOURCE_FILES") != std::string::npos &&
+        adminB.find("UNIFIED_SOURCE_FILES") != std::string::npos &&
         adminB.find("'rule-script.js'") != std::string::npos,
-        "STANDARD_SOURCE_FILES must include rule-script.js for standard builds");
-    TestLog::step("STANDARD_SOURCE_FILES includes rule-script.js");
-
-    // 验证 CSS 裁剪：lite profile 移除 .rule-script-* 选择器
+        "UNIFIED_SOURCE_FILES must include rule-script.js");
+    TestLog::step("UNIFIED_SOURCE_FILES includes rule-script.js");
     TEST_ASSERT_TRUE_MESSAGE(
-        webMod.find(".rule-script-") != std::string::npos,
-        "build-web-modules.js must strip .rule-script-* CSS selectors for lite profile");
-    TestLog::step("rule-script CSS selectors stripped in lite");
+        adminB.find("PROD_SOURCE_FILES") == std::string::npos &&
+        adminB.find("STANDARD_SOURCE_FILES") == std::string::npos,
+        "per-profile source file lists were removed by unified web image");
+    TestLog::step("legacy per-profile source lists stay removed");
 
     TestLog::testEnd(true);
 }
@@ -3653,7 +3621,7 @@ RUN_TEST(test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source);
     RUN_TEST(test_regression_rule_script_feature_flag_consistency);
     RUN_TEST(test_regression_lite_src_filter_excludes_rule_script);
     RUN_TEST(test_regression_rule_script_gated_in_firmware);
-    RUN_TEST(test_regression_lite_web_strips_rule_script);
+    RUN_TEST(test_regression_unified_web_bundles_rule_script);
 
     TestLog::groupEnd();
 }

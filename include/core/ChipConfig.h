@@ -11,6 +11,8 @@
 #include "sdkconfig.h"
 #endif
 
+#include <cstdint>
+
 // ========== 芯片能力定义 ==========
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
@@ -63,29 +65,85 @@
   #define CHIP_NAME           "ESP32"
 #endif
 
-// ========== Web 预留内存阈值（8BIT DRAM 口径，按芯片 DRAM 基线差异化） ==========
+// ========== Web 预留内存阈值（8BIT DRAM 口径，按芯片×PSRAM 组合差异化） ==========
+// 分组依据：芯片 DRAM 总量 × PSRAM 有无 → 共 8 种组合
 // 各芯片 DRAM 总量不同，开机基线差异大，统一阈值会导致：
 //   - S3(512KB DRAM, 基线~44KB)：阈值 12KB 太接近基线，频繁触发振荡
 //   - C3(272KB DRAM, 基线~20KB)：阈值 12KB 太宽松，余量不足时规则切片导致 503
 // 滞回设计（suspend < resume）防边界振荡；业务代码禁止再按 CONFIG_IDF_TARGET 自行派生。
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
-// C3/C6: 基线 free8≈18-22KB，留 ~8KB 余量
-#define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   10240U  // free8 < 10KB 暂停
-#define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     6144U   // blk8 < 6KB 暂停
-#define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    14336U  // free8 ≥ 14KB 恢复
-#define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      10240U  // 且 blk8 ≥ 10KB
+
+// --- ESP32-C3 系列 (DRAM 272KB) ---
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  #if defined(CONFIG_SPIRAM_USE) && defined(CONFIG_SPIRAM_TYPE_IRAM)
+    // C3 + 4MB PSRAM (罕见配置，需确认 board 支持)
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   12288U   // free8 < 12KB 暂停
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     8192U    // blk8 < 8KB 暂停
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    16384U   // free8 ≥ 16KB 恢复
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      12288U   // 且 blk8 ≥ 12KB
+  #else
+    // C3 无 PSRAM (主流：C3-One/F4R0)
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   10240U   // free8 < 10KB 暂停
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     6144U    // blk8 < 6KB 暂停
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    14336U   // free8 ≥ 14KB 恢复
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      10240U   // 且 blk8 ≥ 10KB
+  #endif
+
+// --- ESP32-C6 系列 (DRAM 512KB) ---
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+  #if defined(CONFIG_SPIRAM_USE)
+    // C6 + PSRAM
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   16384U   // free8 < 16KB 暂停
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     12288U   // blk8 < 12KB 暂停
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    20480U   // free8 ≥ 20KB 恢复
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      16384U   // 且 blk8 ≥ 16KB
+  #else
+    // C6 无 PSRAM (主流：F4R0)
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   14336U   // free8 < 14KB 暂停
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     10240U   // blk8 < 10KB 暂停
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    18432U   // free8 ≥ 18KB 恢复
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      14336U   // 且 blk8 ≥ 14KB
+  #endif
+
+// --- ESP32-S3 系列 (DRAM 512KB) ---
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-// S3: 基线 free8≈40-50KB，阈值宽松，避免小波动触发振荡
-#define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   16384U  // free8 < 16KB 暂停
-#define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     12288U  // blk8 < 12KB 暂停
-#define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    20480U  // free8 ≥ 20KB 恢复
-#define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      16384U  // 且 blk8 ≥ 16KB
+  // S3 几乎都有 PSRAM，区分有无仅作容错
+  #if defined(CONFIG_SPIRAM_USE)
+    #if defined(CONFIG_SPIRAM_TYPE_OCT)
+      // S3 + Octal PSRAM (R8: 8MB)
+      #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   20480U   // free8 < 20KB
+      #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     16384U   // blk8 < 16KB
+      #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    24576U   // free8 ≥ 24KB
+      #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      20480U   // 且 blk8 ≥ 20KB
+    #else
+      // S3 + SPI PSRAM (R4: 4MB)
+      #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   18432U   // free8 < 18KB
+      #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     14336U   // blk8 < 14KB
+      #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    22528U   // free8 ≥ 22KB
+      #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      18432U   // 且 blk8 ≥ 18KB
+    #endif
+  #else
+    // S3 无 PSRAM (极少见，仅作 fallback)
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   16384U   // free8 < 16KB
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     12288U   // blk8 < 12KB
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    20480U   // free8 ≥ 20KB
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      16384U   // 且 blk8 ≥ 16KB
+  #endif
+
+// --- ESP32 经典系列 (DRAM 520KB) ---
 #else
-// ESP32 经典: 基线 free8≈25-28KB
-#define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   12288U  // free8 < 12KB 暂停
-#define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     8192U   // blk8 < 8KB 暂停
-#define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    16384U  // free8 ≥ 16KB 恢复
-#define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      12288U  // 且 blk8 ≥ 12KB
+  #if defined(CONFIG_SPIRAM_USE)
+    // ESP32 + PSRAM
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   16384U   // free8 < 16KB
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     12288U   // blk8 < 12KB
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    20480U   // free8 ≥ 20KB
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      16384U   // 且 blk8 ≥ 16KB
+  #else
+    // ESP32 无 PSRAM (F4R0/F8R0)
+    #define CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES   12288U   // free8 < 12KB
+    #define CHIP_WEB_RESERVE_SUSPEND_LARGEST_BLOCK     8192U    // blk8 < 8KB
+    #define CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES    16384U   // free8 ≥ 16KB
+    #define CHIP_WEB_RESERVE_RESUME_LARGEST_BLOCK      12288U   // 且 blk8 ≥ 12KB
+  #endif
 #endif
 
 // ========== 保留引脚定义 ==========
@@ -159,6 +217,41 @@ static inline bool chipIsAbsoluteForbiddenPin(uint8_t pin) {
     return (pin >= 6 && pin <= 11);
 #endif
 }
+
+// ========== 芯片 DRAM 总量查询 (运行时 API) ==========
+
+/**
+ * @brief 获取芯片 DRAM 总量（KB）
+ * @return DRAM 总容量，单位 KB
+ */
+static inline uint32_t chipGetDramTotalKb() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    return 272;  // C3: 272KB DRAM (ESP32-C3 Series Document §3.8)
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+    return 512;  // C6: 512KB DRAM (ESP32-C6 Series Document §3.8)
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+    return 512;  // S3: 512KB DRAM (ESP32-S3 Series Document §3.8)
+#else
+    return 520;  // ESP32 经典：520KB DRAM (ESP32 TRM §3.7)
+#endif
+}
+
+// ========== 碎片感知的连续内存阈值 (占 freeHeap 的比例) ==========
+// 当 largestBlock / freeHeap < FRAGMENTATION_SUSPEND_RATIO 时触发降级
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
+  #define CHIP_FRAGMENTATION_SUSPEND_RATIO   0.35f  // 35%
+  #define CHIP_FRAGMENTATION_CRITICAL_RATIO  0.25f  // 25%
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  #define CHIP_FRAGMENTATION_SUSPEND_RATIO   0.40f  // 40%
+  #define CHIP_FRAGMENTATION_CRITICAL_RATIO  0.30f  // 30%
+#else
+  #define CHIP_FRAGMENTATION_SUSPEND_RATIO   0.38f  // 38%
+  #define CHIP_FRAGMENTATION_CRITICAL_RATIO  0.28f  // 28%
+#endif
+
+// === TLS 专用预留池 (确保 WiFi/MQTT-TLS 握手成功) ===
+// 强制从 DRAM 预留 32KB 连续内存，避免碎片化导致握手失败
+#define TLS_RESERVED_BLOCK_BYTES            32768U
 
 // ========== 触摸引脚定义 ==========
 

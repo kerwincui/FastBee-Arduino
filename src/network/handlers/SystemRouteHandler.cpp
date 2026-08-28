@@ -40,6 +40,8 @@ static void getCachedFsStats(size_t& total, size_t& used) {
 }
 #include <memory>
 #include <ctype.h>
+#include "core/MemoryProfile.h"
+#include "systems/ConfigStorage.h"
 
 namespace {
 // Keep inline imports small because form parsing already holds the body in RAM.
@@ -1947,5 +1949,16 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["i18n"]          = (bool)FASTBEE_ENABLE_I18N;
 
     doc["success"] = true;
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+void SystemRouteHandler::handleGetMemoryProfile(AsyncWebServerRequest* request) {
+    FastBee::MemoryProfileDB& db = FastBee::MemoryProfileDB::instance();
+    String json = db.toJson();
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"].set(serialized(json));  // 嵌套一层避免解析问题
+    
     HandlerUtils::sendJsonStream(request, doc);
 }

@@ -1990,7 +1990,7 @@ bool MQTTClient::reconnect() {
         connPassword = buildSimplePassword();
     }
 
-    // 如果clientId为空，生成随机ID
+    // 如果 clientId 为空，生成随机 ID
     if (connClientId.isEmpty()) {
         char id[20];
         snprintf(id, sizeof(id), "ESP32-%04X", (unsigned)esp_random() & 0xFFFF);

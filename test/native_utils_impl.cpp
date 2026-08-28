@@ -269,28 +269,6 @@ float FileUtils::getSpaceUsage() {
     return static_cast<float>(LittleFS.usedBytes()) / static_cast<float>(total);
 }
 
-String FileUtils::backupFile(const String& sourcePath, const String& backupDir) {
-    if (!exists(sourcePath)) {
-        return "";
-    }
-    String backupPath = joinPath(backupDir, getFileName(sourcePath) + ".bak");
-    return copyFile(sourcePath, backupPath) ? backupPath : String("");
-}
-
-bool FileUtils::restoreBackup(const String& backupPath, const String& restorePath) {
-    if (!exists(backupPath)) {
-        return false;
-    }
-    if (exists(restorePath)) {
-        deleteFile(restorePath);
-    }
-    return copyFile(backupPath, restorePath);
-}
-
-int FileUtils::cleanupOldBackups(const String&, int) {
-    return 0;
-}
-
 String FileUtils::calculateFileHash(const String& path) {
     if (!exists(path) || isDirectory(path)) {
         return "";
