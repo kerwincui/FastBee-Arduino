@@ -12,6 +12,10 @@ __pycache__/
 *.pyd
 .Python
 
+# Build artifacts and distribution files
+dist/
+.archive-docs/
+
 # IDE/Editor configurations
 .vscode/
 .idea/
@@ -72,6 +76,11 @@ temp-web-update.zip
 tmp-file-list.csv
 *.tmp
 *.temp
+device_*.html
+# Temporary debugging documentation
+TEMP-*.md
+SOLUTION.md
+debug-*.md
 
 # Backup files
 *.backup*
