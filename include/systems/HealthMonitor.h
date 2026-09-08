@@ -9,13 +9,13 @@
 #include "core/MemoryBudget.h"
 #include "core/interfaces/ILoggerSystem.h"  // LogLevel 枚举
 
-// 内存保护等级（ESP32 D0WD-V3 no-PSRAM 实测：WiFi+WebServer+外设常态吃掉 ~210KB，
-// 剩余 25~30KB 是稳定工作区间，不应被判为警报）
+// 内存保护等级。CRITICAL 空闲 DRAM 下限按运行时 PSRAM 档位动态计算，
+// 避免无 PSRAM 设备的稳定低内存基线被误判为不可恢复故障。
 enum class MemoryGuardLevel : uint8_t {
-    NORMAL = 0,    // freeHeap >= 20KB 或 largestBlock >= 12KB → 所有功能正常
-    WARN = 1,      // 20KB > freeHeap >= 10KB → 降低轮询频率、降低日志级别
-    SEVERE = 2,    // 10KB > freeHeap >= 6KB → 暂停Modbus轮询、MQTT降采样、停止日志文件写
-    CRITICAL = 3   // freeHeap < 6KB → 禁用文件日志、拒绝大响应、只保留关键页面
+    NORMAL = 0,
+    WARN = 1,
+    SEVERE = 2,
+    CRITICAL = 3
 };
 
 // 阈值常量（贴合 ESP32 no-PSRAM 实际：空闲 heap~27KB，web服务时临时降至 10-15KB 是正常行为）
@@ -125,6 +125,7 @@ public:
 
 private:
     void performHealthCheck();
+    void initializeMemoryThresholds();
     void checkCriticalMemory();  // 低内存保护
     void logTaskStackWatermarks();  // 定期输出任务栈水位
     void logMetricsSummary();        // 定期串口输出关键指标
@@ -141,6 +142,15 @@ private:
     // 内存阈值（根据 DRAM 总量动态计算）
     uint32_t criticalThreshold;
     uint32_t warningThreshold;
+
+    // MemGuard 运行期分级阈值。大多数目标使用 MemoryBudget 的通用值；
+    // 经典 ESP32 无 PSRAM 的完整外设镜像使用较低的保护带，避免其
+    // 已验证的 14~15KB 稳态被误判为 SEVERE 并暂停外设执行。
+    uint32_t guardWarnDramThreshold = FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE;
+    uint32_t guardSevereDramThreshold = FastBee::MemoryBudget::GUARD_SEVERE_DRAM_FREE;
+    uint32_t guardCriticalLargestThreshold = FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK;
+    uint32_t guardSevereLargestThreshold = FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK;
+    uint32_t guardWarnLargestThreshold = FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK;
 
     // 内存保护等级
     MemoryGuardLevel _currentLevel = MemoryGuardLevel::NORMAL;
@@ -183,6 +193,7 @@ private:
     static constexpr unsigned long EMERGENCY_REBOOT_DELAY_MS = 5000;  // EMERGENCY 恢复无效持续 5s 则抢先优雅重启（防 OOM abort）
 
     void performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);
+    void ensureTLSContiguousMemory();  // 确保 TLS 握手所需连续 DRAM（P0 优化）
     void downgradeMqttsToMqtt();      // 将 scheme 从 mqtts 切换为 mqtt 并重启 MQTT
     void disableMqttForMemory();      // 写入 mqtt.enabled=false 到 protocol.json + stopMQTT
     void restoreMemoryRecovery();     // NORMAL 恢复时重启已停止的服务（MQTT 被禁用除外）

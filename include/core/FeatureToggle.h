@@ -1,12 +1,14 @@
 /**
  * @file FeatureToggle.h
  * @brief Feature Toggle Engine for runtime feature management
- * @note This is a minimal stub implementation
+ * @note Compatibility facade over RuntimeFeatureManager. Keeping one source
+ * of truth avoids two independent feature registries drifting apart.
  */
 
 #pragma once
 
 #include <cstdint>
+#include "core/RuntimeFeatureManager.h"
 
 namespace FastBee {
 
@@ -18,13 +20,13 @@ public:
     }
     
     bool initialize() {
-        // Minimal stub - always succeeds
+        initialized_ = true;
         return true;
     }
     
     bool isEnabled(const char* feature) const {
-        // Default: all features disabled unless explicitly enabled
-        return false;
+        if (!initialized_ || !feature) return false;
+        return RuntimeFeatureManager::instance().shouldEnable(feature);
     }
     
 private:
@@ -32,6 +34,7 @@ private:
     ~FeatureToggleEngine() = default;
     FeatureToggleEngine(const FeatureToggleEngine&) = delete;
     FeatureToggleEngine& operator=(const FeatureToggleEngine&) = delete;
+    bool initialized_ = false;
 };
 
 } // namespace FastBee

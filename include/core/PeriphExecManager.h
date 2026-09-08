@@ -52,10 +52,11 @@ public:
     bool updateRule(const String& id, const PeriphExecRule& rule, String& errorMsg);
     bool removeRule(const String& id);
     PeriphExecRule* getRule(const String& id);
+    bool getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const;
     std::vector<PeriphExecRule> getAllRules() const;
     bool enableRule(const String& id);
     bool disableRule(const String& id);
-    size_t getRuleCount() const { return rules.size(); }
+    size_t getRuleCount() const;
 
     // ========== 持久化 ==========
     bool saveConfiguration();

@@ -436,11 +436,11 @@ private:
     // 原始帧事务（返回原始响应字节，供合并范围读解析，避免 OneShotResult 缓冲限制）
     OneShotError _executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
                                                uint8_t expectedSlaveAddr,
-                                               uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                               uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
                                                uint8_t& exceptionCode);
     OneShotError _sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
                                          uint8_t expectedSlaveAddr,
-                                         uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                         uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
                                          uint8_t& exceptionCode);
 
     // 合并读专用：范围读并解析到寄存器值缓冲（qty ≤ MODBUS_MAX_REGISTERS_PER_READ）

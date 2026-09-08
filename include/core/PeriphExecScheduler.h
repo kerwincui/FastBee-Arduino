@@ -25,8 +25,9 @@ struct ButtonEventConfig {
 // ========== 单个按键的运行时状态 ==========
 struct ButtonRuntimeState {
     String periphId;                // 外设ID
-    bool lastState = true;          // 上一次状态（上拉默认高电平，按下为低）
-    bool currentState = true;       // 当前状态
+    bool idleLevel = true;          // 上拉空闲为高；下拉空闲为低
+    bool lastState = true;          // 上一次已消抖电平
+    bool currentState = true;       // 当前电平
     unsigned long lastChangeTime = 0;  // 最后状态变化时间
     unsigned long pressStartTime = 0;  // 按下开始时间
     uint8_t clickCount = 0;         // 点击计数（用于双击检测）

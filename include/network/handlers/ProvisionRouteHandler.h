@@ -36,9 +36,11 @@ private:
     void handleWiFiScan(AsyncWebServerRequest* request);
     void handleWiFiConnect(AsyncWebServerRequest* request);
 
-    // AP 配网公开接口（无需身份认证，供手机端直接调用）
+    // AP 配网态允许匿名访问；正常联网后要求身份认证
     void handleWiFiStatus(AsyncWebServerRequest* request);   // GET  /api/wifi/status  设备状态检测
     void handleWiFiConfig(AsyncWebServerRequest* request);   // POST /api/wifi/config  配网下发配置
+
+    bool allowAnonymousProvisioning() const;
 
     // BLE 蓝牙配网管理接口（WebUI 调用，需身份认证）
     void handleBleProvisionStatus(AsyncWebServerRequest* request);  // GET  /api/ble/provision/status

@@ -95,15 +95,19 @@ public:
     static String joinPath(const String& base, const String& part);
     static String normalizePath(const String& path);
     
-    // 递归计算文件夹大小（多个实现版本）
+    // 计算文件夹大小（显式栈实现，避免递归栈深度限制）
     static size_t calculateFolderSize(const String& folderPath);
-    static size_t calculateFolderSizeOptimized(const String& folderPath); // 使用栈的优化版本
+    // 兼容旧调用方的公开入口，内部与 calculateFolderSize 共用显式栈实现；
+    // 新代码应使用 calculateFolderSize，待外部集成迁移后再删除此符号。
+    static size_t calculateFolderSizeOptimized(const String& folderPath);
     
     // 流式JSON解析：直接从文件读取并反序列化到 JsonDocument
     static bool readJsonFile(const String& path, JsonDocument& doc);
 
     // 文件系统监控
     static String getFileSystemInfoJSON();
+    // 兼容调试入口，仅输出日志且不返回结构化结果；新代码应使用
+    // listDirectory/findFiles，保留此 API 以兼容旧版诊断工具。
     static void listAllFiles(const String& path = "/", int depth = 0);
     
 private:
@@ -111,12 +115,9 @@ private:
     
     // 私有辅助方法
     static bool recursiveDeleteDirectory(const String& path);
-    static bool recursiveCopyDirectory(const String& source, const String& dest);
     static void findFilesRecursive(const String& directory, const String& pattern, 
                                    std::vector<FileInfo>& results, bool recursive);
     static void listDirectoryRecursive(const String& path, std::vector<FileInfo>& results);
-    static size_t calculateFolderSizeRecursive(const String& folderPath);
-    static void addFileInfoToJson(const String& path, JsonObject& parent);
     static bool patternMatches(const String& fileName, const String& pattern);
     static String ensureAbsolutePath(const String& path, const String& baseDir = "/");
 };

@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include "AsyncExecTypes.h"
 #include "ChipConfig.h"
 
@@ -81,6 +82,8 @@ private:
     TaskHandle_t   _workers[WORKER_COUNT];
     volatile bool  _started;
     volatile bool  _shuttingDown;
+    SemaphoreHandle_t _exitSemaphore;
+    size_t _workersCreated;
 };
 
 #endif // PERIPH_EXEC_WORKER_POOL_H

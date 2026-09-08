@@ -101,7 +101,10 @@ private:
     // 报错。要求低水位持续 ACTIVATE_DELAY_MS 才激活；真正抽干（第 10 轮
     // 负载 40s 级）不受影响，且入口临界闸门/tcp_accept 门控/_onData 早断
     // 等硬保护与激活状态无关。恢复方向仍单样本立即生效。
-    static constexpr unsigned long ACTIVATE_DELAY_MS = 2000UL;
+    // no-PSRAM C3 在多个静态资源/登录请求同时到达时，2s 内就可能从
+    // 50KB 级水位跌入碎片化区；缩短去抖窗口优先保证不触发 throwing new。
+    // 正常的 1~2s 瞬态仍由恢复迟滞和前端退避吸收。
+    static constexpr unsigned long ACTIVATE_DELAY_MS = 500UL;
 
     bool active_ = false;
     uint32_t rejectedCount_ = 0;

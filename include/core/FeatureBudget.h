@@ -13,6 +13,7 @@
 #define FASTBEE_FEATURE_BUDGET_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 namespace FastBee {
@@ -43,8 +44,9 @@ public:
     // 定义见 FastBeeFramework.cpp。
     void runChecks();
 
-    // 周期性重评估：对已通过的功能重新检查，DRAM 下降则加入 denied 表
-    // 已 denied 的不重新放行（需重启恢复，避免振荡）
+    // 周期性诊断：记录当前水位，但不撤销已经成功初始化的功能。
+    // 启动准入由 runChecks() 负责；运行期压力由 HealthMonitor/WebMemoryGuard
+    // 和各执行入口门控，避免短暂水位波动把正常功能永久写入 denied 表。
     void recheck();
 
     bool checked() const { return checked_; }

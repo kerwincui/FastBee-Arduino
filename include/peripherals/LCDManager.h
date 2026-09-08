@@ -13,6 +13,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
+#include <freertos/semphr.h>
 #include "core/PeripheralConfig.h"
 #include <vector>
 
@@ -312,10 +313,12 @@ public:
     uint8_t getMaxLines() const;
     
 private:
-    LCDManager() = default;
+    LCDManager();
+    ~LCDManager();
     
     // 显示屏对象
     U8G2* _display = nullptr;
+    mutable SemaphoreHandle_t _displayMutex = nullptr;
     
     // 配置参数
     uint8_t _width = 128;
@@ -334,6 +337,7 @@ private:
     unsigned long _initTime = 0;              // 初始化完成时刻
     unsigned long _lastReassert = 0;          // 上次重申显示参数的时刻
     unsigned long _lastFullRecovery = 0;      // 上次 I2C 完整恢复的时刻
+    unsigned long _lastBusWarning = 0;        // 上次 I2C 不可用告警时刻
     int8_t _sdaPin = -1;                     // 保存 I2C 引脚用于长期恢复
     int8_t _sclPin = -1;
     const unsigned long _minUpdateInterval = 50;  // 最小刷新间隔（ms）
@@ -350,6 +354,11 @@ private:
      * @brief 根据配置创建显示屏对象
      */
     bool createDisplay(const PeripheralConfig& config);
+
+    /**
+     * @brief Probe the configured I2C display before issuing U8G2 transfers.
+     */
+    bool probeI2cDisplay(bool logWarning);
     
     /**
      * @brief 设置默认字体

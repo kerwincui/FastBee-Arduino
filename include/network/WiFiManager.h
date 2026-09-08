@@ -293,7 +293,7 @@ public:
      * @brief 更新网络状态信息
      */
     void updateStatusInfo();
-    
+
     /**
      * @brief 在 loopTask 上执行 WiFi 事件的重量级后续处理（PeriphExec/MQTT/回调）
      * @note handleWiFiEvent 运行在 arduino_events 任务栈上，只置位标志；

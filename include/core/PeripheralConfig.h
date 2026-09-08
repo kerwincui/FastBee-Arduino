@@ -173,22 +173,10 @@ struct PeripheralConfig {
         for (int i = 0; i < 8; i++) {
             pins[i] = 255;  // 255表示未使用
         }
-        // 默认初始化联合体
-        params.gpio.initialState = GPIOState::STATE_LOW;
-        params.gpio.pwmChannel = 0;
-        params.gpio.pwmFrequency = 1000;
-        params.gpio.pwmResolution = 8;
-        params.gpio.defaultDuty = 0;
-        params.gpio.passive = false;
-        params.gpio.interruptCallback = nullptr;
-        params.gpio.aoMode = false;
-        params.gpio.aoMinPct = 0;
-        params.gpio.aoMaxPct = 100;
-        params.adc.attenuation = 0;
-        params.adc.resolution = 12;
-        params.adc.sampleRate = 0;
-        params.adc.sampleCount = 1;
-        params.adc.filterMode = 0;
+        // params is a union: initializing more than one member corrupts the
+        // previously written defaults. Start from a deterministic zero state;
+        // parsers/factories then apply defaults for the selected type.
+        memset(&params, 0, sizeof(params));
     }
     
     // 检查是否为GPIO类型
@@ -260,7 +248,9 @@ struct PeripheralRuntimeState {
     
     PeripheralRuntimeState() 
         : status(PeripheralStatus::PERIPHERAL_DISABLED), initTime(0),
-          lastActivity(0), errorCount(0) {}
+          lastActivity(0), errorCount(0) {
+        memset(&state, 0, sizeof(state));
+    }
 };
 
 // 外设配置JSON序列化/反序列化辅助函数

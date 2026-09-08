@@ -235,7 +235,8 @@ public:
      * @brief 延迟执行（非阻塞）
      * @param milliseconds 延迟毫秒数
      * @param callback 回调函数
-     * @return 定时器ID
+     * @return 定时器ID，分配失败返回 -1。已完成的一次性定时器会在下次
+     *         创建定时器时自动回收；周期定时器仍需调用 clearTimer。
      */
     static int setTimeout(unsigned long milliseconds, void (*callback)());
     
@@ -243,7 +244,7 @@ public:
      * @brief 间隔执行（非阻塞）
      * @param milliseconds 间隔毫秒数
      * @param callback 回调函数
-     * @return 定时器ID
+     * @return 定时器ID，分配失败返回 -1
      */
     static int setInterval(unsigned long milliseconds, void (*callback)());
     

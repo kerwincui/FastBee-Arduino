@@ -10,7 +10,6 @@
 #include <Ticker.h>
 #include <freertos/semphr.h>
 #include <freertos/queue.h>
-#include <functional>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
 #include "ResourceProfile.h"
@@ -64,6 +63,7 @@ public:
 
     // 更新外设
     bool updatePeripheral(const String& id, const PeripheralConfig& config);
+    bool updatePeripheral(const String& id, const PeripheralConfig& config, String& errorMsg);
 
     // 删除外设
     bool removePeripheral(const String& id);
@@ -71,6 +71,7 @@ public:
     // 获取外设配置
     PeripheralConfig* getPeripheral(const String& id);
     const PeripheralConfig* getPeripheral(const String& id) const;
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& snapshot) const;
 
     // 根据类型获取外设列表
     std::vector<PeripheralConfig> getPeripheralsByType(PeripheralType type) const;
@@ -96,6 +97,7 @@ public:
     // 获取外设状态
     PeripheralStatus getPeripheralStatus(const String& id) const;
     PeripheralRuntimeState* getRuntimeState(const String& id);
+    bool getRuntimeStateSnapshot(const String& id, PeripheralRuntimeState& snapshot) const;
 
     // ========== 硬件初始化 ==========
 
@@ -215,7 +217,7 @@ public:
         PeripheralManager* mgr;
         String id;
         Ticker ticker;
-        uint8_t channel;
+        uint8_t pin;
         uint16_t maxDuty;
         int16_t stepSize;
         int16_t breatheState;  // 正值=递增(当前duty), 负值=递减
@@ -376,6 +378,14 @@ private:
 
     // C 字符串零分配查找（调用方须已持有 _mutex）：
     // 外设数量小（<32），线性扫描 strcmp 开销远低于 String 构造的堆分配
+    // 以下两个 helper 也要求调用方已持有 _mutex，统一 String/C 字符串 GPIO 路径。
+    GPIOState readGpioStateLocked(const PeripheralConfig& config,
+                                  const String* peripheralId,
+                                  const char* peripheralIdCStr);
+    bool writeGpioStateLocked(const PeripheralConfig& config,
+                              const String* peripheralId,
+                              const char* peripheralIdCStr,
+                              GPIOState state);
     PeripheralConfig* getPeripheralCStrLocked(const char* id);
     PeripheralRuntimeState* getRuntimeStateCStrLocked(const char* id);
 };

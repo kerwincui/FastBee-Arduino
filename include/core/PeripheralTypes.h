@@ -367,4 +367,44 @@ inline bool isDeviceEventType(PeripheralType type) {
     return type == PeripheralType::DEVICE_EVENT;
 }
 
+// Whether the current PeripheralManager has a concrete initialization path for
+// this type. Keep this list explicit so newly added enum values fail closed.
+inline bool isPeripheralTypeImplemented(PeripheralType type) {
+    switch (type) {
+        case PeripheralType::UART:
+        case PeripheralType::I2C:
+        case PeripheralType::SPI:
+        case PeripheralType::GPIO_DIGITAL_INPUT:
+        case PeripheralType::GPIO_DIGITAL_OUTPUT:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
+        case PeripheralType::GPIO_ANALOG_INPUT:
+        case PeripheralType::GPIO_ANALOG_OUTPUT:
+        case PeripheralType::GPIO_PWM_OUTPUT:
+        case PeripheralType::GPIO_INTERRUPT_RISING:
+        case PeripheralType::GPIO_INTERRUPT_FALLING:
+        case PeripheralType::GPIO_INTERRUPT_CHANGE:
+        case PeripheralType::GPIO_TOUCH:
+        case PeripheralType::ADC:
+        case PeripheralType::DAC:
+        case PeripheralType::LCD:
+        case PeripheralType::SDIO:
+        case PeripheralType::SENSOR_GENERIC:
+        case PeripheralType::PWM_SERVO:
+        case PeripheralType::STEPPER_MOTOR:
+        case PeripheralType::ENCODER:
+        case PeripheralType::ONE_WIRE:
+        case PeripheralType::NEO_PIXEL:
+        case PeripheralType::SEVEN_SEGMENT_TM1637:
+        case PeripheralType::RF_MODULE:
+        case PeripheralType::RADAR_SENSOR:
+        case PeripheralType::MODBUS_DEVICE:
+        case PeripheralType::IR_RECEIVER:
+        case PeripheralType::DEVICE_EVENT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 #endif // PERIPHERAL_TYPES_H

@@ -1,7 +1,9 @@
 /**
  * @file TlsMemoryPool.h
- * @brief TLS Memory Pool for secure connection memory management
- * @note This is a minimal stub implementation
+ * @brief Compatibility facade for the removed TLS memory pool prototype.
+ * @note The firmware uses the platform TLS allocator directly. This header is
+ *       retained for source compatibility with external integrations; it is
+ *       not part of the boot path and does not provide pooled allocation.
  */
 
 #pragma once
@@ -19,7 +21,7 @@ public:
     }
     
     bool initialize() {
-        // Minimal stub - always succeeds
+        // Compatibility-only state; no pool is allocated.
         initialized_ = true;
         return true;
     }
@@ -29,32 +31,29 @@ public:
     }
     
     size_t getPoolSize() const {
-        return 0;  // Stub implementation
+        return 0;
     }
     
     size_t getUsedSize() const {
-        return 0;  // Stub implementation
+        return 0;
     }
     
     size_t getFreeSize() const {
-        return 0;  // Stub implementation
+        return 0;
     }
     
     void* allocate(size_t size) {
-        // Stub: return nullptr to indicate no pool available
-        // TLS will fall back to regular heap allocation
+        // The platform TLS implementation owns allocation and falls back to
+        // its regular heap path when no dedicated pool is configured.
+        (void)size;
         return nullptr;
     }
     
     void deallocate(void* ptr) {
-        // Stub: no-op for nullptr
-        if (ptr) {
-            // In a real implementation, this would return memory to the pool
-        }
+        (void)ptr;
     }
     
     void reset() {
-        // Stub: reset pool state
         initialized_ = false;
     }
     

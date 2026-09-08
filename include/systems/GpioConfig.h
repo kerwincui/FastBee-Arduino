@@ -58,7 +58,11 @@ struct GPIOConfig {
           debounceMs(50), interruptCallback(nullptr) {}
 };
 
-// 预定义GPIO配置
+// 预定义 GPIO 配置。
+//
+// 这些固定引脚是历史兼容入口，适用于旧版板级集成；新固件功能应优先
+// 通过 PeripheralConfig/PeripheralManager 注入板级引脚，避免把默认板的
+// 引脚布局误用到其他硬件。保留这些符号至少一个发布周期，暂不做 ABI 删除。
 namespace GPIO_PINS {
     // 系统LED
     extern const GPIOConfig SYSTEM_LED;

@@ -278,7 +278,7 @@ private:
     uint8_t  listenCheckFailCount = 0;             // 连续检测到端口未监听的次数
     static constexpr unsigned long LISTEN_CHECK_INTERVAL_MS = 30000UL;  // 30s 检查一次
     static constexpr uint8_t LISTEN_CHECK_FAIL_TRIGGER = 3;  // 连续 3 次失败触发恢复
-    static constexpr unsigned long NO_REQUEST_WATCHDOG_MS = 120000UL;   // 2 分钟无请求且有残留连接时清理僵死 PCB
+    static constexpr unsigned long NO_REQUEST_WATCHDOG_MS = 120000UL;   // 2min 无请求且有残留连接时清理僵死 PCB
 };
 
 #endif // WEB_CONFIG_MANAGER_H

@@ -65,6 +65,15 @@
   #define CHIP_NAME           "ESP32"
 #endif
 
+// Keep non-functional defaults that vary by chip in this central hardware
+// abstraction so application modules do not scatter target preprocessor
+// branches throughout the source tree.
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  #define CHIP_DEFAULT_LOG_FILE_SIZE_LIMIT 10240U
+#else
+  #define CHIP_DEFAULT_LOG_FILE_SIZE_LIMIT 16384U
+#endif
+
 // ========== Web 预留内存阈值（8BIT DRAM 口径，按芯片×PSRAM 组合差异化） ==========
 // 分组依据：芯片 DRAM 总量 × PSRAM 有无 → 共 8 种组合
 // 各芯片 DRAM 总量不同，开机基线差异大，统一阈值会导致：

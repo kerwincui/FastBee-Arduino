@@ -128,19 +128,40 @@ struct MemoryBudget {
                largestBlock < MQTTS_WEB_PAUSE_LARGEST_BLOCK;
     }
 
+    // Runtime profiles may need different guard bands because the same
+    // feature bundle leaves very different steady-state DRAM on each chip.
+    // Keep the legacy two-argument overload below unchanged for callers that
+    // rely on the project-wide defaults.
+    static constexpr MemoryPressureLevel guardLevelForFreeDram(
+        uint32_t dramFree,
+        uint32_t criticalDramFree,
+        uint32_t severeDramFree,
+        uint32_t warnDramFree) {
+        if (dramFree < criticalDramFree) {
+            return MemoryPressureLevel::CRITICAL;
+        }
+        if (dramFree < severeDramFree) {
+            return MemoryPressureLevel::SEVERE;
+        }
+        if (dramFree < warnDramFree) {
+            return MemoryPressureLevel::WARN;
+        }
+        return MemoryPressureLevel::NORMAL;
+    }
+
+    static constexpr MemoryPressureLevel guardLevelForFreeDram(
+        uint32_t dramFree,
+        uint32_t criticalDramFree = GUARD_CRITICAL_DRAM_FREE) {
+        return guardLevelForFreeDram(dramFree, criticalDramFree,
+                                     GUARD_SEVERE_DRAM_FREE,
+                                     GUARD_WARN_DRAM_FREE);
+    }
+
     static constexpr MemoryPressureLevel guardLevelForDram(uint32_t dramFree,
                                                            uint32_t largestBlock,
                                                            uint8_t fragmentation,
                                                            bool startupGrace) {
-        MemoryPressureLevel level = MemoryPressureLevel::NORMAL;
-
-        if (dramFree < GUARD_CRITICAL_DRAM_FREE) {
-            level = MemoryPressureLevel::CRITICAL;
-        } else if (dramFree < GUARD_SEVERE_DRAM_FREE) {
-            level = MemoryPressureLevel::SEVERE;
-        } else if (dramFree < GUARD_WARN_DRAM_FREE) {
-            level = MemoryPressureLevel::WARN;
-        }
+        MemoryPressureLevel level = guardLevelForFreeDram(dramFree);
 
         if (!startupGrace) {
             if (largestBlock < GUARD_CRITICAL_LARGEST_BLOCK ||
@@ -244,12 +265,12 @@ struct MemoryBudget {
 #endif
     }
 
-    // 2026-08-05：8BIT 口径真实可 malloc DRAM。INTERNAL 含 IRAM/RTC 不可
-    // malloc 内存，实测比 8BIT 虚高 ~28KB；malloc/new/lwIP pbuf 都从
-    // 8BIT DRAM 分配，低内存门控必须用它否则守卫被误导（OOM abort 教训）。
+    // 8-bit internal DRAM is the pool required by WiFi/lwIP/FreeRTOS.  A
+    // bare MALLOC_CAP_8BIT query also includes PSRAM after extmem is enabled,
+    // which can hide an exhausted internal pool on PSRAM boards.
     static uint32_t dram8Free() {
 #if defined(ESP_PLATFORM)
-        return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
+        return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 #else
         return 0;
 #endif
@@ -257,7 +278,7 @@ struct MemoryBudget {
 
     static uint32_t dram8Largest() {
 #if defined(ESP_PLATFORM)
-        return static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        return static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 #else
         return 0;
 #endif

@@ -11,25 +11,25 @@ namespace ResourceProfile {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
 static constexpr const char* NAME = "esp32c3-lite";
 static constexpr size_t MAX_PERIPHERALS = 16;             // 硬性上限（受 GPIO/DRAM~272KB 限制）
-static constexpr size_t MAX_PERIPH_EXEC_RULES = 12;       // 推荐值（软性限制，超限只警告）
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 12;       // 硬性上限（规则及索引常驻内存）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 16;
 // DRAM 开机基线：~18-22KB（系统+NVS+WiFi 栈），参考 ChipConfig.h#chipGetDramTotalKb()
 #elif defined(CONFIG_IDF_TARGET_ESP32C6)
 static constexpr const char* NAME = "esp32c6-mid";
 static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限（C6 可用 GPIO 为 0-23）
-static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 推荐值（软性限制，超限只警告）
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 硬性上限（规则及索引常驻内存）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
 // DRAM 开机基线：~35-40KB（C6 有 WiFi6 新栈），参考 ChipConfig.h
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
 static constexpr const char* NAME = "esp32s3";
 static constexpr size_t MAX_PERIPHERALS = 32;             // 硬性上限 (PSRAM 设备)
-static constexpr size_t MAX_PERIPH_EXEC_RULES = 32;       // 推荐值 (软性限制，超限只警告)
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 32;       // 硬性上限（规则及索引常驻内存）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 32;
 // DRAM 开机基线：~40-50KB + PSRAM 卸载，参考 ChipConfig.h
 #else
 static constexpr const char* NAME = "esp32-lite";
 static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限
-static constexpr size_t MAX_PERIPH_EXEC_RULES = 16;       // 推荐值（软性限制，超限只警告）
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 16;       // 硬性上限（规则及索引常驻内存）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
 // DRAM 开机基线：~40-45KB（经典 ESP32），参考 ChipConfig.h
 #endif

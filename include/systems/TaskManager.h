@@ -12,6 +12,8 @@
 #include <vector>
 #include <functional>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // 任务函数类型定义
 #include "core/interfaces/ITaskManager.h"
@@ -31,6 +33,10 @@ struct TaskStatistics {
     uint32_t executionCount;
     unsigned long lastExecutionTime; // 上次执行耗时
     unsigned long maxExecutionTime; // 最大执行耗时
+    unsigned long executionBudget;  // 单次执行预算
+    uint32_t overrunCount;           // 累计超预算次数
+    uint32_t deferredCount;          // 因调度轮预算延后的次数
+    uint8_t consecutiveOverruns;     // 连续超预算次数
     unsigned long createdTime;
     unsigned long uptime;
 };
@@ -49,6 +55,10 @@ struct ScheduledTask {
     unsigned long lastExecutionTime; // 上次执行耗时（毫秒）
     unsigned long maxExecutionTime; // 最大执行耗时（毫秒）
     unsigned long totalExecutionTime; // 累计执行时间，用于计算平均值
+    unsigned long executionBudget;    // 单次执行软超时预算（毫秒）
+    uint32_t overrunCount;             // 累计超预算次数
+    uint32_t deferredCount;            // 调度轮预算耗尽后的延后次数
+    uint8_t consecutiveOverruns;       // 连续超预算次数
 };
 
 class TaskManager : public ITaskManager {
@@ -88,10 +98,12 @@ public:
     
     // 任务配置更新
     bool updateTaskInterval(const String& name, unsigned long newInterval); // 更新任务间隔
+    bool setTaskExecutionBudget(const String& name, unsigned long budgetMs);
 
 private:
     std::vector<ScheduledTask> tasks;
     bool isRunning;
+    SemaphoreHandle_t tasksMutex = nullptr;
 };
 
 #endif
