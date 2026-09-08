@@ -40,7 +40,7 @@ static ChipProfile getESP32Profile() {
             {34, 35, 36, 39}};
 }
 
-// S3 非 Octal PSRAM 变体（F8R0/F8R4 等：Quad PSRAM 或无 PSRAM）
+// S3 无 PSRAM 变体（F8R0 等）；带 PSRAM 的 F8R8/F16R8 使用 Octal 保留脚
 static ChipProfile getESP32S3Profile() {
     return {"ESP32-S3", 48, false, true, 8, true, 3,
             {0, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
@@ -232,7 +232,7 @@ static void test_esp32s3_octal_reserved_has_psram_bus() {
 }
 
 static void test_esp32s3_non_octal_psram_pins_not_reserved() {
-    // 非 Octal 变体（F8R0/F8R4）GPIO 33-37 是普通可用引脚，不应误伤
+    // 无 PSRAM 变体（F8R0）GPIO 33-37 是普通可用引脚，不应误伤
     auto chip = getESP32S3Profile();
     for (uint8_t pin : {33, 34, 35, 36, 37}) {
         TEST_ASSERT_TRUE_MESSAGE(isPinAssignable(chip, pin),

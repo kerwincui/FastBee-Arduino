@@ -754,6 +754,7 @@ void test_sta_to_ap_failback_integration() {
 
     // 阶段 1：初始在 STA 模式
     wifi.mode(WIFI_STA);
+    wifi.setShouldFail(true);
     wifi.begin("wrong-network", "wrong-password");
     TEST_ASSERT_EQUAL(WL_CONNECT_FAILED, wifi.status());
     TestLog::step("STA connection failed");
@@ -866,7 +867,7 @@ void test_power_loss_recovery_network_config() {
     const char* staleNvsSSID = "old-config"; // NVS 中的过期配置
 
     // KEY VERIFICATION：系统仍应从 LittleFS 读取最新配置
-    TEST_ASSERT_NOT_EQUAL(0, strcmp(staleNvsSSID, postLossStaSSID));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(staleNvsSSID, postLossStaSSID.c_str()));
     TestLog::step("LittleFS overrides stale NVS cache");
 
     // 阶段 5：尝试重新连接
@@ -1731,7 +1732,7 @@ void test_4g_failure_fallback_multi_chip() {
     ChipEnv chips[] = {
         {"ESP32-F4R0",    320000},
         {"ESP32-S3-F8R0",  320000},
-        {"ESP32-S3-F8R4",  320000},
+        {"ESP32-S3-F8R8",  320000},
         {"ESP32-S3-F16R8", 320000},
     };
 
@@ -1771,7 +1772,7 @@ void test_ethernet_failure_fallback_multi_chip() {
     ChipEnv chips[] = {
         {"ESP32-F4R0",    320000},
         {"ESP32-S3-F8R0",  320000},
-        {"ESP32-S3-F8R4",  320000},
+        {"ESP32-S3-F8R8",  320000},
         {"ESP32-S3-F16R8", 320000},
     };
 

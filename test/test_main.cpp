@@ -67,11 +67,11 @@ extern void test_runtime_feature_manager_group();
 extern void test_feature_budget_group();
 extern void test_network_config_additional_group();  // Added: LittleFS & network.json config tests
 
-// Phase A→D 新功能测试组
-extern void test_fragmentation_aware_scheduler_group();
-extern void test_tls_memory_pool_group();
-extern void test_feature_toggle_group();
-extern void test_memory_profile_db_group();
+// Phase A→D 新功能测试组：对应的 test_fragmentation_aware_scheduler.cpp /
+// test_tls_memory_pool.cpp / test_feature_toggle.cpp / test_memory_profile_db.cpp
+// 四个源文件在仓库中不存在（历史重构遗留的孤儿引用），会导致 native suite
+// 链接失败（undefined reference），故移除其 extern 声明与下方调用。
+// 待这些测试文件补齐后再恢复。
 
 // 测试夹具
 void setUp() {
@@ -275,18 +275,7 @@ void setup() {
     Serial.println("\n[TEST] Running FeatureBudget Tests...");
     test_feature_budget_group();
 
-    // Phase A→D 新功能测试
-    Serial.println("\n[TEST] Running Fragmentation-aware Scheduler Tests...");
-    test_fragmentation_aware_scheduler_group();
-
-    Serial.println("\n[TEST] Running TLS Memory Pool Tests...");
-    test_tls_memory_pool_group();
-
-    Serial.println("\n[TEST] Running FeatureToggle Engine Tests...");
-    test_feature_toggle_group();
-
-    Serial.println("\n[TEST] Running MemoryProfileDB Tests...");
-    test_memory_profile_db_group();
+    // Phase A→D 新功能测试：源文件缺失，暂不调用（见上方 extern 说明）
 
     // 结束测试并输出结果
     int result = UNITY_END();

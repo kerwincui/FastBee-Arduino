@@ -1,17 +1,36 @@
 import { test, expect, env, waitForDevice, waitForHealth } from '../fixtures/base.fixture';
+import type { Page } from '@playwright/test';
+
+/** 等待前端异步启动完成，避免 AppState.init() 覆盖测试刚设置的表单值。 */
+async function openLogin(page: Page) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      // The device can return the lightweight 503 retry page while static
+      // resources drain. DOMContentLoaded lets the helper retry promptly.
+      await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForFunction(() => (window as any).__fastbeeBootReady === true, { timeout: 10_000 }).catch(() => {});
+      if (await page.locator('#login-page').isVisible({ timeout: 5_000 }).catch(() => false)) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await page.waitForTimeout(1000 * (attempt + 1));
+  }
+  throw lastError || new Error('Login page did not become visible');
+}
 
 test.describe('Suite-01: 登录与认证', () => {
 
   // ========== 场景A: 正常登录流程 ==========
 
   test('AUTH-001: 首次访问重定向到登录页 @quick', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await expect(page.locator('#login-page')).toBeVisible();
     await expect(page.locator('#app-container')).toBeHidden();
   });
 
   test('AUTH-002: 默认管理员登录 @quick', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
@@ -22,7 +41,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-003: 登录后Token存储', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
@@ -34,7 +53,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-004: 登录后用户信息显示', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
@@ -43,18 +62,19 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-005: 记住密码-勾选后登录', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.check('#remember');
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
     await expect(page.locator('#app-container')).toBeVisible({ timeout: 15_000 });
-    const remembered = await page.evaluate(() => localStorage.getItem('remember'));
-    expect(remembered).toBeTruthy();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('remember')), {
+      timeout: 5_000,
+    }).toBe('true');
   });
 
   test('AUTH-006: 记住密码-不勾选登录', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     // 取消勾选记住密码
     const remember = page.locator('#remember');
     if (await remember.isVisible() && await remember.isChecked()) {
@@ -72,7 +92,7 @@ test.describe('Suite-01: 登录与认证', () => {
   // ========== 场景B: 异常登录场景 ==========
 
   test('AUTH-007: 错误密码登录', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', 'admin');
     await page.fill('#password', 'wrong_password');
     await page.click('#login-button');
@@ -82,7 +102,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-008: 空用户名提交', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
     // HTML5 验证拦截
@@ -90,7 +110,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-009: 空密码提交', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     // 密码留空
     await page.click('#login-button');
@@ -99,7 +119,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-010: 超长用户名输入 @quick', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', 'A'.repeat(200));
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');
@@ -109,7 +129,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-011: 特殊字符密码（XSS防护）', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     await page.fill('#password', '<script>alert(1)</script>');
     await page.click('#login-button');
@@ -120,7 +140,7 @@ test.describe('Suite-01: 登录与认证', () => {
 
   test('AUTH-012: 快速连续点击登录', async ({ page }) => {
     test.setTimeout(60_000); // 包含设备恢复等待时间
-    await page.goto('/');
+    await openLogin(page);
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     // 快速连点2次（嵌入式设备资源有限，避免崩溃）
@@ -140,7 +160,7 @@ test.describe('Suite-01: 登录与认证', () => {
   // ========== 场景C: 语言切换 ==========
 
   test('AUTH-013: 登录页切换到英文', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     const langSelect = page.locator('#login-language-select');
     if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.selectOption('#login-language-select', 'en');
@@ -155,7 +175,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-014: 登录页切换回中文', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     const langSelect = page.locator('#login-language-select');
     if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.selectOption('#login-language-select', 'en');
@@ -170,7 +190,7 @@ test.describe('Suite-01: 登录与认证', () => {
   });
 
   test('AUTH-015: 英文模式下登录', async ({ page }) => {
-    await page.goto('/');
+    await openLogin(page);
     const langSelect = page.locator('#login-language-select');
     if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.selectOption('#login-language-select', 'en');
@@ -208,14 +228,12 @@ test.describe('Suite-01: 登录与认证', () => {
     }
   });
 
-  test('AUTH-017: 退出后无法直接访问 @quick', async ({ page }) => {
+  test('AUTH-017: 退出后无法直接访问 @quick', async ({ authPage }) => {
     test.setTimeout(90_000);
-    // 先登录
-    await page.goto('/');
-    await page.fill('#username', env.auth.username);
-    await page.fill('#password', env.auth.password);
-    await page.click('#login-button');
-    await expect(page.locator('#app-container')).toBeVisible({ timeout: 15_000 });
+    // Reuse the authenticated fixture to avoid a second PBKDF2 job on
+    // memory-constrained targets. The test still covers logout and direct
+    // navigation after the session is invalidated.
+    const page = authPage;
     // 退出
     await page.click('#user-dropdown-btn');
     await page.waitForTimeout(500);

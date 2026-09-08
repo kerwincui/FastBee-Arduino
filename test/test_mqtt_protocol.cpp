@@ -1622,7 +1622,7 @@ void test_mqtt_status_connected_resets_timer() {
 // ============================================================
 // MQTT 多认证格式 + 多芯片连接稳定性测试
 // S前缀=简单认证, E前缀=加密认证
-// 覆盖 ESP32/ESP32-S3(F8R0无PSRAM)/ESP32-S3(F8R4有PSRAM)/ESP32-S3(F16R8)
+// 覆盖 ESP32/ESP32-S3(F8R0无PSRAM)/ESP32-S3(F8R8有PSRAM)/ESP32-S3(F16R8)
 // ============================================================
 
 /**
@@ -1639,7 +1639,7 @@ struct ChipProfile {
 static const ChipProfile CHIP_PROFILES[] = {
     {"ESP32-F4R0",      320000, 0,              10},   // ESP32 classic, 4MB flash
     {"ESP32-S3-F8R0",   320000, 0,              14},   // ESP32-S3, 8MB flash, no PSRAM
-    {"ESP32-S3-F8R4",   320000, 4*1024*1024,    14},   // ESP32-S3, 8MB flash, 4MB PSRAM
+    {"ESP32-S3-F8R8",   320000, 8*1024*1024,    14},   // ESP32-S3, 8MB flash, 8MB PSRAM
     {"ESP32-S3-F16R8",  320000, 8*1024*1024,    14},   // ESP32-S3, 16MB flash, 8MB PSRAM
 };
 static const int CHIP_PROFILE_COUNT = 4;
@@ -2510,7 +2510,7 @@ void test_mqtts_memory_check_uses_internal_cap() {
 void test_mqtts_psram_largest_block_misleads_default_cap() {
     TestLog::testStart("MQTTS: PSRAM Misleads MALLOC_CAP_DEFAULT largest");
 
-    // 模拟 ESP32-S3-F8R4 场景：
+    // 模拟 ESP32-S3-F8R8 场景：
     //   DRAM 内部碎片化后最大连续块仅 8KB
     //   PSRAM 空闲块 8MB（作为 MALLOC_CAP_DEFAULT 最大块）
     uint32_t dramLargest = 8000;   // MALLOC_CAP_INTERNAL: 8KB (不足 20KB 阈值)
@@ -2585,29 +2585,20 @@ void test_mqtts_dram_diagnostic_log() {
 }
 
 /**
- * @brief MQTTS-14: setInsecure() 节省内存验证
- * 使用 setInsecure() 跳过证书验证后，MQTTS 内存需求降至约 28-32KB
+ * @brief MQTTS-14: MQTTS 必须校验服务端证书
  */
 void test_mqtts_setinsecure_reduces_memory_requirement() {
-    TestLog::testStart("MQTTS: setInsecure() Reduces Memory Requirement");
+    TestLog::testStart("MQTTS: Built-in CA Bundle Validation");
 
     std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read MQTTClient.cpp");
 
-    // 代码中必须使用 setInsecure()（跳过证书验证）
-    TEST_ASSERT_TRUE_MESSAGE(content.find("setInsecure()") != std::string::npos,
-        "MQTTS must use setInsecure() to skip certificate validation");
-    TestLog::step("setInsecure() present: certificate validation skipped");
-
-    // 注释中应说明 setInsecure 节省内存
-    bool hasSavingComment = content.find("setInsecure") != std::string::npos &&
-        (content.find("\u8df3\u8fc7\u8bc1\u4e66") != std::string::npos ||
-         content.find("\u8bc1\u4e66\u9a8c\u8bc1\u8df3\u8fc7") != std::string::npos ||
-         content.find("skip") != std::string::npos ||
-         content.find("certificate verification skipped") != std::string::npos);
-    TEST_ASSERT_TRUE_MESSAGE(hasSavingComment,
-        "Code should document that setInsecure saves ~8-12KB cert memory");
-    TestLog::step("setInsecure() saves cert memory documented");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("setInsecure()") == std::string::npos,
+        "MQTTS must never bypass certificate validation");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("setCACertBundle(x509_crt_bundle_start, caBundleSize)") != std::string::npos,
+        "MQTTS must attach the built-in CA certificate bundle");
+    TestLog::step("Built-in CA bundle enabled; insecure TLS is absent");
 
     // MQTTS minHeap 阈值应低于 50000（不应还在要求完整 60KB）
     std::regex minHeapRe("minHeap\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
@@ -2615,8 +2606,7 @@ void test_mqtts_setinsecure_reduces_memory_requirement() {
     if (std::regex_search(content, match, minHeapRe) && match.size() > 1) {
         int minHeapVal = std::stoi(match[1].str());
         TEST_ASSERT_TRUE_MESSAGE(minHeapVal < 50000,
-            "MQTTS minHeap must be < 50000 when using setInsecure (no cert memory needed)");
-        TestLog::step(("MQTTS minHeap=" + match[1].str() + " < 50000").c_str());
+            "Legacy numeric MQTTS minHeap must remain bounded");
     }
 
     TestLog::testEnd(true);

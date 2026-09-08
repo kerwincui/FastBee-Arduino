@@ -38,7 +38,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
   workers: 1, // 单 worker，设备资源有限
-  timeout: 60_000, // 单测试超时：大多数测试应在 30s 内完成
+  timeout: 90_000, // 嵌入式设备首次认证/刷新可能需要更长时间
   reporter: [
     ['html', { outputFolder: 'reports/html', open: 'never' }],
     ['json', { outputFile: 'reports/results.json' }],
@@ -60,7 +60,7 @@ export default defineConfig({
     // P0 - 冒烟测试：每次构建必跑
     {
       name: 'smoke',
-      testMatch: /01-auth|02-dashboard/,
+      testMatch: /01-auth|02-dashboard|23-memory-pressure-notice|24-web-smooth-access/,
       use: { ...devices['Desktop Chrome'] },
     },
     // P1 - 核心功能：网络/设备/MQTT
@@ -102,6 +102,11 @@ export default defineConfig({
       testMatch: /18-linkage/,
       use: { ...devices['Desktop Chrome'] },
     },
+    // 独立网页连通性/静态资源完整性测试
+    {
+      name: 'web',
+      testMatch: /24-web-smooth-access/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
 });
-

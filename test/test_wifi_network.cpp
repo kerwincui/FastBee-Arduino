@@ -336,14 +336,17 @@ void test_source_sta_connect_uses_all_channel_scan() {
         const char* file;
         const char* fnMarker;
         const char* beginMarker;
+        bool asyncBoot;
     };
     const PathCheck paths[] = {
         { "src/network/NetworkManager.cpp",
           "FBNetworkManager::connectToWiFiBlocking()",
-          "WiFi.begin(wifiConfig.staSSID" },
+          "startBootStaRetryScan();",
+          true },
         { "src/network/WiFiManager.cpp",
           "WiFiManager::connectToWiFi()",
-          "WiFi.begin(targetSSID" },
+          "WiFi.begin(targetSSID",
+          false },
     };
 
     for (const PathCheck& p : paths) {
@@ -370,6 +373,13 @@ void test_source_sta_connect_uses_all_channel_scan() {
         TEST_ASSERT_TRUE_MESSAGE(
             pre.find("setSleep(false)") != std::string::npos,
             (std::string("must disable modem sleep before begin in ") + p.fnMarker).c_str());
+        if (p.asyncBoot) {
+            TEST_ASSERT_TRUE_MESSAGE(
+                pre.find("WiFi.scanNetworks(false, true)") == std::string::npos &&
+                pre.find("while (WiFi.status()") == std::string::npos &&
+                pre.find("delay(") == std::string::npos,
+                "async boot initialization must not retain synchronous scan/wait logic");
+        }
     }
 }
 
@@ -446,30 +456,31 @@ void test_boot_mode_correction_truth_table() {
 }
 
 /**
- * @brief 源码回归：开机 STA 连接需具备足够重试次数以容忍弱/边缘信号
- * （reason=6、扫描偶发 0 网络），尽量优先 STA 再回退 AP。
- * 2026-08-10 起改为预扫描快速失败：SSID 可见时 4 次×connectTimeout，
- * 不可见时 2 次×6s 快速回退 AP（避免不可见 SSID 阻塞 ~90s）。
+ * @brief 源码回归：开机 STA 候选扫描在所有编译模式下均为异步状态机，
+ * 连接重试由 update() 统一推进，不能在初始化或 network_update 中同步等待。
  */
 void test_source_boot_connect_retries_for_weak_signal() {
-    TestLog::testStart("Source: connectToWiFiBlocking retries >=4 for weak-signal tolerance");
+    TestLog::testStart("Source: boot STA candidate scan is async in every Web start mode");
 
     std::string content = readSrcFile("src/network/NetworkManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
         "Failed to read src/network/NetworkManager.cpp");
 
-    // 可见 SSID 分支保留 >=4 次重试（弱信号容忍）
+    // 初始化入口必须启动统一异步状态机，而非直接同步预扫描。
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("MAX_WIFI_RETRIES = ssidVisible ? 4 : 2") != std::string::npos,
-        "visible SSID must keep 4 retries, invisible fast-fails with 2");
-    // 不可见 SSID 分支使用短超时（<=10s/次），不再阻塞 connectTimeout(20s)
+        content.find("startBootStaRetryScan()") != std::string::npos &&
+        content.find("WiFi.scanNetworks(false, true)") == std::string::npos,
+        "boot candidate scan must be asynchronous and contain no blocking scan");
+    size_t initStart = content.find("bool FBNetworkManager::connectToWiFiBlocking()");
+    size_t initEnd = content.find("void FBNetworkManager::disconnectWiFi()", initStart);
+    TEST_ASSERT_TRUE_MESSAGE(initStart != std::string::npos && initEnd != std::string::npos,
+        "STA initialization hook not found");
+    std::string initBlock = content.substr(initStart, initEnd - initStart);
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("perAttemptTimeoutMs = ssidVisible ? (uint32_t)wifiConfig.connectTimeout : 6000UL") != std::string::npos,
-        "invisible SSID must use 6s per-attempt timeout (fast-fail)");
-    // 连接前必须先做一次预扫描判定 SSID 可见性
-    TEST_ASSERT_TRUE_MESSAGE(
-        content.find("WiFi.scanNetworks(false, true)") != std::string::npos,
-        "pre-scan (including hidden SSIDs) must run before blocking connect");
+        initBlock.find("while (WiFi.status()") == std::string::npos &&
+        initBlock.find("delay(") == std::string::npos &&
+        initBlock.find("return true;") != std::string::npos,
+        "STA initialization must return immediately after scheduling async scan");
 }
 
 /**
@@ -507,19 +518,23 @@ void test_source_ap_probe_prescan_fast_fail() {
         "stopAPMode call missing in AP probe");
     TEST_ASSERT_TRUE_MESSAGE(checkPos < stopApPos,
         "ssidVisible check must run BEFORE stopping AP / switching STA");
-    // 3) 预扫描必须含隐藏 SSID 且扫描后释放结果
+    // 3) 预扫描必须异步、包含隐藏 SSID，并在完成后释放结果
     TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("WiFi.scanNetworks(false, true)") != std::string::npos,
-        "AP probe pre-scan must include hidden SSIDs");
+        fnBody.find("WiFi.scanNetworks(true, true)") != std::string::npos &&
+        fnBody.find("WiFi.scanComplete()") != std::string::npos,
+        "AP probe pre-scan must be asynchronous and include hidden SSIDs");
     TEST_ASSERT_TRUE_MESSAGE(
         fnBody.find("WiFi.scanDelete()") != std::string::npos,
         "AP probe pre-scan must release scan results");
-    // 4) scanNetworks 会把纯 AP 切成 APSTA（enableSTA 副作用），必须用
-    //    WiFiModeGuard RAII 守卫在作用域结束时自动恢复纯 AP，避免 STA 残留
-    //    持续抽干 DRAM 跌破 tcp_accept 门控
+    // 4) 异步扫描跨多个 update tick，完成/失败路径必须显式关闭 scan 临时
+    //    启用的 STA，恢复纯 AP。
     TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("WiFiModeGuard modeGuard(\"AP-probe-scan\")") != std::string::npos,
-        "AP probe must use WiFiModeGuard RAII to restore pure AP after scan (scanNetworks flips AP->APSTA)");
+        fnBody.find("WiFi.enableSTA(false)") != std::string::npos,
+        "Async AP probe must explicitly restore pure AP after scan (scanNetworks flips AP->APSTA)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("while (") == std::string::npos &&
+        fnBody.find("delay(") == std::string::npos,
+        "AP probe must not block network_update with polling loops or delays");
 
     // 5) 探测失败路径必须用 WiFi.disconnect(true, true) 关闭 STA 接口，
     //    而非 disconnect(false)。仅断 AP 不断 STA 则 lwIP 缓冲驻留不回收，
@@ -613,10 +628,11 @@ void test_source_scan_delete_called_after_scan() {
 }
 
 /**
- * @brief 连接失败时输出频段诊断
+ * @brief 异步开机连接失败路径不能调用同步频段扫描诊断。
+ * 频段诊断函数仍由 WiFiManager 单独提供，避免在 network_update 中再次阻塞。
  */
 void test_source_connect_failure_diagnoses_band() {
-    TestLog::testStart("Source: connectToWiFiBlocking() diagnoses band on failure");
+    TestLog::testStart("Source: async boot failure path avoids blocking band diagnosis");
 
     std::string content = readSrcFile("src/network/NetworkManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
@@ -626,22 +642,16 @@ void test_source_connect_failure_diagnoses_band() {
     TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
         "connectToWiFiBlocking() not found");
 
-    std::string fnBody = content.substr(pos, 12000);
+    size_t end = content.find("void FBNetworkManager::disconnectWiFi()", pos);
+    TEST_ASSERT_TRUE_MESSAGE(end != std::string::npos,
+        "connectToWiFiBlocking() end not found");
+    std::string fnBody = content.substr(pos, end - pos);
 
-    // 验证在失败路径上调用了频段诊断
     TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("diagnoseBandMismatch") != std::string::npos,
-        "connectToWiFiBlocking must call diagnoseBandMismatch on failure");
-
-    // 验证输出了 WiFi 状态码可读字符串
-    TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("wifiStatusToString") != std::string::npos,
-        "connectToWiFiBlocking must output WiFi status as human-readable string");
-
-    // 验证输出了 DRAM 水位
-    TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("DRAM free") != std::string::npos,
-        "connectToWiFiBlocking must log DRAM free bytes on failure");
+        fnBody.find("startBootStaRetryScan()") != std::string::npos &&
+        fnBody.find("diagnoseBandMismatch") == std::string::npos &&
+        fnBody.find("WiFi.scanNetworks(false, true)") == std::string::npos,
+        "async boot initialization must not invoke a synchronous band scan on failure");
 }
 
 /**
@@ -737,13 +747,13 @@ static bool shouldRebootForApFallback(bool autoReconnect, bool connecting, bool 
 void test_sta_lost_reboot_threshold() {
     TestLog::testStart("STA lost watchdog: reboot only after threshold, not on transient drop");
 
-    const unsigned long threshold = 60000UL;    // 1 分钟，与 STA_LOST_REBOOT_MS 一致
+    const unsigned long threshold = 300000UL;   // 5 分钟，与 STA_LOST_REBOOT_MS 一致
     const unsigned long start = 1000000UL;     // 掉线起点
 
-    // 掉线 30 秒（30000ms < 60000ms）：不重启
+    // 弱信号或 Mesh 漫游造成的 2 分钟掉线不应重启
     TEST_ASSERT_FALSE_MESSAGE(
-        shouldRebootForApFallback(true, false, false, true, start, start + 30000UL, threshold, false),
-        "Transient 30s drop must NOT trigger reboot");
+        shouldRebootForApFallback(true, false, false, true, start, start + 120000UL, threshold, false),
+        "Transient 2min drop must NOT trigger reboot");
 
     // 恰好达到阈值（>=）：重启
     TEST_ASSERT_TRUE_MESSAGE(
@@ -762,7 +772,7 @@ void test_sta_lost_reboot_threshold() {
 void test_sta_lost_reboot_resets_on_reconnect() {
     TestLog::testStart("STA lost watchdog: reconnect resets timer, no reboot");
 
-    const unsigned long threshold = 60000UL;
+    const unsigned long threshold = 300000UL;
 
     // disconnectedSince==0 表示已重连/未计时，即使 now 很大也不重启
     TEST_ASSERT_FALSE_MESSAGE(
@@ -779,7 +789,7 @@ void test_sta_lost_reboot_resets_on_reconnect() {
 void test_sta_lost_reboot_guards() {
     TestLog::testStart("STA lost watchdog: guarded by scheduled/mode/connecting flags");
 
-    const unsigned long threshold = 60000UL;
+    const unsigned long threshold = 300000UL;
     const unsigned long start = 1000000UL;
     const unsigned long farNow = start + threshold + 10000UL;
 
@@ -851,6 +861,28 @@ void test_source_sta_lost_reboots_for_ap_fallback() {
 }
 
 /**
+ * @brief Source regression: once AP fallback is available, retry STA by probe
+ *        without periodically rebooting the whole device.
+ */
+void test_source_ap_fallback_uses_probe_without_periodic_reboot() {
+    TestLog::testStart("Source: AP fallback remains stable while STA probes continue");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    std::string header = readSrcFile("include/network/NetworkManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "Failed to read NetworkManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("handleApModeWifiProbe()") != std::string::npos,
+        "AP fallback must keep the non-rebooting STA probe path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("AP fallback stuck too long") == std::string::npos,
+        "AP fallback must not force periodic whole-device reboots");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("AP_STUCK_REBOOT_MS") == std::string::npos,
+        "obsolete periodic AP reboot threshold must stay removed");
+}
+
+/**
  * @brief 源码回归：头文件定义阈值常量与成员
  */
 void test_source_sta_lost_reboot_constants_defined() {
@@ -862,23 +894,214 @@ void test_source_sta_lost_reboot_constants_defined() {
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("STA_LOST_REBOOT_MS") != std::string::npos,
         "NetworkManager.h must define STA_LOST_REBOOT_MS constant");
-    // 阈值必须为 1 分钟（60000ms）：STA 连不上尽快回退 AP 供用户配置
+    // 5 分钟持续失联才重启：覆盖指数退避和 Mesh/弱信号短时波动
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("STA_LOST_REBOOT_MS = 60000") != std::string::npos,
-        "STA_LOST_REBOOT_MS must be 60000 (1 minute) per WiFi management requirement");
+        content.find("STA_LOST_REBOOT_MS = 300000") != std::string::npos,
+        "STA_LOST_REBOOT_MS must be 300000 (5 minutes) to avoid transient-drop reboot loops");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("_staDisconnectedSince") != std::string::npos,
         "NetworkManager.h must declare _staDisconnectedSince member");
 }
 
 /**
- * @brief 源码回归：AP→STA 恢复必须用 restartMDNS 重新绑定接口
- * 背景：mDNS 在 AP 模式已启动（mdnsStarted=true，绑定 192.168.4.1），若直接调用
- *       startMDNS 会命中提前返回而不做任何事，响应器残留在已失效的 AP 接口，
- *       导致 STA 已连接但 fastbee.local 无法解析。
+ * @brief 网关 ICMP 失败最终只触发 STA 重连，不切 AP/不重启。
+ */
+void test_source_gateway_ping_failure_is_advisory() {
+    TestLog::testStart("Source: gateway ping recovery is STA-only with bounded unknown baseline");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t probeBlockStart = content.find("// 网关 ICMP 使用会话内成功基线");
+    size_t probeBlockEnd = content.find("// 处理连接超时", probeBlockStart);
+    TEST_ASSERT_TRUE_MESSAGE(probeBlockStart != std::string::npos &&
+                             probeBlockEnd != std::string::npos,
+        "Gateway observation block not found");
+    std::string probeBlock = content.substr(probeBlockStart, probeBlockEnd - probeBlockStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("const uint8_t recoveryThreshold = _gwProbeEverSucceeded") != std::string::npos &&
+        probeBlock.find("GW_PROBE_RECOVERY_THRESHOLD") != std::string::npos,
+        "Gateway recovery must retain a stricter threshold for confirmed sessions");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD") != std::string::npos &&
+        probeBlock.find("reconnecting STA without reboot or AP fallback") != std::string::npos,
+        "Unknown-baseline data-plane loss must recover with STA only, never AP fallback");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("probeResultReady") != std::string::npos &&
+        probeBlock.find("if (!probeResultReady)") != std::string::npos,
+        "Starting or waiting for an async ping must not clear the consecutive failure count");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("WiFi.disconnect(false)") != std::string::npos &&
+        probeBlock.find("ESP.restart()") == std::string::npos,
+        "A confirmed gateway path loss must reconnect STA without rebooting the device");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("_gwProbeEverSucceeded ? \"confirmed\" : \"unknown\"") != std::string::npos &&
+        probeBlock.find("pending STA-only recovery") != std::string::npos,
+        "Unanswered gateway probes must remain observable while bounded STA recovery is pending");
+
+    size_t zombieBlockStart = content.find("// WiFi 僵尸连接检测");
+    size_t zombieBlockEnd = content.find("// 清理冲突缓存", zombieBlockStart);
+    TEST_ASSERT_TRUE_MESSAGE(zombieBlockStart != std::string::npos &&
+                             zombieBlockEnd != std::string::npos,
+        "UDP zombie recovery block not found");
+    std::string zombieBlock = content.substr(zombieBlockStart, zombieBlockEnd - zombieBlockStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        zombieBlock.find("if (!isConnected)") != std::string::npos &&
+        zombieBlock.find("zombieFailCount = 0") != std::string::npos,
+        "Zombie failure count must reset while STA is disconnected");
+    TEST_ASSERT_TRUE_MESSAGE(
+        zombieBlock.find("WiFi.disconnect(false)") != std::string::npos,
+        "Repeated local UDP send failure must retain WiFi self-healing");
+
+    const std::string header = readSrcFile("include/network/NetworkManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("GW_PROBE_INTERVAL_MS = 60000") != std::string::npos &&
+        header.find("GW_PROBE_RECOVERY_THRESHOLD = 5") != std::string::npos &&
+        header.find("GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD = 5") != std::string::npos,
+        "Gateway ICMP recovery must tolerate transient/router-filtered probes (60s x 5)");
+}
+
+/**
+ * @brief 驱动重建后不能再用 disconnect(true) 关闭刚启动的 STA。
+ */
+void test_source_sta_driver_restart_keeps_radio_started() {
+    TestLog::testStart("Source: STA restart does not turn radio off before begin");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t retryStart = content.find("const uint32_t bootConnectTimeout");
+    size_t retryEnd = content.find("#else", retryStart);
+    TEST_ASSERT_TRUE_MESSAGE(retryStart != std::string::npos && retryEnd != std::string::npos,
+        "Non-blocking boot retry block not found");
+    std::string retryBlock = content.substr(retryStart, retryEnd - retryStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        retryBlock.find("WiFi.disconnect(true)") == std::string::npos,
+        "Boot retry must not turn WiFi off immediately before begin");
+    TEST_ASSERT_TRUE_MESSAGE(
+        retryBlock.find("delay(") == std::string::npos,
+        "Boot retry timeout path must not block on driver or scan delays");
+    TEST_ASSERT_TRUE_MESSAGE(
+        retryBlock.find("startBootStaRetryScan()") != std::string::npos &&
+        retryBlock.find("WiFi.scanNetworks(false, true)") == std::string::npos,
+        "The first boot retry must launch an asynchronous candidate scan");
+    TEST_ASSERT_TRUE_MESSAGE(
+        retryBlock.find("wifiConfig.connectTimeout < 45000UL") != std::string::npos,
+        "Non-blocking boot connection must allow DHCP grace time on busy multi-AP networks");
+    size_t scanStart = content.find("void FBNetworkManager::startBootStaRetryScan()");
+    size_t scanEnd = content.find("void FBNetworkManager::handleBootStaRetryScan()", scanStart);
+    TEST_ASSERT_TRUE_MESSAGE(scanStart != std::string::npos && scanEnd != std::string::npos,
+        "Async boot retry scan starter not found");
+    std::string scanBlock = content.substr(scanStart, scanEnd - scanStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        scanBlock.find("WiFi.mode(WIFI_MODE_NULL)") != std::string::npos &&
+        scanBlock.find("DRIVER_NULL_SETTLE") != std::string::npos &&
+        scanBlock.find("Async boot retry driver reset started") != std::string::npos,
+        "Boot retry must start the driver reset state asynchronously");
+
+    size_t scanHandleStart = scanEnd;
+    size_t scanHandleEnd = content.find("void FBNetworkManager::update()", scanHandleStart);
+    TEST_ASSERT_TRUE_MESSAGE(scanHandleEnd != std::string::npos,
+        "Async boot retry scan handler block not found");
+    std::string scanHandleBlock = content.substr(scanHandleStart, scanHandleEnd - scanHandleStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        scanHandleBlock.find("WiFi.mode(WIFI_MODE_STA)") != std::string::npos &&
+        scanHandleBlock.find("WiFi.setAutoReconnect(false)") != std::string::npos &&
+        scanHandleBlock.find("DRIVER_STA_SETTLE") != std::string::npos &&
+        scanHandleBlock.find("WiFi.scanNetworks(true, true)") != std::string::npos &&
+        scanHandleBlock.find("WIFI_SCAN_FAILED") != std::string::npos &&
+        scanHandleBlock.find("WiFi.scanComplete()") != std::string::npos &&
+        scanHandleBlock.find("WiFi.scanDelete()") != std::string::npos &&
+        scanHandleBlock.find("memcmp(_bootStaRetryCandidates[j].bssid, bssid, 6) == 0") != std::string::npos &&
+        scanHandleBlock.find("memcmp(previous.bssid, current.bssid, 6) > 0") != std::string::npos,
+        "Async boot retry handler must consume, release, de-duplicate and stably sort scan results");
+
+    size_t launchStart = content.find("void FBNetworkManager::launchBootStaRetryConnection()");
+    size_t launchEnd = content.find("void FBNetworkManager::startBootStaRetryScan()", launchStart);
+    TEST_ASSERT_TRUE_MESSAGE(launchStart != std::string::npos && launchEnd != std::string::npos,
+        "Async boot retry connection launcher not found");
+    std::string launchBlock = content.substr(launchStart, launchEnd - launchStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        launchBlock.find("using automatic AP selection") != std::string::npos &&
+        launchBlock.find("WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str())") != std::string::npos &&
+        launchBlock.find("STA boot retry pinned BSSID") != std::string::npos &&
+        launchBlock.find("(_bootConnectRetries - 1) % _bootStaRetryCandidateCount") != std::string::npos,
+        "The first boot retry must be automatic, then rotate distinct BSSID candidates");
+
+    size_t blockingStart = content.find("bool FBNetworkManager::connectToWiFiBlocking()");
+    size_t blockingEnd = content.find("void FBNetworkManager::disconnectWiFi()", blockingStart);
+    TEST_ASSERT_TRUE_MESSAGE(blockingStart != std::string::npos &&
+                             blockingEnd != std::string::npos,
+        "Blocking STA connection block not found");
+    std::string blockingBlock = content.substr(blockingStart, blockingEnd - blockingStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        blockingBlock.find("startBootStaRetryScan()") != std::string::npos &&
+        blockingBlock.find("WiFi.scanNetworks(false, true)") == std::string::npos &&
+        blockingBlock.find("while (WiFi.status()") == std::string::npos &&
+        blockingBlock.find("delay(") == std::string::npos,
+        "The compatibility initialization path must schedule async scanning without blocking");
+
+    size_t probeStart = content.find("void FBNetworkManager::handleApModeWifiProbe()");
+    size_t probeEnd = content.find("void FBNetworkManager::triggerEvent", probeStart);
+    TEST_ASSERT_TRUE_MESSAGE(probeStart != std::string::npos && probeEnd != std::string::npos,
+        "AP recovery probe block not found");
+    std::string probeBlock = content.substr(probeStart, probeEnd - probeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("memcmp(_apProbeCandidates[j].bssid") != std::string::npos,
+        "AP recovery candidates must de-duplicate repeated BSSID scan records");
+    size_t firstBegin = probeBlock.find("WiFi.begin(");
+    TEST_ASSERT_TRUE_MESSAGE(firstBegin != std::string::npos,
+        "AP recovery probe must start a STA connection");
+    std::string probePrepareBlock = probeBlock.substr(0, firstBegin);
+    TEST_ASSERT_TRUE_MESSAGE(
+        probePrepareBlock.find("WiFi.disconnect(true, true);") == std::string::npos &&
+        probeBlock.find("WiFi.setAutoReconnect(false)") != std::string::npos &&
+        probeBlock.find("WiFi.mode(WIFI_MODE_NULL)") != std::string::npos,
+        "AP recovery must disable Arduino reconnect and reset STA before BSSID changes");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("usePinnedCandidate =") != std::string::npos &&
+        probeBlock.find("(_apProbeAttempt - 1) % _apProbeCandidateCount") != std::string::npos &&
+        probeBlock.find("ap.channel, ap.bssid") != std::string::npos,
+        "AP recovery must use automatic selection first, then rotate sorted BSSID candidates");
+
+    std::string wifiManager = readSrcFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wifiManager.find("WiFi.setAutoReconnect(false)") != std::string::npos &&
+        wifiManager.find("WiFi.setAutoReconnect(true)") == std::string::npos,
+        "WiFiManager must leave reconnect ownership to FBNetworkManager");
+}
+
+/**
+ * @brief 有 STA 凭据且关闭自动故障转移时，失败只能留在 STA 重试，不能切 AP。
+ */
+void test_source_sta_only_policy_disables_ap_fallback() {
+    TestLog::testStart("Source: STA-only recovery never switches to AP when auto failover is disabled");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("STA retries exhausted; AP fallback disabled, continuing STA-only recovery") != std::string::npos &&
+        content.find("STA reconnect budget exhausted; AP fallback disabled, continuing STA-only recovery") != std::string::npos,
+        "Boot and reconnect exhaustion must have explicit STA-only branches");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("wifiConfig.autoFailover &&") != std::string::npos,
+        "STA lost watchdog reboot/AP fallback must honor autoFailover");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("STA connection failed; AP fallback disabled, keeping STA retry mode") != std::string::npos,
+        "Blocking initialization failure must keep STA retry mode when AP fallback is disabled");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("STA_ONLY_RETRY_INTERVAL_MS") != std::string::npos &&
+        content.find("backoffInterval = max(backoffInterval, STA_ONLY_RETRY_INTERVAL_MS)") != std::string::npos,
+        "STA-only recovery must enforce a long retry interval to avoid authentication storms");
+}
+
+/**
+ * @brief 源码回归：AP→STA 恢复必须在 WiFi 接口切换前停止 mDNS，
+ *        切换完成后再启动，避免 mDNS 后台任务访问已销毁的 AP netif。
  */
 void test_source_ap_recovery_restarts_mdns() {
-    TestLog::testStart("Source: AP->STA recovery uses restartMDNS (not startMDNS)");
+    TestLog::testStart("Source: AP->STA recovery stops mDNS before driver switch");
 
     std::string content = readSrcFile("src/network/NetworkManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
@@ -887,6 +1110,15 @@ void test_source_ap_recovery_restarts_mdns() {
     size_t fnPos = content.find("FBNetworkManager::handleApModeWifiProbe()");
     TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
         "handleApModeWifiProbe() function not found");
+
+    // 成功分支前必须先停止 mDNS，再切换 WiFi 驱动。
+    size_t probeLogPos = content.find("[WiFi-AP] Probing WiFi", fnPos);
+    size_t stopPos = content.find("dnsManager->stopMDNS()", probeLogPos);
+    size_t modeResetPos = content.find("WiFi.mode(WIFI_MODE_NULL)", probeLogPos);
+    TEST_ASSERT_TRUE_MESSAGE(stopPos != std::string::npos && modeResetPos != std::string::npos,
+        "AP->STA recovery must stop mDNS before switching WiFi driver mode");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos < modeResetPos,
+        "mDNS must stop before WiFi.mode(WIFI_MODE_NULL)");
 
     // 定位成功分支（WiFi 已恢复，切回 STA）中的 enableMDNS 处理块
     size_t recoveredPos = content.find("WiFi recovered", fnPos);
@@ -901,15 +1133,50 @@ void test_source_ap_recovery_restarts_mdns() {
 
     std::string recoveryBlock = content.substr(mdnsIfPos, 120);
 
-    // 必须调用 restartMDNS 重新绑定到 STA 接口
+    // mDNS 已提前停止，恢复后应在 STA netif 就绪时重新启动
     TEST_ASSERT_TRUE_MESSAGE(
-        recoveryBlock.find("->restartMDNS") != std::string::npos,
-        "AP->STA recovery must call dnsManager->restartMDNS to rebind mDNS on STA interface");
+        recoveryBlock.find("->startMDNS") != std::string::npos,
+        "AP->STA recovery must call dnsManager->startMDNS after STA interface is ready");
 
-    // 禁止在恢复块里直接调用 startMDNS（会因 mdnsStarted 提前返回，mDNS 不会重新绑定）
+    // 恢复块无需 restartMDNS；stop/start 的顺序已在接口切换前后明确拆开。
     TEST_ASSERT_TRUE_MESSAGE(
-        recoveryBlock.find("->startMDNS") == std::string::npos,
-        "AP->STA recovery must NOT call startMDNS directly (early-returns when already started)");
+        recoveryBlock.find("->restartMDNS") == std::string::npos,
+        "AP->STA recovery must not restart mDNS while the WiFi driver is transitioning");
+}
+
+/**
+ * @brief 源码回归：所有 STA/AP 回退入口统一在切换 Wi-Fi 驱动前停止 mDNS。
+ * 经典 ESP32 的 mDNS 任务可能仍持有旧 STA netif；若直接切到 AP，
+ * esp_netif_is_netif_up() 会在后台任务中解引用失效指针并触发 LoadProhibited。
+ */
+void test_source_ap_fallback_stops_mdns_before_driver_switch() {
+    TestLog::testStart("Source: AP fallback stops mDNS before WiFi mode switch");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t fnPos = content.find("bool FBNetworkManager::startAPMode()");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "FBNetworkManager::startAPMode() not found");
+    size_t fnEnd = content.find("\nvoid FBNetworkManager::stopAPMode()", fnPos);
+    if (fnEnd == std::string::npos) fnEnd = fnPos + 1200;
+    std::string fnBody = content.substr(fnPos, fnEnd - fnPos);
+
+    size_t mdnsGuard = fnBody.find("isMDNSStarted()");
+    size_t stopPos = fnBody.find("stopMDNS()", mdnsGuard);
+    size_t wifiSwitch = fnBody.find("wifiManager->startAPMode()");
+    TEST_ASSERT_TRUE_MESSAGE(mdnsGuard != std::string::npos &&
+                             stopPos != std::string::npos &&
+                             wifiSwitch != std::string::npos,
+        "startAPMode must guard and stop mDNS before switching WiFi mode");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos < wifiSwitch,
+        "mDNS must stop before WiFiManager::startAPMode() changes the driver mode");
+
+    size_t restartPos = fnBody.find("dnsManager->startMDNS");
+    TEST_ASSERT_TRUE_MESSAGE(restartPos != std::string::npos && restartPos > wifiSwitch,
+        "startAPMode must restart mDNS after the AP interface is ready");
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("delay(200)", stopPos) != std::string::npos,
+        "mDNS shutdown must include a settle window before netif replacement");
 }
 
 /**
@@ -1011,6 +1278,27 @@ void test_source_ap_mode_disables_wifi_sleep() {
         "setSleep(false) must come AFTER softAP() to ensure AP radio is configured first");
 }
 
+/**
+ * @brief 源码回归：轻量 /api/batch 系统信息必须携带内存护栏等级。
+ * 仪表盘使用该批量接口，缺少 guardLevel 会导致前端无法提前降频，
+ * 只能等重型请求返回 503 后才进入保护提示。
+ */
+void test_source_batch_system_info_reports_memory_guard() {
+    TestLog::testStart("Source: compact batch system info reports memory guard level");
+
+    std::string content = readSrcFile("src/network/handlers/BatchRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read BatchRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("core/FastBeeFramework.h") != std::string::npos,
+        "BatchRouteHandler must access the framework health monitor");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("systems/HealthMonitor.h") != std::string::npos,
+        "BatchRouteHandler must include HealthMonitor for guard level reporting");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("memory[\"guardLevel\"]") != std::string::npos,
+        "Compact system info must expose memory.guardLevel");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("monitor->getMemoryGuardLevel()") != std::string::npos,
+        "Compact system info must read the current guard level");
+}
+
 void test_wifi_network_group() {
     // 频段检测测试
     RUN_TEST(test_channel_to_band_classification);
@@ -1045,13 +1333,19 @@ void test_wifi_network_group() {
     RUN_TEST(test_sta_lost_reboot_resets_on_reconnect);
     RUN_TEST(test_sta_lost_reboot_guards);
     RUN_TEST(test_source_sta_lost_reboots_for_ap_fallback);
+    RUN_TEST(test_source_ap_fallback_uses_probe_without_periodic_reboot);
     RUN_TEST(test_source_sta_lost_reboot_constants_defined);
+    RUN_TEST(test_source_gateway_ping_failure_is_advisory);
+    RUN_TEST(test_source_sta_driver_restart_keeps_radio_started);
+    RUN_TEST(test_source_sta_only_policy_disables_ap_fallback);
 
     // AP→STA 恢复重新绑定 mDNS（fastbee.local 在 STA 下可解析）
     RUN_TEST(test_source_ap_recovery_restarts_mdns);
+    RUN_TEST(test_source_ap_fallback_stops_mdns_before_driver_switch);
     RUN_TEST(test_source_mdns_rebind_premise_intact);
     RUN_TEST(test_source_interface_switch_restarts_mdns);
 
     // AP 模式省电关闭回归保护
     RUN_TEST(test_source_ap_mode_disables_wifi_sleep);
+    RUN_TEST(test_source_batch_system_info_reports_memory_guard);
 }

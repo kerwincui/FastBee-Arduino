@@ -284,6 +284,91 @@ test.describe('Suite-04: 设备配置', () => {
     await expect(authPage.locator('#dev-ntp-success')).not.toHaveClass(/is-hidden/);
   });
 
+  test('DEV-057: 进入NTP页自动同步并显示服务器地址', async ({ authPage, navigateTo }) => {
+    const pageErrors: string[] = [];
+    const consoleErrors: string[] = [];
+    authPage.on('pageerror', error => pageErrors.push(error.message));
+    authPage.on('console', message => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    await navigateTo('device');
+
+    const syncResponse = authPage.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.request().method() === 'POST'
+        && url.pathname === '/api/device/time/sync';
+    }, { timeout: 20_000 }).catch(() => null);
+
+    await authPage.click('.config-tab[data-tab="dev-ntp"]');
+    await expect(authPage.locator('#dev-ntp').first()).toHaveClass(/active/, { timeout: 5000 });
+    await expect(authPage.locator('#dev-ntp-server1').first()).toHaveValue(/.+/, { timeout: 10_000 });
+    await expect(authPage.locator('#dev-ntp-server2').first()).toHaveValue(/.+/, { timeout: 10_000 });
+
+    const response = await syncResponse;
+    expect(response, '进入 NTP 页面应触发 /api/device/time/sync').not.toBeNull();
+    expect(response!.status()).toBe(200);
+    const body = await response!.json();
+    expect(body.success).toBeTruthy();
+    expect(body.data?.synced).toBeTruthy();
+    expect(pageErrors.filter(message => /device-(config|ota)|invalid or unexpected token/i.test(message)))
+      .toEqual([]);
+    expect(consoleErrors.filter(message => /Sync device time failed|AbortError|ERR_CONNECTION_TIMED_OUT/i.test(message)))
+      .toEqual([]);
+  });
+
+  test('DEV-058: OTA页加载完整升级内容', async ({ authPage, navigateTo }) => {
+    await navigateTo('device');
+    await authPage.click('.config-tab[data-tab="dev-ota"]');
+    await expect(authPage.locator('#dev-ota').first()).toHaveClass(/active/, { timeout: 5000 });
+    await expect(authPage.locator('#device-ota-container').first()).not.toBeEmpty({ timeout: 15_000 });
+    await expect(authPage.locator('#ota-url-form').first()).toBeVisible({ timeout: 5000 });
+    await expect(authPage.locator('#ota-upload-form').first()).toBeVisible({ timeout: 5000 });
+    await expect(authPage.locator('#ota-current-version').first()).toBeVisible({ timeout: 5000 });
+
+    for (const selector of ['#ota-url-btn', '#ota-upload-btn']) {
+      const metrics = await authPage.locator(selector).first().evaluate((element) => {
+        const button = element.getBoundingClientRect();
+        const row = element.parentElement?.getBoundingClientRect();
+        return { buttonWidth: button.width, rowWidth: row?.width || 0 };
+      });
+      expect(metrics.buttonWidth).toBeGreaterThan(0);
+      expect(metrics.buttonWidth).toBeLessThan(metrics.rowWidth * 0.5);
+    }
+
+    await authPage.setViewportSize({ width: 390, height: 844 });
+    await authPage.waitForTimeout(100);
+    for (const selector of ['#ota-url-btn', '#ota-upload-btn']) {
+      const metrics = await authPage.locator(selector).first().evaluate((element) => {
+        const button = element.getBoundingClientRect();
+        const row = element.parentElement?.getBoundingClientRect();
+        return { buttonWidth: button.width, rowWidth: row?.width || 0 };
+      });
+      expect(metrics.buttonWidth).toBeLessThan(metrics.rowWidth * 0.5);
+    }
+  });
+
+  test('DEV-059: 设备配置页面中文硬编码', async ({ authPage, navigateTo }) => {
+    await navigateTo('device');
+    await expect(authPage.locator('.fb-card-title').first()).toHaveText('设备配置');
+    await expect(authPage.locator('.config-tab[data-tab="dev-ntp"]').first()).toHaveText('NTP时间');
+    await authPage.click('.config-tab[data-tab="dev-ntp"]');
+    await expect(authPage.locator('#dev-time-refresh-btn').first()).toContainText('刷新');
+    await expect(authPage.locator('#dev-time-synced').first()).not.toContainText('dc-ntp-synced');
+    await expect(authPage.locator('#dev-ntp-server1').first()).toHaveValue(/.+/);
+    await expect(authPage.locator('#dev-ntp-server2').first()).toHaveValue(/.+/);
+    for (const key of ['dc-ntp-time-format', 'dc-ntp-time-format-m', 'dc-ntp-time-format-s', 'common-refresh']) {
+      await expect(authPage.locator('body').first()).not.toContainText(key);
+    }
+
+    await authPage.click('.config-tab[data-tab="dev-ota"]');
+    await expect(authPage.locator('#ota-refresh-btn').first()).toContainText('刷新');
+    await expect(authPage.locator('#device-ota-container').first()).toContainText('固件信息');
+    await expect(authPage.locator('#ota-status-badge').first()).not.toContainText('dev-ota-ready');
+    for (const key of ['dev-ota-network-online', 'dev-ota-ready']) {
+      await expect(authPage.locator('body').first()).not.toContainText(key);
+    }
+  });
+
   // ========== 场景C~I: 高级 Tab 只读查看（合并为单测试 + test.step） ==========
 
   test('DEV-027~056: 高级Tab只读面板查看（开发/缓存/导入导出/安全/恢复/OTA）', async ({ authPage, navigateTo }) => {

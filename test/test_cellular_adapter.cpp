@@ -419,11 +419,11 @@ void test_ec801e_mqtts_uses_secure_client() {
     TEST_ASSERT_TRUE_MESSAGE(
         cell.find("#include <SSLClient.h>") != std::string::npos &&
         cell.find("new (std::nothrow) CellularSoftwareTlsClient") != std::string::npos &&
-        cell.find("setInsecure()") != std::string::npos &&
-        cell.find("setCACertBundle(nullptr)") != std::string::npos &&
+        cell.find("setInsecure()") == std::string::npos &&
+        cell.find("setCACertBundle(x509_crt_bundle_start)") != std::string::npos &&
         cell.find("prepareHandshake();") != std::string::npos &&
         cell.find("TinyGSM TCP + ESP32 mbedTLS") != std::string::npos,
-        "EC801E MQTTS must reset ESP32 software TLS to insecure/no CA bundle before every handshake");
+        "EC801E MQTTS must attach the built-in CA bundle before every handshake");
     std::string secureBody = extractFuncBody(cell, "CellularAdapter::getSecureClient()", 500);
     TEST_ASSERT_TRUE_MESSAGE(!secureBody.empty(), "getSecureClient() must exist");
     size_t qsslPos = secureBody.find("if (_qsslClient) return static_cast<Client*>(_qsslClient)");

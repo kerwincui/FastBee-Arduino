@@ -169,6 +169,36 @@ void test_guard_level_uses_internal_dram_budgets() {
     TestLog::testEnd(true);
 }
 
+void test_guard_level_uses_dynamic_critical_floor() {
+    TestLog::testStart("MemoryBudget: Dynamic Critical DRAM Floor");
+
+    using FastBee::MemoryBudget;
+    using FastBee::MemoryPressureLevel;
+
+    // ESP32-F4R0 full peripheral bundle observed this stable baseline on-device.
+    // It must remain SEVERE (controlled degradation), not CRITICAL/rebooting.
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::SEVERE),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForFreeDram(14232U, 8192U)));
+
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::CRITICAL),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForFreeDram(8191U, 8192U)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::SEVERE),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForFreeDram(8192U, 8192U)));
+
+    // The PSRAM tier retains its stricter 12KB floor.
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::CRITICAL),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForFreeDram(12287U, 12288U)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::SEVERE),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForFreeDram(12288U, 12288U)));
+
+    TestLog::testEnd(true);
+}
+
 // ========== Task 4 内存池管理优化测试 ==========
 
 /**
@@ -521,6 +551,7 @@ void test_memory_budget_group() {
     RUN_TEST(test_mqtts_field_observed_ethernet_restore_budget);
     RUN_TEST(test_mqtts_reconnect_task_stack_budget);
     RUN_TEST(test_guard_level_uses_internal_dram_budgets);
+    RUN_TEST(test_guard_level_uses_dynamic_critical_floor);
     // Task 4: 内存池管理优化测试
     RUN_TEST(test_modbus_buffer_pool_size);
     RUN_TEST(test_mqtt_cmd_queue_memory_limit);

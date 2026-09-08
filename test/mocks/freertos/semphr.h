@@ -6,6 +6,7 @@
 typedef void* SemaphoreHandle_t;
 
 inline SemaphoreHandle_t xSemaphoreCreateMutex() { return nullptr; }
+inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() { return reinterpret_cast<void*>(1); }
 inline SemaphoreHandle_t xSemaphoreCreateBinary() { return nullptr; }
 inline BaseType_t xSemaphoreTake(SemaphoreHandle_t xSemaphore,
                                   TickType_t xTicksToWait)

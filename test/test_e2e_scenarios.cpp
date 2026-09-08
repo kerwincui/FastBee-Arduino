@@ -1020,7 +1020,7 @@ void test_e2e_all_chip_all_network_combination() {
     ChipEnv chips[] = {
         {"ESP32-F4R0",    320000, 0},
         {"ESP32-S3-F8R0",  320000, 0},
-        {"ESP32-S3-F8R4",  320000, 4*1024*1024},
+        {"ESP32-S3-F8R8",  320000, 8*1024*1024},
         {"ESP32-S3-F16R8", 320000, 8*1024*1024},
     };
 

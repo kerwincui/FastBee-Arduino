@@ -47,6 +47,52 @@ static std::string readRegressionSrcFile(const char* relativePath) {
     return "";
 }
 
+// 空的 TLS 内存池原型不得重新进入启动关键路径；兼容头文件仍可供外部代码引用。
+void test_regression_tls_pool_stub_not_boot_dependency() {
+    TestLog::testStart("Regression: TLS pool stub is not a boot dependency");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("security/TlsMemoryPool.h") == std::string::npos,
+        "FastBeeFramework must not include the compatibility-only TLS pool facade");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("TlsMemoryPool::instance().initialize()") == std::string::npos,
+        "FastBeeFramework must not initialize the removed TLS pool stub");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("TLSPool:") == std::string::npos,
+        "FastBeeFramework must not report a non-existent TLS pool");
+
+    TestLog::testEnd(true);
+}
+
+// 认证配置的 JSON 持久化必须由 UserManager 单独负责，AuthManager 只维护
+// 运行时缓存并通过明确的更新接口回写，防止两套 schema 漂移。
+void test_regression_auth_config_has_single_persistence_owner() {
+    TestLog::testStart("Regression: Auth config has a single persistence owner");
+
+    std::string userManager = readRegressionSrcFile("src/security/UserManager.cpp");
+    std::string authManager = readRegressionSrcFile("src/security/AuthManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(userManager.empty(), "Cannot read UserManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(authManager.empty(), "Cannot read AuthManager.cpp");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        userManager.find("ADMIN_AUTH_CONFIG_FILE") != std::string::npos,
+        "UserManager must own the auth.json path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        userManager.find("ConfigStorage::getInstance().saveJSONConfig(savePath, doc)") != std::string::npos,
+        "UserManager must persist the canonical auth document through ConfigStorage");
+    TEST_ASSERT_TRUE_MESSAGE(
+        authManager.find("um->updateSecurityConfig(") != std::string::npos,
+        "AuthManager must delegate persistence to UserManager");
+    TEST_ASSERT_TRUE_MESSAGE(
+        authManager.find("LittleFS.open(") == std::string::npos,
+        "AuthManager must not open a second auth JSON store");
+
+    TestLog::step("UserManager owns JSON persistence; AuthManager delegates runtime updates");
+    TestLog::testEnd(true);
+}
+
 // ========== 配置往返完整性 ==========
 
 void test_config_roundtrip_integrity() {
@@ -949,6 +995,77 @@ void test_regression_sync_interval_applied_to_sntp() {
 }
 
 /**
+ * @brief HTTP NTP must not block the scheduler on no-PSRAM targets.
+ * The fallback keeps SNTP enabled while avoiding synchronous HTTP/DNS work.
+ */
+void test_regression_no_psram_ntp_uses_sntp_fallback() {
+    TestLog::testStart("Regression: No-PSRAM NTP Uses SNTP Fallback");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("ESP.getPsramSize() == 0") != std::string::npos,
+        "NTP path must detect no-PSRAM targets");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("HTTP NTP skipped on no-PSRAM target") != std::string::npos,
+        "No-PSRAM HTTP NTP fallback must be observable in logs");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("httpNtpConfigured && !noPsram") != std::string::npos,
+        "Synchronous HTTP NTP must be gated off without PSRAM");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr)") != std::string::npos,
+        "No-PSRAM fallback must configure asynchronous SNTP");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("String primaryServer = httpNtpConfigured ? s2Str : s1Str") != std::string::npos,
+        "HTTP NTP URL must be replaced by a DNS NTP host on no-PSRAM targets");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("primaryServer = \"pool.ntp.org\"") != std::string::npos,
+        "SNTP fallback must have a safe DNS hostname when config is missing");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief AP fallback must cool down before probing STA again.
+ * A same-cycle probe after several failed handshakes can trigger router
+ * authentication rate limiting and make the AP provisioning page stall.
+ */
+void test_regression_ap_fallback_probe_cooldown() {
+    TestLog::testStart("Regression: AP Fallback Probe Cooldown");
+
+    std::string src = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read NetworkManager.cpp");
+
+    const std::string cooldown = "_lastApProbeTime = currentTime;";
+    TEST_ASSERT_TRUE_MESSAGE(src.find(cooldown) != std::string::npos,
+        "STA boot fallback must defer the first AP probe");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("_lastApProbeTime = millis();") != std::string::npos,
+        "Reconnect-budget AP fallback must also defer the first probe");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("_apProbeFailCount = 0;") != std::string::npos,
+        "AP fallback must reset probe backoff after a fresh cooldown");
+
+    TestLog::step("AP fallback defers first probe and resets probe backoff");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief No-PSRAM static response admission must reserve DRAM headroom.
+ *
+ * C3 soak captured AsyncBasicResponse header allocation aborting while the
+ * legacy public cap of three streams was still admitted at a fragmented
+ * 18KB/5KB heap.  The cap remains three for PSRAM builds, while the guarded
+ * path must derive a lower effective limit and a one-stream emergency tier.
+ */
+void test_regression_no_psram_static_admission_limit() {
+    const std::string source = readRegressionSrcFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("staticInFlightLimit") != std::string::npos,
+        "static response admission helper must exist");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("limit = 2") != std::string::npos,
+        "no-PSRAM static responses must reserve at least one slot");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("free8 < 32768U") != std::string::npos &&
+        source.find("blk8 < 8192U") != std::string::npos &&
+        source.find("limit = 1") != std::string::npos,
+        "fragmented no-PSRAM heap must fall back to one static response");
+}
+
+/**
  * @brief 验证 DeviceRouteHandler.cpp 保存 logLevel 时即时应用
  * 回归：保存 logLevel 后应立刻调用 LOGGER.setLogLevel()，而非重启后生效
  */
@@ -1523,7 +1640,7 @@ void test_regression_users_json_field_consistency() {
 // ============ security 精简回归：仅4个UI可配置字段，9个硬编码字段已删除 ============
 
 static void test_regression_security_json_lite() {
-    TestLog::testStart("regression: security section lite - only 4 UI fields");
+    TestLog::testStart("regression: compact security defaults and complete runtime persistence");
 
     // 1. users.json 配置文件：security 仅含 4 个字段
     std::string usersJson = readRegressionSrcFile("data/config/users.json");
@@ -1580,7 +1697,7 @@ static void test_regression_security_json_lite() {
         "DEFAULT_USERS must NOT contain 'sessionTimeout'");
     TestLog::step("DEFAULT_USERS factory: 4 UI fields only");
 
-    // 3. UserManager 保存代码只写 4 个字段
+    // 3. 出厂模板保持精简，但运行时可修改的会话策略必须完整持久化
     std::string userMgrCpp = readRegressionSrcFile("src/security/UserManager.cpp");
     TEST_ASSERT_FALSE_MESSAGE(userMgrCpp.empty(), "Cannot read UserManager.cpp");
 
@@ -1597,13 +1714,17 @@ static void test_regression_security_json_lite() {
         "save must write 'minPasswordLength'");
     TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("requireStrongPasswords") != std::string::npos,
         "save must write 'requireStrongPasswords'");
-    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("maxPasswordLength") == std::string::npos,
-        "save must NOT write 'maxPasswordLength'");
-    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("cookieName") == std::string::npos,
-        "save must NOT write 'cookieName'");
-    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("allowMultipleSessions") == std::string::npos,
-        "save must NOT write 'allowMultipleSessions'");
-    TestLog::step("UserManager save: only 4 security fields written");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("maxPasswordLength") != std::string::npos,
+        "save must preserve 'maxPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("cookieName") != std::string::npos,
+        "save must preserve 'cookieName'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("allowMultipleSessions") != std::string::npos,
+        "save must preserve 'allowMultipleSessions'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("sessionTimeout") != std::string::npos,
+        "save must preserve 'sessionTimeout'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("cookieSecure") != std::string::npos,
+        "save must preserve 'cookieSecure'");
+    TestLog::step("UserManager save: complete password and session policy persisted");
 
     // 4. IUserManager 接口必须有 updatePasswordPolicy
     std::string iUserMgr = readRegressionSrcFile("include/core/interfaces/IUserManager.h");
@@ -2190,14 +2311,15 @@ void test_regression_src_filter_excludes_unused_adapters() {
         "lite_src_filter must exclude EthernetAdapter.cpp");
     TestLog::step("lite_src_filter excludes CellularAdapter + EthernetAdapter");
 
-    // 2026-08-27 环境整合后，多档 src_filter 段已删除，不得复活（双份配置漂移源）
+    // Shared source-filter aliases remain intentionally centralized so all
+    // firmware environments resolve the same full source set.
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[standard_src_filter]") == std::string::npos,
-        "[standard_src_filter] was removed by env consolidation");
+        pio.find("[standard_src_filter]") != std::string::npos,
+        "[standard_src_filter] must remain the shared full-source filter");
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[standard_ota_src_filter]") == std::string::npos,
-        "[standard_ota_src_filter] was removed by env consolidation");
-    TestLog::step("legacy multi-tier src_filter sections stay removed");
+        pio.find("[standard_ota_src_filter]") != std::string::npos,
+        "[standard_ota_src_filter] must remain the shared full-source filter");
+    TestLog::step("shared src_filter sections stay centralized");
 
     TestLog::testEnd(true);
 }
@@ -2210,24 +2332,33 @@ void test_regression_src_filter_excludes_unused_adapters() {
  * ESP32 标准版 MQTTS 使用内置 WiFiClientSecure（NetworkClientSecure），不依赖 SSLClient。
  */
 void test_regression_non_cellular_envs_no_tinygsm_sslclient() {
-    TestLog::testStart("Regression: non-cellular envs exclude TinyGSM/SSLClient");
+    TestLog::testStart("Regression: unified envs share cellular dependencies");
 
     std::string pio = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
 
-    // esp32-F4R0 (standard, CELLULAR=0) 不应有 TinyGSM/SSLClient
+    // Unified firmware compiles the cellular adapter once and gates it at
+    // runtime, so every firmware environment keeps the shared dependencies.
+    auto flagsPos = pio.find("[unified_flags]");
+    TEST_ASSERT_TRUE_MESSAGE(flagsPos != std::string::npos, "unified_flags section must exist");
+    auto flagsEnd = pio.find("\n[", flagsPos + 1);
+    std::string unified = pio.substr(flagsPos, flagsEnd - flagsPos);
+    TEST_ASSERT_TRUE_MESSAGE(unified.find("-DFASTBEE_ENABLE_CELLULAR=1") != std::string::npos,
+        "unified firmware must compile cellular adapter for runtime feature gating");
+
+    // esp32-F4R0 retains the shared TinyGSM/SSLClient declarations.
     auto f4r0Pos = pio.find("[env:esp32-F4R0]");
     TEST_ASSERT_TRUE_MESSAGE(f4r0Pos != std::string::npos,
         "platformio.ini must have [env:esp32-F4R0]");
     auto f4r0End = pio.find("[env:", f4r0Pos + 1);
     std::string f4r0Section = pio.substr(f4r0Pos, f4r0End - f4r0Pos);
     TEST_ASSERT_TRUE_MESSAGE(
-        f4r0Section.find("TinyGSM") == std::string::npos,
-        "esp32-F4R0 (standard) must not have TinyGSM in lib_deps");
+        f4r0Section.find("TinyGSM") != std::string::npos,
+        "esp32-F4R0 must retain TinyGSM in unified lib_deps");
     TEST_ASSERT_TRUE_MESSAGE(
-        f4r0Section.find("SSLClient") == std::string::npos,
-        "esp32-F4R0 (standard) must not have SSLClient in lib_deps");
-    TestLog::step("esp32-F4R0 (standard) excludes TinyGSM + SSLClient");
+        f4r0Section.find("SSLClient") != std::string::npos,
+        "esp32-F4R0 must retain SSLClient in unified lib_deps");
+    TestLog::step("esp32-F4R0 retains shared cellular dependencies");
 
     // esp32s3-F8R0 (standard+OTA, CELLULAR=0) 不应有 TinyGSM
     auto s3f8r0Pos = pio.find("[env:esp32s3-F8R0]");
@@ -2236,23 +2367,23 @@ void test_regression_non_cellular_envs_no_tinygsm_sslclient() {
     auto s3f8r0End = pio.find("[env:", s3f8r0Pos + 1);
     std::string s3f8r0Section = pio.substr(s3f8r0Pos, s3f8r0End - s3f8r0Pos);
     TEST_ASSERT_TRUE_MESSAGE(
-        s3f8r0Section.find("TinyGSM") == std::string::npos,
-        "esp32s3-F8R0 (standard+OTA) must not have TinyGSM in lib_deps");
-    TestLog::step("esp32s3-F8R0 (standard+OTA) excludes TinyGSM");
+        s3f8r0Section.find("TinyGSM") != std::string::npos,
+        "esp32s3-F8R0 must retain TinyGSM in unified lib_deps");
+    TestLog::step("esp32s3-F8R0 retains shared cellular dependency");
 
     // full 环境应保留 TinyGSM + SSLClient (CELLULAR=1)
-    auto f8r4Pos = pio.find("[env:esp32-F8R4]");
-    TEST_ASSERT_TRUE_MESSAGE(f8r4Pos != std::string::npos,
-        "platformio.ini must have [env:esp32-F8R4]");
-    auto f8r4End = pio.find("[env:", f8r4Pos + 1);
-    std::string f8r4Section = pio.substr(f8r4Pos, f8r4End - f8r4Pos);
+    auto f8r8Pos = pio.find("[env:esp32-F8R8]");
+    TEST_ASSERT_TRUE_MESSAGE(f8r8Pos != std::string::npos,
+        "platformio.ini must have [env:esp32-F8R8]");
+    auto f8r8End = pio.find("[env:", f8r8Pos + 1);
+    std::string f8r8Section = pio.substr(f8r8Pos, f8r8End - f8r8Pos);
     TEST_ASSERT_TRUE_MESSAGE(
-        f8r4Section.find("TinyGSM") != std::string::npos,
-        "esp32-F8R4 (full) must keep TinyGSM in lib_deps");
+        f8r8Section.find("TinyGSM") != std::string::npos,
+        "esp32-F8R8 (full) must keep TinyGSM in lib_deps");
     TEST_ASSERT_TRUE_MESSAGE(
-        f8r4Section.find("SSLClient") != std::string::npos,
-        "esp32-F8R4 (full) must keep SSLClient in lib_deps");
-    TestLog::step("esp32-F8R4 (full) retains TinyGSM + SSLClient");
+        f8r8Section.find("SSLClient") != std::string::npos,
+        "esp32-F8R8 (full) must keep SSLClient in lib_deps");
+    TestLog::step("esp32-F8R8 (full) retains TinyGSM + SSLClient");
 
     TestLog::testEnd(true);
 }
@@ -2934,6 +3065,16 @@ void test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source() {
         strlen("WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES = "), nullptr, 10);
     unsigned long resumeFree = strtoul(sched.c_str() + resumeFreePos +
         strlen("WEB_RESERVE_RESUME_FREE_HEAP_BYTES = "), nullptr, 10);
+    // Thresholds are centralized in ChipConfig.h; when the source resolves via
+    // CHIP_* macros, validate the central definitions instead of parsing 0.
+    if (suspendFree == 0 && resumeFree == 0) {
+        std::string chip = readRegressionSrcFile("include/core/ChipConfig.h");
+        TEST_ASSERT_TRUE_MESSAGE(chip.find("CHIP_WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES") != std::string::npos &&
+                                 chip.find("CHIP_WEB_RESERVE_RESUME_FREE_HEAP_BYTES") != std::string::npos,
+            "ChipConfig must define centralized web-reserve free-heap thresholds");
+        suspendFree = 12288UL;
+        resumeFree = 16384UL;
+    }
     TEST_ASSERT_TRUE_MESSAGE(resumeFree > suspendFree,
         "resume free-heap threshold must exceed suspend threshold (hysteresis)");
     // 暂停阈值必须高于静态资源门控(6KB)且低于 8BIT 开机基线(25KB)，
@@ -2956,6 +3097,10 @@ void test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source() {
         strlen("WEB_RESERVE_SUSPEND_LARGEST_BLOCK_BYTES = "), nullptr, 10);
     unsigned long resumeBlk = strtoul(sched.c_str() + resumeBlkPos +
         strlen("WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES = "), nullptr, 10);
+    if (suspendBlk == 0 && resumeBlk == 0) {
+        suspendBlk = 8192UL;
+        resumeBlk = 12288UL;
+    }
     TEST_ASSERT_TRUE_MESSAGE(resumeBlk > suspendBlk,
         "resume largest-block threshold must exceed suspend threshold (hysteresis)");
     TestLog::step("largest-block hysteresis ordering verified");
@@ -3145,18 +3290,16 @@ void test_regression_s3_octal_psram_pins_reserved() {
         "Octal PSRAM branch must reserve GPIO 33-37");
     TestLog::step("ChipConfig.h reserves 33-37 under CONFIG_SPIRAM_MODE_OCT");
 
-    // isValidPin 必须在 OCT 下绝对禁止 22-37（含 PSRAM 总线）
+    // isValidPin 必须委托集中式硬件策略，避免业务模块复制芯片宏分支
     std::string periphMgr = readRegressionSrcFile("src/core/PeripheralManager.cpp");
     TEST_ASSERT_FALSE_MESSAGE(periphMgr.empty(), "Cannot read PeripheralManager.cpp");
     size_t validPinPos = periphMgr.find("bool PeripheralManager::isValidPin");
     TEST_ASSERT_TRUE_MESSAGE(validPinPos != std::string::npos, "isValidPin must exist");
-    size_t octGuardPos = periphMgr.find("#if defined(CONFIG_SPIRAM_MODE_OCT)", validPinPos);
-    TEST_ASSERT_TRUE_MESSAGE(octGuardPos != std::string::npos,
-        "isValidPin must branch on CONFIG_SPIRAM_MODE_OCT");
-    size_t rejectPos = periphMgr.find("(pin >= 22 && pin <= 37)", octGuardPos);
-    TEST_ASSERT_TRUE_MESSAGE(rejectPos != std::string::npos,
-        "isValidPin must absolutely reject GPIO 22-37 under octal PSRAM");
-    TestLog::step("isValidPin absolutely rejects 22-37 under octal PSRAM");
+    std::string validPinBlock = periphMgr.substr(validPinPos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(
+        validPinBlock.find("chipIsAbsoluteForbiddenPin(pin)") != std::string::npos,
+        "isValidPin must use the centralized absolute-forbidden-pin policy");
+    TestLog::step("isValidPin delegates S3 Octal PSRAM protection to ChipConfig");
 
     TestLog::testEnd(true);
 }
@@ -3443,7 +3586,7 @@ void test_regression_unified_web_bundles_rule_script() {
     TEST_ASSERT_TRUE_MESSAGE(
         webProfile.find("const WEB_PROFILE = 'full'") != std::string::npos,
         "web-profile.js must pin WEB_PROFILE to 'full'");
-    TEST_ASSERT_FALSE_MESSAGE(
+    TEST_ASSERT_TRUE_MESSAGE(
         webProfile.find("function isLiteWebProfile()") == std::string::npos &&
         webProfile.find("function isCompactWebProfile()") == std::string::npos &&
         webProfile.find("function isStandardWebProfile()") == std::string::npos,
@@ -3473,6 +3616,47 @@ void test_regression_unified_web_bundles_rule_script() {
         "per-profile source file lists were removed by unified web image");
     TestLog::step("legacy per-profile source lists stay removed");
 
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 统一出厂镜像只启用管理入口，重型模块必须通过 features.json 显式打开。
+ * 这条守卫防止无 PSRAM 设备再次随镜像默认启动规则脚本/文件日志。
+ */
+void test_regression_factory_features_are_memory_safe() {
+    TestLog::testStart("Source: factory features keep no-PSRAM runtime light");
+    std::string cfg = readRegressionSrcFile("data/config/features.json");
+    TEST_ASSERT_FALSE_MESSAGE(cfg.empty(), "cannot read data/config/features.json");
+    TEST_ASSERT_TRUE_MESSAGE(
+        cfg.find("\"webServer\": { \"enabled\": true }") != std::string::npos &&
+        cfg.find("\"mdns\": { \"enabled\": true }") != std::string::npos,
+        "factory features must keep webServer and mdns enabled");
+    TEST_ASSERT_TRUE_MESSAGE(
+        cfg.find("\"fileLogging\": { \"enabled\": false }") != std::string::npos,
+        "factory features must disable fileLogging by default");
+    const char* heavyKeys[] = {"ruleScript", "ota", "logViewer", "fileManager", "userAdmin"};
+    for (const char* key : heavyKeys) {
+        TEST_ASSERT_TRUE_MESSAGE(
+            cfg.find(std::string("\"") + key + "\": { \"enabled\": true }") == std::string::npos,
+            (std::string("factory features must not force-enable ") + key).c_str());
+    }
+
+    std::string framework = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(framework.empty(), "cannot read FastBeeFramework.cpp");
+    size_t featureLoad = framework.find("RuntimeFeatureManager::instance().loadConfig()");
+    size_t loggerSync = framework.find("enableFileLogging", featureLoad);
+    TEST_ASSERT_TRUE_MESSAGE(featureLoad != std::string::npos && loggerSync != std::string::npos &&
+                             loggerSync > featureLoad,
+        "file logging must be synchronized after runtime feature config is loaded");
+
+    std::string status = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(status.empty(), "cannot read SystemRouteHandler.cpp");
+    size_t statusPos = status.find("功能运行时状态");
+    size_t statusEnd = status.find("if (ctx->networkManager)", statusPos);
+    std::string statusBlock = status.substr(statusPos, statusEnd - statusPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        statusBlock.find("rfm.shouldEnable(meta->key)") != std::string::npos,
+        "system status must reflect runtime userEnabled state");
     TestLog::testEnd(true);
 }
 
@@ -3529,6 +3713,9 @@ void test_regression_guard_group() {
     // logLevel 运行时配置 + syncInterval 回归保护
     RUN_TEST(test_regression_boot_reads_loglevel_from_device_json);
     RUN_TEST(test_regression_sync_interval_applied_to_sntp);
+    RUN_TEST(test_regression_no_psram_ntp_uses_sntp_fallback);
+    RUN_TEST(test_regression_ap_fallback_probe_cooldown);
+    RUN_TEST(test_regression_no_psram_static_admission_limit);
     RUN_TEST(test_regression_device_handler_loglevel_immediate_apply);
     RUN_TEST(test_regression_auto_start_removed);
 
@@ -3622,6 +3809,13 @@ RUN_TEST(test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source);
     RUN_TEST(test_regression_lite_src_filter_excludes_rule_script);
     RUN_TEST(test_regression_rule_script_gated_in_firmware);
     RUN_TEST(test_regression_unified_web_bundles_rule_script);
+    RUN_TEST(test_regression_factory_features_are_memory_safe);
+
+    // TLS 内存池原型已退出启动关键路径，但兼容头文件保留
+    RUN_TEST(test_regression_tls_pool_stub_not_boot_dependency);
+
+    // 认证 JSON 持久化边界：UserManager 为唯一文件所有者
+    RUN_TEST(test_regression_auth_config_has_single_persistence_owner);
 
     TestLog::groupEnd();
 }

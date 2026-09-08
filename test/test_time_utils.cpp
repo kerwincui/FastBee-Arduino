@@ -19,12 +19,27 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include "utils/TimeUtils.h"
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 #include "helpers/TestLogger.h"
 
 void test_time_utils_group();
+
+static std::string readSrcFile(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::ifstream ifs(std::string(root) + "/" + relativePath);
+        if (ifs.good()) {
+            return std::string((std::istreambuf_iterator<char>(ifs)),
+                               std::istreambuf_iterator<char>());
+        }
+    }
+    return "";
+}
 
 // ========== 闰年判断 ==========
 
@@ -488,33 +503,69 @@ void test_ntp_url_device_send_time_concat() {
 }
 
 /**
- * @brief 验证 HTTPS 被降级为 HTTP（避免 ESP32 SSL 内存分配失败）
- * NTP 时间同步是只读公开接口，无需 TLS 加密
+ * @brief 验证 HTTPS 时间源保持加密并使用系统 CA 包校验
  */
 void test_ntp_https_downgraded() {
-    TestLog::testStart("NTP HTTPS Downgraded to HTTP");
+    TestLog::testStart("NTP HTTPS Certificate Validation");
 
-    String url = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
+    std::string source = readSrcFile("src/utils/TimeUtils.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "Failed to read TimeUtils.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("fullUrl = \"http://\" + fullUrl.substring(8)") == std::string::npos,
+        "HTTPS NTP must never be silently downgraded to HTTP");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("secureClient.setCACertBundle(x509_crt_bundle_start, caBundleSize)") != std::string::npos,
+        "HTTPS NTP must validate the peer with the built-in CA bundle");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("configTzTime(timezone.c_str()") != std::string::npos,
+        "HTTPS NTP must bootstrap certificate time through SNTP");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("double serverRecvTime") != std::string::npos,
+        "Millisecond epoch calculations must use double precision");
+    TestLog::step("HTTPS remains encrypted and millisecond timestamps retain precision");
 
-    // 强制降级 HTTPS → HTTP
-    if (url.startsWith("https://")) {
-        url = "http://" + url.substring(8);
-    }
+    TestLog::testEnd(true);
+}
 
-    TEST_ASSERT_TRUE(url.startsWith("http://"));
-    TEST_ASSERT_EQUAL_STRING(
-        "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
-        url.c_str());
-    TestLog::step("HTTPS URL downgraded to HTTP for NTP (avoids SSL memory alloc failure)");
+/**
+ * @brief HTTP NTP must bound both response and connect phases.
+ * A DNS/TCP connect can outlive the regular read timeout on embedded targets.
+ */
+void test_ntp_http_connect_timeout_guard() {
+    TestLog::testStart("NTP HTTP Connect Timeout Guard");
 
-    // HTTP URL 不会被修改
-    String httpUrl = "http://example.com/ntp";
-    String original = httpUrl;
-    if (httpUrl.startsWith("https://")) {
-        httpUrl = "http://" + httpUrl.substring(8);
-    }
-    TEST_ASSERT_EQUAL_STRING(original.c_str(), httpUrl.c_str());
-    TestLog::step("HTTP URL stays unchanged");
+    std::string source = readSrcFile("src/utils/TimeUtils.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "Failed to read TimeUtils.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("http.setTimeout((int)timeout)") != std::string::npos,
+        "HTTP NTP must bound response reads");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("http.setConnectTimeout((int)timeout)") != std::string::npos,
+        "HTTP NTP must bound DNS/TCP connect time");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 一次性 Ticker 完成后应在后续调度时回收，避免递归 setTimeout 长期累积。
+ */
+void test_timer_cleanup_reclaims_inactive_instances() {
+    TestLog::testStart("Timer Cleanup Reclaims Inactive Instances");
+
+    std::string source = readSrcFile("src/utils/TimeUtils.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "Failed to read TimeUtils.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("cleanupInactiveTimers()") != std::string::npos,
+        "Timer creation must sweep completed Ticker instances");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("!ticker->active()") != std::string::npos,
+        "Timer cleanup must identify inactive Ticker instances");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("TimerCallbackGuard") != std::string::npos,
+        "Timer cleanup must not delete a Ticker while its callback is running");
+    TEST_ASSERT_TRUE_MESSAGE(
+        source.find("new (std::nothrow) Ticker()") != std::string::npos,
+        "Timer allocation must handle heap exhaustion without throwing");
 
     TestLog::testEnd(true);
 }
@@ -600,7 +651,9 @@ void test_time_utils_group() {
     RUN_TEST(test_ntp_url_protocol_detection);
     RUN_TEST(test_ntp_url_device_send_time_concat);
     RUN_TEST(test_ntp_https_downgraded);
+    RUN_TEST(test_ntp_http_connect_timeout_guard);
     RUN_TEST(test_ntp_response_format_parsing);
+    RUN_TEST(test_timer_cleanup_reclaims_inactive_instances);
 
     TestLog::groupEnd();
 }

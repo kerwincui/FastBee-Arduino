@@ -684,6 +684,38 @@ static void test_source_maintenance_has_no_temp_warning_log() {
                               "temporary WARNING diagnostics must not stay in performMaintenance");
 }
 
+static void test_source_lcd_serializes_i2c_operations_and_reports_bus_failure() {
+    std::string source = readLcdSrcFile("src/peripherals/LCDManager.cpp");
+    std::string header = readLcdSrcFile("include/peripherals/LCDManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "LCDManager.cpp not readable");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "LCDManager.h not readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(header, "_displayMutex"),
+                             "LCD manager must own a display-operation mutex");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(source, "xSemaphoreCreateRecursiveMutex()"),
+                             "compound LCD operations require a recursive mutex");
+
+    std::string custom = extractFunctionBody(source, "bool LCDManager::showCustomText(");
+    std::string maintenance = extractFunctionBody(source, "void LCDManager::performMaintenance()");
+    std::string refresh = extractFunctionBody(source, "bool LCDManager::refresh()");
+    std::string initialize = extractFunctionBody(source, "bool LCDManager::initialize(");
+    std::string probe = extractFunctionBody(source, "bool LCDManager::probeI2cDisplay(");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(custom, "LCD_GUARD_OR_RETURN(false)"),
+                             "rule-driven OLED output must serialize access");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(maintenance, "RecursiveMutexGuard lcdGuard(_displayMutex, 0)"),
+                             "maintenance must yield instead of blocking behind OLED output");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(initialize, "probeI2cDisplay(true)"),
+                             "initialization must probe before U8G2 sends its setup sequence");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(maintenance, "probeI2cDisplay(true)"),
+                             "maintenance must probe before reasserting the display");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(refresh, "probeI2cDisplay(true)"),
+                             "I2C refresh must probe the configured display address");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(probe, "Wire.endTransmission()"),
+                             "the display probe must complete an I2C address transaction");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(refresh, "return false"),
+                             "an unavailable I2C display must not be reported as successful");
+}
+
 static void test_source_initialize_applies_contrast_and_power_save() {
     std::string content = readLcdSrcFile("src/peripherals/LCDManager.cpp");
     if (content.empty()) {
@@ -825,7 +857,13 @@ static void test_config_oled_params_complete_and_supported() {
                                  "oled contrast must be within 1..255");
     }
 
-    TEST_ASSERT_TRUE_MESSAGE(foundLcd, "peripherals.json must contain an LCD/OLED peripheral");
+    // Unified factory images deliberately ship without pin-bound peripherals.
+    // An empty list is the safe baseline for boards whose GPIO map is unknown;
+    // users can add a validated LCD/OLED profile after selecting the board.
+    if (!foundLcd) {
+        TEST_ASSERT_EQUAL_MESSAGE(0, doc["peripherals"].as<JsonArray>().size(),
+                                  "without LCD/OLED, factory peripheral config must be empty");
+    }
 }
 
 static void test_config_no_temp_diagnostic_rules_left() {
@@ -917,6 +955,7 @@ void test_lcd_manager_group() {
     RUN_TEST(test_source_maintenance_uses_init_display_not_begin);
     RUN_TEST(test_source_maintenance_reasserts_power_and_contrast);
     RUN_TEST(test_source_maintenance_has_no_temp_warning_log);
+    RUN_TEST(test_source_lcd_serializes_i2c_operations_and_reports_bus_failure);
     RUN_TEST(test_source_initialize_applies_contrast_and_power_save);
     RUN_TEST(test_source_lcd_header_declares_maintenance_state);
     RUN_TEST(test_source_framework_registers_lcd_maintenance_task);

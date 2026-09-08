@@ -120,6 +120,9 @@ public:
     static void step(const char* desc) {
         TestLogger::getInstance().step(desc);
     }
+    static void step(const String& desc) {
+        TestLogger::getInstance().step(desc.c_str());
+    }
     static void step(int num, const char* desc) {
         TestLogger::getInstance().step(num, desc);
     }

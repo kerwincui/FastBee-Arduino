@@ -490,16 +490,21 @@ void test_health_monitor_dram_fields_in_report() {
     std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
 
-    // 1. performHealthCheck 应使用 MALLOC_CAP_INTERNAL 获取 DRAM 内存
+    // 1. performHealthCheck 应通过 MemoryBudget 使用内部 8-bit DRAM 口径。
+    // 具体 heap_caps 组合集中在 MemoryBudget.h，避免各模块口径漂移。
+    std::string budget = readProjectFile("include/core/MemoryBudget.h");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("heap_caps_get_free_size(MALLOC_CAP_INTERNAL)") != std::string::npos,
-        "performHealthCheck must use MALLOC_CAP_INTERNAL for DRAM free size");
-    TestLog::step("MALLOC_CAP_INTERNAL used for DRAM free size");
+        budget.find("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT") != std::string::npos,
+        "MemoryBudget must define internal 8-bit DRAM capability mask");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MemoryBudget::dram8Free()") != std::string::npos,
+        "performHealthCheck must use MemoryBudget::dram8Free() for DRAM free size");
+    TestLog::step("MemoryBudget::dram8Free() used for DRAM free size");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)") != std::string::npos,
-        "performHealthCheck must use MALLOC_CAP_INTERNAL for DRAM largest block");
-    TestLog::step("MALLOC_CAP_INTERNAL used for DRAM largest block");
+        content.find("MemoryBudget::dram8Largest()") != std::string::npos,
+        "performHealthCheck must use MemoryBudget::dram8Largest() for DRAM largest block");
+    TestLog::step("MemoryBudget::dram8Largest() used for DRAM largest block");
 
     // 2. 分析日志应同时输出 DRAM 和 Total 对比
     TEST_ASSERT_TRUE_MESSAGE(
@@ -682,7 +687,7 @@ void test_no_psram_chip_memory_detection() {
 void test_psram_chip_dram_isolation() {
     TestLog::testStart("Compat: PSRAM Chip (ESP32-S3) DRAM Isolation");
 
-    // 模拟 ESP32-S3 带 4MB PSRAM 场景
+    // 模拟厂商自定义 ESP32-S3 带 4MB PSRAM 场景
     uint32_t dramFree    = 38 * 1024;  // DRAM 空闲 38KB
     uint32_t psramFree   = 4 * 1024 * 1024;  // PSRAM 空闲 4MB
     uint32_t totalFree   = dramFree + psramFree;  // MALLOC_CAP_DEFAULT
@@ -765,7 +770,7 @@ void test_memory_guard_level_dram_based() {
  * @brief HM-22: checkCriticalMemory 根据 PSRAM 容量动态计算阈值
  * 验证源码中基于 ESP.getPsramSize() 的分级逻辑：
  *   F8R0 (0 PSRAM):  critical=8KB,  warning=16KB
- *   F8R4 (4MB PSRAM): critical=10KB, warning=20KB
+ *   custom 4MB PSRAM: critical=10KB, warning=20KB
  *   F16R8 (8MB PSRAM): critical=12KB, warning=24KB
  */
 void test_dynamic_psram_threshold_tiers() {
@@ -793,7 +798,7 @@ void test_dynamic_psram_threshold_tiers() {
     };
     Tier tiers[] = {
         {"F8R0  (no PSRAM)", 0,                  8192,  16384},
-        {"F8R4  (4MB PSRAM)", 4*1024*1024,       10240, 20480},
+        {"custom (4MB PSRAM)", 4*1024*1024,       10240, 20480},
         {"F16R8 (8MB PSRAM)", 8*1024*1024,       12288, 24576},
     };
 
@@ -850,7 +855,7 @@ void test_source_dynamic_threshold_in_code() {
         "checkCriticalMemory must have 12KB threshold for F16R8");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("10240") != std::string::npos,
-        "checkCriticalMemory must have 10KB threshold for F8R4");
+        "checkCriticalMemory must retain the custom 4MB PSRAM 10KB tier");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("8192") != std::string::npos,
         "checkCriticalMemory must have 8KB threshold for F8R0");
@@ -864,6 +869,31 @@ void test_source_dynamic_threshold_in_code() {
         content.find("static uint32_t warningThreshold") != std::string::npos,
         "warningThreshold must be static (computed once)");
     TestLog::step("Static threshold caching present");
+
+    TestLog::testEnd(true);
+}
+
+void test_memguard_level_uses_dynamic_critical_floor() {
+    TestLog::testStart("HealthMonitor: MemGuard Level Uses Dynamic Critical Floor");
+
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    auto guardStart = content.find("void HealthMonitor::updateMemoryGuardLevel");
+    auto guardEnd = content.find("void HealthMonitor::applyDegradation", guardStart);
+    TEST_ASSERT_TRUE_MESSAGE(guardStart != std::string::npos && guardEnd != std::string::npos,
+        "updateMemoryGuardLevel source must be present");
+
+    std::string guardBody = content.substr(guardStart, guardEnd - guardStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        guardBody.find("guardLevelForFreeDram(freeHeap, criticalThreshold)") != std::string::npos,
+        "MemGuard level classification must use the dynamic critical threshold");
+    TEST_ASSERT_TRUE_MESSAGE(
+        guardBody.find("freeHeap >= criticalThreshold") != std::string::npos,
+        "CRITICAL stuck watchdog recovery check must use the same dynamic floor");
+    TEST_ASSERT_TRUE_MESSAGE(
+        guardBody.find("freeHeap >= MEM_THRESHOLD_WARN") == std::string::npos,
+        "CRITICAL stuck watchdog must not require the fixed 24KB recovery threshold");
 
     TestLog::testEnd(true);
 }
@@ -1449,6 +1479,7 @@ void test_health_monitor_group() {
     // 动态 PSRAM 阈值测试
     RUN_TEST(test_dynamic_psram_threshold_tiers);
     RUN_TEST(test_source_dynamic_threshold_in_code);
+    RUN_TEST(test_memguard_level_uses_dynamic_critical_floor);
 
     // MEMGUARD 日志动态阈值测试
     RUN_TEST(test_memguard_log_uses_dynamic_thresholds);

@@ -906,10 +906,10 @@ static void test_wifi_config_saves_both_configs() {
 }
 
 // ---------------------------------------------------------------------------
-// 测试：/api/wifi/status 和 /api/wifi/config 路由注册 + 公开接口（无认证）
+// 测试：/api/wifi/status 和 /api/wifi/config 路由注册 + 仅配网态匿名
 // ---------------------------------------------------------------------------
 static void test_wifi_api_routes_and_public_access() {
-    TestLog::testStart("Provision: WiFi Status/Config Routes Registered + Public (No Auth)");
+    TestLog::testStart("Provision: WiFi Status/Config Routes + AP-only Anonymous Access");
 
     std::string src = _readProvisionSrcFile("src/network/handlers/ProvisionRouteHandler.cpp");
     if (src.empty()) {
@@ -937,7 +937,7 @@ static void test_wifi_api_routes_and_public_access() {
         "/api/wifi/config must use HTTP_POST");
     TestLog::step("HTTP methods: status=GET, config=POST");
 
-    // 公开接口守护：新接口的处理函数内不应调用 requireAuth
+    // 匿名访问只允许在 AP 配网态；正常联网后必须经过认证
     size_t statusPos = src.find("void ProvisionRouteHandler::handleWiFiStatus");
     size_t configPos = src.find("void ProvisionRouteHandler::handleWiFiConfig");
     TEST_ASSERT_TRUE_MESSAGE(statusPos != std::string::npos, "handleWiFiStatus implementation must exist");
@@ -948,16 +948,24 @@ static void test_wifi_api_routes_and_public_access() {
     if (statusEnd == std::string::npos) statusEnd = src.size();
     std::string statusBody = src.substr(statusPos, statusEnd - statusPos);
 
-    size_t configEnd = src.size();  // handleWiFiConfig is last function
+    // Limit the slice to this handler; later BLE handlers legitimately require auth.
+    size_t configEnd = src.find("void ProvisionRouteHandler::", configPos + 1);
+    if (configEnd == std::string::npos) configEnd = src.size();
     std::string configBody = src.substr(configPos, configEnd - configPos);
 
     TEST_ASSERT_TRUE_MESSAGE(
-        statusBody.find("requireAuth") == std::string::npos,
-        "handleWiFiStatus must NOT call requireAuth (public endpoint)");
+        statusBody.find("allowAnonymousProvisioning()") != std::string::npos &&
+        statusBody.find("requireAuth") != std::string::npos,
+        "handleWiFiStatus must allow anonymous AP provisioning and require auth otherwise");
     TEST_ASSERT_TRUE_MESSAGE(
-        configBody.find("requireAuth") == std::string::npos,
-        "handleWiFiConfig must NOT call requireAuth (public endpoint)");
-    TestLog::step("Both handlers are public (no requireAuth call)");
+        configBody.find("allowAnonymousProvisioning()") != std::string::npos &&
+        configBody.find("requireAuth") != std::string::npos,
+        "handleWiFiConfig must allow anonymous AP provisioning and require auth otherwise");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("if (mode == WIFI_MODE_AP) return true;") != std::string::npos &&
+        src.find("if (mode != WIFI_MODE_APSTA) return false;") != std::string::npos,
+        "Anonymous provisioning must be restricted to AP or disconnected AP+STA mode");
+    TestLog::step("Both handlers restrict anonymous access to provisioning mode");
 
     // handleWiFiConfig 必须保存 WiFi 配置并切换 STA 模式
     TEST_ASSERT_TRUE_MESSAGE(

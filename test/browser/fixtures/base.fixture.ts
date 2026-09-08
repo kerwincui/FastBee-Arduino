@@ -354,7 +354,7 @@ async function performLoginAndCapture(page: Page): Promise<void> {
   // 导航到登录页（带重试，设备可能刚重启）
   for (let gotoRetry = 0; gotoRetry < 3; gotoRetry++) {
     try {
-      await page.goto('/', { timeout: 20_000 });
+      await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
       break;
     } catch (gotoErr) {
       if (gotoRetry < 2) {
@@ -412,8 +412,21 @@ async function restoreAuthState(page: Page): Promise<boolean> {
     await page.context().addCookies(cachedAuthState.cookies as any);
   }
 
-  // 导航到首页，检查是否已认证
-  await page.goto('/');
+  // 导航到首页，检查是否已认证。设备在上一轮静态响应尚未完全
+  // 排空时可能短暂超时，沿用首次登录的有限重试策略，避免把瞬时
+  // 拥塞记录成测试 flaky。
+  let lastNavigationError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      lastNavigationError = null;
+      break;
+    } catch (error) {
+      lastNavigationError = error;
+      if (attempt < 2) await page.waitForTimeout(1500 * (attempt + 1));
+    }
+  }
+  if (lastNavigationError) throw lastNavigationError;
 
   // 如果直接显示 app-container（未重定向到登录页），说明 session 有效
   try {
@@ -540,6 +553,17 @@ export const test = base.extend<TestFixtures>({
       }
     });
   },
+});
+
+// Embedded targets need a short drain window after every browser context,
+// including tests that perform their own manual login instead of using
+// authPage. Without this hook, several closed contexts can leave TCP/static
+// response buffers in flight long enough to trip the low-memory guard.
+test.afterEach(async ({ page }) => {
+  const delayMs = parseInt(process.env.TEST_DELAY_MS || '800', 10);
+  if (delayMs > 0) {
+    await page.waitForTimeout(Math.min(delayMs, 5000)).catch(() => {});
+  }
 });
 
 export { expect };

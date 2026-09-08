@@ -100,7 +100,11 @@ public:
 
     wl_status_t status() { return _status; }
     
-    String SSID() { return _ssid; }
+    String SSID() {
+        // Arduino's SSID() reports the station network in AP+STA mode;
+        // softAPSSID() is the explicit accessor for the local AP.
+        return _mode == WIFI_AP ? _apSSID : _ssid;
+    }
     String psk() { return _password; }
     
     // IP地址

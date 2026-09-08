@@ -911,7 +911,7 @@ void test_source_code_c3_platformio_config() {
         "C3 must use unified_flags (Unified Architecture v2.0)");
     TestLog::step("C3 env uses unified_flags");
 
-    // 无 PSRAM：C3 必须显式关闭 OTA（4MB 单 app 分区）
+    // 无 PSRAM：C3 必须显式关闭 OTA（4MB 单 app 分区）；传感器库仍随统一镜像编译
     TEST_ASSERT_TRUE_MESSAGE(
         c3Section.find("-DFASTBEE_ENABLE_OTA=0") != std::string::npos,
         "C3 must explicitly disable OTA (no PSRAM, single app partition)");
@@ -922,6 +922,13 @@ void test_source_code_c3_platformio_config() {
         c3Section.find("lib_ignore = NimBLE-Arduino") != std::string::npos,
         "C3 must ignore NimBLE-Arduino (no classic BT)");
     TestLog::step("NimBLE-Arduino ignored for C3");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        c3Section.find("OneWire") == std::string::npos &&
+        c3Section.find("DallasTemperature") == std::string::npos &&
+        c3Section.find("FASTBEE_ENABLE_DS18B20=0") == std::string::npos,
+        "C3 must compile DS18B20 dependencies for runtime feature gating");
+    TestLog::step("C3 DS18B20 dependencies kept in unified image");
 
     TestLog::testEnd(true);
 }
@@ -1536,12 +1543,15 @@ void test_source_code_health_monitor_dram_fields() {
         TestLog::step(("RECONN="+std::to_string(reconnVal)+" <= CONNECT="+std::to_string(connectVal)).c_str());
     }
 
-    // 3. 验证 HealthMonitor.cpp 使用 MALLOC_CAP_INTERNAL
+    // 3. 验证 HealthMonitor.cpp 使用统一的内部 8-bit DRAM 辅助函数。
     std::string hmc = readSrcFile("src/systems/HealthMonitor.cpp");
+    std::string mbc = readSrcFile("include/core/MemoryBudget.h");
     TEST_ASSERT_TRUE_MESSAGE(
-        hmc.find("MALLOC_CAP_INTERNAL") != std::string::npos,
-        "HealthMonitor.cpp must use MALLOC_CAP_INTERNAL");
-    TestLog::step("HealthMonitor.cpp uses MALLOC_CAP_INTERNAL");
+        hmc.find("MemoryBudget::dram8Free()") != std::string::npos &&
+        hmc.find("MemoryBudget::dram8Largest()") != std::string::npos &&
+        mbc.find("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT") != std::string::npos,
+        "HealthMonitor must use MemoryBudget internal 8-bit DRAM helpers");
+    TestLog::step("HealthMonitor.cpp uses MemoryBudget internal 8-bit DRAM helpers");
 
     // 4. 验证 METRICS 日志包含 DRAM 字段
     TEST_ASSERT_TRUE_MESSAGE(
@@ -2139,7 +2149,7 @@ void test_source_code_wifi_manager_no_apsta_comments() {
 }
 
 void test_source_code_resource_profile_explicit_profiles() {
-    TestLog::testStart("Source: Explicit Lite/Standard/Full resource profiles");
+    TestLog::testStart("Source: Unified nine-environment resource matrix");
 
     std::string pio = readSrcFile("platformio.ini");
     std::string flags = readSrcFile("include/core/FeatureFlags.h");
@@ -2153,21 +2163,39 @@ void test_source_code_resource_profile_explicit_profiles() {
         pio.find("[unified_flags]") != std::string::npos,
         "Unified architecture must define [unified_flags] section");
     
+    const char* requiredEnvironments[] = {
+        "[env:esp32-F4R0]", "[env:esp32-F8R0]", "[env:esp32-F8R8]",
+        "[env:esp32c3-F4R0]", "[env:esp32c6-F4R0]", "[env:esp32c6-F8R0]",
+        "[env:esp32s3-F8R0]", "[env:esp32s3-F8R8]", "[env:esp32s3-F16R8]"
+    };
+    for (const char* environment : requiredEnvironments) {
+        TEST_ASSERT_TRUE_MESSAGE(
+            pio.find(environment) != std::string::npos,
+            "Unified build matrix is missing a supported environment");
+    }
+
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("-DFASTBEE_PROFILE_FULL=1") != std::string::npos,
-        "Unified architecture must define FASTBEE_PROFILE_FULL=1");
+        pio.find("-DFASTBEE_PROFILE_FULL=1") == std::string::npos &&
+        pio.find("-DFASTBEE_PROFILE_STANDARD=1") == std::string::npos &&
+        pio.find("-DFASTBEE_PROFILE_LITE=1") == std::string::npos,
+        "Unified environments must not select a compile-time product tier");
     
-    TestLog::step("platformio.ini unified_flags configuration present");
+    TestLog::step("platformio.ini unified matrix configuration present");
 
     // Legacy profile sections are deprecated (commented out in platformio.ini)
     // No need to verify lite/standard/full sections exist anymore
 
     TEST_ASSERT_TRUE_MESSAGE(
-        flags.find("#define FASTBEE_PROFILE_LITE 0") != std::string::npos &&
-        flags.find("#define FASTBEE_PROFILE_STANDARD 0") != std::string::npos &&
-        flags.find("#define FASTBEE_PROFILE_FULL 0") != std::string::npos,
-        "FeatureFlags.h must provide safe defaults for all profile markers");
-    TestLog::step("FeatureFlags defaults present");
+        flags.find("FASTBEE_PROFILE_LITE") == std::string::npos &&
+        flags.find("FASTBEE_PROFILE_STANDARD") == std::string::npos &&
+        flags.find("FASTBEE_PROFILE_FULL") == std::string::npos,
+        "FeatureFlags.h must not retain removed compile-time product tiers");
+    TEST_ASSERT_TRUE_MESSAGE(
+        profile.find("CONFIG_IDF_TARGET_ESP32C3") != std::string::npos &&
+        profile.find("CONFIG_IDF_TARGET_ESP32C6") != std::string::npos &&
+        profile.find("CONFIG_IDF_TARGET_ESP32S3") != std::string::npos,
+        "ResourceProfile must derive limits from hardware targets");
+    TestLog::step("Feature flags are tier-free and resource limits are hardware-derived");
 
     // Unified Architecture v2.0 no longer distinguishes product tiers
     // ResourceProfile.h is maintained for backward compatibility
@@ -2568,14 +2596,14 @@ void test_source_code_ap_probe_backoff_mechanism() {
         "Must define AP_PROBE_INTERVAL_MS = 120000 (2 min)");
     TestLog::step("AP_PROBE_INTERVAL_MS = 120000 defined");
 
-    // 2) 必须定义退避探测间隔 10min
+    // 2) 必须定义退避探测间隔 5min
     TEST_ASSERT_TRUE_MESSAGE(
         nmh.find("AP_PROBE_BACKOFF_MS") != std::string::npos &&
-        nmh.find("600000") != std::string::npos,
-        "Must define AP_PROBE_BACKOFF_MS = 600000 (10 min)");
-    TestLog::step("AP_PROBE_BACKOFF_MS = 600000 defined");
+        nmh.find("300000") != std::string::npos,
+        "Must define AP_PROBE_BACKOFF_MS = 300000 (5 min)");
+    TestLog::step("AP_PROBE_BACKOFF_MS = 300000 defined");
 
-    // 3) 必须定义退避阈值（连续失败 5 次）
+    // 3) 必须定义退避阈值（连续失败 3 次）
     TEST_ASSERT_TRUE_MESSAGE(
         nmh.find("AP_PROBE_BACKOFF_THRESHOLD") != std::string::npos,
         "Must define AP_PROBE_BACKOFF_THRESHOLD");
@@ -2587,11 +2615,31 @@ void test_source_code_ap_probe_backoff_mechanism() {
         "update() must dynamically select probe interval based on fail count");
     TestLog::step("Dynamic probe interval selection in update()");
 
+    // STA association remains bounded even though the probe now advances
+    // asynchronously across network_update ticks.
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("AP_PROBE_TIMEOUT_MS") != std::string::npos &&
+        nmh.find("8000") != std::string::npos,
+        "AP probe timeout must stay bounded at 8s or less");
+    TestLog::step("AP probe timeout bounded to 8s");
+
     // 5) handleApModeWifiProbe() 失败路径必须累计 _apProbeFailCount
     // （预扫描快速失败分支 + STA 探测失败分支各计一次，取最后一处）
     auto probeFunc = nmc.find("void FBNetworkManager::handleApModeWifiProbe()");
     TEST_ASSERT_TRUE_MESSAGE(probeFunc != std::string::npos,
         "handleApModeWifiProbe() must exist");
+    auto probeEnd = nmc.find("void FBNetworkManager::triggerEvent", probeFunc);
+    std::string probeBody = nmc.substr(probeFunc, probeEnd - probeFunc);
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("enum class ApProbeState") != std::string::npos &&
+        probeBody.find("WiFi.scanNetworks(true, true)") != std::string::npos &&
+        probeBody.find("WiFi.scanComplete()") != std::string::npos,
+        "AP recovery must use an async scan state machine");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBody.find("while (") == std::string::npos &&
+        probeBody.find("delay(") == std::string::npos,
+        "AP recovery state machine must not poll or delay in network_update");
+    TestLog::step("AP probe uses non-blocking scan/association states");
     auto failPath = nmc.rfind("_apProbeFailCount++");
     TEST_ASSERT_TRUE_MESSAGE(failPath != std::string::npos && failPath > probeFunc,
         "handleApModeWifiProbe() failure path must increment _apProbeFailCount");

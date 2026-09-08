@@ -673,6 +673,58 @@ static void test_srclk_periphmanager_isr_hardening() {
         "attachInterrupt must validate pin before registering the ISR");
 }
 
+static void test_gpio_string_and_cstr_paths_share_core() {
+    std::string src = readOptSrcFile("src/core/PeripheralManager.cpp");
+    if (src.empty()) {
+        TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
+        return;
+    }
+
+    const size_t readStringPos = src.find("GPIOState PeripheralManager::readPin(const String&", 0);
+    const size_t readCStrPos = src.find("GPIOState PeripheralManager::readPinByCStr", readStringPos);
+    const size_t writeStringPos = src.find("bool PeripheralManager::writePin(const String&", 0);
+    const size_t writeCStrPos = src.find("bool PeripheralManager::writePinByCStr", writeStringPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(readStringPos != std::string::npos && readCStrPos != std::string::npos,
+                             "both GPIO read entry points must exist");
+    TEST_ASSERT_TRUE_MESSAGE(writeStringPos != std::string::npos && writeCStrPos != std::string::npos,
+                             "both GPIO write entry points must exist");
+
+    const size_t nextRead = src.find("GPIOState PeripheralManager::readPinByCStr", readStringPos);
+    const size_t nextWrite = src.find("bool PeripheralManager::writePinByCStr", writeStringPos);
+    const std::string readStringBody = src.substr(readStringPos, nextRead - readStringPos);
+    const std::string readCStrBody = src.substr(readCStrPos, writeStringPos - readCStrPos);
+    const std::string writeStringBody = src.substr(writeStringPos, nextWrite - writeStringPos);
+    const std::string writeCStrBody = src.substr(writeCStrPos, 1800);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        readStringBody.find("readGpioStateLocked(*config, &peripheralId, nullptr)") != std::string::npos &&
+        readCStrBody.find("readGpioStateLocked(*config, nullptr, peripheralId)") != std::string::npos,
+        "String and C-string read paths must share the locked GPIO core");
+    TEST_ASSERT_TRUE_MESSAGE(
+        writeStringBody.find("writeGpioStateLocked(*config, &peripheralId, nullptr, state)") != std::string::npos &&
+        writeCStrBody.find("writeGpioStateLocked(*config, nullptr, peripheralId, state)") != std::string::npos,
+        "String and C-string write paths must share the locked GPIO core");
+
+    const size_t readCorePos = src.find("GPIOState PeripheralManager::readGpioStateLocked");
+    const size_t writeCorePos = src.find("bool PeripheralManager::writeGpioStateLocked");
+    TEST_ASSERT_TRUE_MESSAGE(readCorePos != std::string::npos && writeCorePos != std::string::npos,
+                             "shared GPIO cores must be implemented");
+    const std::string readCore = src.substr(readCorePos, writeCorePos - readCorePos);
+    const std::string writeCore = src.substr(writeCorePos, 3200);
+    TEST_ASSERT_TRUE_MESSAGE(
+        readCore.find("isReservedPin(pin)") != std::string::npos &&
+        readCore.find("digitalRead(pin)") != std::string::npos &&
+        readCore.find("analogRead(pin)") != std::string::npos &&
+        readCore.find("getRuntimeStateCStrLocked") != std::string::npos,
+        "shared read core must preserve GPIO input, reserved-pin and runtime-state behavior");
+    TEST_ASSERT_TRUE_MESSAGE(
+        writeCore.find("digitalWrite(pin") != std::string::npos &&
+        writeCore.find("ledcWrite") != std::string::npos &&
+        writeCore.find("getRuntimeStateCStrLocked") != std::string::npos,
+        "shared write core must preserve digital, PWM and runtime-state behavior");
+}
+
 // ============================================================
 // 主入口
 // ============================================================
@@ -743,6 +795,7 @@ void test_peripheral_manager_opt_group() {
     // 源码锁定防回归
     RUN_TEST(test_srclk_healthmonitor_exposes_isr_stats);
     RUN_TEST(test_srclk_periphmanager_isr_hardening);
+    RUN_TEST(test_gpio_string_and_cstr_paths_share_core);
 
     TestLog::groupEnd();
 }

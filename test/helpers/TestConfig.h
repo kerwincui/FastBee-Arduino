@@ -78,7 +78,7 @@ namespace TestConfig {
     static constexpr ChipProfile ALL_CHIP_PROFILES[] = {
         {"ESP32-F4R0",    320000, 0,              6},
         {"ESP32-S3-F8R0",  320000, 0,              8},
-        {"ESP32-S3-F8R4",  320000, 4*1024*1024,    8},
+        {"ESP32-S3-F8R8",  320000, 8*1024*1024,    8},
         {"ESP32-S3-F16R8", 320000, 8*1024*1024,    8},
     };
     static constexpr int CHIP_PROFILE_COUNT = 4;

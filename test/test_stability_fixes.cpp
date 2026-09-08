@@ -519,6 +519,27 @@ static void test_config_write_is_atomic() {
     TEST_ASSERT_TRUE_MESSAGE(
         storage.find("atomicReplaceFromTmp") != std::string::npos,
         "ConfigStorage flush paths must use tmp+rename atomic replace");
+    TEST_ASSERT_TRUE_MESSAGE(
+        storage.find("filename + \".bak\"") != std::string::npos &&
+        storage.find("Recovered %s from backup slot") != std::string::npos &&
+        storage.find("verifyJsonFile(tmpPath)") != std::string::npos,
+        "ConfigStorage must verify writes and recover from a previous-generation backup");
+
+    const std::string userManager = readStabilitySrcFile("src/security/UserManager.cpp");
+    const std::string networkManager = readStabilitySrcFile("src/network/NetworkManager.cpp");
+    const std::string featureManager = readStabilitySrcFile("src/core/RuntimeFeatureManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        userManager.find("ConfigStorage::getInstance().saveJSONConfig") != std::string::npos &&
+        userManager.find("ConfigStorage::getInstance().loadJSONConfig") != std::string::npos,
+        "User configuration must use the verified primary/backup storage path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        networkManager.find("ConfigStorage::getInstance().saveJSONConfig") != std::string::npos &&
+        networkManager.find("ConfigStorage::getInstance().loadJSONConfig") != std::string::npos,
+        "Network configuration must use the verified primary/backup storage path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        featureManager.find("ConfigStorage::getInstance().saveJSONConfig") != std::string::npos &&
+        featureManager.find("ConfigStorage::getInstance().loadJSONConfig") != std::string::npos,
+        "Feature configuration must use the verified primary/backup storage path");
 
     std::string rebooter = readStabilitySrcFile("src/systems/SystemRebooter.cpp");
     if (!rebooter.empty()) {
@@ -527,6 +548,39 @@ static void test_config_write_is_atomic() {
             rebooter.find("flushDirtyEntries(true)") != std::string::npos,
             "SystemRebooter must force-flush dirty config entries before restart");
     }
+}
+
+static void test_security_and_scheduler_release_guards() {
+    TestLog::testStart("Stability: TLS verification and scheduler budgets");
+
+    const std::string ota = readStabilitySrcFile("src/network/OTAManager.cpp");
+    const std::string mqtt = readStabilitySrcFile("src/protocols/MQTTClient.cpp");
+    const std::string cellular = readStabilitySrcFile("src/network/CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        ota.find("setInsecure()") == std::string::npos &&
+        ota.find("setCACertBundle(x509_crt_bundle_start, caBundleSize)") != std::string::npos,
+        "URL OTA must validate the server with the built-in CA bundle");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("setInsecure()") == std::string::npos &&
+        mqtt.find("setCACertBundle(x509_crt_bundle_start, caBundleSize)") != std::string::npos,
+        "WiFi MQTTS must validate the broker certificate");
+    TEST_ASSERT_TRUE_MESSAGE(
+        cellular.find("setInsecure()") == std::string::npos &&
+        cellular.find("setCACertBundle(x509_crt_bundle_start)") != std::string::npos,
+        "Cellular software TLS must validate the broker certificate");
+
+    const std::string taskHeader = readStabilitySrcFile("include/systems/TaskManager.h");
+    const std::string taskSource = readStabilitySrcFile("src/systems/TaskManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        taskHeader.find("executionBudget") != std::string::npos &&
+        taskHeader.find("overrunCount") != std::string::npos &&
+        taskHeader.find("deferredCount") != std::string::npos,
+        "Task statistics must expose budget, overrun, and deferred counts");
+    TEST_ASSERT_TRUE_MESSAGE(
+        taskSource.find("TASK_RUN_CYCLE_BUDGET_MS") != std::string::npos &&
+        taskSource.find("LOW_PRIORITY_OVERRUN_DISABLE_THRESHOLD") != std::string::npos &&
+        taskSource.find("setTaskExecutionBudget") != std::string::npos,
+        "Task scheduler must bound each cycle and isolate repeated low-priority overruns");
 }
 
 // ========== P0：规则配置保存防截断 ==========
@@ -641,11 +695,11 @@ static void test_millis_wraparound_safe_comparisons() {
 
     std::string network = readStabilitySrcFile("src/network/NetworkManager.cpp");
     if (!network.empty()) {
-        // 2026-08-10 起等待上限改为 perAttemptTimeoutMs（预扫描快速失败），
-        // 仍保持减法写法以兼容 millis 回绕
+        // 开机候选扫描已改为跨 update tick 的异步状态机；其扫描超时
+        // 必须继续使用减法写法，以兼容 millis 回绕。
         TEST_ASSERT_TRUE_MESSAGE(
-            network.find("millis() - waitStart < perAttemptTimeoutMs") != std::string::npos,
-            "WiFi connect wait must use subtraction-based timeout");
+            network.find("now - _bootStaRetryScanStartedAt < BOOT_STA_SCAN_TIMEOUT_MS") != std::string::npos,
+            "Async WiFi scan must use subtraction-based timeout");
     }
 
     std::string storage = readStabilitySrcFile("src/systems/ConfigStorage.cpp");
@@ -1386,6 +1440,7 @@ void test_stability_fixes_group() {
 
     // P0/P1 配置持久化
     RUN_TEST(test_config_write_is_atomic);
+    RUN_TEST(test_security_and_scheduler_release_guards);
     RUN_TEST(test_periph_exec_save_truncation_guard);
     RUN_TEST(test_config_cache_read_your_write);
 

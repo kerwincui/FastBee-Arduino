@@ -4,8 +4,9 @@
       "C:\\Program Files\\nodejs\\node.exe",
       "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\node_modules\\@playwright\\test\\cli.js",
       "test",
-      "suites/07-mqtt.spec.ts",
-      "--list"
+      "suites/14-integration.spec.ts",
+      "--grep",
+      "INT-01[123]"
     ],
     "configFile": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\playwright.config.ts",
     "rootDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
@@ -18,28 +19,34 @@
     "grep": {},
     "grepInvert": null,
     "maxFailures": 0,
-    "metadata": {},
+    "metadata": {
+      "actualWorkers": 1
+    },
     "preserveOutput": "always",
     "projects": [
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "smoke",
         "name": "smoke",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
         "testIgnore": [],
         "testMatch": [
-          "/01-auth|02-dashboard/"
+          "/01-auth|02-dashboard|23-memory-pressure-notice|24-web-smooth-access/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "core",
         "name": "core",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
@@ -47,27 +54,31 @@
         "testMatch": [
           "/03-network|04-device|07-mqtt|16-net-mqtt-switch/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "features",
         "name": "features",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
         "testIgnore": [],
         "testMatch": [
-          "/05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf/"
+          "/05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf|19-ir-remote|20-rf-remote/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "auxiliary",
         "name": "auxiliary",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
@@ -75,27 +86,31 @@
         "testMatch": [
           "/09-fullscreen|11-logs|12-files|13-users|18-linkage/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "regression",
         "name": "regression",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
         "testIgnore": [],
         "testMatch": [
-          "/14-integration|15-ui-regression/"
+          "/14-integration|15-ui-regression|21-asset-retry/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "perf",
         "name": "perf",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
@@ -103,13 +118,15 @@
         "testMatch": [
           "/17-perf/"
         ],
-        "timeout": 60000
+        "timeout": 90000
       },
       {
         "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
         "repeatEach": 1,
         "retries": 1,
-        "metadata": {},
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "linkage",
         "name": "linkage",
         "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
@@ -117,7 +134,23 @@
         "testMatch": [
           "/18-linkage/"
         ],
-        "timeout": 60000
+        "timeout": 90000
+      },
+      {
+        "outputDir": "D:/project/gitee/FastBee-Arduino/test/browser/test-results",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "web",
+        "name": "web",
+        "testDir": "D:/project/gitee/FastBee-Arduino/test/browser/suites",
+        "testIgnore": [],
+        "testMatch": [
+          "/24-web-smooth-access/"
+        ],
+        "timeout": 90000
       }
     ],
     "quiet": false,
@@ -154,1390 +187,395 @@
   },
   "suites": [
     {
-      "title": "07-mqtt.spec.ts",
-      "file": "07-mqtt.spec.ts",
+      "title": "14-integration.spec.ts",
+      "file": "14-integration.spec.ts",
       "column": 0,
       "line": 0,
       "specs": [],
       "suites": [
         {
-          "title": "Suite-07: MQTT/MQTTS通信协议",
-          "file": "07-mqtt.spec.ts",
+          "title": "Suite-14: 跨页面集成测试",
+          "file": "14-integration.spec.ts",
           "line": 3,
           "column": 6,
           "specs": [
             {
-              "title": "MQTT-001: 进入通信协议页 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-cddb71739bd7f66d60f2",
-              "file": "07-mqtt.spec.ts",
-              "line": 20,
-              "column": 7
-            },
-            {
-              "title": "MQTT-002: MQTT状态面板展示",
-              "ok": true,
+              "title": "INT-011: 全页面导航不报错",
+              "ok": false,
               "tags": [],
               "tests": [
                 {
-                  "timeout": 60000,
+                  "timeout": 90000,
                   "annotations": [],
                   "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
+                  "projectId": "regression",
+                  "projectName": "regression",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 43543,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:180:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:180:7"
+                        }
+                      ],
+                      "stdout": [
+                        {
+                          "text": "[CAPABILITY-API] ethernet=true cellular=true logViewer=true i18n=undefined\n"
+                        },
+                        {
+                          "text": "[CAPABILITY] menus=[dashboard,device,network,peripheral,periph-exec,protocol,device-control,rule-script,logs,users,features] fullscreen=true\n"
+                        },
+                        {
+                          "text": "页面 dashboard 加载成功\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "(node:35672) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+                        }
+                      ],
+                      "retry": 0,
+                      "startTime": "2026-09-08T13:11:48.997Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-011-全页面导航不报错-regression\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-011-全页面导航不报错-regression\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    },
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 43841,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:180:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:180:7"
+                        }
+                      ],
+                      "stdout": [
+                        {
+                          "text": "[CAPABILITY-API] ethernet=true cellular=true logViewer=true i18n=undefined\n"
+                        },
+                        {
+                          "text": "[CAPABILITY] menus=[dashboard,device,network,peripheral,periph-exec,protocol,device-control,rule-script,logs,users,features] fullscreen=true\n"
+                        },
+                        {
+                          "text": "页面 dashboard 加载成功\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "(node:44704) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+                        }
+                      ],
+                      "retry": 1,
+                      "startTime": "2026-09-08T13:12:33.428Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-011-全页面导航不报错-regression-retry1\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-011-全页面导航不报错-regression-retry1\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
                 }
               ],
-              "id": "f01be14059316a7d04cc-a74f807d973870970790",
-              "file": "07-mqtt.spec.ts",
-              "line": 24,
+              "id": "5b551f1fdf39c9e64d6b-1fdb35304da74dd0c724",
+              "file": "14-integration.spec.ts",
+              "line": 169,
               "column": 7
             },
             {
-              "title": "MQTT-003: 刷新状态",
-              "ok": true,
+              "title": "INT-012: 全页面无JS报错",
+              "ok": false,
               "tags": [],
               "tests": [
                 {
-                  "timeout": 60000,
+                  "timeout": 90000,
                   "annotations": [],
                   "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
+                  "projectId": "regression",
+                  "projectName": "regression",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 43009,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:196:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:196:7"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-09-08T13:13:18.197Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-012-全页面无JS报错-regression\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-012-全页面无JS报错-regression\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    },
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 44317,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:196:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:196:7"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-09-08T13:14:02.077Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-012-全页面无JS报错-regression-retry1\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-012-全页面无JS报错-regression-retry1\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
                 }
               ],
-              "id": "f01be14059316a7d04cc-ca8e8e8788ca7e791948",
-              "file": "07-mqtt.spec.ts",
-              "line": 29,
+              "id": "5b551f1fdf39c9e64d6b-7a2c8dd485e37cdef399",
+              "file": "14-integration.spec.ts",
+              "line": 188,
               "column": 7
             },
             {
-              "title": "MQTT-004: MQTT启用开关",
-              "ok": true,
+              "title": "INT-013: 快速页面切换稳定性",
+              "ok": false,
               "tags": [],
               "tests": [
                 {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-388a5aff3810c653806c",
-              "file": "07-mqtt.spec.ts",
-              "line": 37,
-              "column": 7
-            },
-            {
-              "title": "MQTT-005: 自动重连开关 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-e98c082ae21ccd832eb1",
-              "file": "07-mqtt.spec.ts",
-              "line": 46,
-              "column": 7
-            },
-            {
-              "title": "MQTT-006: 协议选择-mqtt://",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-0cba6e096faaec40f590",
-              "file": "07-mqtt.spec.ts",
-              "line": 54,
-              "column": 7
-            },
-            {
-              "title": "MQTT-007: 协议选择-mqtts://",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-9febc42965c5e56d0cb1",
-              "file": "07-mqtt.spec.ts",
-              "line": 63,
-              "column": 7
-            },
-            {
-              "title": "MQTT-008: Broker地址输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-2bbcc277bc44b18d0aa6",
-              "file": "07-mqtt.spec.ts",
-              "line": 74,
-              "column": 7
-            },
-            {
-              "title": "MQTT-009: 端口输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-a12835002b69e3a748f4",
-              "file": "07-mqtt.spec.ts",
-              "line": 80,
-              "column": 7
-            },
-            {
-              "title": "MQTT-010: 客户端ID输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-9bd6ad49c69cc0c3112c",
-              "file": "07-mqtt.spec.ts",
-              "line": 86,
-              "column": 7
-            },
-            {
-              "title": "MQTT-011: 认证方式选择 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-d39e85b9283cdda67ae1",
-              "file": "07-mqtt.spec.ts",
-              "line": 92,
-              "column": 7
-            },
-            {
-              "title": "MQTT-012: 用户名密码输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-80a358ea0a0427cb281d",
-              "file": "07-mqtt.spec.ts",
-              "line": 100,
-              "column": 7
-            },
-            {
-              "title": "MQTT-013: 心跳间隔修改",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f0ab41382937fa1d61d1",
-              "file": "07-mqtt.spec.ts",
-              "line": 111,
-              "column": 7
-            },
-            {
-              "title": "MQTT-014: 经度输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-4120cbede7d7a999e727",
-              "file": "07-mqtt.spec.ts",
-              "line": 126,
-              "column": 7
-            },
-            {
-              "title": "MQTT-015: 纬度输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-c2b6366b226006731500",
-              "file": "07-mqtt.spec.ts",
-              "line": 138,
-              "column": 7
-            },
-            {
-              "title": "MQTT-016: ICCID输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-dcb7445a4d1bbf1655c8",
-              "file": "07-mqtt.spec.ts",
-              "line": 150,
-              "column": 7
-            },
-            {
-              "title": "MQTT-017: 添加发布主题",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f34c66fb5d398db9f557",
-              "file": "07-mqtt.spec.ts",
-              "line": 164,
-              "column": 7
-            },
-            {
-              "title": "MQTT-018: 添加多个发布主题",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-e1dfb9012af44b9ca481",
-              "file": "07-mqtt.spec.ts",
-              "line": 176,
-              "column": 7
-            },
-            {
-              "title": "MQTT-019: 删除发布主题",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-fa1f81a20145d46005b8",
-              "file": "07-mqtt.spec.ts",
-              "line": 189,
-              "column": 7
-            },
-            {
-              "title": "MQTT-020: 添加订阅主题 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-54b7a1b7573ca8206668",
-              "file": "07-mqtt.spec.ts",
-              "line": 200,
-              "column": 7
-            },
-            {
-              "title": "MQTT-021: 添加多个订阅主题",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-85d7bf9ded2f2104f5b9",
-              "file": "07-mqtt.spec.ts",
-              "line": 211,
-              "column": 7
-            },
-            {
-              "title": "MQTT-022: 删除订阅主题",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-4429ef87d5c1a22bb9fc",
-              "file": "07-mqtt.spec.ts",
-              "line": 224,
-              "column": 7
-            },
-            {
-              "title": "MQTT-023: 主题模板变量",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-c9e7f718039dfb1df9c7",
-              "file": "07-mqtt.spec.ts",
-              "line": 235,
-              "column": 7
-            },
-            {
-              "title": "MQTT-024: 展开遗嘱消息配置",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-ceeb4cda5330f52e8018",
-              "file": "07-mqtt.spec.ts",
-              "line": 247,
-              "column": 7
-            },
-            {
-              "title": "MQTT-025: 遗嘱主题输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-cd9c2f30e6f93d696c4c",
-              "file": "07-mqtt.spec.ts",
-              "line": 257,
-              "column": 7
-            },
-            {
-              "title": "MQTT-026: 遗嘱消息内容",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-41e782e2389d227a6530",
-              "file": "07-mqtt.spec.ts",
-              "line": 266,
-              "column": 7
-            },
-            {
-              "title": "MQTT-027: 遗嘱QoS选择",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-4f8c3662bde6306fa7ae",
-              "file": "07-mqtt.spec.ts",
-              "line": 275,
-              "column": 7
-            },
-            {
-              "title": "MQTT-028: MQTT配置保存",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-cedc7a0d2e27a1a6df43",
-              "file": "07-mqtt.spec.ts",
-              "line": 286,
-              "column": 7
-            },
-            {
-              "title": "MQTT-029: MQTT连接状态",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-ef16d931ebfef0914b02",
-              "file": "07-mqtt.spec.ts",
-              "line": 297,
-              "column": 7
-            },
-            {
-              "title": "MQTT-030: MQTTS连接验证 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-87521ebda10967df0c0f",
-              "file": "07-mqtt.spec.ts",
-              "line": 311,
-              "column": 7
-            },
-            {
-              "title": "MQTT-031: MQTT数据发布验证",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-953545556b874bdde771",
-              "file": "07-mqtt.spec.ts",
-              "line": 324,
-              "column": 7
-            },
-            {
-              "title": "MQTT-032: mqtt://首次连接全流程",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-2b6630bde676f5e6fa20",
-              "file": "07-mqtt.spec.ts",
-              "line": 332,
-              "column": 7
-            },
-            {
-              "title": "MQTT-033: mqtt://连接状态字段完整",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-98c793fca94f24e5bd68",
-              "file": "07-mqtt.spec.ts",
-              "line": 352,
-              "column": 7
-            },
-            {
-              "title": "MQTT-034: mqtt://禁用后状态",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f2e45ed1844a20f80590",
-              "file": "07-mqtt.spec.ts",
-              "line": 366,
-              "column": 7
-            },
-            {
-              "title": "MQTT-035: mqtt://重新启用后连接",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-fcbd79ad829bda3e0317",
-              "file": "07-mqtt.spec.ts",
-              "line": 377,
-              "column": 7
-            },
-            {
-              "title": "MQTT-036: mqtt://错误Broker地址 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-822d23b0c618de821dfd",
-              "file": "07-mqtt.spec.ts",
-              "line": 386,
-              "column": 7
-            },
-            {
-              "title": "MQTT-037: mqtt://错误端口",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f6affbc79b08f135dc7a",
-              "file": "07-mqtt.spec.ts",
-              "line": 406,
-              "column": 7
-            },
-            {
-              "title": "MQTT-038: mqtt://错误用户名",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-30182c2d039bd70b3b66",
-              "file": "07-mqtt.spec.ts",
-              "line": 417,
-              "column": 7
-            },
-            {
-              "title": "MQTT-039: mqtt://错误密码",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-c881c5740058ab8f09f0",
-              "file": "07-mqtt.spec.ts",
-              "line": 434,
-              "column": 7
-            },
-            {
-              "title": "MQTT-040: mqtt://连接后自动重连",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-82f9d36f06f2a4a701a2",
-              "file": "07-mqtt.spec.ts",
-              "line": 445,
-              "column": 7
-            },
-            {
-              "title": "MQTT-041: mqtt://禁用自动重连后断开",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-1b8b9f0538e5075d0567",
-              "file": "07-mqtt.spec.ts",
-              "line": 454,
-              "column": 7
-            },
-            {
-              "title": "MQTT-042: mqtt://重连次数统计",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-d86e93c1e144e1b538be",
-              "file": "07-mqtt.spec.ts",
-              "line": 467,
-              "column": 7
-            },
-            {
-              "title": "MQTT-043: mqtts://协议切换验证",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-e128503a6b4e0a072b52",
-              "file": "07-mqtt.spec.ts",
-              "line": 477,
-              "column": 7
-            },
-            {
-              "title": "MQTT-044: mqtts://ESP32-S3全功能设备连接",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-9dd159277c3618e08423",
-              "file": "07-mqtt.spec.ts",
-              "line": 486,
-              "column": 7
-            },
-            {
-              "title": "MQTT-045: mqtts://失败后Web服务恢复",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-e833af2771201cb5bc77",
-              "file": "07-mqtt.spec.ts",
-              "line": 498,
-              "column": 7
-            },
-            {
-              "title": "MQTT-046: mqtts://失败后回退mqtt",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-7bffefd23e452a9e7346",
-              "file": "07-mqtt.spec.ts",
-              "line": 505,
-              "column": 7
-            },
-            {
-              "title": "MQTT-047: mqtts://连接后DRAM监控",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-abe34a74868563d5c43e",
-              "file": "07-mqtt.spec.ts",
-              "line": 522,
-              "column": 7
-            },
-            {
-              "title": "MQTT-048: mqtts://断开后内存释放",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-24c27a7cf8e4eccde280",
-              "file": "07-mqtt.spec.ts",
-              "line": 535,
-              "column": 7
-            },
-            {
-              "title": "MQTT-049: mqtts://自动重连",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-2b63ab83abd43f706c16",
-              "file": "07-mqtt.spec.ts",
-              "line": 545,
-              "column": 7
-            },
-            {
-              "title": "MQTT-050: mqtts://重连内存泄漏检测",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-347c2cf67068539e385b",
-              "file": "07-mqtt.spec.ts",
-              "line": 552,
-              "column": 7
-            },
-            {
-              "title": "MQTT-051: 产品秘钥输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-46e420134b6447b5f2fd",
-              "file": "07-mqtt.spec.ts",
-              "line": 570,
-              "column": 7
-            },
-            {
-              "title": "MQTT-052: 授权码输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-bfef48ee75ea7996c421",
-              "file": "07-mqtt.spec.ts",
-              "line": 579,
-              "column": 7
-            },
-            {
-              "title": "MQTT-053: MQTT时间同步按钮",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-b66604f18c04ed449f0e",
-              "file": "07-mqtt.spec.ts",
-              "line": 588,
-              "column": 7
-            },
-            {
-              "title": "MQTT-054: MQTT测试结果",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-8524d06d023db531cc46",
-              "file": "07-mqtt.spec.ts",
-              "line": 596,
-              "column": 7
-            },
-            {
-              "title": "MQTT-055: 遗嘱保留开关",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-436fb59d3693cb0de77a",
-              "file": "07-mqtt.spec.ts",
-              "line": 604,
-              "column": 7
-            },
-            {
-              "title": "MQTT-056: 卡平台编号输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-3c67264ba60c9e6e280c",
-              "file": "07-mqtt.spec.ts",
-              "line": 616,
-              "column": 7
-            },
-            {
-              "title": "MQTT-057: 摘要JSON输入",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-70e77819b8ba141d49f9",
-              "file": "07-mqtt.spec.ts",
-              "line": 628,
-              "column": 7
-            },
-            {
-              "title": "MQTT-058: MQTT成功消息元素",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f69d00f1c626d4c9d0df",
-              "file": "07-mqtt.spec.ts",
-              "line": 640,
-              "column": 7
-            },
-            {
-              "title": "MQTT-059: 完整MQTT配置保存+刷新",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-bf62a0bb047b8b3b1083",
-              "file": "07-mqtt.spec.ts",
-              "line": 645,
-              "column": 7
-            },
-            {
-              "title": "MQTT-060: MQTT配置持久化验证",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-6e935a4d955fb01fd9b6",
-              "file": "07-mqtt.spec.ts",
-              "line": 666,
-              "column": 7
-            },
-            {
-              "title": "MQTT-061: MQTT表单完整性",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-f02e17b0f189e61577eb",
-              "file": "07-mqtt.spec.ts",
-              "line": 672,
-              "column": 7
-            },
-            {
-              "title": "MQTT-062: MQTT状态面板完整性",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-8481cbe1c61908677798",
-              "file": "07-mqtt.spec.ts",
-              "line": 681,
-              "column": 7
-            },
-            {
-              "title": "MQTT-063: MQTT表单按钮完整性",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-d0b4c47a3b532bedfdc9",
-              "file": "07-mqtt.spec.ts",
-              "line": 690,
-              "column": 7
-            },
-            {
-              "title": "MQTT-064: 可折叠区域展开/收起",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-0f934b58023f34ee9750",
-              "file": "07-mqtt.spec.ts",
-              "line": 699,
-              "column": 7
-            },
-            {
-              "title": "MQTT-065: API健康检查",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-16700772bdc933a45ed6",
-              "file": "07-mqtt.spec.ts",
-              "line": 716,
-              "column": 7
-            },
-            {
-              "title": "MQTT-066: 状态接口暴露重连观测字段 @quick",
-              "ok": true,
-              "tags": [
-                "quick"
-              ],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-db2675a5f665cfa07d35",
-              "file": "07-mqtt.spec.ts",
-              "line": 728,
-              "column": 7
-            },
-            {
-              "title": "MQTT-067: 手动重连接口可用（恢复路径）",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-35642ce3ee9353d1c3a5",
-              "file": "07-mqtt.spec.ts",
-              "line": 752,
-              "column": 7
-            },
-            {
-              "title": "MQTT-068: 刷新状态按钮触发状态更新（UI交互回归）",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "core",
-                  "projectName": "core",
-                  "results": [],
-                  "status": "skipped"
-                }
-              ],
-              "id": "f01be14059316a7d04cc-1c37d96dd00b09899e67",
-              "file": "07-mqtt.spec.ts",
-              "line": 775,
+                  "timeout": 90000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "regression",
+                  "projectName": "regression",
+                  "results": [
+                    {
+                      "workerIndex": 4,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 43705,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:211:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:211:7"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-09-08T13:14:47.251Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-013-快速页面切换稳定性-regression\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-013-快速页面切换稳定性-regression\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    },
+                    {
+                      "workerIndex": 5,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 43898,
+                      "error": {
+                        "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n",
+                        "stack": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:211:7",
+                        "location": {
+                          "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                          "column": 22,
+                          "line": 535
+                        },
+                        "snippet": "\u001b[90m   at \u001b[39m..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                            "column": 22,
+                            "line": 535
+                          },
+                          "message": "TimeoutError: page.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.menu-item[data-page=\"device\"]')\u001b[22m\n\u001b[2m    - locator resolved to <a href=\"#\" class=\"menu-item\" data-page=\"device\">…</a>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    19 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n   at ..\\fixtures\\base.fixture.ts:535\n\n  533 |         // 菜单项偶发不可见（UI 残留状态）：click 失败也进入重试，reload 恢复后再试\n  534 |         try {\n> 535 |           await page.click(`.menu-item[data-page=\"${pageName}\"]`, { timeout: 10_000 });\n      |                      ^\n  536 |         } catch (clickErr) {\n  537 |           if (attempt < maxRetries) {\n  538 |             await page.reload({ timeout: 20_000 }).catch(() => {});\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts:535:22\n    at D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\suites\\14-integration.spec.ts:211:7"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-09-08T13:15:32.127Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-013-快速页面切换稳定性-regression-retry1\\test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\test-results\\14-integration-Suite-14-跨页面集成测试-INT-013-快速页面切换稳定性-regression-retry1\\error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "D:\\project\\gitee\\FastBee-Arduino\\test\\browser\\fixtures\\base.fixture.ts",
+                        "column": 22,
+                        "line": 535
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "5b551f1fdf39c9e64d6b-90fb650997a68d7d0b86",
+              "file": "14-integration.spec.ts",
+              "line": 207,
               "column": 7
             }
           ]
@@ -1547,11 +585,11 @@
   ],
   "errors": [],
   "stats": {
-    "startTime": "2026-07-27T19:21:15.850Z",
-    "duration": 268.0899999999999,
+    "startTime": "2026-09-08T13:11:48.229Z",
+    "duration": 268196.896,
     "expected": 0,
-    "skipped": 68,
-    "unexpected": 0,
+    "skipped": 0,
+    "unexpected": 3,
     "flaky": 0
   }
 }

@@ -28,8 +28,10 @@
 #define FASTBEE_ENABLE_RULE_SCRIPT 1
 #define FASTBEE_ENABLE_OTA 1
 #define FASTBEE_ENABLE_OTA_FS 1
-// 刻意不定义: LED_SCREEN / COMMAND_SCRIPT / MODBUS_SLAVE / BLE
+// 刻意不定义: LED_SCREEN / COMMAND_SCRIPT / BLE
 // —— 用于验证"未编译功能"路径
+// 注: MODBUS_SLAVE 特性已从注册表彻底移除（不再是"未编译功能"），
+//     由 test_rfm_modbus_slave_removed 专门验证其不存在
 
 #include "core/RuntimeFeatureManager.h"
 #include "core/FeatureBudget.h"
@@ -70,12 +72,12 @@ void test_rfm_first_run_generates_defaults() {
     auto& mgr = RuntimeFeatureManager::instance();
     TEST_ASSERT_TRUE(mgr.loadConfig());
     TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json"));
-    // B 类功能默认启用
-    TEST_ASSERT_TRUE(mgr.shouldEnable("lcd"));
-    TEST_ASSERT_TRUE(mgr.shouldEnable("neopixel"));
-    TEST_ASSERT_TRUE(mgr.shouldEnable("modbus"));
-    TEST_ASSERT_TRUE(mgr.shouldEnable("ruleScript"));
-    // C 类功能默认禁用
+    // 统一镜像默认只保留管理入口；外设/协议由功能配置显式启用。
+    TEST_ASSERT_FALSE(mgr.shouldEnable("lcd"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("neopixel"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("modbus"));
+    TEST_ASSERT_FALSE(mgr.shouldEnable("ruleScript"));
+    // 高级功能同样默认禁用
     TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("rfid"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("lcdGb2312"));
@@ -86,6 +88,7 @@ void test_rfm_persist_and_reload() {
     resetMockFs();
     auto& mgr = RuntimeFeatureManager::instance();
     TEST_ASSERT_TRUE(mgr.loadConfig());
+    mgr.setNetworkReady(true);
 
     JsonDocument doc;
     doc["features"]["irRemote"]["enabled"] = true;
@@ -126,8 +129,8 @@ void test_rfm_corrupted_json_fallback() {
     auto& mgr = RuntimeFeatureManager::instance();
     // 返回 false 表示使用了回退
     TEST_ASSERT_FALSE(mgr.loadConfig());
-    // 回退后仍正常工作，B 类默认启用
-    TEST_ASSERT_TRUE(mgr.shouldEnable("lcd"));
+    // 回退后仍正常工作，统一镜像默认关闭重型外设
+    TEST_ASSERT_FALSE(mgr.shouldEnable("lcd"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
 }
 
@@ -136,7 +139,13 @@ void test_rfm_estimation() {
     resetMockFs();
     auto& mgr = RuntimeFeatureManager::instance();
     TEST_ASSERT_TRUE(mgr.loadConfig());
-    // B 类默认启用合计: lcd20+neopixel12+sevenSegment3+ds18b20 5+modbus20+ruleScript 8 = 68KB
+    mgr.setNetworkReady(true);
+    JsonDocument enable;
+    for (const char* key : {"lcd", "neopixel", "sevenSegment", "ds18b20", "modbus", "ruleScript"}) {
+        enable["features"][key]["enabled"] = true;
+    }
+    TEST_ASSERT_TRUE(mgr.updateFromJson(enable));
+    // 显式启用后的合计: lcd20+neopixel12+sevenSegment3+ds18b20 5+modbus20+ruleScript 8 = 68KB
     TEST_ASSERT_GREATER_OR_EQUAL(68, mgr.estimateFlashKB());
     TEST_ASSERT_GREATER_THAN(0, mgr.estimateRamB());
 
@@ -153,6 +162,7 @@ void test_rfm_uncompiled_cannot_enable() {
     resetMockFs();
     auto& mgr = RuntimeFeatureManager::instance();
     TEST_ASSERT_TRUE(mgr.loadConfig());
+    mgr.setNetworkReady(true);
 
     // ble / commandScript / ledScreen 在当前宏下未编译
     TEST_ASSERT_FALSE(mgr.shouldEnable("ble"));
@@ -202,6 +212,7 @@ void test_rfm_budget_denied() {
     resetMockFs();
     auto& mgr = RuntimeFeatureManager::instance();
     TEST_ASSERT_TRUE(mgr.loadConfig());
+    mgr.setNetworkReady(true);
 
     JsonDocument doc;
     doc["features"]["rfid"]["enabled"] = true;
@@ -214,6 +225,30 @@ void test_rfm_budget_denied() {
     TEST_ASSERT_FALSE(mgr.shouldEnable("rfid"));
 }
 
+// Test 10: modbusSlave 从站特性已彻底移除（禁用从站后不再注册，界面不显示）
+void test_rfm_modbus_slave_removed() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    // 从站特性已从注册表移除：shouldEnable 对未注册 key 安全返回 false
+    TEST_ASSERT_FALSE(mgr.shouldEnable("modbusSlave"));
+
+    // 状态 JSON（/api/features/status 数据源）不得含 modbusSlave，
+    // 确保功能配置界面彻底不显示从站项（而非 compiled=false 的灰显）
+    JsonDocument doc;
+    mgr.getStatusJson(doc.as<JsonVariant>());
+    JsonArray features = doc["features"];
+    bool foundSlave = false;
+    bool foundMaster = false;
+    for (JsonObject f : features) {
+        if (strcmp(f["key"], "modbusSlave") == 0) foundSlave = true;
+        if (strcmp(f["key"], "modbus") == 0) foundMaster = true;
+    }
+    TEST_ASSERT_FALSE(foundSlave);   // 从站项已移除
+    TEST_ASSERT_TRUE(foundMaster);   // 主站项 modbus 仍保留
+}
+
 void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_first_run_generates_defaults);
     RUN_TEST(test_rfm_persist_and_reload);
@@ -224,4 +259,5 @@ void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_unknown_key_disabled);
     RUN_TEST(test_rfm_status_json);
     RUN_TEST(test_rfm_budget_denied);
+    RUN_TEST(test_rfm_modbus_slave_removed);
 }

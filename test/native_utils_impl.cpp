@@ -430,10 +430,6 @@ void FileUtils::findFilesRecursive(const String&, const String&, std::vector<Fil
 
 void FileUtils::listDirectoryRecursive(const String&, std::vector<FileInfo>&) {}
 
-size_t FileUtils::calculateFolderSizeRecursive(const String&) {
-    return 0;
-}
-
 bool FileUtils::patternMatches(const String& fileName, const String& pattern) {
     return pattern == "*" || fileName == pattern;
 }

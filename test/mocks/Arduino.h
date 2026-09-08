@@ -140,6 +140,16 @@ public:
         try { return std::stof(_value); } catch (...) { return 0.0f; }
     }
 
+    // native 测试辅助：printf 风格格式化。
+    // 部分测试用 String("fmt %d").str(args...) 生成日志文本，ESP32 WString 无此方法，
+    // 这里在 mock 中补齐，使 native 全量 suite 可编译（不影响固件构建）。
+    template <typename... Args>
+    String str(Args... args) const {
+        char buf[256];
+        snprintf(buf, sizeof(buf), _value.c_str(), args...);
+        return String(buf);
+    }
+
     size_t write(uint8_t value) {
         _value.push_back(static_cast<char>(value));
         return 1;

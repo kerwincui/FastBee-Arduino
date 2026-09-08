@@ -1,4 +1,37 @@
 import { test, expect, waitForDevice } from '../fixtures/base.fixture';
+import type { Page } from '@playwright/test';
+
+// Some dashboard fragments are mounted twice during a refresh. Prefer the
+// visible instance so a stale hidden fragment cannot trigger strict-mode
+// failures while the device is still serving the page.
+function visibleById(page: Page, id: string) {
+  return page.locator(`#${id}`).filter({ visible: true }).first();
+}
+
+/** Embedded targets can take several seconds to populate a dashboard refresh. */
+async function expectDashboardValue(page: Page, id: string, matcher: RegExp, timeout = 20_000) {
+  await expect.poll(
+    async () => (await visibleById(page, id).textContent())?.trim() ?? '',
+    { timeout, intervals: [500, 1000, 2000] },
+  ).toMatch(matcher);
+}
+
+async function skipIfDeviceControlHidden(page: Page) {
+  const menu = page.locator('.menu-item[data-page="device-control"]');
+  const runtimeEnabled = await page.evaluate(async () => {
+    try {
+      const response = await fetch('/api/system/status?probe=1', { cache: 'no-store' });
+      if (!response.ok) return null;
+      const payload = await response.json() as { data?: { features?: { deviceControl?: string } } };
+      return payload.data?.features?.deviceControl === 'active';
+    } catch {
+      return null;
+    }
+  }).catch(() => null);
+  if (runtimeEnabled === false || !(await menu.isVisible().catch(() => false))) {
+    test.skip(true, '设备未启用设备大屏功能（内存护栏或功能配置已禁用）');
+  }
+}
 
 test.describe('Suite-02: 设备监控仪表盘', () => {
 
@@ -47,17 +80,10 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
   test('DASH-005: Flash存储进度条 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     await authPage.click('#monitor-refresh-btn');
-    await authPage.waitForTimeout(5000); // 等待设备数据加载
-    const pct = await authPage.locator('#monitor-flash-percent').textContent();
-    expect(pct).toMatch(/\d+%/);
-    const used = await authPage.locator('#monitor-flash-used').textContent();
-    expect(used).not.toBe('--');
-    const free = await authPage.locator('#monitor-flash-free').textContent();
-    expect(free).not.toBe('--');
-    const total = await authPage.locator('#monitor-flash-total').textContent();
-    expect(total).not.toBe('--');
-    const sketch = await authPage.locator('#monitor-flash-sketch').textContent();
-    expect(sketch).not.toBe('--');
+    await expectDashboardValue(authPage, 'monitor-flash-percent', /\d+%/);
+    for (const id of ['monitor-flash-used', 'monitor-flash-free', 'monitor-flash-total', 'monitor-flash-sketch']) {
+      await expectDashboardValue(authPage, id, /^(?!-$|--$).+/);
+    }
   });
 
   test('DASH-006: Heap内存进度条', async ({ authPage, navigateTo }) => {
@@ -169,12 +195,14 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
   });
 
   test('DASH-016: 全屏监控-新标签页', async ({ authPage, navigateTo }) => {
+    await skipIfDeviceControlHidden(authPage);
     await navigateTo('device-control');
     // 设备大屏页面应加载
     await expect(authPage.locator('#device-control-page')).toBeVisible();
   });
 
   test('DASH-017: 全屏监控-刷新按钮', async ({ authPage, navigateTo }) => {
+    await skipIfDeviceControlHidden(authPage);
     await navigateTo('device-control');
     // 设备控制页内加载
     await authPage.waitForTimeout(2000);
@@ -182,6 +210,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
   });
 
   test('DASH-018: 全屏监控-关闭标签页', async ({ authPage, navigateTo }) => {
+    await skipIfDeviceControlHidden(authPage);
     await navigateTo('device-control');
     await authPage.waitForTimeout(1000);
     // 关闭按钮存在
@@ -189,22 +218,46 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
   });
 
   test('DASH-019: 仪表盘数据自动更新', async ({ authPage, navigateTo }) => {
-    test.setTimeout(180_000); // 需要等待超过1分钟
+    test.setTimeout(60_000);
     await navigateTo('dashboard');
     await authPage.click('#monitor-refresh-btn'); // 确保数据已加载
     await authPage.waitForTimeout(3000);
-    const uptime1 = await authPage.locator('#monitor-uptime').textContent();
-    if (uptime1 === '--') {
-      await authPage.waitForTimeout(5000); // 再等待数据加载
-    }
-    const uptimeBefore = await authPage.locator('#monitor-uptime').textContent();
-    // 等待超过1分钟确保分钟级变化（设备可能只更新到分钟精度）
-    await authPage.waitForTimeout(90_000);
-    await authPage.click('#monitor-refresh-btn');
-    await authPage.waitForTimeout(3000);
-    const uptimeAfter = await authPage.locator('#monitor-uptime').textContent();
-    // 运行时间应有变化
-    expect(uptimeAfter).not.toBe(uptimeBefore);
+    const readUptime = async () => authPage.evaluate(async () => {
+      const response = await fetch('/api/system/status?probe=1', { cache: 'no-store' });
+      if (response.status === 503) {
+        const payload = await response.json().catch(() => ({})) as {
+          message?: string;
+          error?: string;
+          retryAfter?: number;
+        };
+        const detail = `${payload.message || ''} ${payload.error || ''}`.toLowerCase();
+        if (/low\s+memory|critical\s+memory|memory\s+pressure|内存紧张|内存压力|低内存/.test(detail)) {
+          return { retryAfterMs: Math.max(1000, Number(payload.retryAfter || 5) * 1000) };
+        }
+      }
+      if (!response.ok) return null;
+      const payload = await response.json() as { data?: { uptime?: number } };
+      return { uptime: Number(payload.data?.uptime) };
+    });
+    let uptimeBefore = 0;
+    await expect.poll(async () => {
+      const result = await readUptime();
+      if (result && 'retryAfterMs' in result) {
+        await authPage.waitForTimeout(Math.min(result.retryAfterMs, 8000));
+        return 0;
+      }
+      uptimeBefore = result && 'uptime' in result ? result.uptime : 0;
+      return uptimeBefore;
+    }, { timeout: 30_000, intervals: [500, 1000, 2000] }).toBeGreaterThan(0);
+    await expect.poll(async () => {
+      const result = await readUptime();
+      if (result && 'retryAfterMs' in result) {
+        await authPage.waitForTimeout(Math.min(result.retryAfterMs, 8000));
+        return uptimeBefore;
+      }
+      return result && 'uptime' in result ? result.uptime : 0;
+    }, { timeout: 45_000, intervals: [1000, 2000, 3000] })
+      .toBeGreaterThan(uptimeBefore);
   });
 
   // ========== 场景D: 布局与视觉 ==========

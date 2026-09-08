@@ -42,9 +42,15 @@ function serialReset(port: string): boolean {
 async function waitForDevice(maxMs = 60_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
-    // 固件实际端点为 /api/system/health，返回 { success: true, data: { status: 'healthy' } }
-    const health = await fetchJson(`${BASE_URL}/api/system/health`, 5_000);
-    if (health && (health.success === true || health.ok)) return true;
+    // /api/health is the public probe; retain the legacy endpoint as a fallback
+    // for older deployed images.
+    const health = await fetchJson(`${BASE_URL}/api/health`, 5_000)
+      ?? await fetchJson(`${BASE_URL}/api/system/health`, 5_000);
+    const status = health?.data;
+    if (health && (health.success === true || health.ok === true
+      || (status && typeof status === 'object' && (status as Record<string, unknown>).status === 'healthy'))) {
+      return true;
+    }
     await new Promise(r => setTimeout(r, 2_000));
   }
   return false;
