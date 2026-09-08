@@ -1,5 +1,6 @@
 #include "./security/UserManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
 #include "utils/TimeUtils.h"
 #include <mbedtls/md5.h>
@@ -575,11 +576,21 @@ bool UserManager::saveUsersToStorage() {
     }
 #endif
 
+    doc["version"] = 1;
     JsonObject security = doc["security"].to<JsonObject>();
     security["maxLoginAttempts"]        = config.maxLoginAttempts;
     security["loginLockoutTime"]        = config.loginLockoutTime;
     security["minPasswordLength"]       = config.minPasswordLength;
+    security["maxPasswordLength"]       = config.maxPasswordLength;
     security["requireStrongPasswords"]  = config.requireStrongPasswords;
+    security["allowMultipleSessions"]   = config.allowMultipleSessions;
+    security["sessionTimeout"]           = config.sessionTimeout;
+    security["sessionCleanupInterval"]   = config.sessionCleanupInterval;
+    security["enableSessionPersistence"] = config.enableSessionPersistence;
+    security["cookieName"]               = config.cookieName;
+    security["cookieMaxAge"]             = config.cookieMaxAge;
+    security["cookieHttpOnly"]           = config.cookieHttpOnly;
+    security["cookieSecure"]             = config.cookieSecure;
 
     if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
         LOG_ERROR("UserManager: Failed to create /config directory");
@@ -587,26 +598,15 @@ bool UserManager::saveUsersToStorage() {
     }
 
     const char* savePath = FASTBEE_SINGLE_ADMIN_MODE ? ADMIN_AUTH_CONFIG_FILE : USERS_CONFIG_FILE;
-    File file = LittleFS.open(savePath, "w");
-    if (!file) {
-        LOG_ERROR("UserManager: Failed to open file for writing");
-        return false;
-    }
-
-    size_t written = serializeJson(doc, file);
-    file.close();
-    if (written == 0) {
-        LOG_ERROR("UserManager: Failed to write file");
-        return false;
-    }
-
-    return true;
+    return ConfigStorage::getInstance().saveJSONConfig(savePath, doc);
 }
 
 bool UserManager::loadUsersFromStorage() {
     UsersLock lk(_usersMutex);
-    const bool hasUsersFile = LittleFS.exists(USERS_CONFIG_FILE);
-    const bool hasAuthFile = LittleFS.exists(ADMIN_AUTH_CONFIG_FILE);
+    const bool hasUsersFile = LittleFS.exists(USERS_CONFIG_FILE) ||
+                              LittleFS.exists(String(USERS_CONFIG_FILE) + ".bak");
+    const bool hasAuthFile = LittleFS.exists(ADMIN_AUTH_CONFIG_FILE) ||
+                             LittleFS.exists(String(ADMIN_AUTH_CONFIG_FILE) + ".bak");
 
 #if FASTBEE_SINGLE_ADMIN_MODE
     const char* loadPath = hasAuthFile ? ADMIN_AUTH_CONFIG_FILE : (hasUsersFile ? USERS_CONFIG_FILE : nullptr);
@@ -619,19 +619,9 @@ bool UserManager::loadUsersFromStorage() {
         return false;
     }
 
-    File file = LittleFS.open(loadPath, "r");
-    if (!file) {
-        LOG_ERROR("UserManager: Failed to open user data file");
-        return false;
-    }
-
     FastBeeJsonDocLarge doc;
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
-    if (error) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "UserManager: Failed to parse user data: %s", error.c_str());
-        LOG_ERROR(buf);
+    if (!ConfigStorage::getInstance().loadJSONConfig(loadPath, doc)) {
+        LOG_ERROR("UserManager: Failed to load primary and backup user data");
         return false;
     }
 
@@ -836,10 +826,10 @@ String UserManager::getAllUsers() {
         const User& user = pair.second;
         JsonObject userObj = usersArray.add<JsonObject>();
         userObj["username"]    = user.username;
+        userObj["lastLogin"]   = user.lastLogin;
         userObj["enabled"]     = user.enabled;
         userObj["description"] = user.description;
         userObj["createTime"]  = user.createTime;
-        userObj["lastLogin"]   = user.lastLogin;
     }
 
     String jsonStr;

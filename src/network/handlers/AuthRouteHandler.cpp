@@ -3,8 +3,8 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
-#include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
+#include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 
 // ============ 登录异步化 ============
@@ -19,7 +19,15 @@ namespace {
 
 // 并发登录任务槽：防止恶意并发登录请求堆叠多个 PBKDF2 计算
 SemaphoreHandle_t loginSlotMutex() {
+    // PBKDF2 is CPU and stack heavy. On single-core C3/C6, two concurrent
+    // 8KB login tasks can starve lwIP and fragment the small internal DRAM
+    // pool; serialize those requests while retaining two slots on dual-core
+    // boards where the second core can keep the network responsive.
+#if CHIP_DUAL_CORE
     static SemaphoreHandle_t sem = xSemaphoreCreateCounting(2, 2);
+#else
+    static SemaphoreHandle_t sem = xSemaphoreCreateCounting(1, 1);
+#endif
     return sem;
 }
 
@@ -30,6 +38,7 @@ struct LoginJob {
     String password;
     String ipAddress;
     String userAgent;
+    bool apiClient = false;
 };
 
 void loginTask(void* arg) {
@@ -42,16 +51,23 @@ void loginTask(void* arg) {
         if (result.success) {
             JsonDocument responseDoc;
             responseDoc["success"] = true;
-            responseDoc["sessionId"] = result.sessionId;
+            if (job->apiClient) responseDoc["sessionId"] = result.sessionId;
             responseDoc["username"] = result.username;
 
             String jsonStr;
             serializeJson(responseDoc, jsonStr);
             AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
 
-            String cookieValue = result.sessionId + "; Path=/; Max-Age=" + String(3600);
-            response->addHeader("Set-Cookie", "sessionId=" + cookieValue);
-            response->addHeader("Set-Cookie", "session=" + cookieValue);
+            SecurityConfig securityConfig;
+            auto* authManager = static_cast<AuthManager*>(job->ctx->authManager);
+            if (authManager) securityConfig = authManager->getSecurityConfig();
+            if (securityConfig.cookieName.isEmpty()) securityConfig.cookieName = "sessionId";
+            String cookie = securityConfig.cookieName + "=" + result.sessionId +
+                            "; Path=/; Max-Age=" + String(securityConfig.cookieMaxAge) +
+                            "; SameSite=Strict";
+            if (securityConfig.cookieHttpOnly) cookie += "; HttpOnly";
+            if (securityConfig.cookieSecure) cookie += "; Secure";
+            response->addHeader("Set-Cookie", cookie);
             response->addHeader("Connection", "close");
             request->send(response);
         } else {
@@ -130,6 +146,7 @@ void AuthRouteHandler::handleLogin(AsyncWebServerRequest* request) {
     job->password = password;
     job->ipAddress = ipAddress;
     job->userAgent = userAgent;
+    job->apiClient = request->hasHeader("X-FastBee-Api-Client");
 
     // 双核芯片钉到 APP 核（核 1），把核 0 留给 WiFi/lwIP；
     // 单核芯片（C3/C6）普通创建：PBKDF2 任务优先级低于 lwIP tcpip 任务，
@@ -165,7 +182,21 @@ void AuthRouteHandler::handleLogout(AsyncWebServerRequest* request) {
     }
 
     if (ctx->authManager && ctx->authManager->logout(sessionId)) {
-        ctx->sendSuccess(request, "Logged out successfully");
+        JsonDocument doc;
+        doc["success"] = true;
+        doc["message"] = "Logged out successfully";
+        String body;
+        serializeJson(doc, body);
+        auto* response = request->beginResponse(200, "application/json", body);
+        auto* authManager = static_cast<AuthManager*>(ctx->authManager);
+        SecurityConfig securityConfig = authManager ? authManager->getSecurityConfig() : SecurityConfig();
+        if (securityConfig.cookieName.isEmpty()) securityConfig.cookieName = "sessionId";
+        String expiredCookie = securityConfig.cookieName + "=; Path=/; Max-Age=0; SameSite=Strict";
+        if (securityConfig.cookieHttpOnly) expiredCookie += "; HttpOnly";
+        if (securityConfig.cookieSecure) expiredCookie += "; Secure";
+        response->addHeader("Set-Cookie", expiredCookie);
+        response->addHeader("Connection", "close");
+        request->send(response);
     } else {
         ctx->sendError(request, 400, "Logout failed");
     }

@@ -19,6 +19,14 @@
 #include "systems/LoggerSystem.h"
 #include <esp_random.h>
 
+namespace {
+bool isLcdPeripheral(const String& id) {
+    PeripheralConfig snapshot;
+    return PeripheralManager::getInstance().getPeripheralSnapshot(id, snapshot) &&
+           snapshot.type == PeripheralType::LCD;
+}
+}
+
 // ========== 解析 ==========
 
 std::vector<ScriptCommand> ScriptEngine::parse(const String& script) {
@@ -334,8 +342,7 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
 #if FASTBEE_ENABLE_LCD
                 // LCD/OLED 优先分流：当目标外设类型为 LCD 时，TEXT/DISPLAY 子动作走自定义多行显示
                 else if ((cmd.subAction == "TEXT" || cmd.subAction == "DISPLAY") &&
-                         pm.getPeripheral(cmd.strParam) &&
-                         pm.getPeripheral(cmd.strParam)->type == PeripheralType::LCD) {
+                         isLcdPeripheral(cmd.strParam)) {
                     String val = cmd.extraParam;
 #if FASTBEE_ENABLE_PERIPH_EXEC
                     val = PeriphExecExecutor::resolveSensorTemplate(val);

@@ -822,6 +822,10 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     data["enabled"] = mqttConfigLoaded ? mqttConfigEnabled : false;
     data["autoStartAttempted"] = autoStartAttempted;
     data["autoStartStarted"] = autoStartStarted;
+    // Keep the status schema stable even before a valid MQTT configuration is
+    // loaded. The UI and telemetry consumers must not branch on key presence.
+    data["autoReconnect"] = false;
+    data["reconnectCount"] = 0;
 
     // 测试连接结果：在restore前记录的连接状态
     if (testWasConnected || testJustRestored) {

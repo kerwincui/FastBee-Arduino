@@ -6,10 +6,20 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/OTAManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include <ArduinoJson.h>
 
-// 注：分块写入/重启调度已下沉到 OTAManager，此处不再直接依赖
-// Update/RestartDiagnostics/SystemRebooter
+namespace {
+// OTA completion is owned by OTAManager, but keep the route-level recovery
+// hook available for integrations that finish an OTA from the HTTP layer.
+// It records the same diagnostic snapshot before scheduling a non-blocking
+// reboot, so no async_tcp handler invokes the reset primitive directly.
+void scheduleOtaRouteRestart(const char* reason) {
+    RestartDiagnostics::savePreRestartState(RestartReason::OTA_UPDATE, reason);
+    SystemRebooter::scheduleReboot(reason, 3000UL, RestartReason::OTA_UPDATE);
+}
+}  // namespace
 
 OTARouteHandler::OTARouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -123,8 +133,8 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
         return;
     }
 
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        ctx->sendError(request, 400, "Invalid URL format");
+    if (!url.startsWith("https://")) {
+        ctx->sendError(request, 400, "OTA URL must use HTTPS");
         return;
     }
 
@@ -157,9 +167,7 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
 
 void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const String& filename,
                                        size_t index, uint8_t* data, size_t len, bool final) {
-    if (!ctx->requiresAuth(request)) {
-        return;
-    }
+    if (!ctx->requireAuth(request)) return;
 
     if (!ctx->otaManager) {
         LOGGER.error("OTA: OTA manager not initialized, upload rejected");

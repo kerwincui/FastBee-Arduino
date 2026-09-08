@@ -102,31 +102,32 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     // 如果传了 id 参数，只返回单条外设（避免编辑时加载全部导致内存不足）
     if (request->hasParam("id")) {
         String periphId = request->getParam("id")->value();
-        const PeripheralConfig* config = pm.getPeripheral(periphId);
-        if (!config) {
+        PeripheralConfig config;
+        if (!pm.getPeripheralSnapshot(periphId, config)) {
             request->send(404, "application/json", "{\"success\":false,\"message\":\"Peripheral not found\"}");
             return;
         }
 
         JsonDocument doc;
-        doc["id"] = config->id;
-        doc["name"] = config->name;
-        doc["type"] = static_cast<int>(config->type);
-        doc["typeName"] = getPeripheralTypeName(config->type);
-        doc["category"] = getCategoryName(getPeripheralCategory(config->type));
-        doc["enabled"] = config->enabled;
-        addPassiveBuzzerFlag(doc, *config);
+        doc["id"] = config.id;
+        doc["name"] = config.name;
+        doc["type"] = static_cast<int>(config.type);
+        doc["typeName"] = getPeripheralTypeName(config.type);
+        doc["category"] = getCategoryName(getPeripheralCategory(config.type));
+        doc["enabled"] = config.enabled;
+        doc["implemented"] = isPeripheralTypeImplemented(config.type);
+        addPassiveBuzzerFlag(doc, config);
 
         JsonArray pins = doc["pins"].to<JsonArray>();
-        for (int i = 0; i < config->pinCount && i < 8; i++) {
-            if (config->pins[i] != 255) {
-                pins.add(config->pins[i]);
+        for (int i = 0; i < config.pinCount && i < 8; i++) {
+            if (config.pins[i] != 255) {
+                pins.add(config.pins[i]);
             }
         }
 
-        auto runtimeState = pm.getRuntimeState(periphId);
-        if (runtimeState) {
-            doc["status"] = static_cast<int>(runtimeState->status);
+        PeripheralRuntimeState runtimeState;
+        if (pm.getRuntimeStateSnapshot(periphId, runtimeState)) {
+            doc["status"] = static_cast<int>(runtimeState.status);
         } else {
             doc["status"] = 0;
         }
@@ -241,6 +242,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         itemDoc["typeName"] = getPeripheralTypeName(config.type);
         itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
         itemDoc["enabled"] = config.enabled;
+        itemDoc["implemented"] = isPeripheralTypeImplemented(config.type);
         addPassiveBuzzerFlag(itemDoc, config);
 
         if (!compact) {
@@ -251,9 +253,9 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
                 }
             }
 
-            auto runtimeState = pm.getRuntimeState(config.id);
-            if (runtimeState) {
-                itemDoc["status"] = static_cast<int>(runtimeState->status);
+            PeripheralRuntimeState runtimeState;
+            if (pm.getRuntimeStateSnapshot(config.id, runtimeState)) {
+                itemDoc["status"] = static_cast<int>(runtimeState.status);
             } else {
                 itemDoc["status"] = 0;
             }
@@ -322,6 +324,33 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
     profile["used"] = profileUsed;
     profile["remaining"] = std::max(0, profileMax - profileUsed);
     JsonObject data = doc["data"].to<JsonObject>();
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    JsonObject hardware = doc["hardware"].to<JsonObject>();
+    hardware["chip"] = CHIP_NAME;
+    hardware["maxGpio"] = CHIP_MAX_GPIO;
+    hardware["pwmChannels"] = CHIP_MAX_PWM_CH;
+    hardware["hasDac"] = (bool)CHIP_HAS_DAC;
+    hardware["hasTouch"] = (bool)CHIP_HAS_TOUCH;
+    JsonArray inputPins = hardware["inputPins"].to<JsonArray>();
+    JsonArray outputPins = hardware["outputPins"].to<JsonArray>();
+    JsonArray adcPins = hardware["adcPins"].to<JsonArray>();
+    JsonArray dacPins = hardware["dacPins"].to<JsonArray>();
+    JsonArray touchPins = hardware["touchPins"].to<JsonArray>();
+    JsonArray reservedPins = hardware["reservedPins"].to<JsonArray>();
+    for (uint8_t pin = 0; pin <= CHIP_MAX_GPIO; ++pin) {
+        String pinError;
+        if (pm.isReservedPin(pin)) reservedPins.add(pin);
+        if (pm.validatePinForType(pin, PeripheralType::GPIO_DIGITAL_INPUT, pinError)) inputPins.add(pin);
+        pinError = "";
+        if (pm.validatePinForType(pin, PeripheralType::GPIO_DIGITAL_OUTPUT, pinError)) outputPins.add(pin);
+        pinError = "";
+        if (pm.validatePinForType(pin, PeripheralType::ADC, pinError)) adcPins.add(pin);
+        pinError = "";
+        if (pm.validatePinForType(pin, PeripheralType::DAC, pinError)) dacPins.add(pin);
+        pinError = "";
+        if (pm.validatePinForType(pin, PeripheralType::GPIO_TOUCH, pinError)) touchPins.add(pin);
+    }
 
     // 通信接口
     JsonArray commTypes = data["communication"].to<JsonArray>();
@@ -331,7 +360,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = (i != 4 && i != 5);  // CAN, USB 未实现
+        typeObj["implemented"] = isPeripheralTypeImplemented(type);
     }
 
     // GPIO接口
@@ -342,6 +371,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
+        typeObj["implemented"] = isPeripheralTypeImplemented(type);
     }
 
     // 模拟信号
@@ -352,6 +382,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
+        typeObj["implemented"] = isPeripheralTypeImplemented(type);
     }
 
     // 调试接口（已隐藏，JTAG/SWD未实现驱动）
@@ -372,17 +403,16 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
-        // CAN=4, USB=5, SDIO=37, CAMERA=39, ETHERNET=40, ENCODER=43 未实现硬件驱动
-        typeObj["implemented"] = (i != 37 && i != 39 && i != 40 && i != 43);
+        typeObj["implemented"] = isPeripheralTypeImplemented(type);
     }
-    const int extraSpecialTypes[] = {47, 48, 49, 51, 60};
+    const int extraSpecialTypes[] = {47, 48, 49, 50, 51, 52, 53, 60};
     for (int value : extraSpecialTypes) {
         PeripheralType type = static_cast<PeripheralType>(value);
         JsonObject typeObj = specialTypes.add<JsonObject>();
         typeObj["value"] = value;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = true;
+        typeObj["implemented"] = isPeripheralTypeImplemented(type);
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -398,7 +428,8 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto config = pm.getPeripheral(id);
+    PeripheralConfig configSnapshot;
+    const PeripheralConfig* config = pm.getPeripheralSnapshot(id, configSnapshot) ? &configSnapshot : nullptr;
 
     if (!config) {
         ctx->sendError(request, 404, "Peripheral not found");
@@ -475,7 +506,9 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["brightness"] = config->params.segment.brightness;
     }
 
-    auto runtimeState = pm.getRuntimeState(id);
+    PeripheralRuntimeState runtimeSnapshot;
+    const PeripheralRuntimeState* runtimeState =
+        pm.getRuntimeStateSnapshot(id, runtimeSnapshot) ? &runtimeSnapshot : nullptr;
     if (runtimeState) {
         JsonObject status = data["status"].to<JsonObject>();
         status["state"] = static_cast<int>(runtimeState->status);
@@ -531,6 +564,7 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", 1000);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", 8);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", 0);
+        config.params.gpio.passive = ctx->getParamBool(request, "passive", false);
     } else if (config.type == PeripheralType::ADC) {
         config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", 0);
         config.params.adc.resolution = ctx->getParamInt(request, "resolution", 12);
@@ -624,13 +658,11 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto existing = pm.getPeripheral(id);
-    if (!existing) {
+    PeripheralConfig config;
+    if (!pm.getPeripheralSnapshot(id, config)) {
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
-
-    PeripheralConfig config = *existing;
 
     String name = ctx->getParamValue(request, "name", "");
     if (!name.isEmpty()) config.name = name;
@@ -680,6 +712,7 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", config.params.gpio.pwmResolution);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", config.params.gpio.defaultDuty);
+        config.params.gpio.passive = ctx->getParamBool(request, "passive", config.params.gpio.passive);
     } else if (config.type == PeripheralType::ADC) {
         config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", config.params.adc.attenuation);
         config.params.adc.resolution = ctx->getParamInt(request, "resolution", config.params.adc.resolution);
@@ -743,14 +776,15 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.segment.brightness = (uint8_t)b;
     }
 
-    if (pm.updatePeripheral(id, config)) {
+    String errorMsg;
+    if (pm.updatePeripheral(id, config, errorMsg)) {
         if (pm.saveConfiguration()) {
             ctx->sendSuccess(request, "Peripheral updated");
         } else {
             ctx->sendError(request, 500, "Peripheral updated in memory but save to flash failed");
         }
     } else {
-        ctx->sendError(request, 400, "Failed to update peripheral");
+        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update peripheral" : errorMsg);
     }
 }
 
@@ -834,10 +868,10 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto runtimeState = pm.getRuntimeState(id);
-    auto config = pm.getPeripheral(id);
-
-    if (!config) {
+    PeripheralConfig config;
+    PeripheralRuntimeState runtimeState;
+    const bool hasRuntimeState = pm.getRuntimeStateSnapshot(id, runtimeState);
+    if (!pm.getPeripheralSnapshot(id, config)) {
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
@@ -847,15 +881,15 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
     JsonObject data = doc["data"].to<JsonObject>();
 
     data["id"] = id;
-    data["enabled"] = config->enabled;
-    data["status"] = runtimeState ? static_cast<int>(runtimeState->status) : 0;
+    data["enabled"] = config.enabled;
+    data["status"] = hasRuntimeState ? static_cast<int>(runtimeState.status) : 0;
 
-    if (runtimeState) {
-        data["initTime"] = runtimeState->initTime;
-        data["lastActivity"] = runtimeState->lastActivity;
-        data["errorCount"] = runtimeState->errorCount;
-        if (!runtimeState->lastError.isEmpty()) {
-            data["lastError"] = runtimeState->lastError;
+    if (hasRuntimeState) {
+        data["initTime"] = runtimeState.initTime;
+        data["lastActivity"] = runtimeState.lastActivity;
+        data["errorCount"] = runtimeState.errorCount;
+        if (!runtimeState.lastError.isEmpty()) {
+            data["lastError"] = runtimeState.lastError;
         }
     }
 
@@ -872,9 +906,8 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto config = pm.getPeripheral(id);
-
-    if (!config) {
+    PeripheralConfig config;
+    if (!pm.getPeripheralSnapshot(id, config)) {
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
@@ -884,18 +917,18 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
     JsonObject data = doc["data"].to<JsonObject>();
 
     data["id"] = id;
-    data["type"] = static_cast<int>(config->type);
-    data["typeName"] = getPeripheralTypeName(config->type);
+    data["type"] = static_cast<int>(config.type);
+    data["typeName"] = getPeripheralTypeName(config.type);
 
-    if (config->isGPIOPeripheral()) {
+    if (config.isGPIOPeripheral()) {
         GPIOState state = pm.readPin(id);
         data["state"] = static_cast<int>(state);
         data["stateName"] = (state == GPIOState::STATE_HIGH) ? "HIGH" : (state == GPIOState::STATE_LOW) ? "LOW" : "UNDEFINED";
 
-        if (config->type == PeripheralType::GPIO_ANALOG_INPUT || config->type == PeripheralType::ADC) {
+        if (config.type == PeripheralType::GPIO_ANALOG_INPUT || config.type == PeripheralType::ADC) {
             data["value"] = pm.readAnalog(id);
         }
-    } else if (config->isCommunicationPeripheral()) {
+    } else if (config.isCommunicationPeripheral()) {
         uint8_t buffer[128];
         size_t len = sizeof(buffer);
 
@@ -925,7 +958,7 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
             data["hex"] = "";
             data["length"] = 0;
         }
-    } else if (config->type == PeripheralType::RADAR_SENSOR) {
+    } else if (config.type == PeripheralType::RADAR_SENSOR) {
         bool detected = false;
         if (pm.readRadarState(id, detected)) {
             data["detected"] = detected;
@@ -935,7 +968,7 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
             data["detected"] = nullptr;
             data["value"] = nullptr;
         }
-    } else if (config->type == PeripheralType::RF_MODULE) {
+    } else if (config.type == PeripheralType::RF_MODULE) {
         bool level = false;
         if (pm.readRfLevel(id, level)) {
             data["level"] = level;
@@ -945,9 +978,9 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
             data["level"] = nullptr;
             data["value"] = nullptr;
         }
-    } else if (config->type == PeripheralType::DAC) {
-        data["channel"] = config->params.dac.channel;
-        data["pin"] = config->getPrimaryPin();
+    } else if (config.type == PeripheralType::DAC) {
+        data["channel"] = config.params.dac.channel;
+        data["pin"] = config.getPrimaryPin();
     } else {
         uint8_t buffer[64];
         size_t len = sizeof(buffer);
@@ -1055,9 +1088,8 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto config = pm.getPeripheral(id);
-
-    if (!config) {
+    PeripheralConfig config;
+    if (!pm.getPeripheralSnapshot(id, config)) {
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
@@ -1065,7 +1097,7 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
     bool success = false;
     String message;
 
-    if (config->isGPIOPeripheral()) {
+    if (config.isGPIOPeripheral()) {
         if (request->hasParam("state", true)) {
             int stateValue = ctx->getParamInt(request, "state", 0);
             GPIOState state = (stateValue == 1) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
@@ -1075,9 +1107,9 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
             success = pm.togglePin(id);
             message = success ? "GPIO toggled" : "GPIO toggle failed";
         } else if (request->hasParam("pwm", true) &&
-                 (config->type == PeripheralType::GPIO_PWM_OUTPUT ||
-                  config->type == PeripheralType::GPIO_ANALOG_OUTPUT ||
-                  config->type == PeripheralType::PWM_SERVO)) {
+                 (config.type == PeripheralType::GPIO_PWM_OUTPUT ||
+                  config.type == PeripheralType::GPIO_ANALOG_OUTPUT ||
+                  config.type == PeripheralType::PWM_SERVO)) {
             uint32_t dutyCycle = ctx->getParamInt(request, "pwm", 0);
             success = pm.writePWM(id, dutyCycle);
             message = success ? "PWM duty set" : "PWM write failed";
@@ -1085,7 +1117,7 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
             ctx->sendError(request, 400, "Missing parameter (state/toggle/pwm)");
             return;
         }
-    } else if (config->type == PeripheralType::DAC) {
+    } else if (config.type == PeripheralType::DAC) {
         if (request->hasParam("value", true)) {
             int value = ctx->getParamInt(request, "value", 0);
             if (value < 0) value = 0;
@@ -1097,7 +1129,7 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
             ctx->sendError(request, 400, "Missing value parameter");
             return;
         }
-    } else if (config->type == PeripheralType::RF_MODULE) {
+    } else if (config.type == PeripheralType::RF_MODULE) {
         String code = ctx->getParamValue(request, "code", "");
         if (code.isEmpty()) code = ctx->getParamValue(request, "data", "");
         if (code.isEmpty()) code = ctx->getParamValue(request, "value", "");
@@ -1116,7 +1148,7 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
         if (repeat > 20) repeat = 20;
         success = pm.sendRfCode(id, code, (uint8_t)bits, (uint16_t)pulseWidth, (uint8_t)repeat);
         message = success ? "RF code sent" : "RF send failed";
-    } else if (config->isCommunicationPeripheral()) {
+    } else if (config.isCommunicationPeripheral()) {
         if (request->hasParam("data", true)) {
             String dataStr = ctx->getParamValue(request, "data", "");
             if (!dataStr.isEmpty()) {

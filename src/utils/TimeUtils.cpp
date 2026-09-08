@@ -12,10 +12,63 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <map>
+#include <new>
 
 // 定时器管理
 std::map<int, Ticker*> timers;
 int nextTimerId = 1;
+
+namespace {
+
+extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
+
+constexpr time_t MIN_VALID_TLS_TIME = 1577836800;  // 2020-01-01 UTC
+
+// 一次性回调可能递归创建下一个定时器；在用户回调仍执行时禁止回收
+// 外层 Ticker，避免底层 esp_timer 回调栈上的自删除。
+std::map<int, bool> timerCallbacksRunning;
+
+struct TimerCallbackGuard {
+    explicit TimerCallbackGuard(int timerId) : id(timerId) {
+        auto it = timerCallbacksRunning.find(id);
+        if (it != timerCallbacksRunning.end()) {
+            it->second = true;
+        }
+    }
+
+    ~TimerCallbackGuard() {
+        auto it = timerCallbacksRunning.find(id);
+        if (it != timerCallbacksRunning.end()) {
+            it->second = false;
+        }
+    }
+
+    int id;
+};
+
+// Ticker::once_ms() 完成后对象本身不会自动释放。创建新定时器前回收
+// 已经停止的实例，避免周期性 setTimeout() 调用把已完成对象留在 map 中。
+void cleanupInactiveTimers() {
+    for (auto it = timers.begin(); it != timers.end();) {
+        Ticker* ticker = it->second;
+        auto callbackIt = timerCallbacksRunning.find(it->first);
+        const bool callbackRunning = callbackIt != timerCallbacksRunning.end() && callbackIt->second;
+        if (ticker == nullptr || (!ticker->active() && !callbackRunning)) {
+            delete ticker;
+            if (callbackIt != timerCallbacksRunning.end()) {
+                timerCallbacksRunning.erase(callbackIt);
+            }
+            it = timers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+}
 
 bool TimeUtils::initialize(const TimeZone& timezone, const String& ntpServer) {
     // 配置时区
@@ -51,13 +104,9 @@ bool TimeUtils::syncNTP(unsigned long timeout) {
 }
 
 bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTimestampMs, unsigned long timeout) {
-    float deviceSendTime = (float)millis();
+    const double deviceSendTime = static_cast<double>(millis());
     String fullUrl = url;
-
-    // NTP 时间同步无需加密，强制降级 HTTPS → HTTP 避免 SSL 内存分配失败
-    if (fullUrl.startsWith("https://")) {
-        fullUrl = "http://" + fullUrl.substring(8);
-    }
+    const bool useTls = fullUrl.startsWith("https://");
 
     // 截断已有 deviceSendTime 参数，重新拼接当前时间戳
     int idx = fullUrl.indexOf("?deviceSendTime=");
@@ -72,50 +121,79 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
 
     HTTPClient http;
     static WiFiClient plainClient;
-    bool beginOk = http.begin(plainClient, fullUrl);
+    static WiFiClientSecure secureClient;
+    bool beginOk = false;
+
+    if (useTls) {
+        // Certificate validation needs a plausible wall clock. Bootstrap it
+        // with SNTP while preserving the configured POSIX timezone.
+        if (getTimestamp() < MIN_VALID_TLS_TIME) {
+            const char* currentTz = getenv("TZ");
+            String timezone = currentTz ? currentTz : "UTC0";
+            configTzTime(timezone.c_str(), "pool.ntp.org", "time.nist.gov", "time.google.com");
+            if (!syncNTP(timeout)) {
+                return false;
+            }
+        }
+
+        const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
+        if (caBundleSize == 0) {
+            return false;
+        }
+        secureClient.setCACertBundle(x509_crt_bundle_start, caBundleSize);
+        secureClient.setHandshakeTimeout(30);
+        beginOk = http.begin(secureClient, fullUrl);
+    } else {
+        beginOk = http.begin(plainClient, fullUrl);
+    }
 
     if (!beginOk) {
         return false;
     }
     http.setTimeout((int)timeout);
+    // HTTPClient::setTimeout() mainly limits response reads. DNS/TCP connect
+    // can otherwise keep the scheduler blocked far longer on a weak/no-PSRAM
+    // device when the configured NTP host is unavailable.
+    http.setConnectTimeout((int)timeout);
 
     int httpCode = http.GET();
     bool success = false;
 
     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-        float deviceRecvTime = (float)millis();
+        const double deviceRecvTime = static_cast<double>(millis());
         String payload = http.getString();
         
-        float serverRecvTime = 0, serverSendTime = 0;
+        double serverRecvTime = 0;
+        double serverSendTime = 0;
         
         FastBeeJsonDoc doc;
         DeserializationError parseErr = deserializeJson(doc, payload);
         if (!parseErr) {
-            serverRecvTime = doc["serverRecvTime"] | 0.0f;
-            serverSendTime = doc["serverSendTime"] | 0.0f;
+            serverRecvTime = doc["serverRecvTime"] | 0.0;
+            serverSendTime = doc["serverSendTime"] | 0.0;
             if (serverRecvTime == 0) {
-                serverRecvTime = doc["data"]["serverTime"] | 0.0f;
+                serverRecvTime = doc["data"]["serverTime"] | 0.0;
                 serverSendTime = serverRecvTime;
             }
         }
 
         if (serverRecvTime == 0) {
-            auto extractTag = [&](const String& tag) -> float {
+            auto extractTag = [&](const String& tag) -> double {
                 String open  = "<" + tag + ">";
                 String close = "</" + tag + ">";
                 int s = payload.indexOf(open);
                 int e = payload.indexOf(close, s);
                 if (s >= 0 && e > s) {
-                    return payload.substring(s + open.length(), e).toFloat();
+                    return payload.substring(s + open.length(), e).toDouble();
                 }
-                return 0.0f;
+                return 0.0;
             };
             serverRecvTime = extractTag("serverRecvTime");
             serverSendTime = extractTag("serverSendTime");
         }
 
-        if (serverRecvTime > 1000000000000.0f && serverSendTime > 1000000000000.0f) {
-            float nowMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0f;
+        if (serverRecvTime > 1000000000000.0 && serverSendTime > 1000000000000.0) {
+            const double nowMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0;
             outTimestampMs = (long long)nowMs;
             time_t sec = (time_t)(outTimestampMs / 1000);
             struct timeval tv = { sec, (suseconds_t)((outTimestampMs % 1000) * 1000) };
@@ -346,17 +424,33 @@ String TimeUtils::formatDuration(unsigned long milliseconds, bool showMillisecon
 }
 
 int TimeUtils::setTimeout(unsigned long milliseconds, void (*callback)()) {
-    Ticker* ticker = new Ticker();
+    cleanupInactiveTimers();
+
+    Ticker* ticker = new (std::nothrow) Ticker();
+    if (ticker == nullptr) {
+        return -1;
+    }
     int timerId = nextTimerId++;
-    
-    ticker->once_ms(milliseconds, callback);
+    timerCallbacksRunning[timerId] = false;
+
+    ticker->once_ms(milliseconds, [timerId, callback]() {
+        TimerCallbackGuard guard(timerId);
+        if (callback != nullptr) {
+            callback();
+        }
+    });
     timers[timerId] = ticker;
     
     return timerId;
 }
 
 int TimeUtils::setInterval(unsigned long milliseconds, void (*callback)()) {
-    Ticker* ticker = new Ticker();
+    cleanupInactiveTimers();
+
+    Ticker* ticker = new (std::nothrow) Ticker();
+    if (ticker == nullptr) {
+        return -1;
+    }
     int timerId = nextTimerId++;
     
     ticker->attach_ms(milliseconds, callback);
@@ -371,6 +465,7 @@ void TimeUtils::clearTimer(int timerId) {
         delete it->second;
         timers.erase(it);
     }
+    timerCallbacksRunning.erase(timerId);
 }
 
 bool TimeUtils::isTimeInRange(time_t checkTime, time_t startTime, time_t endTime) {

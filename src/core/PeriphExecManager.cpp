@@ -222,8 +222,8 @@ bool PeriphExecManager::ruleNeedsModbus(const PeriphExecRule& rule) const {
         }
         // 检查目标外设是否为 Modbus 类型
         if (!action.targetPeriphId.isEmpty()) {
-            const PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (cfg && cfg->isModbusPeripheral()) return true;
+            PeripheralConfig cfg;
+            if (pm.getPeripheralSnapshot(action.targetPeriphId, cfg) && cfg.isModbusPeripheral()) return true;
         }
     }
     return false;
@@ -271,8 +271,8 @@ bool PeriphExecManager::shouldAvoidSyncFallback(const PeriphExecRule& rule) cons
         }
         // 检查目标外设是否为 Modbus 类型（Modbus 操作需要异步执行避免阻塞）
         if (!action.targetPeriphId.isEmpty()) {
-            const PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (cfg && cfg->isModbusPeripheral()) return true;
+            PeripheralConfig cfg;
+            if (pm.getPeripheralSnapshot(action.targetPeriphId, cfg) && cfg.isModbusPeripheral()) return true;
         }
     }
     return false;
@@ -418,15 +418,16 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
         return false;
     }
 
-    // 软性推荐值检查：超过推荐数量时记录警告，但不拒绝创建
-    // 实际限制由 MAX_ACTIVE_TASKS（同时运行的规则数）和系统资源决定
+    // Rules and their indexes are resident for the lifetime of the device. A
+    // hard profile cap keeps RAM use bounded and matches loadConfiguration().
     if (rules.size() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
-        LOGGER.warningf("[PeriphExec] Rule count (%u) exceeds recommended limit for profile %s (recommended=%u). "
-                        "System stability may be affected if too many rules run simultaneously.",
-                        static_cast<unsigned int>(rules.size() + 1),
+        LOGGER.warningf("[PeriphExec] Rule limit reached for profile %s (max=%u)",
                         FastBee::ResourceProfile::NAME,
                         static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
-        // 不阻断，继续添加
+        errorMsg = String("Rule limit reached for profile ") +
+                   FastBee::ResourceProfile::NAME + " (max " +
+                   String(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) + ")";
+        return false;
     }
 
     // 上限检查
@@ -551,19 +552,34 @@ bool PeriphExecManager::removeRule(const String& id) {
 }
 
 PeriphExecRule* PeriphExecManager::getRule(const String& id) {
-    // 注意：返回指针，调用者需确保在主循环线程中使用
+    // Internal zero-copy accessor. Callers must already hold _rulesMutex.
     auto it = rules.find(id);
     return (it != rules.end()) ? &it->second : nullptr;
 }
 
+bool PeriphExecManager::getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const {
+    MutexGuard lock(_rulesMutex);
+    if (!lock.isLocked()) return false;
+    auto it = rules.find(id);
+    if (it == rules.end()) return false;
+    snapshot = it->second;
+    return true;
+}
+
 std::vector<PeriphExecRule> PeriphExecManager::getAllRules() const {
-    // 返回深拷贝，线程安全
+    MutexGuard lock(_rulesMutex);
     std::vector<PeriphExecRule> result;
+    if (!lock.isLocked()) return result;
     result.reserve(rules.size());
     for (const auto& pair : rules) {
         result.push_back(pair.second);
     }
     return result;
+}
+
+size_t PeriphExecManager::getRuleCount() const {
+    MutexGuard lock(_rulesMutex);
+    return lock.isLocked() ? rules.size() : 0;
 }
 
 bool PeriphExecManager::enableRule(const String& id) {
@@ -1280,10 +1296,11 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
     JsonArray arr = doc.to<JsonArray>();
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    PeripheralConfig* config = nullptr;
+    PeripheralConfig configSnapshot;
+    const PeripheralConfig* config = nullptr;
 
     if (!periphId.isEmpty()) {
-        config = pm.getPeripheral(periphId);
+        if (pm.getPeripheralSnapshot(periphId, configSnapshot)) config = &configSnapshot;
     }
 
     auto addAction = [&arr](uint8_t type, const char* name, const char* category = "") {
@@ -1432,14 +1449,13 @@ std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
 // ========== 手动执行 ==========
 
 bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
-    PeriphExecRule* rule = getRule(id);
-    if (!rule) {
+    PeriphExecRule ruleCopy;
+    if (!getRuleSnapshot(id, ruleCopy)) {
         LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
         return false;
     }
 
     // 创建副本并异步分发，避免阻塞 Web 请求线程
-    PeriphExecRule ruleCopy = *rule;
     String resolvedValue = receivedValue;
     if (resolvedValue.isEmpty()) {
         for (const auto& trigger : ruleCopy.triggers) {
@@ -2514,15 +2530,16 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             // Modbus 目标 sensorId 映射（通过回调）
             if (_modbusBuildSensorIdCb && ar.targetPeriphId.startsWith("modbus:")) {
                 PeripheralManager& periMgr = PeripheralManager::getInstance();
-                const PeripheralConfig* pcfg = periMgr.getPeripheral(ar.targetPeriphId);
-                if (pcfg && pcfg->isModbusPeripheral() && pcfg->params.modbus.sensorId[0] != '\0') {
+                PeripheralConfig pcfg;
+                if (periMgr.getPeripheralSnapshot(ar.targetPeriphId, pcfg) &&
+                    pcfg.isModbusPeripheral() && pcfg.params.modbus.sensorId[0] != '\0') {
                     uint16_t channel = 0;
                     int sepIdx = ar.actualValue.indexOf(':');
                     if (sepIdx > 0) {
                         channel = ar.actualValue.substring(0, sepIdx).toInt();
                         reportValue = ar.actualValue.substring(sepIdx + 1);
                     }
-                    String sid = _modbusBuildSensorIdCb(pcfg->params.modbus.deviceIndex, channel);
+                    String sid = _modbusBuildSensorIdCb(pcfg.params.modbus.deviceIndex, channel);
                     if (!sid.isEmpty()) reportId = sid;
                 }
             }
@@ -2549,7 +2566,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         }
 
         // 回退：尝试直接外设控制
-        const PeripheralConfig* directCfg = periMgr.getPeripheral(unmatchedIds[i]);
+        PeripheralConfig directSnapshot;
+        PeripheralConfig* directCfg = periMgr.getPeripheralSnapshot(unmatchedIds[i], directSnapshot)
+            ? &directSnapshot : nullptr;
         if (!directCfg) {
             // 既无规则匹配、也不存在对应外设（如平台属性下发附带的
             // temperature/humidity 等只读项）：跳过，不回显到 property/post。

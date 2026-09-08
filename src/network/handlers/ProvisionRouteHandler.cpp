@@ -91,6 +91,7 @@ void ProvisionRouteHandler::handleSetupPage(AsyncWebServerRequest* request) {
 }
 
 void ProvisionRouteHandler::handleWiFiScan(AsyncWebServerRequest* request) {
+    if (!allowAnonymousProvisioning() && !ctx->requireAuth(request)) return;
     // 非阻塞扫描架构：
     //  - 重活（WiFi.scanNetworks 阻塞扫描 + JSON 构建）运行在独立 FreeRTOS 任务；
     //  - async_tcp 任务上的 chunked 回调仅短暂加锁轮询 scanResultReady 标志并拷贝结果，
@@ -275,6 +276,7 @@ void ProvisionRouteHandler::_wifiScanTask(void* arg) {
 }
 
 void ProvisionRouteHandler::handleWiFiConnect(AsyncWebServerRequest* request) {
+    if (!allowAnonymousProvisioning() && !ctx->requireAuth(request)) return;
     String ssid = ctx->getParamValue(request, "ssid", "");
     String password = ctx->getParamValue(request, "password", "");
 
@@ -392,9 +394,10 @@ void ProvisionRouteHandler::_updateDeviceConfig(const String& userId,
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/wifi/status — 检测设备状态（公开接口，无需认证）
+// GET /api/wifi/status — AP 配网态匿名，正常联网后需要认证
 // ---------------------------------------------------------------------------
 void ProvisionRouteHandler::handleWiFiStatus(AsyncWebServerRequest* request) {
+    if (!allowAnonymousProvisioning() && !ctx->requireAuth(request)) return;
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
@@ -464,9 +467,10 @@ void ProvisionRouteHandler::handleWiFiStatus(AsyncWebServerRequest* request) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/wifi/config — 配网下发配置（公开接口，无需认证）
+// POST /api/wifi/config — AP 配网态匿名，正常联网后需要认证
 // ---------------------------------------------------------------------------
 void ProvisionRouteHandler::handleWiFiConfig(AsyncWebServerRequest* request) {
+    if (!allowAnonymousProvisioning() && !ctx->requireAuth(request)) return;
     // 必须参数：SSID/ssid, password, userId
     // 可选参数：deviceNum, extra
     String ssid     = ctx->getParamValue(request, "SSID", "");
@@ -534,6 +538,13 @@ void ProvisionRouteHandler::handleWiFiConfig(AsyncWebServerRequest* request) {
     ctx->sendSuccess(request, "Connecting to WiFi...");
     delay(100);
     WiFi.begin(ssid.c_str(), password.c_str());
+}
+
+bool ProvisionRouteHandler::allowAnonymousProvisioning() const {
+    const wifi_mode_t mode = WiFi.getMode();
+    if (mode == WIFI_MODE_AP) return true;
+    if (mode != WIFI_MODE_APSTA) return false;
+    return WiFi.status() != WL_CONNECTED;
 }
 
 // ---------------------------------------------------------------------------

@@ -1008,7 +1008,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // device.json - 设备基本信息（清除个性化配置，保留合理默认值）
         static const char DEFAULT_DEVICE[] PROGMEM =
             "{\"deviceId\":\"\",\"productNumber\":0,\"userId\":\"1\","
-            "\"deviceName\":\"FastBee-Device\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
+            "\"deviceName\":\"FastBee\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
             "\"enableNTP\":true,\"ntpServer1\":\"http://iot.fastbee.cn/prod-api/iot/tool/ntp\",\"ntpServer2\":\"cn.pool.ntp.org\","
             "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
             "\"developerModeEnabled\":true}";
@@ -1346,7 +1346,7 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     doc["freeHeap"]  = ESP.getFreeHeap();
     doc["uptime"]    = millis();
 
-    // 功能运行时状态：disabled=编译禁用 / no-memory=预算拒绝自动降级 / active=正常启用
+    // 功能运行时状态：disabled=未编译或用户关闭 / no-memory=预算拒绝自动降级 / active=正常启用
     // 统一从 RuntimeFeatureManager 遍历全部已注册功能（2026-08 审计修复：覆盖 27/27 而非原 8/27）
     {
         auto& rfm = FastBee::RuntimeFeatureManager::instance();
@@ -1355,8 +1355,9 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         for (size_t i = 0; i < rfm.featureCount(); ++i) {
             const auto* meta = rfm.getFeatureAt(i);
             if (!meta) break;
-            const char* state = (!meta->compiled) ? "disabled"
-                : (budgetReg.isDenied(meta->key) ? "no-memory" : "active");
+            const char* state = !meta->compiled ? "disabled"
+                : (budgetReg.isDenied(meta->key) ? "no-memory"
+                : (rfm.shouldEnable(meta->key) ? "active" : "disabled"));
             features[meta->key] = state;
         }
     }
@@ -1946,7 +1947,6 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["logViewer"]    = (bool)FASTBEE_ENABLE_LOG_VIEWER;
     doc["data"]["fileLogging"]  = (bool)FASTBEE_ENABLE_FILE_LOGGING;
     doc["data"]["taskManager"]  = (bool)FASTBEE_ENABLE_TASK_MANAGER;
-    doc["data"]["i18n"]          = (bool)FASTBEE_ENABLE_I18N;
 
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);

@@ -651,37 +651,7 @@ size_t FileUtils::getDirectorySize(const String& path) {
 }
 
 size_t FileUtils::calculateFolderSize(const String& folderPath) {
-    if (!fsInitialized || !exists(folderPath)) {
-        return 0;
-    }
-
-    return calculateFolderSizeRecursive(folderPath);
-}
-
-size_t FileUtils::calculateFolderSizeRecursive(const String& folderPath) {
-    size_t totalSize = 0;
-
-    File dir = LittleFS.open(folderPath);
-    if (!dir || !dir.isDirectory()) {
-        return 0;
-    }
-
-    File file = dir.openNextFile();
-    while (file) {
-        String fileName = file.name();
-        String fullPath = fileName; // 已经是完整路径
-
-        if (file.isDirectory()) {
-            totalSize += calculateFolderSizeRecursive(fullPath);
-        } else {
-            totalSize += file.size();
-        }
-
-        file = dir.openNextFile();
-    }
-
-    dir.close();
-    return totalSize;
+    return calculateFolderSizeOptimized(folderPath);
 }
 
 size_t FileUtils::calculateFolderSizeOptimized(const String& folderPath) {
@@ -959,11 +929,13 @@ String FileUtils::getFileSystemInfoJSON() {
 
     // 文件系统空间信息
     size_t total = getTotalSpace();
-    size_t used  = total - getFreeSpace();
+    size_t freeSpace = getFreeSpace();
+    float usage = getSpaceUsage();
+    size_t used  = total - freeSpace;
     doc["fs"]["total"]        = total;
     doc["fs"]["used"]         = used;
-    doc["fs"]["free"]         = getFreeSpace();
-    doc["fs"]["percent_used"] = getSpaceUsage() * 100;
+    doc["fs"]["free"]         = freeSpace;
+    doc["fs"]["percent_used"] = usage * 100;
 
     // 关键目录大小
     JsonObject sizes = doc["folder_sizes"].to<JsonObject>();
@@ -991,8 +963,8 @@ String FileUtils::getFileSystemInfoJSON() {
     // 文件系统健康状态
     JsonObject health       = doc["health"].to<JsonObject>();
     health["initialized"]   = fsInitialized;
-    health["space_warning"] = getSpaceUsage() > 0.8f;
-    health["space_critical"]= getSpaceUsage() > 0.9f;
+    health["space_warning"] = usage > 0.8f;
+    health["space_critical"]= usage > 0.9f;
     health["has_www"]       = exists("/www");
     health["has_config"]    = exists("/config");
 
@@ -1089,4 +1061,3 @@ int FileUtils::cleanupTempFiles(const String& tempDir, time_t olderThan) {
     }
     return removed;
 }
-

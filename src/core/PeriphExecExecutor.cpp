@@ -255,11 +255,11 @@ bool isAllDigits(const String& s) {
 bool isCallPeripheralOutputAction(const ExecAction& action) {
     if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) return false;
     if (action.targetPeriphId.isEmpty()) return false;
-    const PeripheralConfig* cfg = PeripheralManager::getInstance().getPeripheral(action.targetPeriphId);
-    if (!cfg) return false;
-    return cfg->type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
-           cfg->type == PeripheralType::GPIO_PWM_OUTPUT ||
-           cfg->type == PeripheralType::GPIO_ANALOG_OUTPUT;
+    PeripheralConfig cfg;
+    if (!PeripheralManager::getInstance().getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+    return cfg.type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+           cfg.type == PeripheralType::GPIO_PWM_OUTPUT ||
+           cfg.type == PeripheralType::GPIO_ANALOG_OUTPUT;
 }
 
 bool looksLikeHexPayload(const String& rawValue) {
@@ -602,9 +602,9 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 #if CHIP_HAS_DAC
             uint8_t dacVal = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
             LOGGER.infof("[PeriphExec] Execute SetDAC(%d) on %s", (int)dacVal, action.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) return false;
-            uint8_t pin = cfg->getPrimaryPin();
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+            uint8_t pin = cfg.getPrimaryPin();
             dacWrite(pin, dacVal);
             return true;
 #else
@@ -637,8 +637,8 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 
         // Modbus 线圈写入 (FC05) — 支持 "channel:state" 或 "state" 格式
         case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg || !cfg->isModbusPeripheral()) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg) || !cfg.isModbusPeripheral()) {
                 LOGGER.warningf("[PeriphExec] Modbus coil write: '%s' is not a Modbus peripheral",
                                 action.targetPeriphId.c_str());
                 return false;
@@ -654,30 +654,30 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             }
             // 通过 PeripheralManager 的 Modbus 写入接口
             bool value = coilState;
-            if (cfg->params.modbus.ncMode) value = !value;
-            uint16_t coilAddr = cfg->params.modbus.coilBase + channel;
-            if (cfg->params.modbus.controlProtocol == 0) {
+            if (cfg.params.modbus.ncMode) value = !value;
+            uint16_t coilAddr = cfg.params.modbus.coilBase + channel;
+            if (cfg.params.modbus.controlProtocol == 0) {
                 // 线圈模式 (FC05)
                 LOGGER.infof("[PeriphExec] Modbus FC05: slave=%d coil=%d state=%d",
-                    cfg->params.modbus.slaveAddress, coilAddr, value);
+                    cfg.params.modbus.slaveAddress, coilAddr, value);
                 return pm.writeModbusCoil(action.targetPeriphId, coilAddr, value);
             }
             // 寄存器协议模式 (FC06)
             uint16_t regVal = value ? 1 : 0;
             LOGGER.infof("[PeriphExec] Modbus FC06 (coil): slave=%d reg=%d val=0x%04X",
-                cfg->params.modbus.slaveAddress, coilAddr, regVal);
+                cfg.params.modbus.slaveAddress, coilAddr, regVal);
             return pm.writeModbusReg(action.targetPeriphId, coilAddr, regVal);
         }
 
         // Modbus 寄存器写入 (FC06) — 支持 "addr:value" 或 "value" 格式
         case ExecActionType::ACTION_MODBUS_REG_WRITE: {
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg || !cfg->isModbusPeripheral()) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg) || !cfg.isModbusPeripheral()) {
                 LOGGER.warningf("[PeriphExec] Modbus reg write: '%s' is not a Modbus peripheral",
                                 action.targetPeriphId.c_str());
                 return false;
             }
-            uint16_t regAddr = cfg->params.modbus.coilBase;
+            uint16_t regAddr = cfg.params.modbus.coilBase;
             uint16_t regVal = 0;
             int sepIdx = effectiveValue.indexOf(':');
             if (sepIdx > 0) {
@@ -687,7 +687,7 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                 regVal = effectiveValue.toInt();
             }
             LOGGER.infof("[PeriphExec] Modbus FC06: slave=%d reg=%d val=%d",
-                cfg->params.modbus.slaveAddress, regAddr, regVal);
+                cfg.params.modbus.slaveAddress, regAddr, regVal);
             return pm.writeModbusReg(action.targetPeriphId, regAddr, regVal);
         }
 
@@ -698,9 +698,9 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             String resolved = resolveSensorTemplate(effectiveValue);
             LOGGER.infof("[PeriphExec] Execute DisplayNumber(%s -> %s) on %s",
                          effectiveValue.c_str(), resolved.c_str(), action.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) return false;
-            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+            if (cfg.type != PeripheralType::SEVEN_SEGMENT_TM1637) {
                 LOGGER.warningf("[PeriphExec] DISPLAY_NUMBER target '%s' is not TM1637",
                                 action.targetPeriphId.c_str());
                 return false;
@@ -713,9 +713,9 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             String resolved = resolveSensorTemplate(effectiveValue);
             LOGGER.infof("[PeriphExec] Execute DisplayText(%s -> %s) on %s",
                          effectiveValue.c_str(), resolved.c_str(), action.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) return false;
-            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+            if (cfg.type != PeripheralType::SEVEN_SEGMENT_TM1637) {
                 LOGGER.warningf("[PeriphExec] DISPLAY_TEXT target '%s' is not TM1637",
                                 action.targetPeriphId.c_str());
                 return false;
@@ -725,9 +725,9 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 
         case ExecActionType::ACTION_DISPLAY_CLEAR: {
             LOGGER.infof("[PeriphExec] Execute DisplayClear on %s", action.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) return false;
-            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+            if (cfg.type != PeripheralType::SEVEN_SEGMENT_TM1637) {
                 LOGGER.warningf("[PeriphExec] DISPLAY_CLEAR target '%s' is not TM1637",
                                 action.targetPeriphId.c_str());
                 return false;
@@ -743,13 +743,13 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             //   - 支持 $value 占位符（替换为 MQTT/规则下发的原始接收值）
             //   - 首行以 # 开头为居中标题 + 分隔线
             //   - actionValue 多行文本，\n 分行
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) {
+            PeripheralConfig cfg;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) {
                 LOGGER.warningf("[PeriphExec] OLED_DISPLAY target not found: %s",
                                 action.targetPeriphId.c_str());
                 return false;
             }
-            if (cfg->type != PeripheralType::LCD) {
+            if (cfg.type != PeripheralType::LCD) {
                 LOGGER.warningf("[PeriphExec] OLED_DISPLAY target '%s' is not LCD",
                                 action.targetPeriphId.c_str());
                 return false;
@@ -1280,12 +1280,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
                 return false;
             }
         }
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        uint8_t pin = cfg->getPrimaryPin();
+        uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
             return false;
@@ -1322,12 +1322,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
                 return false;
             }
         }
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        uint8_t pin = cfg->getPrimaryPin();
+        uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
             return false;
@@ -1347,16 +1347,16 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             return false;
         }
     } else if (strcmp(category, "ultrasonic") == 0) {
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        if (cfg->pinCount < 2 || cfg->pins[0] == 255 || cfg->pins[1] == 255) {
+        if (cfg.pinCount < 2 || cfg.pins[0] == 255 || cfg.pins[1] == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic '%s' needs trig+echo pins", periphId);
             return false;
         }
-        rawValue = SensorDriver::getInstance().readUltrasonic(cfg->pins[0], cfg->pins[1]);
+        rawValue = SensorDriver::getInstance().readUltrasonic(cfg.pins[0], cfg.pins[1]);
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic read failed on '%s'", periphId);
 #if FASTBEE_ENABLE_LCD
@@ -1367,12 +1367,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             return false;
         }
     } else if (strcmp(category, "current") == 0) {
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        uint8_t pin = cfg->getPrimaryPin();
+        uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: current sensor '%s' has no valid pin", periphId);
             return false;
@@ -1388,12 +1388,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             return false;
         }
     } else if (strcmp(category, "voltage") == 0) {
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        uint8_t pin = cfg->getPrimaryPin();
+        uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: voltage sensor '%s' has no valid pin", periphId);
             return false;
@@ -1409,12 +1409,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         }
     } else if (strcmp(category, "ntc") == 0) {
         // NTC 热敏电阻（分压器 + B 参数法测温）
-        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-        if (!cfg) {
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
             return false;
         }
-        uint8_t pin = cfg->getPrimaryPin();
+        uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: NTC sensor '%s' has no valid pin", periphId);
             return false;
@@ -1436,8 +1436,8 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         // 尝试通过 DriverRegistry 查找注册的驱动（BMP280/MPU6050 等）
         ISensorDriver* driver = FastBee::DriverRegistry::getInstance().createDriver(category);
         if (driver) {
-            const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
-            uint8_t pin = cfg ? cfg->getPrimaryPin() : 0;
+            PeripheralConfig cfg;
+            uint8_t pin = pm.getPeripheralSnapshot(String(periphId), cfg) ? cfg.getPrimaryPin() : 0;
             String driverParamsBuffer;
             const char* driverParams = nullptr;
             JsonVariantConst driverParamsNode = doc["driverParams"];
@@ -1702,7 +1702,9 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    PeripheralConfig* targetCfg = pm.getPeripheral(targetId);
+    PeripheralConfig targetConfig;
+    const PeripheralConfig* targetCfg =
+        pm.getPeripheralSnapshot(targetId, targetConfig) ? &targetConfig : nullptr;
     if (!targetCfg) {
         LOGGER.warningf("[PeriphExec] Call peripheral: target not found: %s", targetId.c_str());
         return false;
@@ -1892,10 +1894,11 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 
         // 检查目标外设是否为 Modbus 子设备
         bool isModbusTarget = false;
-        const PeripheralConfig* cfg = pm.getPeripheral(ar.targetPeriphId);
-        if (cfg && cfg->isModbusPeripheral()) {
+        PeripheralConfig cfg;
+        const bool hasConfig = pm.getPeripheralSnapshot(ar.targetPeriphId, cfg);
+        if (hasConfig && cfg.isModbusPeripheral()) {
             isModbusTarget = true;
-        } else if (!cfg) {
+        } else if (!hasConfig) {
             // 外设未在 PeripheralManager 中注册，仍使用原始 ID 上报，跳过 Modbus 映射
             LOGGER.warningf("[PeriphExec] Report: peripheral '%s' not found in config, using raw ID",
                             ar.targetPeriphId.c_str());
@@ -1916,7 +1919,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 #if FASTBEE_ENABLE_MODBUS
             && modbus
 #endif
-            && cfg->params.modbus.sensorId[0] != '\0') {
+            && cfg.params.modbus.sensorId[0] != '\0') {
             // 从 actualValue 解析 channel（格式 "channel:state" 或 "state"）
             uint16_t channel = 0;
             int sepIdx = ar.actualValue.indexOf(':');
@@ -1925,7 +1928,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
                 reportValue = ar.actualValue.substring(sepIdx + 1);
             }
 #if FASTBEE_ENABLE_MODBUS
-            String sid = modbus->buildSensorId(cfg->params.modbus.deviceIndex, channel);
+            String sid = modbus->buildSensorId(cfg.params.modbus.deviceIndex, channel);
             if (!sid.isEmpty()) {
                 reportId = sid;
             }

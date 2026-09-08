@@ -29,7 +29,6 @@
 #include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/platform.h>
-#include "network/WebConfigManager.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/SSERouteHandler.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -46,6 +45,9 @@
 #if FASTBEE_ENABLE_MQTT
 
 namespace {
+
+extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 constexpr size_t MQTTS_MBEDTLS_PSRAM_MIN_ALLOC = 256U;
 constexpr size_t MQTTS_MBEDTLS_PSRAM_RESERVE = 64U * 1024U;
@@ -2117,7 +2119,15 @@ void MQTTClient::ensureTlsTransport() {
             LOG_WARNING("[MQTT] WiFiClientSecure allocation failed");
             return;
         }
-        _wifiClientSecure->setInsecure();
+        const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
+        if (caBundleSize == 0) {
+            LOG_ERROR("[MQTT] Built-in CA certificate bundle is unavailable");
+            delete _wifiClientSecure;
+            _wifiClientSecure = nullptr;
+            return;
+        }
+        _wifiClientSecure->setCACertBundle(x509_crt_bundle_start, caBundleSize);
+        _wifiClientSecure->setHandshakeTimeout(30);
         if (!_externalClient) {
             mqttClient.setClient(*_wifiClientSecure);
         }
@@ -2337,11 +2347,11 @@ void MQTTClient::doReconnect() {
 
     // ===== MQTTS 专用内存保护 =====
     // ESP32-S3/C6 等芯片 MQTTS (SSL/TLS) 连接内存需求分析：
-    //   - setInsecure() 已跳过证书验证（节省 ~8-12KB）
+    //   - 内置 CA bundle 启用服务端身份校验（需预留证书解析内存）
     //   - SSL/TLS 握手缓冲区（mbedtls record layer）：~16KB
     //   - mbedtls 上下文（ssl_context + transform）：~8KB
     //   - MQTT 基础开销（PubSubClient + String 等）：~4KB
-    //   - 实测：~28-32KB DRAM 即可握手成功
+    //   - 握手前使用 MemoryBudget 的 TLS ready 门槛保留证书解析空间
     // 
     // 关键：WiFi/lwIP/mbedtls 均使用内部 DRAM（MALLOC_CAP_INTERNAL）
     //   - PSRAM 不可用于 SSL/TCP socket 内存（DMA 不可寻址）
@@ -2351,7 +2361,7 @@ void MQTTClient::doReconnect() {
     // 
     // 保护策略：
     // 1. 用 MALLOC_CAP_INTERNAL 检测真实 DRAM 最大连续块（排除 PSRAM）
-    // 2. 降低 MQTTS 阈值到 35KB total / 20KB 连续（setInsecure 节省了证书内存）
+    // 2. 使用分芯片 MQTTS 门槛，为 CA 链校验保留连续 DRAM
     // 3. 失败后延迟等待 FreeRTOS 回收内存再重试
     // 4. 连续失败后进入慢模式，避免反复尝试加剧碎片
     

@@ -120,9 +120,8 @@ bool WebConfigManager::initialize() {
     server->addMiddleware(memGuard.get());
 #endif
 
-    // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
-    // 解决 fastbee.local 与 IP 地址混用时的跨域问题
-    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    // Same-origin is the default. Avoid a wildcard CORS policy because the
+    // browser sends credentials to this device API.
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
@@ -134,6 +133,24 @@ bool WebConfigManager::initialize() {
     // ── IP 维度限流中间件：分发链最前端拦截，超限直接 429 ──
     // 令牌桶固定 16 槽（LRU 替换），静态资源/OPTIONS 预检不消耗令牌
     server->addMiddleware([this](AsyncWebServerRequest* request, ArMiddlewareNext next) {
+        const WebRequestMethodComposite method = request->method();
+        const bool unsafe = method == HTTP_POST || method == HTTP_PUT ||
+                            method == HTTP_PATCH || method == HTTP_DELETE;
+        if (unsafe && request->hasHeader("Origin")) {
+            const String origin = request->header("Origin");
+            const String host = request->header("Host");
+            // Compare the complete origin. Suffix matching would allow a hostile
+            // origin such as http://attacker<host> to pass the CSRF check.
+            const bool sameOrigin = !host.isEmpty() &&
+                                    (origin == (String("http://") + host) ||
+                                     origin == (String("https://") + host));
+            if (!sameOrigin && origin != "http://fastbee.local" &&
+                origin != "https://fastbee.local") {
+                request->send(403, "application/json",
+                              "{\"success\":false,\"error\":\"Cross-origin request denied\"}");
+                return;
+            }
+        }
         uint32_t retryAfterSec = 1;
         if (checkIpRateLimit(request, retryAfterSec)) {
             next();

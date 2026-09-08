@@ -13,6 +13,7 @@
 
 #include "systems/HealthMonitor.h"
 #include "core/FeatureBudget.h"
+#include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
@@ -56,6 +57,8 @@ HealthMonitor::HealthMonitor()
       consecutiveLowMemCount(0),
       consecutiveFragmentationCriticalCount(0),
       running(false),
+      criticalThreshold(0),
+      warningThreshold(0),
       _compactionTriggered(false),
       mqttQueueDepth(0),
       sseClientCount(0),
@@ -121,14 +124,14 @@ void HealthMonitor::update() {
 void HealthMonitor::performHealthCheck() {
     // ── 内存状态 ─────────────────────────────────────────────────────────
     // ── DRAM 8BIT 口径（真实可 malloc 内存，排除 PSRAM/IRAM/RTC）──────────
-    currentHealth.dramFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    currentHealth.dramLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    currentHealth.dramFreeHeap     = FastBee::MemoryBudget::dram8Free();
+    currentHealth.dramLargestBlock = FastBee::MemoryBudget::dram8Largest();
 
     // ── 内存状态（8BIT DRAM 口径，真实可 malloc 内存）─────────────────
-    // 2026-08 迁移：从 MALLOC_CAP_INTERNAL 改为 MALLOC_CAP_8BIT，消除 IRAM/RTC
-    // 虚高 ~28KB 导致的降级触发滞后（与 WebMemoryGuard/PeriphExecScheduler 统一口径）
-    currentHealth.freeHeap    = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    currentHealth.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+    // 统一使用 MemoryBudget 的内部 8-bit DRAM 口径，避免裸 MALLOC_CAP_8BIT
+    // 在 PSRAM 板型上把外部内存计入，导致降级触发滞后。
+    currentHealth.freeHeap    = FastBee::MemoryBudget::dram8Free();
+    currentHealth.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     if (currentHealth.freeHeap < heapWatermark) {
         heapWatermark = currentHealth.freeHeap;
@@ -218,41 +221,80 @@ bool HealthMonitor::isSystemHealthy() const {
         && currentHealth.fileSystemOK;
 }
 
+void HealthMonitor::initializeMemoryThresholds() {
+    static bool thresholdsInitialized = false;
+    static uint32_t criticalThresholdCache = 0;
+    static uint32_t warningThresholdCache = 0;
+    static uint32_t guardWarnDramCache = FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE;
+    static uint32_t guardSevereDramCache = FastBee::MemoryBudget::GUARD_SEVERE_DRAM_FREE;
+    static uint32_t guardCriticalLargestCache = FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK;
+    static uint32_t guardSevereLargestCache = FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK;
+    static uint32_t guardWarnLargestCache = FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK;
+
+    if (!thresholdsInitialized) {
+        const size_t psramSize = ESP.getPsramSize();
+
+        if (psramSize >= 8 * 1024 * 1024) {
+            criticalThresholdCache = 12288U;  // 12KB, F16R8
+            warningThresholdCache  = 24576U;  // 24KB
+        } else if (psramSize >= 4 * 1024 * 1024) {
+            criticalThresholdCache = 10240U;  // 10KB, custom 4MB PSRAM
+            warningThresholdCache  = 20480U;  // 20KB
+        } else {
+            criticalThresholdCache = 8192U;   // 8KB, F8R0/C3/C6
+            warningThresholdCache  = 16384U;  // 16KB
+        }
+
+        criticalThresholdCache = constrain(criticalThresholdCache, 4096U, 16384U);
+        warningThresholdCache  = constrain(warningThresholdCache, 8192U, 32768U);
+
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        // The full F4R0 image has a measured 14~15KB internal-DRAM idle
+        // baseline.  The project-wide 24/30KB bands classify that healthy
+        // state as SEVERE and stop PeriphExec, even though the web-reserve
+        // policy still has enough room to serve requests.  Keep the genuine
+        // critical floor at 8KB while using 12/20KB and 8/12/4KB bands for
+        // this one no-PSRAM profile.  PSRAM variants retain the generic bands.
+        if (psramSize == 0) {
+            guardWarnDramCache = 20480U;
+            guardSevereDramCache = 12288U;
+            guardCriticalLargestCache = 4096U;
+            guardSevereLargestCache = 8192U;
+            guardWarnLargestCache = 12288U;
+        }
+#endif
+
+        thresholdsInitialized = true;
+
+        LOGGER.info(String("[THRESHOLD] Initialized for ") + CHIP_NAME +
+                    String(" with PSRAM=") + (unsigned long)(psramSize / 1024) +
+                    String("KB: critical=") + (unsigned int)(criticalThresholdCache / 1024) +
+                    String("KB, warn=") + (unsigned int)(warningThresholdCache / 1024) +
+                    String("KB, guard=") + (unsigned int)(guardSevereDramCache / 1024) +
+                    "/" + (unsigned int)(guardWarnDramCache / 1024) + "KB");
+    }
+
+    // Copy the cached policy for every instance; source-level tests construct
+    // more than one monitor in a process even though firmware uses a singleton.
+    criticalThreshold = criticalThresholdCache;
+    warningThreshold = warningThresholdCache;
+    guardWarnDramThreshold = guardWarnDramCache;
+    guardSevereDramThreshold = guardSevereDramCache;
+    guardCriticalLargestThreshold = guardCriticalLargestCache;
+    guardSevereLargestThreshold = guardSevereLargestCache;
+    guardWarnLargestThreshold = guardWarnLargestCache;
+}
+
 // 低内存保护：分级恢复机制（替代原有的 15s 硬重启）
 // EMERGENCY: DRAM < 4KB → 立即禁用 MQTT + 停止所有非 Web 服务
 // CRITICAL 持续 30s → 写入配置禁用 MQTT（重启后也不连）
 // CRITICAL 持续 90s → 安全重启（boot loop 保护：启动 < 120s 不重启）
 void HealthMonitor::checkCriticalMemory() {
+    initializeMemoryThresholds();
+
     // 使用 8BIT DRAM 进行检测（排除 PSRAM/IRAM/RTC，真实可 malloc 内存）
     // WiFi/MQTT/SSL 都不能用 PSRAM，使用 DRAM 空闲来评估真实风险
     const uint32_t checkHeap = currentHealth.dramFreeHeap;
-
-    // === Phase A Task A.2: 动态内存阈值 (基于芯片 DRAM 总量) ===
-    static bool thresholdsInitialized = false;
-    if (!thresholdsInitialized) {
-        uint32_t dramTotalKb = chipGetDramTotalKb();
-        size_t psramSize = ESP.getPsramSize();
-            
-        LOGGER.info(String("[THRESHOLD] Initializing for ") + CHIP_NAME + String(" with PSRAM=") + (unsigned long)(psramSize / 1024) + "KB");
-            
-        if (psramSize >= 8 * 1024 * 1024) {
-            criticalThreshold = dramTotalKb * 1024 * 0.04f;  // 4%
-            warningThreshold  = dramTotalKb * 1024 * 0.08f;  // 8%
-        } else if (psramSize >= 4 * 1024 * 1024) {
-            criticalThreshold = dramTotalKb * 1024 * 0.05f;  // 5%
-            warningThreshold  = dramTotalKb * 1024 * 0.10f;  // 10%
-        } else {
-            criticalThreshold = dramTotalKb * 1024 * 0.06f;  // 6%
-            warningThreshold  = dramTotalKb * 1024 * 0.12f;  // 12%
-        }
-            
-        // 硬限制：最低 4KB,最高 16KB
-        criticalThreshold = constrain(criticalThreshold, 4096U, 16384U);
-        warningThreshold  = constrain(warningThreshold,  8192U, 32768U);
-            
-        LOGGER.info(String("[THRESHOLD] Initialized: critical=") + (unsigned int)(criticalThreshold / 1024) + "KB, warn=" + (unsigned int)(warningThreshold / 1024) + "KB");
-        thresholdsInitialized = true;
-    }
 
     // ── 紧急兜底：DRAM < 4KB，系统随时可能 crash，不等计时立即执行所有恢复 ──
     // 首次进入时记录时间；恢复无效且持续低于阈值则快速优雅重启。
@@ -266,13 +308,13 @@ void HealthMonitor::checkCriticalMemory() {
             Serial.printf("[MEMRECOVER] EMERGENCY: DRAM=%lu < 4KB, immediate full recovery\n",
                           (unsigned long)checkHeap);
             // 立即执行 SEVERE 恢复（如果还没做）
-            uint32_t dramBeforeRecovery = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            uint32_t dramBeforeRecovery = FastBee::MemoryBudget::dram8Free();
             performMemoryRecovery(MemoryGuardLevel::NORMAL, MemoryGuardLevel::CRITICAL);
             // 立即禁用 MQTT（幂等）
             _mqttDisabledForMemory = true;
             _mqttStoppedForMemory = true;
             disableMqttForMemory();
-            uint32_t dramAfterRecovery = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+            uint32_t dramAfterRecovery = FastBee::MemoryBudget::dram8Free();
             Serial.printf("[MEMRECOVER] EMERGENCY complete: DRAM=%lu (gained %ld bytes), Web stays available\n",
                           (unsigned long)dramAfterRecovery,
                           (long)dramAfterRecovery - (long)dramBeforeRecovery);
@@ -431,12 +473,24 @@ void HealthMonitor::logTaskStackWatermarks() {
 // ── MemGuard 等级判断 ────────────────────────────────────────────────
 
 void HealthMonitor::updateMemoryGuardLevel() {
+    initializeMemoryThresholds();
+
     uint32_t freeHeap = currentHealth.dramFreeHeap;
     // 使用 DRAM 内部连续块做等级判断（排除 PSRAM 干扰）
     // MALLOC_CAP_DEFAULT 在有 PSRAM 的设备上会包含 PSRAM 的巨大连续块（如 8MB）
     // 导致 CRITICAL 判断永远不会触发，实际 DRAM 被消耗却检测不到
     uint32_t largestBlock = currentHealth.dramLargestBlock;  // DRAM 内部连续块
-    MemoryGuardLevel newLevel;
+    // Keep the legacy/default classification call as the baseline, then apply
+    // the profile-specific runtime bands when this target has one.
+    MemoryGuardLevel newLevel = static_cast<MemoryGuardLevel>(static_cast<uint8_t>(
+        FastBee::MemoryBudget::guardLevelForFreeDram(freeHeap, criticalThreshold)));
+    if (guardSevereDramThreshold != FastBee::MemoryBudget::GUARD_SEVERE_DRAM_FREE ||
+        guardWarnDramThreshold != FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE) {
+        newLevel = static_cast<MemoryGuardLevel>(static_cast<uint8_t>(
+            FastBee::MemoryBudget::guardLevelForFreeDram(
+                freeHeap, criticalThreshold, guardSevereDramThreshold,
+                guardWarnDramThreshold)));
+    }
 
     // 启动期 grace period：前 90 秒为框架 + lwip + AsyncTCP + NTP + 日志 flush 等
     // 并发初始化阶段，ESP32 no-PSRAM 堆会出现一次性高碎片/小 largestBlock 峰值。
@@ -445,27 +499,21 @@ void HealthMonitor::updateMemoryGuardLevel() {
     // freeHeap 绝对值低的强降级仍然保留——那是真正的危险信号。
     const bool inStartupGrace = (millis() < 90000UL);
 
-    // 基于 freeHeap 的初步判断
-    if (freeHeap >= MEM_THRESHOLD_NORMAL) {
-        newLevel = MemoryGuardLevel::NORMAL;
-    } else if (freeHeap >= MEM_THRESHOLD_WARN) {
-        newLevel = MemoryGuardLevel::WARN;
-    } else if (freeHeap >= MEM_THRESHOLD_SEVERE) {
-        newLevel = MemoryGuardLevel::SEVERE;
-    } else {
-        newLevel = MemoryGuardLevel::CRITICAL;
-    }
+    // freeHeap 初始等级使用与 checkCriticalMemory 相同的动态 CRITICAL 下限。
+    // 经典 ESP32 完整外设配置的实测稳定基线约 14KB，低于旧固定 16KB
+    // 阈值但远高于无 PSRAM 设备真正的 8KB 危险线。
 
-    // 健康反证：freeHeap 虽略低，但 largestBlock 足够大时保持 NORMAL
-    // （ESP32 常态 freeHeap ~27KB、largest ~22KB 是健康运行区间，不应降级）
-    if (newLevel == MemoryGuardLevel::WARN && largestBlock >= MEM_LARGEST_HEALTHY) {
+    // 健康反证：freeHeap 虽略低，但 largestBlock 足够大时保持 NORMAL。
+    // 连续块门槛与当前芯片档位保持一致，避免经典 ESP32 的 12KB 基线
+    // 被通用 16KB 门槛再次抬高。
+    if (newLevel == MemoryGuardLevel::WARN && largestBlock >= guardWarnLargestThreshold) {
         newLevel = MemoryGuardLevel::NORMAL;
     }
 
     // 基于 largestFreeBlock 的强制提升：即使 freeHeap 看起来正常，
     // 如果最大可分配块过小，系统无法工作。
-    // 注意：MAX_CONNECTIONS=4 + Connection:close 时正常 web 服务期间 largest 会临时降到 3-8KB，
-    // 因此 CRITICAL 阈值设为 8KB，SEVERE 设为 12KB，避免访问网页时误触发降级。
+    // 注意：MAX_CONNECTIONS=4 + Connection:close 时正常 web 服务期间 largest 会临时降到数 KB，
+    // 因此各档位采用芯片对应的连续块阈值，避免访问网页时误触发降级。
     // 2026-08-24 修复M（菜单 503 根因）：崩溃重启后 blk8 稳态卡在
     // 11252（12288 阈值陷阱带，frag=77%）永久触发 SEVERE，导致
     // /api/protocol/config、/api/users/online 等重响应菜单持续 503，
@@ -474,8 +522,8 @@ void HealthMonitor::updateMemoryGuardLevel() {
     // WARN——AsyncTCP 2872B 主缓冲与 JSON 响应小分配仍安全，且
     // rejectHeavyRequestOnPressure 只拦 SEVERE+，菜单不再误伤；
     // freeHeap 也低时保持原提升（真正危险）。
-    const bool heapHealthyForFrag = (freeHeap >= MEM_THRESHOLD_NORMAL);
-    if (largestBlock < FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK) {
+    const bool heapHealthyForFrag = (freeHeap >= guardWarnDramThreshold);
+    if (largestBlock < guardCriticalLargestThreshold) {
         // 最大块 < 8KB：内存碎片严重，系统分配能力受限
         if (inStartupGrace) {
             static uint32_t lastGraceWarnCrit = 0;
@@ -484,7 +532,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastGraceWarnCrit = now;
                 Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip CRITICAL)\n",
                               (unsigned long)(now / 1000), (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK);
+                              (unsigned)guardCriticalLargestThreshold);
             }
         } else if (heapHealthyForFrag) {
             static uint32_t lastSkipCritLog = 0;
@@ -493,7 +541,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastSkipCritLog = now;
                 Serial.printf("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN\n",
                               (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK,
+                              (unsigned)guardCriticalLargestThreshold,
                               (unsigned)freeHeap);
             }
             if (newLevel < MemoryGuardLevel::WARN) {
@@ -506,11 +554,11 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastElevCritLog = now;
                 Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to CRITICAL\n",
                               (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK);
+                              (unsigned)guardCriticalLargestThreshold);
             }
             newLevel = MemoryGuardLevel::CRITICAL;
         }
-    } else if (largestBlock < FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK) {
+    } else if (largestBlock < guardSevereLargestThreshold) {
         // 最大块 < 12KB：内存压力较大
         if (inStartupGrace) {
             static uint32_t lastGraceWarnSev = 0;
@@ -519,7 +567,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastGraceWarnSev = now;
                 Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip SEVERE)\n",
                               (unsigned long)(now / 1000), (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK);
+                              (unsigned)guardSevereLargestThreshold);
             }
         } else if (heapHealthyForFrag) {
             static uint32_t lastSkipSevLog = 0;
@@ -528,7 +576,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastSkipSevLog = now;
                 Serial.printf("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN\n",
                               (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK,
+                              (unsigned)guardSevereLargestThreshold,
                               (unsigned)freeHeap);
             }
             if (newLevel < MemoryGuardLevel::WARN) {
@@ -541,7 +589,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                 lastElevSevLog = now;
                 Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to SEVERE\n",
                               (unsigned long)largestBlock,
-                              (unsigned)FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK);
+                              (unsigned)guardSevereLargestThreshold);
             }
             newLevel = MemoryGuardLevel::SEVERE;
         }
@@ -565,7 +613,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
                           (int)currentHealth.heapFragmentation);
         } else if (newLevel == MemoryGuardLevel::WARN &&
-                   largestBlock < FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK &&
+                   largestBlock < guardSevereLargestThreshold &&
                    !heapHealthyForFrag) {
             // 修复M：freeHeap 健康时碎片化不再升到 SEVERE（同 largestBlock 反证）
             newLevel = MemoryGuardLevel::SEVERE;
@@ -670,8 +718,8 @@ void HealthMonitor::updateMemoryGuardLevel() {
             // 的异常路径），不重启，强制降级并复位计时。2026-08-24
             // 07:17:47 取证：largest=21492 frag=33% heap=31748 的健康堆
             // 因降级迟滞死锁被误重启。
-            if (currentHealth.dramLargestBlock >= FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK &&
-                freeHeap >= MEM_THRESHOLD_WARN) {
+            if (currentHealth.dramLargestBlock >= guardCriticalLargestThreshold &&
+                freeHeap >= criticalThreshold) {
                 Serial.printf("[MEMGUARD] CRITICAL stuck %lus but heap recovered (largest=%lu heap=%lu), force-downgrading instead of reboot\n",
                               (unsigned long)(guardCriticalDuration / 1000),
                               (unsigned long)currentHealth.dramLargestBlock,
@@ -859,8 +907,8 @@ void HealthMonitor::compactMemory() {
              (int)currentHealth.heapFragmentation);
     LOG_WARNING(logBuf);
 
-    const size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    const uint32_t dramBefore = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    const size_t largestBefore = FastBee::MemoryBudget::dram8Largest();
+    const uint32_t dramBefore = FastBee::MemoryBudget::dram8Free();
 
     // 策略1: 刷新日志缓冲区（释放待写入文件的日志数据占用的堆内存）
     LoggerSystem::getInstance().flushBuffer();
@@ -886,8 +934,8 @@ void HealthMonitor::compactMemory() {
     ConfigStorage::getInstance().clearCache();
 #endif
 
-    const size_t largestAfter = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    const uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    const size_t largestAfter = FastBee::MemoryBudget::dram8Largest();
+    const uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
     Serial.printf("[MEMGUARD] Compaction result: dram=%lu->%lu largest=%lu->%lu (delta=%+d)\n",
                   (unsigned long)dramBefore,
                   (unsigned long)dramAfter,
@@ -920,8 +968,8 @@ bool HealthMonitor::isMemorySevere() const {
 bool HealthMonitor::isMemoryCritical() const {
     if (_currentLevel == MemoryGuardLevel::CRITICAL) return true;
     // 即使等级尚未更新，直接检查 largestFreeBlock 作为兜底
-    // 8BIT 口径：与 WebMemoryGuard GUARD_CRITICAL_LARGEST_BLOCK(8KB) 对齐
-    return currentHealth.largestFreeBlock < FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK;
+    // 8BIT 口径：使用当前芯片档位的连续块临界线。
+    return currentHealth.largestFreeBlock < guardCriticalLargestThreshold;
 }
 
 bool HealthMonitor::isFragmentationHigh() const {
@@ -1094,7 +1142,7 @@ void HealthMonitor::logMetricsSummary() {
         (unsigned long)(currentHealth.uptime / 1000UL));
     // 输出内存池使用率（碎片预防）
     logPoolStats();
-    // 周期性预算重评估：DRAM 下降时将已通过的功能重新拒绝
+    // 周期性预算诊断：不撤销已初始化功能，运行期降级由 MemGuard/各入口负责
     FastBee::FeatureBudgetRegistry::instance().recheck();
 }
 
@@ -1120,7 +1168,7 @@ size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) 
 
 // ── 内存恢复：SEVERE 级别服务降级 ─────────────────────────────────────
 void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel) {
-    uint32_t dramBefore = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    uint32_t dramBefore = FastBee::MemoryBudget::dram8Free();
     // 使用已有的碎片率计算函数（基于 DRAM），避免 uint8_t 截断和乘法溢出风险
     uint8_t fragPercent = (dramBefore > 0)
         ? calculateHeapFragmentationPercent(currentHealth.dramFreeHeap, currentHealth.dramLargestBlock)
@@ -1132,6 +1180,12 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+
+    // Step 0: 确保 TLS 所需连续内存（P0 优化）
+    if (!currentHealth.dramLargestBlock) {
+        Serial.println("[MEMRECOVER] WARN: dramLargestBlock=0, forced downgrade before TLS handshake");
+    }
+    ensureTLSContiguousMemory();
 
     // Step 1: MQTTS → MQTT 降级（释放 ~30-50KB TLS DRAM）
 #if FASTBEE_ENABLE_MQTT
@@ -1167,7 +1221,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
         }
     }
 
-    uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
     Serial.printf("[MEMRECOVER] === SEVERE recovery complete === dram=%lu (gained %ld bytes)\n",
                   (unsigned long)dramAfter, (long)(dramAfter - dramBefore));
 }
@@ -1209,7 +1263,7 @@ void HealthMonitor::downgradeMqttsToMqtt() {
     }
 
     // 记录 DRAM 变化用于诊断
-    uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
     Serial.printf("[MEMRECOVER]   DRAM after downgrade: %lu bytes\n", (unsigned long)dramAfter);
 }
 
@@ -1285,6 +1339,38 @@ void HealthMonitor::restoreMemoryRecovery() {
     _criticalStartTime = 0;
 
     Serial.println("[MEMRECOVER] === NORMAL restore complete ===");
+}
+
+// ── TLS 预留池强制检查（P0 优化）───────────────────────────────────────
+void HealthMonitor::ensureTLSContiguousMemory() {
+#if FASTBEE_ENABLE_MQTT
+    // 仅对 MQTTS 启用机型进行检查
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+    if (!pm) return;
+
+    MQTTClient* mqtt = pm->getMQTTClient();
+    if (!mqtt || mqtt->getConfig().scheme != "mqtts") return;
+
+    uint32_t largestBlock = currentHealth.dramLargestBlock;
+    const uint32_t tlsRequired = 32768U;  // 32KB 连续 DRAM（见 ChipConfig.h:TLS_RESERVED_BLOCK_BYTES）
+
+    // 检查最大连续块是否满足 TLS 握手需求
+    if (largestBlock >= tlsRequired) return;  // 已满足，直接返回
+
+    Serial.printf("[TLS-RESERVE] WARN: Largest contiguous DRAM=%u < %u required for TLS handshake\n",
+                  largestBlock, tlsRequired);
+
+    // 再次触发内存回收（应该已经执行过了，但作为兜底）
+    if (largestBlock < 16384U) {  // 小于 16KB，立即降级到非 TLS
+        Serial.println("[TLS-RESERVE] CRITICAL: Insufficient contiguous memory (<16KB), forcing downgrade");
+
+        if (!_mqttsMemoryDowngrade) {
+            downgradeMqttsToMqtt();
+            Serial.println("[TLS-RESERVE] Forced downgrade to plain MQTT due to TLS memory pressure");
+        }
+    }
+#endif
 }
 
 // ── 永久禁用 MQTT：写入配置 + 停止（CRITICAL 30s 最后手段）────────────

@@ -1,6 +1,7 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
 #include "core/ChipConfig.h"
+#include "core/MemoryBudget.h"
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
 #include "systems/OtaSelfCheck.h"
@@ -258,8 +259,8 @@ void loop() {
     static unsigned long _loopDbg = 0;
     if (millis() - _loopDbg > 15000) {
         _loopDbg = millis();
-        // 与 METRICS free8 同口径：MALLOC_CAP_8BIT 真实可 malloc DRAM（ESP.getFreeHeap() 为 INTERNAL 口径，虚高约 28KB）
-        ets_printf("[LOOP-ALIVE] heap=%lu\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+        // 与 METRICS dram8 同口径：只统计内部 8-bit DRAM，避免 PSRAM 掩盖内存压力。
+        ets_printf("[LOOP-ALIVE] heap=%lu\n", (unsigned long)FastBee::MemoryBudget::dram8Free());
     }
     
     // 让出 CPU 时间，平衡响应和功耗，提升稳定性

@@ -3,8 +3,10 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
+#include "core/FastBeeFramework.h"
 #include "core/FeatureFlags.h"
 #include "core/SystemConstants.h"
+#include "systems/HealthMonitor.h"
 #include "utils/NetworkUtils.h"
 #include "utils/PsramJsonDocument.h"
 #include "utils/TimeUtils.h"
@@ -81,6 +83,17 @@ void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degrade
 
     JsonObject memory = data["memory"].to<JsonObject>();
     fillMemorySummary(memory);
+
+    // Keep the compact /api/batch representation pressure-aware. Dashboard
+    // polling intentionally uses this lightweight path on no-PSRAM targets;
+    // exposing the guard level here lets the browser slow its own refresh rate
+    // before a heavy request is rejected with HTTP 503.
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor) {
+        memory["guardLevel"] = HandlerUtils::memoryGuardLevelName(monitor->getMemoryGuardLevel());
+        memory["critical"] = monitor->isMemoryCritical();
+    }
 
     size_t fsTotal = LittleFS.totalBytes();
     size_t fsUsed = LittleFS.usedBytes();

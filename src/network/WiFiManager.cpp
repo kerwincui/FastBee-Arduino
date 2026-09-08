@@ -33,6 +33,17 @@ WiFiManager::~WiFiManager() {
 bool WiFiManager::initialize() {
     LOG_INFO("WiFiManager: Initializing...");
 
+    // NetworkManager owns the credentials in LittleFS and controls retries.
+    // Do not let every WiFi.begin()/disconnect cycle rewrite the Arduino WiFi
+    // NVS record; stale BSSID state and flash wear both hurt long-running C3/C6
+    // devices after repeated authentication failures.
+    WiFi.persistent(false);
+
+    // FBNetworkManager owns retry/backoff/AP-fallback. Arduino's independent
+    // reconnect callback races mode resets and BSSID changes, producing
+    // ESP_ERR_WIFI_NOT_STARTED / ESP_ERR_WIFI_STATE on classic ESP32.
+    WiFi.setAutoReconnect(false);
+
     // 设置 WiFi 事件回调
     WiFi.onEvent([this](arduino_event_id_t event, arduino_event_info_t info) {
         this->handleWiFiEvent(event, info);
@@ -167,7 +178,7 @@ bool WiFiManager::startAPMode() {
         // 通过检查是否能获取SSID来验证
         String currentSSID = WiFi.softAPSSID();
         String expectedSSID = wifiConfig.apSSID.isEmpty() ?
-            (devName + "_" + getChipID().substring(0, 6)) : wifiConfig.apSSID;
+            (devName + "-" + getChipID().substring(0, 6)) : wifiConfig.apSSID;
 
         if (currentSSID.length() > 0 && currentSSID == expectedSSID) {
             LOG_INFO("WiFiManager: AP mode already active with correct configuration");
@@ -236,7 +247,7 @@ bool WiFiManager::startAPMode() {
     String apSSID;
     if (wifiConfig.apSSID.isEmpty()) {
         apSSID = devName;
-        apSSID += "_";
+        apSSID += "-";
         apSSID += getChipID().substring(0, 6);
     } else {
         apSSID = wifiConfig.apSSID;
@@ -541,8 +552,9 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_
     // 禁止使用 LOGGER 日志宏（内部有 256 字节栈缓冲区），统一用 Serial.printf
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            Serial.printf("[WiFi] STA connected: %s ch=%d\n",
-                          WiFi.SSID().c_str(), WiFi.channel());
+            Serial.printf("[WiFi] STA connected: %s ch=%d bssid=%s\n",
+                          WiFi.SSID().c_str(), WiFi.channel(),
+                          WiFi.BSSIDstr().c_str());
             statusInfo.status = NetworkStatus::CONNECTING;
             connecting = true;
             break;
@@ -556,10 +568,10 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_
             statusInfo.reconnectAttempts = 0;
             modeTransitioning = false;
 
-            Serial.printf("[WiFi] Connected! IP=%s GW=%s RSSI=%d\n",
+            Serial.printf("[WiFi] Connected! IP=%s GW=%s RSSI=%d bssid=%s\n",
                           statusInfo.ipAddress.c_str(),
                           WiFi.gatewayIP().toString().c_str(),
-                          WiFi.RSSI());
+                          WiFi.RSSI(), WiFi.BSSIDstr().c_str());
 
             // 更新网络信息
             statusInfo.currentGateway = WiFi.gatewayIP().toString();
@@ -720,6 +732,9 @@ void WiFiManager::setIPConflictCallback(NetworkEventCallback callback) {
 
 void WiFiManager::setAutoReconnect(bool enabled) {
     autoReconnectEnabled = enabled;
+    // Keep the Arduino callback disabled; this flag controls our explicit
+    // attemptReconnect() state machine instead.
+    WiFi.setAutoReconnect(false);
     LOG_INFO("WiFiManager: Auto reconnect: " +
              String(enabled ? "enabled" : "disabled"));
 }
@@ -761,7 +776,7 @@ String WiFiManager::getMACAddress() {
 
 String WiFiManager::_readDeviceName() {
     // 从设备配置(device.json)读取设备名称，用于 AP SSID 自动生成
-    // deviceName 已移至设备配置统一管理，不再存储在 network.json 中
+    // 为空时默认 "fastbee"，最终 SSID 格式：fastbee-XXXX 或 {名称}-XXXX
     const char* devicePath = "/config/device.json";
     if (LittleFS.exists(devicePath)) {
         File f = LittleFS.open(devicePath, "r");
@@ -771,6 +786,7 @@ String WiFiManager::_readDeviceName() {
                 f.close();
                 if (doc["deviceName"].is<String>()) {
                     String name = doc["deviceName"].as<String>();
+                    name.trim();
                     if (name.length() > 0) return name;
                 }
             } else {
@@ -778,7 +794,7 @@ String WiFiManager::_readDeviceName() {
             }
         }
     }
-    return "FastBee";  // 默认值
+    return "fastbee";  // 默认值
 }
 
 String WiFiManager::getChipID() {
@@ -927,4 +943,3 @@ bool WiFiManager::selectBestNetwork(String& outSSID, String& outPassword) {
                  outSSID.c_str(), candidates[0].priority, candidates[0].rssi);
     return true;
 }
-

@@ -1640,7 +1640,7 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
 // ============================================================================
 OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
                                                           uint8_t expectedSlaveAddr,
-                                                          uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                                          uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
                                                           uint8_t& exceptionCode) {
     OneShotError error = ONESHOT_TIMEOUT;
     rawLen = 0;
@@ -1771,7 +1771,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         error = ONESHOT_SUCCESS;
         rawLen = respIdx;
         if (rawResp) {
-            uint8_t copyLen = (respIdx < rawCap) ? respIdx : rawCap;
+            size_t copyLen = (respIdx < rawCap) ? respIdx : rawCap;
             memcpy(rawResp, respBuf, copyLen);
         }
         break;
@@ -1869,7 +1869,7 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
 // ============================================================================
 OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
                                                     uint8_t expectedSlaveAddr,
-                                                    uint8_t* rawResp, uint8_t rawCap, uint8_t& rawLen,
+                                                    uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
                                                     uint8_t& exceptionCode) {
     rawLen = 0;
     exceptionCode = 0;

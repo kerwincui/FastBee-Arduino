@@ -21,10 +21,12 @@
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <time.h>
 
 #if FASTBEE_ENABLE_OTA
 
@@ -47,6 +49,15 @@ static portMUX_TYPE s_otaSpawnMux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_otaUrlTaskActive = false;
 
 namespace {
+extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
+
+void sendOtaJson(AsyncWebServerRequest* request, int status, JsonDocument& doc) {
+    String body;
+    serializeJson(doc, body);
+    request->send(status, "application/json", body);
+}
+
 struct OtaUrlTaskParams {
     OTAManager* manager;
     String url;
@@ -248,14 +259,15 @@ void OTAManager::cancelOTA() {
 
 // 状态 JSON（扁平结构，供测试与脚本使用）
 String OTAManager::getStatusJSON() const {
-    String json = "{";
-    json += "\"inProgress\":" + String(otaInProgress ? "true" : "false") + ",";
-    json += "\"progress\":" + String(progress) + ",";
-    json += "\"currentSize\":" + String((unsigned long)currentSize) + ",";
-    json += "\"totalSize\":" + String((unsigned long)totalExpected) + ",";
-    json += "\"elapsedMs\":" + String((unsigned long)(millis() - otaStartTime)) + ",";
-    json += "\"error\":\"" + otaErrorMessage + "\"";
-    json += "}";
+    JsonDocument doc;
+    doc["inProgress"] = otaInProgress;
+    doc["progress"] = progress;
+    doc["currentSize"] = (unsigned long)currentSize;
+    doc["totalSize"] = (unsigned long)totalExpected;
+    doc["elapsedMs"] = (unsigned long)(millis() - otaStartTime);
+    doc["error"] = otaErrorMessage;
+    String json;
+    serializeJson(doc, json);
     return json;
 }
 
@@ -295,13 +307,20 @@ void OTAManager::handleOTAStart(AsyncWebServerRequest *request) {
         } else if (otaErrorMessage.indexOf("No OTA partition") >= 0) {
             code = 501;
         }
-        request->send(code, "application/json", "{\"error\": \"" + otaErrorMessage + "\"}");
+        JsonDocument errorDoc;
+        errorDoc["success"] = false;
+        errorDoc["error"] = otaErrorMessage;
+        sendOtaJson(request, code, errorDoc);
         return;
     }
 
     size_t maxSketchSpace = calcMaxSketchSpace();
     LOG_INFO("OTAManager: OTA update started successfully");
-    request->send(200, "application/json", "{\"status\": \"OTA started\", \"max_size\": " + String(maxSketchSpace) + "}");
+    JsonDocument startedDoc;
+    startedDoc["success"] = true;
+    startedDoc["status"] = "OTA started";
+    startedDoc["max_size"] = (unsigned long)maxSketchSpace;
+    sendOtaJson(request, 200, startedDoc);
     // 触发OTA升级开始系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
     PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_START, "");
@@ -324,7 +343,10 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
 
     // 写入数据（失败时 writeData 已终止会话并记录错误）
     if (writeData(data, len) != len) {
-        request->send(500, "application/json", "{\"error\": \"" + otaErrorMessage + "\"}");
+        JsonDocument errorDoc;
+        errorDoc["success"] = false;
+        errorDoc["error"] = otaErrorMessage;
+        sendOtaJson(request, 500, errorDoc);
         // 触发OTA升级失败系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_FAILED, otaErrorMessage);
@@ -350,9 +372,13 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
 #if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_SUCCESS, "");
 #endif
-            request->send(200, "application/json",
-                "{\"status\": \"OTA completed\", \"size\": " + String(currentSize) +
-                ", \"md5\": \"" + md5 + "\", \"message\": \"Restarting in 3 seconds...\"}");
+            JsonDocument completedDoc;
+            completedDoc["success"] = true;
+            completedDoc["status"] = "OTA completed";
+            completedDoc["size"] = (unsigned long)currentSize;
+            completedDoc["md5"] = md5;
+            completedDoc["message"] = "Restarting in 3 seconds...";
+            sendOtaJson(request, 200, completedDoc);
 
             // 延迟重启交给主循环 SystemRebooter 执行，避免在 async_tcp 任务上
             // 同步睡眠 3 秒导致响应无法 flush 给客户端（发送依赖 async_tcp 泵动）
@@ -367,7 +393,10 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
 #if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_FAILED, otaErrorMessage);
 #endif
-            request->send(500, "application/json", "{\"error\": \"" + otaErrorMessage + "\"}");
+            JsonDocument errorDoc;
+            errorDoc["success"] = false;
+            errorDoc["error"] = otaErrorMessage;
+            sendOtaJson(request, 500, errorDoc);
         }
     }
     // 注：非 final 分块不得对同一 request 多次 send（ESPAsyncWebServer 协议违规，
@@ -400,16 +429,27 @@ void OTAManager::handleOTAStatus(AsyncWebServerRequest *request) {
 // 处理OTA取消请求
 void OTAManager::handleOTACancel(AsyncWebServerRequest *request) {
     if (!otaInProgress) {
-        request->send(200, "application/json", "{\"status\": \"No OTA in progress\"}");
+        JsonDocument idleDoc;
+        idleDoc["success"] = true;
+        idleDoc["status"] = "No OTA in progress";
+        sendOtaJson(request, 200, idleDoc);
         return;
     }
 
     cancelOTA();
-    request->send(200, "application/json", "{\"status\": \"OTA cancelled\"}");
+    JsonDocument cancelledDoc;
+    cancelledDoc["success"] = true;
+    cancelledDoc["status"] = "OTA cancelled";
+    sendOtaJson(request, 200, cancelledDoc);
 }
 
 // 通过URL进行OTA更新
 bool OTAManager::startOTA(const String& url) {
+    if (!url.startsWith("https://")) {
+        otaErrorMessage = "OTA URL must use HTTPS";
+        otaStatus = OTA_FAILED;
+        return false;
+    }
     // 解耦说明：OTA 不依赖 NetworkManager，但 URL 下载需要 WiFi STA 链路就绪；
     // 未连接时快速失败，避免 HTTP 建连超时阻塞后台任务（上传型 OTA 不受影响）
     if (WiFi.status() != WL_CONNECTED) {
@@ -419,13 +459,34 @@ bool OTAManager::startOTA(const String& url) {
         return false;
     }
 
+    // Certificate validity cannot be checked safely before the clock has been
+    // synchronized. Refuse URL OTA instead of silently weakening TLS.
+    if (time(nullptr) < 1577836800) {  // 2020-01-01 UTC
+        otaErrorMessage = "System time is not synchronized for TLS validation";
+        LOG_WARNING("OTAManager: " + otaErrorMessage);
+        otaStatus = OTA_FAILED;
+        return false;
+    }
+
     LOG_INFO("OTAManager: Starting OTA from URL: " + url);
     otaFirmwareUrl = url;
 
-    WiFiClient client;
+    WiFiClientSecure client;
+    const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
+    if (caBundleSize == 0) {
+        otaErrorMessage = "Built-in CA certificate bundle is unavailable";
+        otaStatus = OTA_FAILED;
+        return false;
+    }
+    client.setCACertBundle(x509_crt_bundle_start, caBundleSize);
+    client.setHandshakeTimeout(30);
     HTTPClient http;
 
-    http.begin(client, url);
+    if (!http.begin(client, url)) {
+        otaErrorMessage = "Failed to initialize HTTPS client";
+        otaStatus = OTA_FAILED;
+        return false;
+    }
     http.setTimeout(30000);  // 30秒超时
 
     int httpCode = http.GET();
@@ -455,7 +516,7 @@ bool OTAManager::startOTA(const String& url) {
     otaStatus = OTA_DOWNLOADING;
 
     // 获取流并写入
-    WiFiClient* stream = http.getStreamPtr();
+    NetworkClient* stream = http.getStreamPtr();
     uint8_t buff[1024];
     long remaining = expectedSize > 0 ? (long)expectedSize : -1;  // -1 = 未知大小
 

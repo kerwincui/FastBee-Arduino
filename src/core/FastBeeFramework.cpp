@@ -42,7 +42,6 @@
 #include "systems/SystemRebooter.h"
 #include "security/UserManager.h"
 #include "security/AuthManager.h"
-#include "security/TlsMemoryPool.h"  // Phase C Task C.3: TLS 内存池
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
 #include "utils/TimeUtils.h"
@@ -120,9 +119,6 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #if FASTBEE_ENABLE_RF_LEARN
     {"rfLearn", 12},       // 脉冲捕获缓冲 300B + 中断处理
 #endif
-#if FASTBEE_MODBUS_SLAVE_ENABLE
-    {"modbusSlave", 18},   // 从站响应缓冲 440B + 寄存器映射
-#endif
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
     {"commandScript", 20}, // 脚本缓冲 500B + 解析器
 #endif
@@ -160,22 +156,31 @@ void FastBee::FeatureBudgetRegistry::recheck() {
     if (!checked_) return;
 #if defined(ESP_PLATFORM)
     const uint32_t free8Kb = FastBee::MemoryBudget::dram8Free() / 1024U;
-    for (const auto& budget : kFeatureBudgets) {
-        if (budget.name == nullptr) break;
-        // 跳过已 denied 的（不自动恢复，防振荡）
-        if (isDenied(budget.name)) continue;
-        // webServer 是设备唯一 Web 恢复/配置入口：启动瞬间的堆瞬态（MQTT 重启、
-        // LittleFS 挂载等）若在此将其永久 deny，会导致 Web 永久不启动、设备失联，
-        // 只能物理复位恢复。运行时压力由 WebMemoryGuard/tcp_accept 门控兜底，
-        // 因此 recheck 不 deny webServer。
-        if (strcmp(budget.name, "webServer") == 0) continue;
-        if (free8Kb < budget.minFree8Kb) {
-            FastBee::FeatureBudgetRegistryAccess::deny(budget.name);
-            Serial.printf("[BUDGET-RECHECK] %s disabled: free8=%luKB < need=%uKB\n",
-                          budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
+    // A feature may already own buffers, tasks, or driver state by the time
+    // this periodic diagnostic runs.  Marking it denied here leaves the
+    // runtime manager out of sync with those live resources and permanently
+    // disables later dependency checks after a transient allocation spike.
+    // Keep the scan diagnostic-only; runChecks() remains the sole admission
+    // point before feature initialization.
+    static uint32_t lastReportedFree8Kb = UINT32_MAX;
+    if (free8Kb != lastReportedFree8Kb) {
+        lastReportedFree8Kb = free8Kb;
+        const FastBee::FeatureBudget* firstAtRisk = nullptr;
+        for (const auto& budget : kFeatureBudgets) {
+            if (budget.name == nullptr) break;
+            if (!isDenied(budget.name) && free8Kb < budget.minFree8Kb) {
+                firstAtRisk = &budget;
+                break;
+            }
+        }
+        if (firstAtRisk) {
+            Serial.printf("[BUDGET-RECHECK] diagnostic: free8=%luKB below %s startup budget (%uKB); active features retained\n",
+                          (unsigned long)free8Kb, firstAtRisk->name,
+                          firstAtRisk->minFree8Kb);
         }
     }
-    // 同步到 RuntimeFeatureManager
+    // Keep the runtime status view synchronized with the immutable startup
+    // decision table.  No new denials are introduced by this path.
     FastBee::RuntimeFeatureManager::instance().syncBudgetState();
 #endif
 }
@@ -288,16 +293,6 @@ bool FastBeeFramework::initialize() {
     unsigned long featureToggleMs = millis() - stepStart;
     Serial.printf("[Boot] FeatureToggle: %lu ms\n", featureToggleMs);
     
-    // === Phase C Task C.3: 初始化 TLS 内存预留池 (步骤 2.5) ===
-    stepStart = millis();
-    Serial.println("[STEP2.5] Initializing TLS Memory Pool...");
-    if (!FastBee::TlsMemoryPool::instance().initialize()) {
-        Serial.println("[FATAL] Failed to initialize TLS memory pool!");
-        return false;
-    }
-    unsigned long tlsPoolMs = millis() - stepStart;
-    Serial.printf("[Boot] TLSPool: %lu ms\n", tlsPoolMs);
-        
     // 步骤 2: 初始化日志系统（之后统一用 LOG 宏）
     stepStart = millis();
     Serial.println("[STEP2] Initializing Logger System...");
@@ -345,6 +340,11 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP2.3] Loading runtime feature config...");
     FastBee::RuntimeFeatureManager::instance().loadConfig();
+    // 文件日志是可选的运行时功能。Logger 在 STEP2 早于功能配置初始化，
+    // 因此配置加载完成后必须再次同步，避免统一镜像在无 PSRAM 设备上
+    // 无条件打开 LittleFS 写盘和周期性文件轮转造成堆碎片。
+    LOGGER.enableFileLogging(
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("fileLogging"));
     Serial.printf("[Boot] RuntimeFeatureManager: %lu ms\n", millis() - stepStart);
 
     // 步骤2.5: 初始化外设管理器（尽早初始化，确保GPIO输出引脚在WiFi连接前就位）
@@ -416,7 +416,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
 
-    // 初始化网络（会从 network.json 加载配置，可能阻塞等待WiFi连接）
+    // 初始化网络（会从 network.json 加载配置；STA 扫描/连接由 update() 异步推进）
     if (!network->initialize()) {
         Serial.println("[STEP7-E] WARN: Network initialization returned false");
     }
@@ -458,7 +458,7 @@ bool FastBeeFramework::initialize() {
 #else  // !FASTBEE_WEB_START_EARLY
     // ---- 常规模式：WiFi连接完成后再启动Web服务器 ----
 
-    // 步骤 4: 初始化网络管理器（可能阻塞：STA模式下 connectToWiFiBlocking 最长等待 connectTimeout ms）
+    // 步骤 4: 初始化网络管理器（STA 候选扫描和连接由 update() 异步推进）
     stepStart = millis();
     Serial.println("[STEP4] Creating NetworkManager...");
     network.reset(new FBNetworkManager(server.get()));
@@ -936,7 +936,7 @@ bool FastBeeFramework::initialize() {
     ets_printf("[Boot] === Performance Report ===\n");
     ets_printf("[Boot] Total boot time: %lu ms\n", bootTime);
     if (networkMs > 1000) {
-        ets_printf("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)\n", networkMs);
+        ets_printf("[Boot] NetworkManager initialization took %lu ms (driver/config setup)\n", networkMs);
     }
     ets_printf("[Boot] === End Report ===\n");
 
@@ -1055,7 +1055,8 @@ bool FastBeeFramework::addSystemTasks() {
     }
 #endif
 
-    // 网络状态更新任务（每5秒）
+    // 网络状态更新任务（每500ms）：AP 恢复使用非阻塞状态机，亚秒级 tick
+    // 可满足驱动 settle 时序，同时所有昂贵操作仍由 NetworkManager 内部门控。
     if (!taskManager->addTask("network_update", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (framework && framework->network) {
@@ -1191,7 +1192,7 @@ bool FastBeeFramework::addSystemTasks() {
                 }
             }
         }
-    }, this, 5000)) {
+    }, this, 500)) {
         LOG_WARNING("Failed to add network update task");
     }
 
@@ -1383,10 +1384,10 @@ void FastBeeFramework::run() {
         unsigned long mins = (uptimeSec % 3600) / 60;
         unsigned long secs = uptimeSec % 60;
 
-        // 内存状态：统一 MALLOC_CAP_8BIT 真实 DRAM 口径（与 METRICS free8 一致）；
-        // ESP.getFreeHeap() 为 INTERNAL 口径含 IRAM/RTC 虚高约 28KB，旧 heap=a/b 格式易被误读为 空闲/总量
-        uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-        uint32_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        // 内存状态：统一使用内部 8-bit DRAM 口径；裸 MALLOC_CAP_8BIT 在
+        // 启用 PSRAM 后会把外部内存计入，无法反映 WiFi/lwIP 可用水位。
+        uint32_t freeHeap = FastBee::MemoryBudget::dram8Free();
+        uint32_t maxBlock = FastBee::MemoryBudget::dram8Largest();
         ets_printf("[STATUS] uptime=%luh%lum%lus free8=%lu blk8=%lu",
                       hours, mins, secs, (unsigned long)freeHeap, (unsigned long)maxBlock);
         // 停摆取证：TCP 连接积压数与距上次 HTTP 请求时长。
@@ -1647,7 +1648,18 @@ void FastBeeFramework::syncTimeFromConfig() {
     LOG_INFOF("[NTP] Timezone set to: %s, syncInterval=%ds", tz, syncInterval);
 
     String s1Str = s1;
-    if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {
+    String s2Str = s2;
+    // HTTP NTP allocates DNS/TCP/response buffers synchronously.  On boards
+    // without PSRAM this can monopolize the task runner when the remote host
+    // is unreachable, starving AsyncTCP and making the Web UI appear offline.
+    // Keep time synchronization available through asynchronous SNTP instead.
+    const bool noPsram = (ESP.getPsramSize() == 0);
+    const bool httpNtpConfigured = s1Str.startsWith("http://") || s1Str.startsWith("https://");
+    if (httpNtpConfigured && noPsram) {
+        LOG_WARNING("[NTP] HTTP NTP skipped on no-PSRAM target; using asynchronous SNTP fallback");
+    }
+
+    if (httpNtpConfigured && !noPsram) {
         // HTTP NTP同步
         long long ts = 0;
         if (TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000)) {
@@ -1656,11 +1668,27 @@ void FastBeeFramework::syncTimeFromConfig() {
             tzset();
         }
         // 同时启动标准NTP作为备份
-        configTzTime(tz, s2, "time.google.com", nullptr);
+        const char* backupServer = s2Str.isEmpty() ||
+            s2Str.startsWith("http://") || s2Str.startsWith("https://")
+            ? "pool.ntp.org" : s2Str.c_str();
+        configTzTime(tz, backupServer, "time.google.com", nullptr);
     } else {
         // 标准NTP同步（异步，需要等待后台完成）
-        LOG_INFOF("[NTP] Starting SNTP sync with %s, %s", s1, s2);
-        configTzTime(tz, s1, s2);
+        // HTTP URL 不是合法的 SNTP 主机名；无 PSRAM 时用配置中的第二
+        // 个 DNS NTP 主机作为首选，保证回退路径仍真正可用。
+        String primaryServer = httpNtpConfigured ? s2Str : s1Str;
+        if (primaryServer.isEmpty() || primaryServer.startsWith("http://") ||
+            primaryServer.startsWith("https://")) {
+            primaryServer = "pool.ntp.org";
+        }
+        String secondaryServer = httpNtpConfigured ? String("time.google.com") : s2Str;
+        if (secondaryServer.isEmpty() || secondaryServer.startsWith("http://") ||
+            secondaryServer.startsWith("https://")) {
+            secondaryServer = "time.google.com";
+        }
+        LOG_INFOF("[NTP] Starting SNTP sync with %s, %s",
+                  primaryServer.c_str(), secondaryServer.c_str());
+        configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr);
     }
 
     // 确保时区设置生效
@@ -1695,7 +1723,7 @@ void FastBeeFramework::ensureDeviceIdentity() {
 
     if (!devParsed) {
         // 文件不存在或解析失败：创建最小默认配置
-        devDoc["deviceName"] = "FastBee-Device";
+        devDoc["deviceName"] = "FastBee";
         devDoc["userId"] = "1";
         devDirty = true;
     }

@@ -538,13 +538,7 @@ bool ProtocolManager::restartMQTT() {
 }
 
 bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
-    // ===== MQTT 启用检查：禁用时不创建客户端、不连接 =====
-    // 这是所有 MQTT 启动路径的统一入口守卫：
-    //   1. 设备启动（FastBeeFramework STEP 11.1）无条件调用
-    //   2. 网络就绪后自动启动任务
-    //   3. 保存协议配置时
-    //   4. 测试连接自动恢复时
-    // 禁用 MQTT 后，任何路径都不应创建客户端或发起连接
+    // 统一入口守卫：禁用配置时停止并清理客户端，不创建或连接 MQTT。
     {
         JsonDocument enabledDoc;
         bool sectionOk = ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc);
@@ -570,6 +564,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
 
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
 
+    // Preserve an active client unless a forced rebuild is requested.
     if (!forceRebuild && mqttClient && !mqttClient->isStopped()) {
         MQTTConfig currentConfig = mqttClient->getConfig();
         if (!currentConfig.server.isEmpty() && currentConfig.port > 0) {
@@ -779,21 +774,21 @@ bool ProtocolManager::restartModbus() {
         return false;
     }
 
-    PeripheralConfig* periph = PeripheralManager::getInstance().getPeripheral(peripheralId);
-    if (!periph) {
+    PeripheralConfig periph;
+    if (!PeripheralManager::getInstance().getPeripheralSnapshot(peripheralId, periph)) {
         LOG_ERRORF("Modbus RTU: Peripheral '%s' not found", peripheralId.c_str());
         return false;
     }
 
-    if (periph->type != PeripheralType::UART) {
+    if (periph.type != PeripheralType::UART) {
         LOG_ERRORF("Modbus RTU: Peripheral '%s' is not UART type", peripheralId.c_str());
         return false;
     }
 
     // 引脚约定: pins[0]=RX, pins[1]=TX
-    modbusConfig.rxPin = periph->pins[0];
-    modbusConfig.txPin = periph->pins[1];
-    modbusConfig.baudRate = periph->params.uart.baudRate > 0 ? periph->params.uart.baudRate : 9600;
+    modbusConfig.rxPin = periph.pins[0];
+    modbusConfig.txPin = periph.pins[1];
+    modbusConfig.baudRate = periph.params.uart.baudRate > 0 ? periph.params.uart.baudRate : 9600;
 
     LOG_INFOF("Modbus RTU: Using peripheral '%s' - RX:%d, TX:%d, Baud:%d",
               peripheralId.c_str(), modbusConfig.rxPin, modbusConfig.txPin, modbusConfig.baudRate);

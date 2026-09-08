@@ -50,6 +50,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         bool internetAvailable = false;
         if (ctx->networkManager) {
             FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+            netMgr->updateStatusInfo();
             NetworkStatusInfo netInfo = netMgr->getStatusInfo();
             internetAvailable = netInfo.internetAvailable;
         }
@@ -87,6 +88,8 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         bool internetAvailable = false;
         if (ctx->networkManager) {
             FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+            // 刷新底层网络状态，避免刚联网时使用旧的 internetAvailable=false 阻止手动同步。
+            netMgr->updateStatusInfo();
             NetworkStatusInfo netInfo = netMgr->getStatusInfo();
             internetAvailable = netInfo.internetAvailable;
         }
@@ -305,6 +308,10 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
     doc["data"]["developerModeEnabled"] = true;
     doc["data"]["logLevel"] = "INFO";
+    doc["data"]["enableNTP"] = true;
+    doc["data"]["ntpServer1"] = "http://iot.fastbee.cn/prod-api/iot/tool/ntp";
+    doc["data"]["ntpServer2"] = "cn.pool.ntp.org";
+    doc["data"]["timezone"] = "CST-8";
     doc["data"]["syncInterval"] = 3600;
     doc["data"]["maxLoginAttempts"]       = 5;
     doc["data"]["loginLockoutTime"]       = 300000;

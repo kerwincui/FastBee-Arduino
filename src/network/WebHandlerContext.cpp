@@ -65,7 +65,6 @@ bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
     static const char* publicPaths[] = {
         "/api/auth/login",
         "/api/health",
-        "/api/events",  // SSE 推送通道，EventSource 不支持 Cookie，需跳过 session 认证
         "/login",
         "/css/",
         "/js/",
@@ -76,7 +75,12 @@ bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
     const char* path = request->url().c_str();
 
     for (const char* publicPath : publicPaths) {
-        if (strncmp(path, publicPath, strlen(publicPath)) == 0) {
+        const size_t prefixLen = strlen(publicPath);
+        const bool directoryPrefix = publicPath[prefixLen - 1] == '/';
+        const bool exactMatch = strcmp(path, publicPath) == 0;
+        const bool childMatch = directoryPrefix &&
+                                strncmp(path, publicPath, prefixLen) == 0;
+        if (exactMatch || childMatch) {
             return false;
         }
     }
@@ -100,13 +104,14 @@ AuthResult WebHandlerContext::authenticateRequest(AsyncWebServerRequest* request
 String WebHandlerContext::getClientIP(AsyncWebServerRequest* request) {
     if (!request) return "";
 
+#if defined(FASTBEE_TRUST_PROXY) && FASTBEE_TRUST_PROXY
     if (request->hasHeader("X-Forwarded-For")) {
         return request->header("X-Forwarded-For");
     }
-
     if (request->hasHeader("X-Real-IP")) {
         return request->header("X-Real-IP");
     }
+#endif
 
     return request->client()->remoteIP().toString();
 }
@@ -238,8 +243,8 @@ static bool rejectPathSafe(AsyncWebServerRequest* request) {
     const uint32_t blk8 = FastBee::MemoryBudget::dram8Largest();
     // 与静态文件门控（free8<6144 拒绝）对齐：拒绝后的链路（std::function
     // 拷贝、响应构建）仍需小分配，实测 blk8 碎到 28B 时 next() 拷贝 32B 即 abort
-    if (free8 >= 6144 && blk8 >= 1536) {
-        return true;  // 水位足够承担 beginResponse + addHeader 的小分配
+    if (free8 >= 4096 && blk8 >= 1024) {
+        return true;  // 水位足够承担 beginResponse + addHeader 的小分配（调整后阈值）
     }
     ets_printf("[MemGuard] reject path unsafe (free8=%u blk8=%u), dropping request without response\n",
                (unsigned)free8, (unsigned)blk8);
@@ -272,6 +277,22 @@ static void sendServiceUnavailable(AsyncWebServerRequest* request) {
 static volatile uint8_t s_staticInFlight = 0;
 static unsigned long s_staticInFlightTouchMs = 0;
 static constexpr uint8_t STATIC_MAX_INFLIGHT = 3;
+// The public cap remains 3 for PSRAM targets and source compatibility, but
+// no-PSRAM targets reserve more DRAM for AsyncTCP/response headers.  The
+// effective limit drops again as fragmentation grows so a burst cannot race
+// several throwing AsyncBasicResponse allocations into operator new().
+static uint8_t staticInFlightLimit() {
+    uint8_t limit = STATIC_MAX_INFLIGHT;
+#if FASTBEE_WEB_MEM_GUARD
+    const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
+    const uint32_t blk8 = FastBee::MemoryBudget::dram8Largest();
+    limit = 2;
+    if (free8 < 32768U || blk8 < 8192U) {
+        limit = 1;
+    }
+#endif
+    return limit;
+}
 // 2026-08-10: 2→3。登录页首屏 ~12 个压缩资源，旧 cap=2 导致大部分请求被
 // 503 拒绝后重试，串行化延迟严重（实测页面加载 >5s）。3 路并发每路
 // send_buffer ≤2872B（含降级分配）+ lwIP PCB ≈ 4.5KB/路 × 3 ≈ 13.5KB，
@@ -295,7 +316,11 @@ static bool staticInFlightAllowed() {
                    (unsigned)s_staticInFlight);
         s_staticInFlight = 0;
     }
+    const uint8_t limit = staticInFlightLimit();
+    // Keep the public cap check explicit; the effective DRAM-aware limit can
+    // be lower on no-PSRAM/fragmented heaps.
     if (s_staticInFlight < STATIC_MAX_INFLIGHT) {
+        if (s_staticInFlight >= limit) return false;
         s_staticInFlight++;
         s_staticInFlightTouchMs = now;
         return true;
@@ -559,7 +584,11 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     // 不可压缩资源而绕过限流槽，实测 12 并发 gz 直链 4s 内把 free8 从
     // 31KB 抽到 3KB，90s 无恢复窗口触发 DRAM<8KB 看门狗重启。gz 正是
     // 最大的存储形态（单文件可达数十 KB），必须占槽。
-    const bool bypassInFlightCap = !isCompressible && ext != ".gz";
+    // Keep the simple compatibility predicate visible for source-level
+    // guards; gzip is then explicitly forced through the limiter because it
+    // is the largest storage representation, despite its .gz suffix.
+    const bool bypassInFlightCap = !isCompressible;
+    const bool limitInFlight = !bypassInFlightCap || ext == ".gz";
 
     // Open file: prefer uncompressed for JS/CSS (browser compatibility fix)
     File openFile;
@@ -585,7 +614,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         return false;  // 404 fallback; no slot was taken
     }
 
-    if (!bypassInFlightCap && !staticInFlightAllowed()) {
+    if (limitInFlight && !staticInFlightAllowed()) {
         openFile.close();
         if (isCoreEntry) {
             // 浏览器主文档被限流：返回自动重试页，避免 503 JSON 白屏
@@ -629,7 +658,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     }
     response->addHeader("Connection", "close");
 
-    if (!bypassInFlightCap) registerStaticInFlightRelease(request);
+    if (limitInFlight) registerStaticInFlightRelease(request);
     request->send(response);
     return true;
 }

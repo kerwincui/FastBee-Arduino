@@ -19,6 +19,8 @@
 
 namespace {
 
+extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+
 struct ScopedBoolFlag {
     bool& flag;
     bool previous;
@@ -206,8 +208,7 @@ public:
 
 private:
     void prepareHandshake() {
-        setCACertBundle(nullptr);
-        setInsecure();
+        setCACertBundle(x509_crt_bundle_start);
     }
 
     bool& _busy;

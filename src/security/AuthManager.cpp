@@ -823,14 +823,6 @@ String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request,
         if (!token.isEmpty()) return token;
     }
 
-    if (request->hasParam("session")) {
-        return request->getParam("session")->value();
-    }
-    
-    if (request->hasParam("session", true)) {
-        return request->getParam("session", true)->value();
-    }
-    
     return "";
 }
 

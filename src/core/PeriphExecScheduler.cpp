@@ -408,9 +408,10 @@ void PeriphExecScheduler::triggerEventById(const String& eventId, const String& 
 
     // 可能是用户自定义的 DEVICE_EVENT 外设事件：尝试查找外设
     String eventName;
-    PeripheralConfig* cfg = PeripheralManager::getInstance().getPeripheral(eventId);
-    if (cfg && cfg->type == PeripheralType::DEVICE_EVENT) {
-        eventName = cfg->name;
+    PeripheralConfig cfg;
+    if (PeripheralManager::getInstance().getPeripheralSnapshot(eventId, cfg) &&
+        cfg.type == PeripheralType::DEVICE_EVENT) {
+        eventName = cfg.name;
         LOGGER.infof("[PeriphExec] Device event triggered: %s (%s, data=%s)",
                      eventId.c_str(), eventName.c_str(), eventData.c_str());
         // 同时分发给规则（若有规则以此外设为触发源）与 MQTT
@@ -509,6 +510,19 @@ void PeriphExecScheduler::checkSerialEvents() {
     if (FastBee::MemoryBudget::dramFree() < 16000) return;
 
     PeripheralManager& pm = PeripheralManager::getInstance();
+
+    // Drop buffers for deleted, disabled, or repurposed UARTs so repeated
+    // configuration churn cannot grow these maps indefinitely.
+    for (auto it = _serialRxBuffers.begin(); it != _serialRxBuffers.end();) {
+        PeripheralConfig snapshot;
+        if (!pm.getPeripheralSnapshot(it->first, snapshot) || !snapshot.enabled ||
+            snapshot.type != PeripheralType::UART || !_manager->hasDataSourceRule(it->first)) {
+            _serialRxLastByteAt.erase(it->first);
+            it = _serialRxBuffers.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
     auto dispatchFrame = [&](const String& id, String frame) {
         frame.trim();
@@ -624,17 +638,31 @@ void PeriphExecScheduler::checkButtonEvents() {
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
+    for (auto it = _buttonStates.begin(); it != _buttonStates.end();) {
+        PeripheralConfig snapshot;
+        if (!pm.getPeripheralSnapshot(it->first, snapshot) || !snapshot.enabled ||
+            !supportsButtonEvent(snapshot.type)) {
+            it = _buttonStates.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     pm.forEachPeripheral([this, &pm, now](const PeripheralConfig& config) {
         // 只处理支持按键事件的外设类型（上拉/下拉输入）
         if (!config.enabled) return;
         if (!supportsButtonEvent(config.type)) return;
 
-        // 获取或创建按键状态
-        if (_buttonStates.find(config.id) == _buttonStates.end()) {
+        const bool idleLevel = config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP;
+
+        // 获取或创建按键状态。极性改变时丢弃旧的点击/长按状态。
+        auto stateIt = _buttonStates.find(config.id);
+        if (stateIt == _buttonStates.end() || stateIt->second.idleLevel != idleLevel) {
             ButtonRuntimeState state;
             state.periphId = config.id;
-            state.lastState = true;  // 上拉默认高电平
-            state.currentState = true;
+            state.idleLevel = idleLevel;
+            state.lastState = idleLevel;
+            state.currentState = idleLevel;
             _buttonStates[config.id] = state;
         }
 
@@ -654,8 +682,8 @@ void PeriphExecScheduler::checkButtonEvents() {
                 btnState.lastState = currentLevel;
                 btnState.lastChangeTime = now;
 
-                if (!currentLevel) {
-                    // 按键按下（低电平）
+                if (currentLevel != btnState.idleLevel) {
+                    // 按键按下（上拉为低，下拉为高）
                     btnState.pressStartTime = now;
 
                     // 触发按键按下事件
@@ -663,7 +691,7 @@ void PeriphExecScheduler::checkButtonEvents() {
 
                     LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
                 } else {
-                    // 按键释放（高电平）
+                    // 按键释放
                     unsigned long pressDuration = now - btnState.pressStartTime;
 
                     // 触发按键释放事件
@@ -695,7 +723,7 @@ void PeriphExecScheduler::checkButtonEvents() {
             }
         } else {
             // 状态未变化，检查长按和双击
-            if (!currentLevel) {
+            if (currentLevel != btnState.idleLevel) {
                 // 按键持续按下，检查长按
                 unsigned long pressDuration = now - btnState.pressStartTime;
 
@@ -910,9 +938,9 @@ String PeriphExecScheduler::collectPeripheralData() {
         obj["type"] = typeVal;
 
         // 获取运行时状态
-        auto* runtimeState = pm.getRuntimeState(config.id);
-        if (runtimeState) {
-            obj["status"] = static_cast<int>(runtimeState->status);
+        PeripheralRuntimeState runtimeState;
+        if (pm.getRuntimeStateSnapshot(config.id, runtimeState)) {
+            obj["status"] = static_cast<int>(runtimeState.status);
         } else {
             obj["status"] = 0;
         }

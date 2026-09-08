@@ -167,12 +167,12 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             HandlerUtils::sendJsonError(request, 503, "Service busy (rules locked), retry in 2s", 2);
             return;
         }
-        const PeriphExecRule* rule = mgr.getRule(ruleId);
-        if (!rule) {
+        PeriphExecRule rule;
+        if (!mgr.getRuleSnapshot(ruleId, rule)) {
             request->send(404, "application/json", "{\"success\":false,\"message\":\"Rule not found\"}");
             return;
         }
-        String response = serializeRuleFull(*rule);
+        String response = serializeRuleFull(rule);
         // 锁在 RAII 释放后，再发送响应（响应可能涉及异步发送）
         // 这里 lock 仍在作用域内，但 send 是同步入队，不阻塞太久
         HandlerUtils::sendJsonSuccess(request, response);
@@ -254,8 +254,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             String unit = sDoc["unit"].as<String>();
 
             String periphName = periphId;
-            const PeripheralConfig* periph = pm.getPeripheral(periphId);
-            if (periph && !periph->name.isEmpty()) periphName = periph->name;
+            PeripheralConfig periph;
+            if (pm.getPeripheralSnapshot(periphId, periph) && !periph.name.isEmpty()) periphName = periph.name;
 
             String displayLabel = periphName + " - " + sensorLabel;
             if (!sensorSources.isEmpty()) sensorSources += ",";
@@ -304,8 +304,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
             String targetPeriphName;
             if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
-                const PeripheralConfig* periph = pm.getPeripheral(rule.actions[0].targetPeriphId);
-                if (periph) targetPeriphName = periph->name;
+                PeripheralConfig periph;
+                if (pm.getPeripheralSnapshot(rule.actions[0].targetPeriphId, periph)) targetPeriphName = periph.name;
             }
 
             // 构建流程摘要: 触发 → 动作 → 上报
@@ -513,25 +513,25 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    PeriphExecRule* existing = mgr.getRule(id);
-    if (!existing) {
+    PeriphExecRule existing;
+    if (!mgr.getRuleSnapshot(id, existing)) {
         ctx->sendError(request, 404, "Rule not found");
         return;
     }
 
     PeriphExecRule rule;
     rule.id = id;
-    rule.name = ctx->getParamValue(request, "name", existing->name);
-    rule.enabled = ctx->getParamBool(request, "enabled", existing->enabled);
-    rule.execMode = ctx->getParamInt(request, "execMode", existing->execMode);
-    rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
-    rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
-    rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", existing->reportAfterExec);
+    rule.name = ctx->getParamValue(request, "name", existing.name);
+    rule.enabled = ctx->getParamBool(request, "enabled", existing.enabled);
+    rule.execMode = ctx->getParamInt(request, "execMode", existing.execMode);
+    rule.protocolType = ctx->getParamInt(request, "protocolType", existing.protocolType);
+    rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing.scriptContent);
+    rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", existing.reportAfterExec);
 
     // 旧版 form-encoded: 使用已有 trigger/action 作为默认值
     ExecTrigger t;
-    if (!existing->triggers.empty()) {
-        t = existing->triggers[0]; // 复制现有 trigger 作为默认
+    if (!existing.triggers.empty()) {
+        t = existing.triggers[0]; // 复制现有 trigger 作为默认
     }
     t.triggerType = ctx->getParamInt(request, "triggerType", t.triggerType);
     t.triggerPeriphId = ctx->getParamValue(request, "triggerPeriphId", t.triggerPeriphId);
@@ -547,8 +547,8 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.triggers.push_back(t);
 
     ExecAction a;
-    if (!existing->actions.empty()) {
-        a = existing->actions[0]; // 复制现有 action 作为默认
+    if (!existing.actions.empty()) {
+        a = existing.actions[0]; // 复制现有 action 作为默认
     }
     a.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", a.targetPeriphId);
     a.actionType = ctx->getParamInt(request, "actionType", a.actionType);
@@ -948,8 +948,8 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         // 获取目标外设名称
         String periphName;
         if (!firstAction.targetPeriphId.isEmpty()) {
-            const PeripheralConfig* periph = pm.getPeripheral(firstAction.targetPeriphId);
-            if (periph) periphName = periph->name;
+            PeripheralConfig periph;
+            if (pm.getPeripheralSnapshot(firstAction.targetPeriphId, periph)) periphName = periph.name;
         }
 
         // 构建单条记录
@@ -1062,14 +1062,14 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    PeriphExecRule* existing = mgr.getRule(id);
-    if (!existing) {
+    PeriphExecRule existing;
+    if (!mgr.getRuleSnapshot(id, existing)) {
         ctx->sendError(request, 404, "Rule not found");
         return;
     }
 
     // 基于现有规则更新
-    PeriphExecRule rule = *existing;
+    PeriphExecRule rule = existing;
     parseRuleFromJson(obj, rule);
     rule.id = id;
 
@@ -1118,9 +1118,9 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
 
         // 关联触发外设名称
         if (!t.triggerPeriphId.isEmpty()) {
-            const PeripheralConfig* periph = pm.getPeripheral(t.triggerPeriphId);
-            if (periph) {
-                tObj["triggerPeriphName"] = periph->name;
+            PeripheralConfig periph;
+            if (pm.getPeripheralSnapshot(t.triggerPeriphId, periph)) {
+                tObj["triggerPeriphName"] = periph.name;
             }
         }
     }
@@ -1136,10 +1136,10 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
         aObj["syncDelayMs"] = a.syncDelayMs;
         aObj["execMode"] = a.execMode;
         if (!a.targetPeriphId.isEmpty()) {
-            const PeripheralConfig* periph = pm.getPeripheral(a.targetPeriphId);
-            if (periph) {
-                aObj["targetPeriphName"] = periph->name;
-                aObj["targetPeriphType"] = static_cast<int>(periph->type);
+            PeripheralConfig periph;
+            if (pm.getPeripheralSnapshot(a.targetPeriphId, periph)) {
+                aObj["targetPeriphName"] = periph.name;
+                aObj["targetPeriphType"] = static_cast<int>(periph.type);
             }
         }
     }

@@ -15,6 +15,7 @@
 
 #include "core/FeatureBudget.h"
 #include "core/FeatureFlags.h"
+#include "systems/ConfigStorage.h"
 #include "systems/LoggerSystem.h"
 
 #if defined(ESP_PLATFORM)
@@ -23,7 +24,6 @@
 
 namespace {
 constexpr const char* kConfigPath = "/config/features.json";
-constexpr const char* kConfigTmpPath = "/config/features.json.tmp";
 }  // namespace
 
 namespace FastBee {
@@ -66,98 +66,96 @@ void RuntimeFeatureManager::generateDefaults() {
     // （ACTION_FEATURE_ENABLE/DISABLE，MQTT/GPIO 触发）动态切换并自动重启生效。
 
     // ═══ A 类: 核心 Web 服务（默认启用，可在功能配置页禁用省内存）═══
-    registerFeature({"webServer", "Web Server (HTTP/API)", "network", 60, 36864,
+    registerFeature({"webServer", "Web 服务 (HTTP/API)", "network", 60, 36864,
                      FASTBEE_ENABLE_WEB_SERVER != 0, true,
                      "AsyncWebServer + routes (~35KB DRAM)", nullptr, 30});
-    registerFeature({"mdns", "mDNS Discovery (.local)", "network", 5, 8192,
+    registerFeature({"mdns", "mDNS 发现 (.local)", "network", 5, 8192,
                      FASTBEE_ENABLE_MDNS != 0, true,
                      "mode-independent switch", nullptr, 8});
 
-    // ═══ B 类: 常用外设（出厂默认禁用，按需启用）═══
-    registerFeature({"lcd", "OLED/LCD Display", "peripheral", 20, 1200,
+    // ═══ B 类：常用外设（出厂默认禁用，按需启用）═══
+    registerFeature({"lcd", "OLED/LCD 显示屏", "peripheral", 20, 1200,
                      FASTBEE_ENABLE_LCD != 0, false,
                      "I2C SSD1306/SH1106", nullptr, 19});
     registerFeature({"neopixel", "NeoPixel LED", "peripheral", 12, 212,
                      FASTBEE_ENABLE_NEOPIXEL != 0, false,
                      "GPIO (WS2812)", nullptr, 18});
-    registerFeature({"sevenSegment", "TM1637 Seven Segment", "peripheral", 3, 32,
+    registerFeature({"sevenSegment", "TM1637 七段数码管", "peripheral", 3, 32,
                      FASTBEE_ENABLE_SEVEN_SEGMENT != 0, false,
                      "GPIO (2-wire)", nullptr, 0});
-    registerFeature({"ds18b20", "DS18B20 Temperature", "peripheral", 5, 100,
+    registerFeature({"ds18b20", "DS18B20 温度传感器", "peripheral", 5, 100,
                      (FASTBEE_ENABLE_SENSOR_DRIVER != 0 && FASTBEE_ENABLE_DS18B20 != 0), false,
-                     "OneWire (not on C3/C6)", nullptr, 0});
-    registerFeature({"modbus", "Modbus Protocol", "protocol", 20, 1024,
+                     "OneWire 数据引脚 + 外部上拉", nullptr, 0});
+    registerFeature({"modbus", "Modbus 主站", "protocol", 20, 1024,
                      FASTBEE_ENABLE_MODBUS != 0, false,
                      "UART/RS485", nullptr, 20, true});
-    registerFeature({"ruleScript", "Rule Script Engine", "system", 8, 2048,
+    registerFeature({"ruleScript", "规则引擎", "system", 8, 2048,
                      FASTBEE_ENABLE_RULE_SCRIPT != 0, false,
                      nullptr, nullptr, 22, true});
 
-    // ═══ C 类: 高级外设与系统功能（出厂默认禁用）═══
-    registerFeature({"lcdGb2312", "GB2312 Chinese Font", "peripheral", 248, 0,
+    // ═══ C 类：高级外设与系统功能（出厂默认禁用）═══
+    registerFeature({"lcdGb2312", "GB2312 中文字库", "peripheral", 248, 0,
                      FASTBEE_ENABLE_LCD_GB2312 != 0, false,
                      nullptr, "lcd", 0});
-    registerFeature({"ledScreen", "LED Screen (RMT)", "peripheral", 10, 6144,
+    registerFeature({"ledScreen", "RMT LED 大屏", "peripheral", 10, 6144,
                      FASTBEE_ENABLE_LED_SCREEN != 0, false,
                      "ESP32 RMT", nullptr, 15, true});  // 设备大屏默认禁用
-    registerFeature({"irRemote", "IR Remote Control", "peripheral", 8, 300,
+    registerFeature({"irRemote", "红外遥控", "peripheral", 8, 300,
                      FASTBEE_ENABLE_IR_REMOTE != 0, false,
                      "IR receiver + GPIO", nullptr, 25, true});
     registerFeature({"rfid", "RFID MFRC522", "peripheral", 12, 200,
                      FASTBEE_ENABLE_RFID != 0, false,
                      "SPI MFRC522", nullptr, 24, true});
-    registerFeature({"i2cSensors", "I2C Advanced Sensors", "peripheral", 15, 500,
+    registerFeature({"i2cSensors", "I2C 进阶传感器", "peripheral", 15, 500,
                      FASTBEE_ENABLE_I2C_SENSORS != 0, false,
                      "I2C BMP280/MPU6050", nullptr, 23, true});
-    registerFeature({"rfLearn", "433MHz RF Learn", "peripheral", 4, 300,
+    registerFeature({"rfLearn", "433MHz RF 学习", "peripheral", 4, 300,
                      FASTBEE_ENABLE_RF_LEARN != 0, false,
                      "RF receiver + GPIO", nullptr, 12});
     registerFeature({"ds1302", "DS1302 RTC", "peripheral", 2, 100,
                      FASTBEE_ENABLE_DS1302 != 0, false,
                      "3-wire (CE/IO/SCLK)", nullptr, 0});
-    registerFeature({"lcd1602", "LCD1602 Character LCD", "peripheral", 3, 100,
+    registerFeature({"lcd1602", "LCD1602 字符屏", "peripheral", 3, 100,
                      FASTBEE_ENABLE_LCD1602 != 0, false,
                      "I2C PCF8574", nullptr, 0});
-    registerFeature({"modbusSlave", "Modbus Slave", "protocol", 10, 440,
-                     (FASTBEE_ENABLE_MODBUS != 0 && FASTBEE_MODBUS_SLAVE_ENABLE != 0), false,
-                     nullptr, "modbus", 18, true});
-    registerFeature({"commandScript", "Command Script", "system", 3, 500,
+    // modbusSlave 从站特性已移除：从站代码由 FASTBEE_MODBUS_SLAVE_ENABLE=0 关闭编译，
+    // 该功能项无运行时门控作用（无 shouldEnable("modbusSlave") 调用）且从站数据源未接入，
+    // 故不再注册，功能配置界面不显示从站项。
+    registerFeature({"commandScript", "命令脚本", "system", 3, 500,
                      FASTBEE_ENABLE_COMMAND_SCRIPT != 0, false,
                      nullptr, "ruleScript", 20, true});
     // MQTTS 随 MQTT 栈编入（mbedtls 已链接，Flash 增量为 0）；RAM 为 TLS
     // 握手实测 ~42KB（16KB in + 16KB out + ~10KB 上下文），无 PSRAM 时
     // 准入需 ~52KB 空闲（MemoryBudget::MQTTS_NO_PSRAM_MIN_DRAM_FREE）。
     // 出厂默认禁用：scheme=mqtts 的用户需在功能配置页手动启用。
-    registerFeature({"mqtts", "MQTTS Encrypted Transport (TLS)", "protocol", 0, 43008,
+    registerFeature({"mqtts", "MQTTS (加密传输)", "protocol", 0, 43008,
                      FASTBEE_ENABLE_MQTT != 0, false,
                      "TLS handshake ~42KB DRAM (~52KB without PSRAM)", nullptr, 45});
-    registerFeature({"deviceControl", "Device Control Panel", "system", 27, 4096,
+    registerFeature({"deviceControl", "设备控制面板", "system", 27, 4096,
                      FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
                      "PSRAM required (Web JS ~106KB browser-side)", nullptr, 110});  // 设备大屏控制面板默认禁用
-    registerFeature({"ota", "OTA Update", "system", 10, 1024,
+    registerFeature({"ota", "OTA 固件升级", "system", 10, 1024,
                      FASTBEE_ENABLE_OTA != 0, false,
-                     "Dual partition (8MB+)", nullptr, 20});
-    registerFeature({"otaFs", "OTA Filesystem", "system", 3, 500,
-                     FASTBEE_ENABLE_OTA_FS != 0, false,
-                     nullptr, "ota", 0});
-    registerFeature({"logViewer", "Log Viewer", "system", 4, 500,
+                     "Dual partition + LittleFS support", nullptr, 20});
+    // otaFs 作为 ota 的附属功能自动启用
+    registerFeature(FeatureMeta{"otaFs", nullptr, "system", 3, 500,
+                     (true), false,
+                     nullptr, "ota", 0, false});
+    registerFeature({"logViewer", "日志查看器", "system", 4, 500,
                      FASTBEE_ENABLE_LOG_VIEWER != 0, false,
                      nullptr, nullptr, 0});
-    registerFeature({"fileLogging", "File Logging", "system", 3, 500,
+    registerFeature({"fileLogging", "文件日志记录", "system", 3, 500,
                      FASTBEE_ENABLE_FILE_LOGGING != 0, false,
                      nullptr, nullptr, 0});
-    registerFeature({"userAdmin", "User Admin", "system", 5, 500,
+    registerFeature({"userAdmin", "用户管理", "system", 5, 500,
                      FASTBEE_ENABLE_USER_ADMIN != 0, false,
                      nullptr, nullptr, 0});
-    registerFeature({"i18n", "Internationalization", "system", 5, 0,
-                     FASTBEE_ENABLE_I18N != 0, false,
-                     nullptr, nullptr, 0});
 
-    // ═══ D 类: 网络扩展（出厂默认禁用，以太网/4G 需按硬件配置手动启用）═══
+    // ═══ D 类：网络扩展（出厂默认禁用，以太网/4G 需按硬件配置手动启用）═══
     registerFeature({"ble", "BLE Bluetooth", "network", 80, 10240,
                      FASTBEE_ENABLE_BLE != 0, false,
                      "NimBLE-Arduino", nullptr, 35});
-    registerFeature({"ethernet", "Ethernet W5500", "network", 8, 2048,
+    registerFeature({"ethernet", "以太网 W5500", "network", 8, 2048,
                      FASTBEE_ENABLE_ETHERNET != 0, false,
                      "SPI W5500", nullptr, 15});
     registerFeature({"cellular", "4G Cellular", "network", 15, 4096,
@@ -213,40 +211,10 @@ void RuntimeFeatureManager::buildConfigDoc(JsonDocument& doc) const {
 }
 
 bool RuntimeFeatureManager::saveConfig(const JsonDocument& doc) {
-    // 1. 写入临时文件
-    File tmpFile = LittleFS.open(kConfigTmpPath, "w");
-    if (!tmpFile) {
-        LOGGER.error("[FeatureCfg] Failed to open temp file for write");
-        return false;
-    }
-    serializeJson(doc, tmpFile);
-    tmpFile.close();
-
-    // 2. 验证临时文件可解析
-    File verifyFile = LittleFS.open(kConfigTmpPath, "r");
-    if (!verifyFile) {
-        LittleFS.remove(kConfigTmpPath);
-        LOGGER.error("[FeatureCfg] Failed to reopen temp file for verification");
-        return false;
-    }
-    JsonDocument verifyDoc;
-    DeserializationError err = deserializeJson(verifyDoc, verifyFile);
-    verifyFile.close();
-    if (err) {
-        LittleFS.remove(kConfigTmpPath);
-        LOGGER.error("[FeatureCfg] Written config verification failed");
-        return false;
-    }
-
-    // 3. 原子性替换 (删除旧文件 + 重命名新文件)
-    LittleFS.remove(kConfigPath);
-    if (!LittleFS.rename(kConfigTmpPath, kConfigPath)) {
-        LOGGER.error("[FeatureCfg] Failed to rename temp config file");
-        return false;
-    }
-
-    LOGGER.info("[FeatureCfg] Config saved successfully");
-    return true;
+    const bool saved = ConfigStorage::getInstance().saveJSONConfig(kConfigPath, doc);
+    if (saved) LOGGER.info("[FeatureCfg] Config saved successfully");
+    else LOGGER.error("[FeatureCfg] Failed to save verified config and backup");
+    return saved;
 }
 
 bool RuntimeFeatureManager::saveCurrentConfig() {
@@ -261,8 +229,17 @@ bool RuntimeFeatureManager::saveCurrentConfig() {
 bool RuntimeFeatureManager::loadConfig() {
     generateDefaults();
 
-    File file = LittleFS.open(kConfigPath, "r");
-    if (!file) {
+    JsonDocument doc;
+    if (!ConfigStorage::getInstance().loadJSONConfig(kConfigPath, doc)) {
+        const bool hasStoredConfig = LittleFS.exists(kConfigPath) ||
+                                     LittleFS.exists(String(kConfigPath) + ".bak");
+        if (hasStoredConfig) {
+            LOGGER.warning("[FeatureCfg] Primary and backup JSON invalid, using safe defaults");
+            loaded_ = true;
+            syncBudgetState();
+            applyDependencyRules();
+            return false;
+        }
         // 首次运行: 生成默认配置并写入文件
         LOGGER.info("[FeatureCfg] No config file, generating defaults");
         loaded_ = true;
@@ -270,18 +247,6 @@ bool RuntimeFeatureManager::loadConfig() {
         applyDependencyRules();
         saveCurrentConfig();
         return true;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-
-    if (err) {
-        LOGGER.warning("[FeatureCfg] JSON parse failed, using defaults");
-        loaded_ = true;
-        syncBudgetState();
-        applyDependencyRules();
-        return false;
     }
 
     // 用文件中的值覆盖默认配置
@@ -432,7 +397,13 @@ void RuntimeFeatureManager::getStatusJson(JsonVariant dst) const {
         if (st.meta.requiresNetwork) obj["deferred"] = true;
         if (!st.meta.compiled) {
             obj["locked"] = true;
-            obj["lockReason"] = "Not compiled into firmware";
+            // OTA 在 4MB 单 app 分区中是硬件/分区能力限制，不是统一代码
+            // 缺失；将原因透传给页面，避免误导用户重新编译无效固件。
+            if (st.meta.key && strcmp(st.meta.key, "ota") == 0) {
+                obj["lockReason"] = "当前分区不支持 OTA（需要带 ota_1 的 A/B 双分区）";
+            } else {
+                obj["lockReason"] = "Not compiled into firmware";
+            }
         }
         if (st.meta.compiled && st.userEnabled) {
             activeFlashKB += st.meta.flashKB;

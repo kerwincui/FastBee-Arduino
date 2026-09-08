@@ -18,13 +18,32 @@
 #include <core/SystemConstants.h>
 
 namespace {
-// 原子替换：临时文件 rename 覆盖目标（littlefs rename 具备 POSIX 覆盖语义），
-// 避免断电/崩溃时配置文件半截损坏（旧实现 FILE_WRITE 直接截断原文件）
+bool verifyJsonFile(const String& path, JsonDocument* out = nullptr) {
+    File file = LittleFS.open(path, FILE_READ);
+    if (!file) return false;
+    JsonDocument parsed;
+    DeserializationError error = deserializeJson(parsed, file);
+    file.close();
+    if (error) return false;
+    if (out) *out = parsed;
+    return true;
+}
+
+// Commit a verified temporary file while retaining the previous generation.
+// If power is lost after staging the primary, the next load uses .bak.
 bool atomicReplaceFromTmp(const String& tmpPath, const String& filename) {
+    if (!LittleFS.exists(tmpPath) || !verifyJsonFile(tmpPath)) return false;
+
+    const String backupPath = filename + ".bak";
+    const bool hadPrimary = LittleFS.exists(filename);
+    LittleFS.remove(backupPath);
+    if (hadPrimary && !LittleFS.rename(filename, backupPath)) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
     if (LittleFS.rename(tmpPath, filename)) return true;
-    // 兜底：rename 覆盖失败时退回 remove+rename
-    LittleFS.remove(filename);
-    if (LittleFS.rename(tmpPath, filename)) return true;
+
+    if (hadPrimary) LittleFS.rename(backupPath, filename);
     LittleFS.remove(tmpPath);
     return false;
 }
@@ -52,8 +71,10 @@ bool ConfigStorage::initializeInternal() {
         return false;
     }
 
-    if (!LittleFS.begin(true)) {
-        LOG_ERROR("ConfigStorage: Failed to initialize LittleFS");
+    // Do not auto-format here. A transient mount failure or damaged metadata
+    // must not erase the primary and backup configuration generations.
+    if (!LittleFS.begin(false)) {
+        LOG_ERROR("ConfigStorage: Failed to mount LittleFS; explicit recovery required");
         return false;
     }
 
@@ -115,9 +136,12 @@ bool ConfigStorage::removeKey(const String& key) {
 // ── JSON 文件接口 ─────────────────────────────────────────────────────────────
 
 bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& config) {
+    if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 判断是否为关键配置（需立即写入）
-    bool isCritical = (filename.indexOf("protocol") >= 0 || filename.indexOf("network") >= 0);
+    bool isCritical = (filename.indexOf("protocol") >= 0 || filename.indexOf("network") >= 0 ||
+                       filename.indexOf("users") >= 0 || filename.indexOf("auth") >= 0 ||
+                       filename.indexOf("features") >= 0);
 
     {
         CacheLock lock(_cacheMutex);
@@ -146,6 +170,8 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
             ConfigCacheEntry* entry = findInCache(filename);
             if (entry) {
                 entry->dirty = false;
+                entry->rawJson = "";
+                entry->lastLoadTime = 0;
             }
         }
     }
@@ -161,9 +187,11 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
         return false;
     }
 
+    const size_t expected = measureJson(config);
     size_t written = serializeJson(config, file);
+    file.flush();
     file.close();
-    if (written == 0) {
+    if (written != expected || !verifyJsonFile(tmpPath)) {
         LittleFS.remove(tmpPath);
         return false;
     }
@@ -172,6 +200,7 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
 }
 
 bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config) {
+    if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 1. 查询缓存（加锁）
     {
@@ -211,25 +240,31 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
     }
 #endif
 
-    // 文件 I/O（不需要锁）
-    File file = LittleFS.open(filename, FILE_READ);
-    if (!file) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for read", filename.c_str());
-        LOG_WARNING(buf);
-        return false;
+    // 文件 I/O（不需要锁）。主槽损坏或缺失时回退到上一代备份。
+    String loadPath = filename;
+    bool recoveredFromBackup = false;
+    if (!verifyJsonFile(loadPath, &config)) {
+        loadPath = filename + ".bak";
+        config.clear();
+        if (!verifyJsonFile(loadPath, &config)) {
+            LOG_ERRORF("ConfigStorage: No valid primary or backup JSON for %s", filename.c_str());
+            return false;
+        }
+        recoveredFromBackup = true;
+        LOG_WARNINGF("ConfigStorage: Recovered %s from backup slot", filename.c_str());
     }
 
-    DeserializationError err = deserializeJson(config, file);
-    time_t modTime = file.getLastWrite();
-    file.close();
+    File metadataFile = LittleFS.open(loadPath, FILE_READ);
+    time_t modTime = metadataFile ? metadataFile.getLastWrite() : 0;
+    if (metadataFile) metadataFile.close();
 
-    if (err) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "ConfigStorage: JSON parse error in %s: %s",
-                 filename.c_str(), err.c_str());
-        LOG_ERROR(buf);
-        return false;
+    // Restore the recovered generation as primary so the next save cannot
+    // rotate a corrupt primary over the last known-good backup.
+    if (recoveredFromBackup) {
+        LittleFS.remove(filename);
+        if (!LittleFS.rename(loadPath, filename)) {
+            LOG_ERRORF("ConfigStorage: Failed to restore recovered primary %s", filename.c_str());
+        }
     }
 
 #if FASTBEE_ENABLE_STORAGE_CACHE
@@ -268,32 +303,34 @@ bool ConfigStorage::loadConfigSection(const char* filename, const String& sectio
         return false;
     }
 
-    if (!LittleFS.exists(filename)) {
-        LOG_WARNINGF("ConfigStorage: Config not found: %s", filename);
-        return false;
-    }
-
-    File f = LittleFS.open(filename, "r");
-    if (!f) {
-        LOG_ERRORF("ConfigStorage: Failed to open %s", filename);
-        return false;
-    }
-
     // 构造 Filter：{ "<section>": true }，只保留匹配子节点，其它全部跳过
     JsonDocument filter;
     filter[section] = true;
 
-    DeserializationError err = deserializeJson(outDoc, f, DeserializationOption::Filter(filter));
-    f.close();
+    auto loadSectionFrom = [&](const String& path) -> bool {
+        File file = LittleFS.open(path, FILE_READ);
+        if (!file) return false;
+        outDoc.clear();
+        DeserializationError error = deserializeJson(outDoc, file, DeserializationOption::Filter(filter));
+        file.close();
+        return !error && outDoc[section].is<JsonObject>();
+    };
 
-    if (err) {
-        LOG_ERRORF("ConfigStorage: Section '%s' parse error in %s: %s", section.c_str(), filename, err.c_str());
+    const String primaryPath(filename);
+    if (loadSectionFrom(primaryPath)) return true;
+
+    const String backupPath = primaryPath + ".bak";
+    if (!loadSectionFrom(backupPath)) {
+        LOG_ERRORF("ConfigStorage: No valid '%s' section in primary or backup %s",
+                   section.c_str(), filename);
         return false;
     }
 
-    if (!outDoc[section].is<JsonObject>()) {
-        LOG_WARNINGF("ConfigStorage: Section '%s' missing in %s", section.c_str(), filename);
-        return false;
+    LOG_WARNINGF("ConfigStorage: Recovered section '%s' from backup %s",
+                 section.c_str(), filename);
+    LittleFS.remove(primaryPath);
+    if (!LittleFS.rename(backupPath, primaryPath)) {
+        LOG_ERRORF("ConfigStorage: Failed to restore recovered primary %s", filename);
     }
     return true;
 }
@@ -417,8 +454,11 @@ bool ConfigStorage::evictLRUEntry() {
     }
 
     // 如果找到的条目是 dirty 的，先 flush（直接用 rawJson，避免重序列化）
-    if (_cache[minIdx].dirty && _cache[minIdx].rawJson.length() > 0) {
-        flushRawToDisk(_cache[minIdx].filename, _cache[minIdx].rawJson);
+    if (_cache[minIdx].dirty && _cache[minIdx].rawJson.length() > 0 &&
+        !flushRawToDisk(_cache[minIdx].filename, _cache[minIdx].rawJson)) {
+        LOG_ERRORF("ConfigStorage: Refusing to evict unsaved cache entry %s",
+                   _cache[minIdx].filename.c_str());
+        return false;
     }
 
     // 移除：将最后一个条目移到被淘汰的位置
@@ -434,21 +474,15 @@ bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
     // measureJson 只遍历 DOM 不分配新内存，开销很小。
     const size_t estSize = measureJson(doc);
     if (estSize > CACHE_MAX_FILE_BYTES) {
-        // 大文件（如 protocol.json/peripherals.json）绕过缓存，避免堆峰值翻倍
-        // 并清除残留旧条目，避免后续不一致
-        ConfigCacheEntry* stale = findInCache(filename);
-        if (stale) {
-            if (stale->dirty && stale->rawJson.length() > 0) {
-                flushRawToDisk(stale->filename, stale->rawJson);
-            }
-            size_t idx = stale - _cache;
-            if (idx < _cacheSize - 1) {
-                _cache[idx] = std::move(_cache[_cacheSize - 1]);
-            }
-            _cacheSize--;
-        }
+        // 大文件绕过缓存。不要在这里淘汰同名 dirty 条目；调用方只有在
+        // 新内容成功直写磁盘后才能使旧缓存失效。
         return false;
     }
+
+    String serialized;
+    serialized.reserve(estSize + 16);
+    const size_t written = serializeJson(doc, serialized);
+    if (written != estSize) return false;
 
     ConfigCacheEntry* entry = findInCache(filename);
     if (entry && entry->dirty && modTime != 0) {
@@ -459,16 +493,14 @@ bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
     if (!entry) {
         // 缓存已满，淘汰一个
         if (_cacheSize >= MAX_CONFIG_CACHE_ENTRIES) {
-            evictLRUEntry();
+            if (!evictLRUEntry()) return false;
         }
         entry = &_cache[_cacheSize++];
         entry->filename = filename;
         entry->accessCount = 0;
     }
-    // 一次性序列化到 rawJson（String reserve 避免多次扩容）
-    entry->rawJson = "";
-    entry->rawJson.reserve(estSize + 16);
-    serializeJson(doc, entry->rawJson);
+    // Only replace the cached generation after serialization succeeded.
+    entry->rawJson = std::move(serialized);
     entry->lastLoadTime = millis();
     entry->fileModifyTime = modTime;
     entry->accessCount++;
@@ -485,9 +517,11 @@ bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& conf
         LOG_ERROR(buf);
         return false;
     }
+    const size_t expected = measureJson(config);
     size_t written = serializeJson(config, file);
+    file.flush();
     file.close();
-    if (written == 0) {
+    if (written != expected || !verifyJsonFile(tmpPath)) {
         LittleFS.remove(tmpPath);
         return false;
     }
@@ -505,7 +539,7 @@ bool ConfigStorage::flushRawToDisk(const String& filename, const String& rawJson
     }
     size_t written = file.print(rawJson);
     file.close();
-    if (written != rawJson.length()) {
+    if (written != rawJson.length() || !verifyJsonFile(tmpPath)) {
         LittleFS.remove(tmpPath);
         return false;
     }
@@ -533,14 +567,21 @@ void ConfigStorage::clearCache() {
     CacheLock lock(_cacheMutex);
     if (!lock) return;
 
+    size_t retained = 0;
     for (size_t i = 0; i < _cacheSize; i++) {
-        if (_cache[i].dirty && _cache[i].rawJson.length() > 0) {
-            flushRawToDisk(_cache[i].filename, _cache[i].rawJson);
+        const bool flushFailed = _cache[i].dirty && _cache[i].rawJson.length() > 0 &&
+                                 !flushRawToDisk(_cache[i].filename, _cache[i].rawJson);
+        if (flushFailed) {
+            LOG_ERRORF("ConfigStorage: Retaining unsaved cache entry %s",
+                       _cache[i].filename.c_str());
+            if (retained != i) _cache[retained] = std::move(_cache[i]);
+            retained++;
+            continue;
         }
         _cache[i].rawJson = "";
         _cache[i].filename = "";
     }
-    _cacheSize = 0;
+    _cacheSize = retained;
 }
 
 void ConfigStorage::clearCache(const String& filename) {
@@ -549,8 +590,10 @@ void ConfigStorage::clearCache(const String& filename) {
 
     ConfigCacheEntry* entry = findInCache(filename);
     if (entry) {
-        if (entry->dirty && entry->rawJson.length() > 0) {
-            flushRawToDisk(entry->filename, entry->rawJson);
+        if (entry->dirty && entry->rawJson.length() > 0 &&
+            !flushRawToDisk(entry->filename, entry->rawJson)) {
+            LOG_ERRORF("ConfigStorage: Retaining unsaved cache entry %s", entry->filename.c_str());
+            return;
         }
         // 移除条目
         size_t idx = entry - _cache;

@@ -17,6 +17,7 @@
 #include "systems/HealthMonitor.h"
 #include "core/MemoryBudget.h"
 #include "core/FastBeeFramework.h"
+#include "core/ChipConfig.h"
 #include "core/FeatureFlags.h"
 #include <Arduino.h>
 #include <vector>
@@ -28,9 +29,6 @@
 
 // 日志文件固定路径（与 SystemConstants::FileSystem 对应）
 static constexpr const char* LOG_FILE_PATH = "/logs/system.log";
-
-// 默认日志文件大小限制（1MB）
-static constexpr size_t DEFAULT_LOG_FILE_SIZE_LIMIT = 1024 * 1024;
 
 // 静态成员初始化
 vprintf_like_t LoggerSystem::originalEspLogFunc = nullptr;
@@ -44,7 +42,7 @@ LoggerSystem::LoggerSystem()
       fileLoggingEnabled(FASTBEE_ENABLE_FILE_LOGGING != 0),
       initialized(false),
       espLogCaptureEnabled(false),   // 默认禁用 ESP 日志捕获（降低 LittleFS/堆碎片压力）
-      logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB
+      logFileSizeLimit(CHIP_DEFAULT_LOG_FILE_SIZE_LIMIT) {
     memset(_ringBuffer.data, 0, LOG_RING_BUFFER_SIZE);
 }
 

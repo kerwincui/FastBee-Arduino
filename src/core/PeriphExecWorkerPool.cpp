@@ -3,7 +3,8 @@
 #include "systems/LoggerSystem.h"
 
 PeriphExecWorkerPool::PeriphExecWorkerPool()
-    : _queue(nullptr), _started(false), _shuttingDown(false) {
+    : _queue(nullptr), _started(false), _shuttingDown(false),
+      _exitSemaphore(nullptr), _workersCreated(0) {
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
     }
@@ -22,6 +23,13 @@ bool PeriphExecWorkerPool::begin() {
     _queue = xQueueCreate(QUEUE_CAPACITY, sizeof(AsyncExecContext*));
     if (!_queue) {
         LOGGER.error("[WorkerPool] Failed to create queue");
+        return false;
+    }
+    _exitSemaphore = xSemaphoreCreateCounting(WORKER_COUNT, 0);
+    if (!_exitSemaphore) {
+        vQueueDelete(_queue);
+        _queue = nullptr;
+        LOGGER.error("[WorkerPool] Failed to create exit semaphore");
         return false;
     }
 
@@ -57,15 +65,23 @@ bool PeriphExecWorkerPool::begin() {
                           (unsigned)i,
                           (int)ESP.getFreeHeap(),
                           (int)ESP.getMaxAllocHeap());
-            // 清理已创建的部分 worker（投递哨兵）
+            // 清理已创建的部分 worker（投递哨兵并等待退出）
             _shuttingDown = true;
             AsyncExecContext* sentinel = nullptr;
             for (size_t j = 0; j < i; ++j) {
                 xQueueSend(_queue, &sentinel, 0);
             }
-            // 队列资源稍后通过 shutdown 路径回收（这里保留 _queue 不删，避免与 worker 竞争）
+            for (size_t j = 0; j < i; ++j) {
+                xSemaphoreTake(_exitSemaphore, pdMS_TO_TICKS(2000));
+            }
+            _workersCreated = 0;
+            vQueueDelete(_queue);
+            _queue = nullptr;
+            vSemaphoreDelete(_exitSemaphore);
+            _exitSemaphore = nullptr;
             return false;
         }
+        _workersCreated++;
     }
 
     _started = true;
@@ -93,7 +109,7 @@ bool PeriphExecWorkerPool::enqueue(AsyncExecContext* ctx) {
 }
 
 void PeriphExecWorkerPool::shutdown() {
-    if (!_started && !_queue) {
+    if (!_started && !_queue && _workersCreated == 0) {
         return;
     }
     _shuttingDown = true;
@@ -107,8 +123,16 @@ void PeriphExecWorkerPool::shutdown() {
     }
 
     _started = false;
-    // worker 任务在收到 nullptr 后自删除；队列由 worker 退出后释放过于复杂
-    // 实际项目运行至 reboot，无需精细回收。这里仅置 null 防再次使用
+    for (size_t i = 0; i < _workersCreated; ++i) {
+        if (_exitSemaphore && xSemaphoreTake(_exitSemaphore, pdMS_TO_TICKS(3000)) != pdTRUE) {
+            LOGGER.errorf("[WorkerPool] Worker #%u did not exit before timeout", (unsigned)i);
+        }
+    }
+    if (_queue) vQueueDelete(_queue);
+    _queue = nullptr;
+    if (_exitSemaphore) vSemaphoreDelete(_exitSemaphore);
+    _exitSemaphore = nullptr;
+    _workersCreated = 0;
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
     }
@@ -126,6 +150,7 @@ void PeriphExecWorkerPool::workerLoopThunk(void* arg) {
     auto* self = static_cast<PeriphExecWorkerPool*>(arg);
     if (self) {
         self->workerLoop();
+        if (self->_exitSemaphore) xSemaphoreGive(self->_exitSemaphore);
     }
     vTaskDelete(nullptr);
 }

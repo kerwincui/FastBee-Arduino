@@ -11,6 +11,7 @@
 #include "peripherals/LCDManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
+#include "core/AsyncExecTypes.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
 #include <WiFi.h>
@@ -22,10 +23,39 @@ LCDManager& LCDManager::getInstance()
     return instance;
 }
 
+LCDManager::LCDManager()
+    : _displayMutex(xSemaphoreCreateRecursiveMutex())
+{
+}
+
+LCDManager::~LCDManager()
+{
+    if (_display) {
+        delete _display;
+        _display = nullptr;
+    }
+    if (_displayMutex) {
+        vSemaphoreDelete(_displayMutex);
+        _displayMutex = nullptr;
+    }
+}
+
+// LCD operations can originate from the scheduler, script worker, and the
+// maintenance task. U8G2 and Arduino Wire share mutable transaction state, so
+// every public operation must serialize at this boundary. Recursive locking
+// keeps compound operations such as showCustomText()->print()->refresh() safe.
+#define LCD_GUARD_OR_RETURN(value) \
+    RecursiveMutexGuard lcdGuard(_displayMutex, pdMS_TO_TICKS(250)); \
+    if (!lcdGuard.isLocked()) return value
+#define LCD_GUARD_OR_RETURN_VOID() \
+    RecursiveMutexGuard lcdGuard(_displayMutex, pdMS_TO_TICKS(250)); \
+    if (!lcdGuard.isLocked()) return
+
 // ========== 初始化与配置 ==========
 
 bool LCDManager::initialize(const PeripheralConfig& config)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("lcd")) {
         LOG_INFO("LCD Manager: Compiled but runtime-disabled, skip init");
         return false;
@@ -75,6 +105,13 @@ bool LCDManager::initialize(const PeripheralConfig& config)
                 Wire.begin(sda, scl);
                 LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
                           sda, scl, _i2cAddress);
+                // U8G2 sends a complete controller setup sequence from begin().
+                // Fail fast when the configured panel is absent so a single bad
+                // profile cannot stall boot or flood the log with one error per byte.
+                if (!probeI2cDisplay(true)) {
+                    LOG_WARNING("LCD Manager: Display probe failed, skipping U8G2 initialization");
+                    return false;
+                }
             } else {
                 LOG_WARNINGF("LCD Manager: Invalid I2C pins (SDA=%d, SCL=%d), skipping I2C init", sda, scl);
                 return false;
@@ -124,6 +161,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
 
 void LCDManager::deinitialize()
 {
+    LCD_GUARD_OR_RETURN_VOID();
     if (_display)
     {
         delete _display;
@@ -230,6 +268,7 @@ void LCDManager::setDefaultFont()
 
 void LCDManager::clear()
 {
+    LCD_GUARD_OR_RETURN_VOID();
     if (!_display || !_initialized) return;
     
     _display->clearBuffer();
@@ -238,6 +277,7 @@ void LCDManager::clear()
 
 bool LCDManager::print(const String& text, uint8_t x, uint8_t y, TextAlign align)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized)
     {
         LOG_WARNING("LCD Manager: Display not initialized");
@@ -271,6 +311,7 @@ bool LCDManager::print(const String& text, uint8_t x, uint8_t y, TextAlign align
 
 bool LCDManager::printLine(const String& text, uint8_t line)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     uint8_t y = (line + 1) * getFontHeight();
@@ -285,6 +326,7 @@ bool LCDManager::printLine(const String& text, uint8_t line)
 
 bool LCDManager::printLines(const String lines[], uint8_t lineCount)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     clear();
@@ -299,6 +341,7 @@ bool LCDManager::printLines(const String lines[], uint8_t lineCount)
 
 bool LCDManager::showCustomText(const String& content)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
 
     // 最多显示行数：受屏高和字体限制，同时加上硬上限避免栈数组过大
@@ -368,6 +411,7 @@ bool LCDManager::showCustomText(const String& content)
 
 bool LCDManager::showSensorData(const String& name, float value, const String& unit, uint8_t line)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     char buffer[32];
@@ -378,6 +422,7 @@ bool LCDManager::showSensorData(const String& name, float value, const String& u
 
 bool LCDManager::showSystemInfo()
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     clear();
@@ -419,6 +464,7 @@ bool LCDManager::showSystemInfo()
 
 bool LCDManager::drawLine(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->drawLine(x1, y1, x2, y2);
@@ -428,6 +474,7 @@ bool LCDManager::drawLine(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2)
 
 bool LCDManager::drawRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->drawFrame(x, y, w, h);
@@ -437,6 +484,7 @@ bool LCDManager::drawRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
 
 bool LCDManager::drawBox(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->drawBox(x, y, w, h);
@@ -446,6 +494,7 @@ bool LCDManager::drawBox(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
 
 bool LCDManager::drawCircle(uint8_t x, uint8_t y, uint8_t r)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->drawCircle(x, y, r);
@@ -455,6 +504,7 @@ bool LCDManager::drawCircle(uint8_t x, uint8_t y, uint8_t r)
 
 bool LCDManager::drawDisc(uint8_t x, uint8_t y, uint8_t r)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->drawDisc(x, y, r);
@@ -465,8 +515,9 @@ bool LCDManager::drawDisc(uint8_t x, uint8_t y, uint8_t r)
 // ========== 通用传感器数据显示模块 ==========
 
 void LCDManager::updateSensorEntry(const String& id, const String& label, float value,
-                                    const String& unit, uint8_t decimals)
+                                   const String& unit, uint8_t decimals)
 {
+    LCD_GUARD_OR_RETURN_VOID();
     if (!_initialized) return;
     
     // 查找已有条目
@@ -506,6 +557,7 @@ void LCDManager::updateSensorEntry(const String& id, const String& label, float 
 
 void LCDManager::invalidateSensorEntry(const String& id)
 {
+    LCD_GUARD_OR_RETURN_VOID();
     for (auto& entry : _sensorEntries)
     {
         if (entry.id == id)
@@ -518,6 +570,7 @@ void LCDManager::invalidateSensorEntry(const String& id)
 
 uint8_t LCDManager::getSensorPageCount() const
 {
+    LCD_GUARD_OR_RETURN(0);
     if (_sensorEntries.empty()) return 0;
     
     // 每页显示行数 = maxLines - 1（顶部标题行）
@@ -529,6 +582,7 @@ uint8_t LCDManager::getSensorPageCount() const
 
 bool LCDManager::showSensorPage(int8_t page)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     if (_sensorEntries.empty()) return false;
     
@@ -601,6 +655,7 @@ bool LCDManager::showSensorPage(int8_t page)
 
 void LCDManager::autoRefreshSensorDisplay(unsigned long intervalMs)
 {
+    LCD_GUARD_OR_RETURN_VOID();
     if (!_initialized || _sensorEntries.empty()) return;
     
     unsigned long now = millis();
@@ -626,6 +681,7 @@ void LCDManager::autoRefreshSensorDisplay(unsigned long intervalMs)
 
 bool LCDManager::setFont(uint8_t fontIndex)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     switch (fontIndex)
@@ -671,6 +727,7 @@ bool LCDManager::setFont(uint8_t fontIndex)
 
 bool LCDManager::setContrast(uint8_t contrast)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->setContrast(contrast);
@@ -679,6 +736,7 @@ bool LCDManager::setContrast(uint8_t contrast)
 
 bool LCDManager::setFlip(bool flip)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     if (flip)
@@ -695,14 +753,34 @@ bool LCDManager::setFlip(bool flip)
 
 bool LCDManager::setDisplayOn(bool on)
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     _display->setPowerSave(!on);
     return true;
 }
 
+bool LCDManager::probeI2cDisplay(bool logWarning)
+{
+    if (_interface != DisplayInterface::I2C_MODE) return true;
+    if (_sdaPin < 0 || _sclPin < 0) return false;
+
+    Wire.beginTransmission(_i2cAddress);
+    const uint8_t wireStatus = Wire.endTransmission();
+    if (wireStatus == 0) return true;
+
+    const unsigned long now = millis();
+    if (logWarning && (now - _lastBusWarning >= 30000UL || _lastBusWarning == 0)) {
+        LOG_WARNINGF("LCD Manager: I2C display 0x%02X unavailable (status=%u)",
+                     _i2cAddress, (unsigned)wireStatus);
+        _lastBusWarning = now;
+    }
+    return false;
+}
+
 bool LCDManager::refresh()
 {
+    LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
     // 检查刷新间隔，避免频繁刷新
@@ -711,6 +789,8 @@ bool LCDManager::refresh()
         return true;
     }
     
+    if (!probeI2cDisplay(true)) return false;
+
     _display->sendBuffer();
     _lastUpdate = millis();
     _contentChanged = false;
@@ -720,6 +800,10 @@ bool LCDManager::refresh()
 
 void LCDManager::performMaintenance()
 {
+    // Maintenance is opportunistic. Never block the framework task behind a
+    // foreground rule/script display transfer.
+    RecursiveMutexGuard lcdGuard(_displayMutex, 0);
+    if (!lcdGuard.isLocked()) return;
     if (!_display || !_initialized) return;
 
     unsigned long now = millis();
@@ -733,6 +817,7 @@ void LCDManager::performMaintenance()
 
     if (now - _initTime <= REASSERT_WINDOW_MS) {
         if (now - _lastReassert >= REASSERT_INTERVAL_MS) {
+            if (!probeI2cDisplay(true)) return;
             _display->initDisplay();
             _display->setPowerSave(0);
             _display->setContrast(_contrast);
@@ -755,6 +840,10 @@ void LCDManager::performMaintenance()
             // 完整 I2C 总线恢复：重置 Wire 外设 → 重发面板初始化 → 重推画面
             Wire.end();
             Wire.begin(_sdaPin, _sclPin);
+            if (!probeI2cDisplay(true)) {
+                _lastFullRecovery = now;
+                return;
+            }
             _display->initDisplay();
             _display->setPowerSave(0);
             _display->setContrast(_contrast);
@@ -771,6 +860,7 @@ void LCDManager::performMaintenance()
 
 uint8_t LCDManager::getFontHeight() const
 {
+    LCD_GUARD_OR_RETURN(10);
     if (!_display) return 10;
     
     switch (_currentFont)
@@ -784,6 +874,7 @@ uint8_t LCDManager::getFontHeight() const
 
 uint8_t LCDManager::getMaxLines() const
 {
+    LCD_GUARD_OR_RETURN(0);
     return _height / getFontHeight();
 }
 
@@ -792,5 +883,8 @@ bool LCDManager::shouldUpdate()
     unsigned long now = millis();
     return (now - _lastUpdate >= _minUpdateInterval) || _contentChanged;
 }
+
+#undef LCD_GUARD_OR_RETURN
+#undef LCD_GUARD_OR_RETURN_VOID
 
 #endif // FASTBEE_ENABLE_LCD
