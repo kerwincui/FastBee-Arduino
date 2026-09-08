@@ -42,6 +42,8 @@
                 </div>
             </div>
         </div>
+        <div id="ota-capability-hint" class="is-hidden u-mt-10"
+            style="padding:10px 12px;border-radius:6px;background:var(--warning-bg,#fff7e6);color:var(--warning-text,#ad6800);font-size:13px"></div>
     </div>
 </div>
 
@@ -64,7 +66,7 @@
                         placeholder="http://example.com/firmware.bin">
                     <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
                 </div>
-                <button type="submit" class="fb-btn fb-btn-primary"
+                <button type="submit" class="fb-btn fb-btn-primary ota-action-btn"
                     id="ota-url-btn">
                     <span>在线升级</span>
                 </button>
@@ -96,7 +98,7 @@
                     <small class="help-text-block">仅支持
                         .bin 格式的固件文件</small>
                 </div>
-                <button type="submit" class="fb-btn fb-btn-primary"
+                <button type="submit" class="fb-btn fb-btn-primary ota-action-btn"
                     id="ota-upload-btn">
                     <span>上传升级</span>
                 </button>

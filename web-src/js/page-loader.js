@@ -22,6 +22,19 @@ var PageLoader = {
         return path;
     },
 
+    // A timed-out/retried static response can leave the previous page root in
+    // the DOM before the loader state is updated. Keep one active root per
+    // page so repeated navigation cannot create duplicate element IDs.
+    _dedupePageRoot(moduleName) {
+        var rootId = moduleName + '-page';
+        var roots = Array.prototype.slice.call(document.querySelectorAll('#' + rootId));
+        if (roots.length <= 1) return;
+        var keep = roots.find(function(root) { return root.classList.contains('active'); }) || roots[0];
+        roots.forEach(function(root) {
+            if (root !== keep) root.remove();
+        });
+    },
+
     /**
      * 带重试的 fetch（设备繁忙/堆压力下偶发连接超时，退避重试避免页面加载失败）
      * @param {string} url - 请求地址
@@ -45,6 +58,39 @@ var PageLoader = {
         throw lastErr;
     },
 
+    _renderUnavailablePage(moduleName, error) {
+        var container = document.getElementById('content-area');
+        if (!container || !moduleName) return false;
+
+        var rootId = moduleName + '-page';
+        var root = document.getElementById(rootId);
+        if (!root) {
+            root = document.createElement('div');
+            root.id = rootId;
+            root.className = 'page page-layout-flat';
+            container.appendChild(root);
+        }
+        root.innerHTML = '';
+
+        var message = document.createElement('div');
+        message.className = 'message message-warning';
+        message.setAttribute('data-page-fallback', 'memory-pressure');
+        message.textContent = '设备当前内存紧张，页面暂时不可用，请稍后刷新重试';
+        root.appendChild(message);
+
+        var statusText = String(error && error.message || '');
+        var isPressure = /HTTP\s+503/i.test(statusText);
+        if (typeof Notification !== 'undefined' && Notification.warning) {
+            Notification.warning(
+                isPressure
+                    ? '设备当前内存紧张，页面已进入保护模式，请稍后刷新重试'
+                    : '页面加载失败，请稍后刷新重试',
+                isPressure ? '内存保护' : '页面加载'
+            );
+        }
+        return true;
+    },
+
     /**
      * 加载页面 HTML 片段到 content-area
      * @param {string} pageId - 页面元素 ID，如 'dashboard-page'
@@ -52,7 +98,11 @@ var PageLoader = {
      */
     async loadPage(pageId, pageMapping) {
         var moduleName = pageMapping[pageId];
-        if (!moduleName || this._loadedPages[moduleName]) return;
+        if (!moduleName) return;
+        if (this._loadedPages[moduleName]) {
+            this._dedupePageRoot(moduleName);
+            return;
+        }
         if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
 
         this._loadingPages[moduleName] = this._enqueueOp((async () => {
@@ -67,6 +117,7 @@ var PageLoader = {
                     container.appendChild(wrapper.firstChild);
                 }
             }
+            this._dedupePageRoot(moduleName);
             this._loadedPages[moduleName] = true;
             // 若当前语言非中文，翻译新加载的页面内容
             if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
@@ -78,6 +129,11 @@ var PageLoader = {
             await this._loadingPages[moduleName];
         } catch(e) {
             console.error('[PageLoader] Failed to load:', moduleName, e);
+            // A no-PSRAM device may intentionally reject heavyweight page HTML
+            // with 503. Keep navigation usable and explain the controlled
+            // degradation instead of leaving a blank page root.
+            this._renderUnavailablePage(moduleName, e);
+            this._loadedPages[moduleName] = true;
         } finally {
             delete this._loadingPages[moduleName];
         }

@@ -73,7 +73,7 @@
             const getter = options && options.noCache && typeof window.apiGetFresh === 'function' ? window.apiGetFresh : apiGet;
             if (content) content.textContent = '日志加载中...';
 
-            return getter('/api/logs', { file, tail: 120, limit: 4096 })
+            return getter('/api/logs', { file, tail: 180, limit: 4096 })
                 .then((res) => {
                     if (!res || !res.success) throw new Error(res && (res.error || res.message) || 'load failed');
                     const data = res.data || {};

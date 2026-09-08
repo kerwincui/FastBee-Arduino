@@ -16,16 +16,11 @@
     AppState.refreshPage = function() {
         const token = localStorage.getItem('auth_token');
 
-        // 在 API 调用前保存用户名和 Session ID 到局部变量
-        // 注意：不再保存明文密码到 localStorage，提升安全性
+        // Prefer the HttpOnly session cookie. A legacy bearer token is still
+        // accepted when present so an already-open tab can migrate cleanly.
         const savedRemember = localStorage.getItem('remember');
         const savedUsername = localStorage.getItem('username');
 
-        if (!token) {
-            // 没有 token，尝试使用保存的用户名自动登录 (不再使用密码)
-            this._tryAutoLogin(savedRemember, savedUsername);
-            return;
-        }
         apiGet('/api/auth/session')
             .then(res => {
                 if (res && res.success && res.data && res.data.sessionValid) {
@@ -33,12 +28,12 @@
                     this._bootDashboardAfterAuth();
                 } else {
                     // 会话无效，仅基于 sessionid 重试（不再依赖密码）
-                    this._tryAutoLogin(savedRemember, savedUsername);
+                    this._showLoginPage();
                 }
             })
             .catch(() => {
                 // 会话验证失败（如 401），仅基于 sessionid 重试
-                this._tryAutoLogin(savedRemember, savedUsername);
+                this._showLoginPage();
             });
     };
 
@@ -49,37 +44,10 @@
      * @private
      */
     AppState._tryAutoLogin = function(remember, username) {
-        const token = localStorage.getItem('auth_token');
-        
-        // 优先使用 Session ID 进行免密登录
-        if (token) {
-            localStorage.setItem('sessionId', token);
-            apiPost('/api/auth/login', { username })
-                .then(res => {
-                    if (res && res.success) {
-                        const sid = res.sessionId;
-                        localStorage.setItem('auth_token', sid);
-                        localStorage.setItem('sessionId', sid);
-                        localStorage.setItem('remember', remember === 'true' ? 'true' : 'false');
-
-                        this.currentUser.name = res.username || username;
-                        sessionStorage.setItem('currentUsername', this.currentUser.name);
-
-                        this._bootDashboardAfterAuth();
-                    } else {
-                        // 自动登录失败，清除所有认证信息并显示登录页
-                        localStorage.removeItem('auth_token');
-                        localStorage.removeItem('sessionId');
-                        localStorage.removeItem('remember');
-                        this._showLoginPage();
-                    }
-                })
-                .catch(() => {
-                    this._showLoginPage();
-                });
-        } else {
-            this._showLoginPage();
-        }
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('sessionId');
+        localStorage.removeItem('remember');
+        this._showLoginPage();
     };
 
     /**
@@ -87,6 +55,10 @@
      * @private
      */
     AppState._showLoginPage = function() {
+        // Release the long-lived event stream as soon as the session leaves the
+        // application. This prevents closed/expired browser sessions from
+        // retaining an SSE socket on memory-constrained targets.
+        if (typeof this.disconnectSSE === 'function') this.disconnectSSE();
         document.getElementById('login-page').style.display = 'flex';
         document.getElementById('app-container').classList.add('fb-hidden');
 
@@ -148,7 +120,37 @@
                 }, 120);
             }
 
-            setTimeout(function() {
+        });
+
+        var self = this;
+        setTimeout(function() {
+            self._loadModals();
+        }, 3000);
+
+        // Background page/API preloading is useful on larger targets but can
+        // starve the classic ESP32/C3 during repeated browser sessions. Read
+        // the public health snapshot first and only preload when there is a
+        // meaningful memory reserve (PSRAM is preferred when present).
+        setTimeout(function() {
+            var allowBackgroundPreload = function() {
+                return fetch('/api/health', { cache: 'no-store' })
+                    .then(function(resp) { return resp.ok ? resp.json() : null; })
+                    .then(function(payload) {
+                        var memory = payload && payload.data && payload.data.memory;
+                        if (!memory) return false;
+                        var psramTotal = Number(memory.psramTotal || 0);
+                        var psramFree = Number(memory.psramFree || 0);
+                        if (psramTotal > 0) return psramFree >= 64 * 1024;
+                        return Number(memory.heapFree || payload.data.freeHeap || 0) >= 64 * 1024;
+                    })
+                    .catch(function() { return false; });
+            };
+
+            allowBackgroundPreload().then(function(allow) {
+                if (!allow) {
+                    console.info('[Preloader] skipped on constrained memory target');
+                    return;
+                }
                 if (typeof ApiPreloader !== 'undefined' && typeof ApiPreloader.preloadPageData === 'function') {
                     ApiPreloader.preloadPageData('device');
                 }
@@ -160,13 +162,8 @@
                         'protocol-page'
                     ], self._pageMapping, { delayMs: 1200 }).catch(function() {});
                 }
-            }, 5000);
-        });
-
-        var self = this;
-        setTimeout(function() {
-            self._loadModals();
-        }, 3000);
+            });
+        }, 5000);
     };
 
     /**
@@ -237,19 +234,14 @@
         apiPost('/api/auth/login', { username, password })
             .then(res => {
                 if (res && res.success) {
-                    const sid = res.sessionId;
-
-                    // 保存 token 到 localStorage，fetch-api.js 会自动注入 Authorization 头
-                    localStorage.setItem('auth_token', sid);
-
-                    // 记住登录状态 (仅保存用户名和 Session ID，不保存密码)
+                    // Authentication is carried by the HttpOnly cookie set by
+                    // the server; no session token is persisted in storage.
                     if (remember) {
                         localStorage.setItem('remember', 'true');
                         localStorage.setItem('username', username);
                         // 不再保存密码到 localStorage!
-                        localStorage.setItem('sessionId', sid);
                     } else {
-                        ['remember', 'username', 'sessionId'].forEach(k => localStorage.removeItem(k));
+                        ['remember', 'username', 'sessionId', 'auth_token'].forEach(k => localStorage.removeItem(k));
                         // 同时清理密码字段 (即使之前存在)
                         if (localStorage.getItem('password')) {
                             localStorage.removeItem('password');

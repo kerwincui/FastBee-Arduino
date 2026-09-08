@@ -1,7 +1,7 @@
 /**
  * 外设执行管理 - 表单模块
  * 规则编辑表单渲染、字段验证、表单提交处理
- * 依赖: periph-exec.js (核心) 和 periph-exec-modbus.js 先加载
+ * 依赖：periph-exec.js (核心) 和 periph-exec-modbus.js 先加载
  */
 (function() {
     Object.assign(AppState, {

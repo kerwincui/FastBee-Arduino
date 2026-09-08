@@ -6,6 +6,11 @@
 (function () {
     'use strict';
 
+    // 页面文案统一使用中文；保留此兼容助手供现有提示调用点使用。
+    function t(key, fallback) {
+        return fallback || key;
+    }
+
     function getEl(id) {
         return document.getElementById(id);
     }
@@ -23,6 +28,7 @@
         _otaRecoveryTimer: null,
         _otaBusy: false,
         _otaNetworkOnline: false,
+        _otaSupported: true,
         _otaFreeSketchSpace: 0,
         
         // WP-13/73: Page lifecycle management (timer cleanup on page hide)
@@ -60,6 +66,7 @@
 
         // data-action="triggerOtaFileSelect" 由全局分发器调用
         triggerOtaFileSelect() {
+            if (!this._otaSupported) return;
             const fileInput = getEl('ota-file');
             if (fileInput) fileInput.click();
         },
@@ -72,6 +79,15 @@
         refreshOtaInfo() {
             const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             if (!getter) return;
+
+            // 4MB 单 app 镜像没有 ota_1，服务端会拒绝 A/B 升级；先探测
+            // 能力并在页面上明确说明，避免用户操作到不存在的 OTA 路由。
+            getter('/api/system/capabilities')
+                .then(res => {
+                    const caps = (res && res.success && res.data) ? res.data : null;
+                    if (caps && typeof caps.ota === 'boolean') this._applyOtaCapability(caps.ota);
+                })
+                .catch(() => { /* 能力接口不可用时保留默认可用态 */ });
 
             // 固件信息：当前版本、Flash 总量、可升级空间
             getter('/api/system/info')
@@ -143,22 +159,42 @@
             if (hint) hint.classList.toggle('fb-hidden', online);
 
             const urlInput = getEl('ota-url');
-            if (urlInput) urlInput.disabled = !online;
+            if (urlInput) urlInput.disabled = !online || !this._otaSupported;
 
             this._updateButtonStates();
         },
 
         _updateButtonStates() {
             const urlBtn = getEl('ota-url-btn');
-            if (urlBtn) urlBtn.disabled = this._otaBusy || !this._otaNetworkOnline;
+            if (urlBtn) urlBtn.disabled = this._otaBusy || !this._otaNetworkOnline || !this._otaSupported;
             const uploadBtn = getEl('ota-upload-btn');
-            if (uploadBtn) uploadBtn.disabled = this._otaBusy;
+            if (uploadBtn) uploadBtn.disabled = this._otaBusy || !this._otaSupported;
+        },
+
+        _applyOtaCapability(available) {
+            this._otaSupported = available !== false;
+            const hint = getEl('ota-capability-hint');
+            if (hint) {
+                hint.classList.toggle('is-hidden', this._otaSupported);
+                if (!this._otaSupported) {
+                    hint.textContent = '当前固件为 4MB 单应用分区，不支持 A/B OTA；请使用 8MB/16MB A/B 固件。';
+                }
+            }
+            const fileInput = getEl('ota-file');
+            if (fileInput) fileInput.disabled = !this._otaSupported;
+            const urlInput = getEl('ota-url');
+            if (urlInput) urlInput.disabled = !this._otaSupported || !this._otaNetworkOnline;
+            this._updateButtonStates();
         },
 
         // ============ 在线升级（URL 下载） ============
 
         startOnlineUpgrade() {
             if (this._otaBusy) return;
+            if (!this._otaSupported) {
+                this._showMessage('ota-online-message', false, '当前分区不支持 OTA 升级');
+                return;
+            }
             const input = getEl('ota-url');
             const url = input ? input.value.trim() : '';
             if (!/^https?:\/\/.+/i.test(url)) {
@@ -218,6 +254,10 @@
 
         startLocalUpload() {
             if (this._otaBusy) return;
+            if (!this._otaSupported) {
+                this._showMessage('ota-upload-message', false, '当前分区不支持 OTA 升级');
+                return;
+            }
             const input = getEl('ota-file');
             if (!input || !input.files || input.files.length === 0) {
                 this._showMessage('ota-upload-message', false,

@@ -41,8 +41,8 @@
                 <label>MQTT Broker</label>
                 <div style="display:flex;gap:0.4em;align-items:stretch;">
                     <select id="mqtt-scheme" style="width:6.5em;flex-shrink:0;">
-                        <option value="mqtt">MQTT (未加密)</option>
-                        <option value="mqtts">MQTTS (加密传输)</option>
+                        <option value="mqtt">MQTT</option>
+                        <option value="mqtts">MQTTS</option>
                     </select>
                     <input type="text" id="mqtt-broker" class=""
                         value="" style="flex:1;min-width:0;">
@@ -233,7 +233,7 @@
     <div class="fb-mt-4 u-action-row protocol-form-actions">
         <button type="submit" class="fb-btn fb-btn-primary">保存配置</button>
         <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
-            data-action="refreshMqttStatus">刷新状态</button>
+            data-action="refreshMqttStatus" data-i18n="mqtt-refresh-btn">刷新状态</button>
         <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
             data-action="mqttNtpSync">MQTT时间同步</button>
         <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>

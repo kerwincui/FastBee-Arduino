@@ -353,39 +353,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // ============ 语言 ============
     setupLanguage() {
-        // 非 Full 版本默认中文（不覆盖已有偏好）
-        if (!localStorage.getItem('language')) {
-            localStorage.setItem('language', 'zh-CN');
-        }
-        if (typeof i18n !== 'undefined') {
-            i18n.currentLang = localStorage.getItem('language') || 'zh-CN';
-        }
-
-        // 通过 capabilities API 检测是否支持多语言（Full版本）
-        var self = this;
-        var getter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh
-            : (typeof apiGetFresh === 'function' ? apiGetFresh : (typeof apiGet === 'function' ? apiGet : null));
-        if (!getter) return;
-        getter('/api/system/capabilities').then(function(res) {
-            if (!res || !res.success || !res.data || !res.data.i18n) return;
-            // Full 版本启用语言切换
-            var langSelect = document.getElementById('language-select');
-            if (!langSelect) return;
-            langSelect.classList.remove('fb-hidden');
-            // 恢复用户上次选择的语言
-            var savedLang = localStorage.getItem('language') || 'zh-CN';
-            langSelect.value = savedLang;
-            if (savedLang !== 'zh-CN' && typeof i18n !== 'undefined') {
-                i18n.setLanguage(savedLang);
-            }
-            // 绑定切换事件
-            langSelect.addEventListener('change', function() {
-                var lang = langSelect.value;
-                if (typeof i18n !== 'undefined') {
-                    i18n.setLanguage(lang);
-                }
-            });
-        }).catch(function() { /* 静默失败，保持中文 */ });
+        // Web UI 统一使用中文硬编码，不加载语言包或请求多语言能力。
+        if (typeof localStorage !== 'undefined') localStorage.setItem('language', 'zh-CN');
     },
 
     _getPageModuleMap() {
@@ -506,11 +475,33 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         }
         // 切换到NTP时间tab时自动加载时间
         if (pageId === 'device-page' && tabId === 'dev-ntp') {
-            if (typeof this.loadDeviceTime === 'function') this.loadDeviceTime({ noCache: true });
+            const syncNtp = () => {
+                if (typeof this.syncDeviceTime === 'function') {
+                    // 进入页面即触发一次真实 NTP 同步；成功/失败提示由用户主动刷新时显示。
+                    this.syncDeviceTime({ silent: true });
+                } else if (typeof this.loadDeviceTime === 'function') {
+                    this.loadDeviceTime({ noCache: true });
+                }
+            };
+            // 页面 HTML 与运行时模块是异步加载的，快速点击 Tab 时把动作排到模块加载完成后。
+            if (typeof this.syncDeviceTime === 'function' || typeof this.loadDeviceTime === 'function') {
+                syncNtp();
+            } else if (typeof this._loadModule === 'function') {
+                this._loadModule('device-config', syncNtp);
+            }
         }
         // 切换到基本信息tab时自动加载硬件信息
         if (pageId === 'device-page' && tabId === 'dev-basic') {
-            if (typeof this._loadDeviceHardwareInfo === 'function') this._loadDeviceHardwareInfo({ noCache: true });
+            const loadHardware = () => {
+                if (typeof this._loadDeviceHardwareInfo === 'function') {
+                    this._loadDeviceHardwareInfo({ noCache: true });
+                }
+            };
+            if (typeof this._loadDeviceHardwareInfo === 'function') {
+                loadHardware();
+            } else if (typeof this._loadModule === 'function') {
+                this._loadModule('device-config', loadHardware);
+            }
         }
     },
 
@@ -568,7 +559,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         deviceControl: 'device-control',   // 设备大屏
         logViewer: 'logs',                 // 设备日志
         fileManager: 'data',               // 文件管理
-        userAdmin: 'users'                 // 用户管理
+        userAdmin: 'users',                // 用户管理
+        ota: 'device'                      // OTA 升级（在设备配置页面内）
     },
 
     // 最近一次 /api/features/status 的激活状态缓存（key → active）

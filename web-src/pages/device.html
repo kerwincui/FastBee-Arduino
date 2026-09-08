@@ -209,6 +209,26 @@
 
             <!-- OTA 升级 tab（使用统一的 device-ota 分片模块） -->
             <div id="dev-ota" class="config-content">
+                <!-- 分片加载失败时保留一个可用的本地升级入口 -->
+                <div id="dev-ota-inline-panel" class="fb-panel">
+                    <div class="fb-card-body" style="padding:14px 18px">
+                        <h4 class="dev-mode-section-title"><span>固件升级</span></h4>
+                        <p class="dev-mode-section-desc">选择 .bin 固件文件后点击上传，升级过程中请勿断电。</p>
+                        <p id="dev-ota-capability-hint" class="is-hidden u-fs-12" style="color:var(--warning-text,#ad6800)"></p>
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+                            <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-ota-file" style="margin:0;cursor:pointer">选择固件</label>
+                            <input type="file" id="dev-ota-file" accept=".bin" class="is-hidden">
+                            <button id="dev-ota-upload-btn" type="button" class="fb-btn fb-btn-primary fb-btn-compact" disabled>上传升级</button>
+                            <span id="dev-ota-filename" style="font-size:12px;color:var(--text-secondary)"></span>
+                        </div>
+                        <div id="dev-ota-progress-wrap" class="is-hidden" style="margin-top:8px">
+                            <div style="background:var(--bg-gray,#eee);border-radius:4px;overflow:hidden;height:18px">
+                                <div id="dev-ota-progress-bar" style="width:0%;height:100%;background:var(--primary,#007bff);transition:width 0.3s"></div>
+                            </div>
+                            <span id="dev-ota-progress-text" style="font-size:12px;color:var(--text-secondary)">0%</span>
+                        </div>
+                    </div>
+                </div>
                 <!-- OTA 升级分片容器（包含固件信息、在线升级、本地上传） -->
                 <div id="device-ota-container"></div>
             </div>
@@ -316,7 +336,7 @@
                     <!-- 安全策略（左侧） -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 class="dev-mode-section-title">
+                            <h4 id="dev-sec-title" class="dev-mode-section-title">
                                 <span>安全策略</span>
                             </h4>
                             <form id="device-security-form" class="fb-form" style="margin:0">
@@ -358,7 +378,7 @@
                     <!-- 恢复出厂设置（右侧） -->
                     <div class="fb-panel u-flex-1-min-280">
                         <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
+                            <h4 id="dev-sys-factory-title" style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
                                 <span>恢复出厂设置</span>
                             </h4>
                             <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>

@@ -67,6 +67,14 @@
                     if (!res || !res.success) return;
                     var data = res.data || {};
 
+                    // Keep fullscreen monitoring pressure-aware without an
+                    // additional health request. The shared governor widens
+                    // refresh intervals as the device enters WARN/SEVERE/
+                    // CRITICAL memory protection levels.
+                    if (typeof apiReportRuntimePressure === 'function') {
+                        apiReportRuntimePressure(data, 'fullscreen');
+                    }
+
                     // 设备信息
                     var device = data.device || {};
                     self._setText('monitor-chip-model', device.chipModel || 'ESP32');

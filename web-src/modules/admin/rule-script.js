@@ -67,18 +67,20 @@
 
         _renderRuleScriptActions(rule) {
             let html = '';
+            html += '<div class="rule-script-actions" style="display:inline-flex;gap:6px;flex-wrap:nowrap;">';
             html += this._renderRuleScriptActionButton('edit', rule.id, '编辑', 'fb-btn-primary');
             html += rule.enabled
                 ? this._renderRuleScriptActionButton('toggle', rule.id, '禁用', 'fb-btn-warning', false)
                 : this._renderRuleScriptActionButton('toggle', rule.id, '启用', 'fb-btn-success', true);
             html += this._renderRuleScriptActionButton('delete', rule.id, '删除', 'fb-btn-danger');
+            html += '</div>';
             return html;
         },
 
         _renderRuleScriptRow(rule, triggerLabels, protocolLabels) {
             const triggerText = triggerLabels[rule.triggerType] || '?';
             const protocolText = protocolLabels[rule.protocolType] || '-';
-            const statsText = '触发次数: ' + (rule.triggerCount || 0);
+            const statsText = '触发次数：' + (rule.triggerCount || 0);
             // 主题映射显示
             let topicText = '-';
             if (rule.protocolType === 0) { // MQTT
@@ -92,8 +94,8 @@
             html += '<td>' + escapeHtml(triggerText) + '</td>';
             html += '<td>' + escapeHtml(protocolText) + '</td>';
             html += '<td>' + escapeHtml(topicText) + '</td>';
-            html += '<td class="rule-script-stats-cell">' + escapeHtml(statsText) + '</td>';
-            html += '<td class="u-toolbar-sm">';
+            html += '<td class="rule-script-stats-cell" style="white-space:nowrap;">' + escapeHtml(statsText) + '</td>';
+            html += '<td class="u-toolbar-sm" style="white-space:nowrap;min-width:180px;">';
             html += this._renderRuleScriptActions(rule);
             html += '</td></tr>';
             return html;

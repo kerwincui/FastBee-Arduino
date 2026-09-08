@@ -13,7 +13,7 @@
     .login-page{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--space-5);background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%)}
     .app-container.fb-hidden{display:none}
     .login-card{width:100%;max-width:400px;background:rgba(255,255,255,.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:0;border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow)}
-    /* Single language (zh-CN) only - removed language selector styles */
+    /* 单一中文界面，不显示语言选择器 */
     .login-header{text-align:center;padding:var(--space-4) var(--space-5) 0}.login-logo-img{display:inline-block;width:48px;height:48px;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(22,119,255,.22))}.login-body{padding:var(--space-4) var(--space-8) var(--space-6)}.login-body fieldset{border:0;margin:0;padding:0;min-width:0}
     .fb-form input[type=text],.fb-form input[type=password],.fb-btn{box-sizing:border-box}
     .fb-form input[type=text],.fb-form input[type=password]{width:100%;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:var(--rounded-md)}
@@ -127,7 +127,6 @@
                         <button id="sidebar-toggle" class="sidebar-toggle">☰</button>
                         <h1 class="page-title" id="page-title">设备监控仪表盘</h1>
                     </div>
-                    <!-- Single language (zh-CN) only - no language selector -->
                     <div class="header-actions">
                         <!-- 用户下拉菜单 -->
                         <div class="user-dropdown">
@@ -266,11 +265,11 @@
                 body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password)
             }).then(function(resp) {
                 return resp.json().catch(function() { return {}; }).then(function(data) {
-                    if (!resp.ok || !data || !data.success || !data.sessionId) {
+                    if (!resp.ok || !data || !data.success) {
                         throw new Error((data && data.error) || 'login failed');
                     }
-                    localStorage.setItem('auth_token', data.sessionId);
-                    localStorage.setItem('sessionId', data.sessionId);
+                    localStorage.removeItem('auth_token');
+                    localStorage.removeItem('sessionId');
                     if (remember) {
                         localStorage.setItem('remember', 'true');
                         localStorage.setItem('username', username);
@@ -336,10 +335,21 @@
         }
     })();
     </script>
-    <!-- Service Worker 注册：延迟到页面完全加载后5秒，避免与初始API请求叠加压床ESP32 -->
+    <!-- Service Worker 注册：延迟到页面完全加载后 5 秒，避免与初始 API 请求叠加压床 ESP32 -->
     <script>
     (function() {
         if (!('serviceWorker' in navigator)) return;
+
+        // 先尝试卸载所有旧的 SW
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+            registrations.forEach(function(reg) {
+                console.log('[FastBee] Unregistering old SW:', reg.scope);
+                reg.unregister();
+            });
+        }).catch(function(err) {
+            console.warn('[FastBee] Failed to unregister old SW:', err);
+        });
+
         setTimeout(function() {
             var version = window.__fastbeeAssetVersion || 'dev';
             try {

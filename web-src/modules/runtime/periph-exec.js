@@ -232,7 +232,7 @@
             if (this.isDeveloperModeEnabled()) {
                 btn.disabled = false;
                 if (overLimit) {
-                    btn.title = t('pe-capacity-warn', '执行规则已超出推荐上限') + '(' + profile.max + ')' + t('pe-capacity-can-add', '，但仍可新增');
+                    btn.title = '执行规则已超出推荐上限' + '(' + profile.max + ')' + '，但仍可新增';
                 } else {
                     btn.removeAttribute('title');
                 }
@@ -240,12 +240,12 @@
         },
 
         _formatPeriphExecCapacitySummary(total) {
-            var summary = t('pe-total-count', '共') + ' ' + total + ' ' + t('pe-total-count-suffix', '项');
+            var summary = '共' + ' ' + total + ' ' + '项';
             var profile = this._peProfile;
             if (profile && profile.max !== undefined) {
                 summary += ' (' + (profile.used || 0) + '/' + profile.max + ')';
                 if ((profile.used || 0) > profile.max) {
-                    summary += ' ⚠️ ' + t('pe-over-limit', '已超出推荐上限');
+                    summary += ' ⚠️ ' + '已超出推荐上限';
                 }
             }
             return summary;
@@ -360,7 +360,7 @@
 
             var value = String(input.value || '').trim();
             if (!value.length) {
-                this._setPeriphExecRunValuePromptError(t('pe-enter-value', '请输入要设置的值'));
+                this._setPeriphExecRunValuePromptError('请输入要设置的值');
                 input.focus();
                 return;
             }
@@ -373,9 +373,9 @@
             var modal = this._ensurePeriphExecRunValueModal();
             if (!modal) {
                 var fallbackValue = prompt(
-                    t('pe-enter-value-prompt', '请输入要设置的值 (如: PWM占空比、PID参数等):'),
-                    opts.defaultValue != null ? String(opts.defaultValue) : ''
-                );
+                '请输入要设置的值 (如：PWM 占空比、PID 参数等):',
+                opts.defaultValue != null ? String(opts.defaultValue) : ''
+            );
                 if (fallbackValue === null) return Promise.resolve(null);
                 var normalizedValue = String(fallbackValue || '').trim();
                 if (!normalizedValue.length) {
@@ -392,15 +392,15 @@
             var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
             var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
 
-            if (titleEl) titleEl.textContent = opts.title || t('pe-exec-value-title', '输入执行值');
-            if (labelEl) labelEl.textContent = opts.label || t('pe-exec-value-label', '执行值');
+            if (titleEl) titleEl.textContent = opts.title || '输入执行值';
+            if (labelEl) labelEl.textContent = opts.label || '执行值';
 
-            var helpText = opts.helpText || t('pe-exec-value-desc', '请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。');
+            var helpText = opts.helpText || '请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。';
             if (opts.ruleName) helpText = opts.ruleName + ' - ' + helpText;
             if (helpEl) helpEl.textContent = helpText;
 
-            if (cancelBtn) cancelBtn.textContent = t('common-cancel', '取消');
-            if (confirmBtn) confirmBtn.textContent = opts.confirmText || t('pe-exec-once', '执行一次');
+            if (cancelBtn) cancelBtn.textContent = '取消';
+            if (confirmBtn) confirmBtn.textContent = opts.confirmText || '执行一次';
             if (input) {
                 input.value = opts.defaultValue != null ? String(opts.defaultValue) : '';
                 input.placeholder = opts.placeholder || '';
@@ -500,7 +500,7 @@
 
         _populateTriggerPeriphSelect(selectEl, selectedValue) {
             if (!selectEl) return;
-            selectEl.innerHTML = '<option value="">' + t('common-select-placeholder', '-- 选择外设 --') + '</option>';
+            selectEl.innerHTML = '<option value="">-- 选择外设 --</option>';
             (this._pePeripherals || []).forEach(p => {
                 var opt = document.createElement('option');
                 opt.value = p.id; opt.textContent = p.name + ' (' + p.id + ')';
@@ -512,7 +512,7 @@
         // 填充按键类型的触发外设下拉：仅保留数字输入（上拉=13 / 下拉=14）
         _populateButtonPeriphSelect(selectEl, selectedValue) {
             if (!selectEl) return;
-            selectEl.innerHTML = '<option value="">' + t('pe-any-button-periph', '-- 任意按键外设 --') + '</option>';
+            selectEl.innerHTML = '<option value="">-- 任意按键外设 --</option>';
             (this._pePeripherals || []).filter(p => p.type === 13 || p.type === 14).forEach(p => {
                 var opt = document.createElement('option');
                 opt.value = p.id; opt.textContent = p.name + ' (' + p.id + ')';
@@ -605,7 +605,7 @@
 
         _renderPeriphExecStatusBadge(enabled) {
             var badgeClass = enabled ? 'badge badge-success' : 'badge badge-info';
-            var label = enabled ? t('common-enabled', '已启用') : t('common-disabled', '已禁用');
+            var label = enabled ? '已启用' : '已禁用';
             return '<span class="' + badgeClass + '">' + escapeHtml(label) + '</span>';
         },
 
@@ -634,16 +634,16 @@
             var buttons = [];
             var runAttrs = 'data-name="' + escapeHtml(ruleName || '') + '"';
             if (hasSetMode) runAttrs += ' data-has-set-mode="true"';
-            buttons.push(this._renderPeriphExecActionButton('run', ruleId, t('pe-exec-once', '执行一次'), 'fb-btn-outline-primary', runAttrs));
-            buttons.push(this._renderPeriphExecActionButton('edit', ruleId, t('common-edit', '编辑'), 'fb-btn-primary'));
+            buttons.push(this._renderPeriphExecActionButton('run', ruleId, '执行一次', 'fb-btn-outline-primary', runAttrs));
+            buttons.push(this._renderPeriphExecActionButton('edit', ruleId, '编辑', 'fb-btn-primary'));
             buttons.push(this._renderPeriphExecActionButton(
                 'toggle',
                 ruleId,
-                enabled ? t('common-disable', '禁用') : t('common-enable', '启用'),
+                enabled ? '禁用' : '启用',
                 enabled ? 'fb-btn-warning' : 'fb-btn-success',
                 'data-next-enabled="' + (enabled ? 'false' : 'true') + '"'
             ));
-            buttons.push(this._renderPeriphExecActionButton('delete', ruleId, t('pe-action-delete', '删除'), 'fb-btn-danger'));
+            buttons.push(this._renderPeriphExecActionButton('delete', ruleId, '删除', 'fb-btn-danger'));
             return '<div class="u-table-action-row">' + buttons.join('') + '</div>';
         },
 
@@ -767,14 +767,14 @@
                     }
                     console.error('Failed to load periph exec edit data:', err);
                     if (typeof window.apiNotifyError === 'function') {
-                        window.apiNotifyError(err, t('pe-load-fail', '规则数据加载失败，请稍后重试'), t('pe-enter-value-title', '外设执行'));
+                        window.apiNotifyError(err, '规则数据加载失败，请稍后重试', '外设执行');
                     }
                 });
         },
 
         deletePeriphExecRule(id) {
             if (!this.guardDeveloperModeAction()) return;
-            if (!confirm(t('common-confirm-delete', '确定要删除此规则吗？'))) return;
+            if (!confirm('确定要删除此规则吗？')) return;
             apiDelete('/api/periph-exec/', { id: id })
                 .then(res => {
                     if (res && res.success) {
@@ -826,7 +826,7 @@
                         ))
                     );
                     if (isNetworkError) {
-                        Notification.error(t('common-device-offline', '设备离线或不可达，请检查网络连接'), t('pe-enter-value-title', '外设执行'));
+                        Notification.error('设备离线或不可达，请检查网络连接', '外设执行');
                     } else {
                         Notification.error('状态切换失败', '外设执行');
                     }
@@ -858,9 +858,9 @@
                             ))
                         );
                         if (isNetworkError) {
-                            Notification.error(t('common-device-offline', '设备离线或不可达，请检查网络连接'), t('pe-enter-value-title', '外设执行'));
+                            Notification.error('设备离线或不可达，请检查网络连接', '外设执行');
                         } else {
-                            Notification.error(t('pe-exec-fail', '规则执行失败'), t('pe-enter-value-title', '外设执行'));
+                            Notification.error('规则执行失败', '外设执行');
                         }
                     });
             };
@@ -877,13 +877,13 @@
         _refreshPeriphExecList() {
             var btn = document.getElementById('periph-exec-refresh-btn');
             if (btn && btn.disabled) return;
-            if (btn) { btn.disabled = true; btn.textContent = t('common-loading', '加载中...'); }
+            if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/periph-exec');
             }
             this.loadPeriphExecPage();
             setTimeout(function() {
-                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; ' + t('common-refresh', '刷新'); }
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; ' + '刷新'; }
             }, 2000);
         },
 
@@ -897,7 +897,7 @@
             const filterSel = document.getElementById('periph-exec-filter-periph');
             const filterVal = filterSel ? filterSel.value : '';
 
-            this.renderEmptyTableRow(tbody, 7, t('common-loading', '加载中...'));
+            this.renderEmptyTableRow(tbody, 7, '加载中...');
 
             const self = this;
             const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
@@ -918,7 +918,7 @@
                     const currentPageSize = execRes && execRes.pageSize ? execRes.pageSize : 10;
                     
                     if (!execRes || !execRes.success || !execRes.data || execRes.data.length === 0) {
-                        this.renderEmptyTableRow(tbody, 5, t('pe-no-data', '暂无外设执行'));
+                        this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                         this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
                         return;
                     }
@@ -936,43 +936,43 @@
                         return (a.name || '').localeCompare(b.name || '', 'zh');
                     });
                     if (rules.length === 0) {
-                        this.renderEmptyTableRow(tbody, 5, t('pe-no-data', '暂无外设执行'));
+                        this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                         this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
                         return;
                     }
                     const triggerLabels = {
-                        0: t('pe-trigger-platform', '平台触发 (MQTT)'),
-                        1: t('pe-trigger-timer', '定时触发'),
-                        4: t('pe-trigger-event', '事件触发'),
-                        5: t('pe-trigger-poll', '轮询触发 (本地数据)'),
-                        6: t('pe-trigger-rule-chain', '规则链触发')
+                        0: '平台触发 (MQTT)',
+                        1: '定时触发',
+                        4: '事件触发',
+                        5: '轮询触发 (本地数据)',
+                        6: '规则链触发'
                     };
                     const actionLabels = {
-                        0: t('pe-action-high', '设置高电平'), 1: t('pe-action-low', '设置低电平'),
-                        2: t('pe-action-blink', '闪烁'), 3: t('pe-action-breath', '呼吸灯'),
-                        4: t('pe-action-pwm', '设置PWM'), 5: t('pe-action-dac', '设置DAC'),
-                        6: t('pe-action-reboot', '系统重启'), 7: t('pe-action-factory-reset', '恢复出厂'),
-                        8: t('pe-action-ntp', 'NTP同步'), 9: t('pe-action-ota', 'OTA升级'),
-                        10: t('pe-action-send-cmd', '发送指令'),
-                        11: t('pe-action-light-effect', '灯效控制'),
-                        12: t('pe-action-motor', '电机控制'),
-                        13: t('pe-action-high-toggle', '高电平反转'), 14: t('pe-action-low-toggle', '低电平反转'),
-                        15: t('pe-action-script', '命令脚本'),
-                        16: t('pe-action-modbus-coil', 'Modbus线圈写入'), 17: t('pe-action-modbus-reg', 'Modbus寄存器写入'),
-                        18: t('pe-action-modbus-poll', 'Modbus轮询采集'),
-                        19: t('pe-action-sensor-read', '传感器数据读取'),
-                        20: t('pe-action-reserved', '预留动作'),
-                        21: t('pe-action-trigger-event', '触发设备事件'),
-                        22: t('pe-action-enable-rule', '启用执行规则'), 23: t('pe-action-disable-rule', '禁用执行规则'),
-                        24: t('pe-action-show-number', '显示数字'),
-                        25: t('pe-action-show-text', '显示文本'),
-                        26: t('pe-action-clear-screen', '数码管清屏'),
-                        27: t('pe-action-oled', 'OLED自定义显示'),
-                        28: t('pe-action-rf-send', '射频发送'),
-                        29: t('pe-action-serial-send', '串口发送'),
-                        30: t('pe-action-toggle-level', '电平翻转'),
-                        31: t('pe-action-enable-func', '启用功能'),
-                        32: t('pe-action-disable-func', '禁用功能')
+                        0: '设置高电平', 1: '设置低电平',
+                        2: '闪烁', 3: '呼吸灯',
+                        4: '设置 PWM', 5: '设置 DAC',
+                        6: '系统重启', 7: '恢复出厂',
+                        8: 'NTP 同步', 9: 'OTA 升级',
+                        10: '发送指令',
+                        11: '灯效控制',
+                        12: '电机控制',
+                        13: '高电平反转', 14: '低电平反转',
+                        15: '命令脚本',
+                        16: 'Modbus 线圈写入', 17: 'Modbus 寄存器写入',
+                        18: 'Modbus 轮询采集',
+                        19: '传感器数据读取',
+                        20: '预留动作',
+                        21: '触发设备事件',
+                        22: '启用执行规则', 23: '禁用执行规则',
+                        24: '显示数字',
+                        25: '显示文本',
+                        26: '数码管清屏',
+                        27: 'OLED 自定义显示',
+                        28: '射频发送',
+                        29: '串口发送',
+                        30: '电平翻转',
+                        31: '启用功能',
+                        32: '禁用功能'
                     };
                     let html = '';
                     rules.forEach(r => {
@@ -983,7 +983,7 @@
                     this.applyDeveloperModeState(tbody);
                 })
                 .catch(() => {
-                    this.renderEmptyTableRow(tbody, 5, t('pe-no-data', '暂无外设执行'));
+                    this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                 });
         },
 
@@ -1007,11 +1007,11 @@
 
         _formatPeriphExecResultStatus(statusName) {
             var name = String(statusName || '').toLowerCase();
-            if (name === 'completed') return { text: t('common-success', '成功'), className: 'badge-success' };
-            if (name === 'failed') return { text: t('common-fail', '失败'), className: 'badge-danger' };
-            if (name === 'running') return { text: t('common-running', '运行中'), className: 'badge-warning' };
-            if (name === 'pending') return { text: t('common-waiting', '等待中'), className: 'badge-info' };
-            return { text: t('common-unknown', '未知'), className: 'badge-info' };
+            if (name === 'completed') return { text: '成功', className: 'badge-success' };
+            if (name === 'failed') return { text: '失败', className: 'badge-danger' };
+            if (name === 'running') return { text: '运行中', className: 'badge-warning' };
+            if (name === 'pending') return { text: '等待中', className: 'badge-info' };
+            return { text: '未知', className: 'badge-info' };
         },
 
         _formatPeriphExecUptimeMs(value) {
@@ -1040,7 +1040,7 @@
                 }
                 const currentVal = sel.value;
                 // 在静态触发类型选项之后追加外设名称分组
-                const separator = '<option disabled>' + t('pe-filter-by-periph', '─── 按外设筛选 ───') + '</option>';
+                const separator = '<option disabled>' + '─── 按外设筛选 ───' + '</option>';
                 let periphOpts = '';
                 res.data.forEach(p => {
                     periphOpts += '<option value="' + p.name + '">' + p.name + '</option>';

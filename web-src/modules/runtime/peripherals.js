@@ -2,6 +2,10 @@
  * 外设接口管理模块
  * 包含外设列表、新增/编辑/删除外设、类型参数配置
  */
+/* eslint-disable */
+// Define global t() function if not already defined by i18n
+const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => defaultValue;
+/* eslint-enable */
 (function() {
     AppState.registerModule('peripherals', {
 
@@ -10,6 +14,7 @@
         _periphPageSize: 10,
         _periphTotalCount: 0,
         _periphProfile: null,
+        _periphHardware: null,
         _periphEventsBound: false,
 
         // ============ 事件绑定 ============
@@ -35,6 +40,7 @@
             if (typeof this._registerModalBinder === 'function') {
                 this._registerModalBinder('peripherals', () => this._bindPeripheralModalEvents());
             }
+            this._loadPeripheralHardwareCapabilities();
             this._periphEventsBound = true;
         },
 
@@ -191,9 +197,7 @@
                         const safeId = escapeHtml(periph.id);
                         const safeName = escapeHtml(periph.name);
                         const safeType = escapeHtml(periph.typeName || periph.type || '--');
-                                                const typeVal = Number(periph.type || 0);
-                                                const unimplTypes = [4, 5, 37, 39, 40, 43]; // CAN, USB, SDIO, CAMERA, ETHERNET, ENCODER
-                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
+                        const typeTag = periph.implemented === false ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
                         const pinsStr = escapeHtml(periph.pins ? periph.pins.join(', ') : '--');
                         html += '<tr>' +
                             '<td>' + safeId + '</td>' +
@@ -524,27 +528,40 @@
                 });
         },
 
+        _loadPeripheralHardwareCapabilities() {
+            apiGet('/api/peripherals/types').then((res) => {
+                if (res && res.success && res.hardware) {
+                    this._periphHardware = res.hardware;
+                }
+            }).catch((err) => console.warn('Load peripheral hardware capabilities failed:', err));
+        },
+
         _getPinRecommendation(type) {
-            // ESP32 通用引脚推荐（6-11为Flash保留, 34-39仅输入）
-            var m = {
-                1: '推荐: 16(RX),17(TX) 或 25,26',
-                2: '推荐: 21(SCL),22(SDA)',
-                3: '推荐: 18(CLK),19(MISO),23(MOSI),5(CS)',
-                11: '推荐: 仅输入脚, 如 34-39',
-                12: '推荐: 通用输出脚, 如 2,4,25,26,27',
-                17: '推荐: PWM输出脚, 如 2,4,12-19,25-27',
-                26: '推荐: ADC输入脚, 如 34-39',
-                27: '推荐: DAC输出: 25 或 26',
-                41: '推荐: PWM脚, 如 13,14,25',
-                42: '推荐: 11,10,9,13 (ULN2003)',
-                44: '推荐: 4 (DHT) 或任意数字输入',
-                45: '推荐: 27 (数据脚)',
-                47: '推荐: CLK+DIO, 如 21,22',
-                48: '推荐: 任意输出脚',
-                49: '推荐: 任意输入脚',
-                53: '推荐: 任意输入脚, 如 35/36/39'
+            var hw = this._periphHardware;
+            if (!hw) return '';
+            var pick = function(list, count) {
+                return Array.isArray(list) ? list.slice(0, count || 8).join(',') : '';
             };
-            return m[type] || '';
+            var input = pick(hw.inputPins);
+            var output = pick(hw.outputPins);
+            var adc = pick(hw.adcPins);
+            var dac = pick(hw.dacPins);
+            var touch = pick(hw.touchPins);
+            var chip = hw.chip || 'ESP32';
+
+            if (type === 26 || type === 15) return adc ? chip + ' ADC 可用: ' + adc : chip + ' 不支持该 ADC 引脚配置';
+            if (type === 27) return dac ? chip + ' DAC 可用: ' + dac : chip + ' 不支持 DAC';
+            if (type === 21) return touch ? chip + ' Touch 可用: ' + touch : chip + ' 不支持 Touch';
+            if ([11, 13, 14, 18, 19, 20, 44, 49, 53].indexOf(type) >= 0) {
+                return input ? chip + ' 输入候选: ' + input : '';
+            }
+            if ([12, 16, 17, 41, 42, 45, 47, 48].indexOf(type) >= 0) {
+                return output ? chip + ' 输出候选: ' + output : '';
+            }
+            if ([1, 2, 3, 36, 37, 43, 50, 52].indexOf(type) >= 0) {
+                return output ? chip + ' 可用 GPIO 候选: ' + output : '';
+            }
+            return '';
         },
 
         _validatePinsInline() {

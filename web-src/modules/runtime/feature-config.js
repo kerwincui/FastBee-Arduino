@@ -69,9 +69,6 @@
             });
 
             var html = this.renderGroupTables(mainFeatures);
-            if (zeroRamFeatures.length > 0) {
-                html += this.buildZeroRamSection(zeroRamFeatures);
-            }
             list.innerHTML = html;
 
             // 全功能统一固件（所有功能均已编入）时，Flash 占用已固定，
@@ -131,19 +128,29 @@
             return html;
         },
 
-        // 渲染单个功能行
+        // 渲染单个功能行（支持子功能隐藏）
         buildFeatureRow(f) {
             var locked = !!f.locked || !f.compiled;
             var disabledAttr = locked ? ' disabled' : '';
             var checked = f.userEnabled ? ' checked' : '';
-            var rowStyle = locked ? ' style="opacity:0.5;"' : '';
+            var rowStyle = locked ? ' style="opacity:0.5";' : '';
+            var lockLabel = (!f.lockReason || f.lockReason === 'Not compiled into firmware')
+                ? '未编译入固件'
+                : '未编译入固件 · ' + f.lockReason;
+
+            // 子功能无独立显示名称，不渲染为独立行
+            if (!f.name) {
+                return '';
+            }
+
             var dep = '';
-            if (f.hwDep) dep += escapeHtml(f.hwDep);
-            if (f.dependsOn) dep += (dep ? ' / ' : '') + '依赖 ' + escapeHtml(f.dependsOn);
-            return '<tr' + rowStyle + ' data-feature-key="' + escapeHtml(f.key) + '">'
-                + '<td>' + escapeHtml(f.name)
-                + '<div class="u-fs-12 u-text-secondary">' + escapeHtml(f.key)
-                + (locked ? ' · 未编译入固件' : '') + '</div></td>'
+            if (f.hwDep) dep += f.hwDep;
+            if (f.dependsOn) dep += (dep ? ' / ' : '') + '依赖 ' + f.dependsOn;
+
+            return '<tr' + rowStyle + ' data-feature-key="' + escapeHtml(f.key) + '">' +
+                '<td>' + escapeHtml(f.name) +
+                '<div class="u-fs-12 u-text-secondary">' + escapeHtml(f.key)
+                + (locked ? ' · ' + escapeHtml(lockLabel) : '') + '</div></td>'
                 + '<td>' + (f.flashKB || 0) + 'KB</td>'
                 + '<td>' + formatRam(f.ramB) + '</td>'
                 + '<td class="u-fs-12">' + (dep || '-') + '</td>'
@@ -151,20 +158,6 @@
                 + '<input type="checkbox" data-feature-toggle="' + escapeHtml(f.key) + '"' + checked + disabledAttr + '>'
                 + '<span class="toggle-slider"></span></label></td>'
                 + '</tr>';
-        },
-
-        // 零 DRAM 可选功能折叠区（运行时不占内存，开关仅影响行为/渲染）
-        buildZeroRamSection(features) {
-            return '<div class="mqtt-collapsible-section" style="margin-top:16px;">'
-                + '<div class="mqtt-collapsible-header" data-zero-ram-toggle>'
-                + '<h4 style="margin:0;font-size:14px;">可选功能 · 零 DRAM 占用（' + features.length + '）</h4>'
-                + '<span class="mqtt-collapse-icon" id="features-zero-ram-body-icon">&#9654;</span>'
-                + '</div>'
-                + '<div id="features-zero-ram-body" class="mqtt-collapsible-body fb-hidden">'
-                + '<p class="u-fs-12 u-text-secondary" style="margin:8px 0;">以下功能运行时不占用 DRAM（字模/文案存储于 Flash），开关仅影响功能行为或渲染方式，不影响内存水位，可按需启用。</p>'
-                + this.renderGroupTables(features)
-                + '</div>'
-                + '</div>';
         },
 
         onFeatureToggle(key, enabled) {
@@ -200,8 +193,14 @@
                 var row = input.closest('tr');
                 // 父功能禁用或未编译：依赖未满足，子功能无展示意义，直接隐藏该行
                 var parentInactive = !parent.userEnabled || !parent.compiled;
+                // 对于无名称的子功能（如 otaFs），跳过隐藏逻辑
+                if (!f.name && !parentInactive) {
+                    // 作为父功能的附属能力，保持隐藏
+                    row.style.display = 'none';
+                    return;
+                }
                 if (row) row.style.display = parentInactive ? 'none' : '';
-                // 子功能自身未编译：仍灰显提示"未编译入固件"
+                // 子功能自身未编译：仍灰显并显示服务端提供的具体原因
                 var selfLocked = !f.compiled;
                 input.disabled = parentInactive || selfLocked;
                 if (row && !parentInactive) row.style.opacity = selfLocked ? '0.5' : '';
@@ -257,13 +256,12 @@
             );
             
             if (willDisableWebServer) {
-                const confirmMsg = t('fc-webserver-disable-warning', 
-                    '警告：关闭 Web 服务后将失去通过浏览器配置设备的能力！\n\n' +
+                const confirmMsg = '警告：关闭 Web 服务后将失去通过浏览器配置设备的能力！\n\n' +
                     '恢复方式：\n' +
                     '1. 访问 http://fastbee.local (mDNS) 或 IP 直连进入 AP 配置模式\n' +
                     '2. 通过外设执行规则 ACTION_FEATURE_ENABLE 重新启用\n' +
                     '3. 或连接串口发送 AT 命令恢复\n\n' +
-                    '确定要关闭 Web 服务吗？');
+                    '确定要关闭 Web 服务吗？';
                 
                 if (!confirm(confirmMsg)) {
                     var saveBtn = document.getElementById('features-save-btn');
@@ -280,7 +278,7 @@
                 if (f.compiled) body.features[f.key] = { enabled: !!f.userEnabled };
             });
             var saveBtn = document.getElementById('features-save-btn');
-            if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = t('fc-saving', '保存中...'); }
+            if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
             // 后端 features/* POST 通过 onData 回调累积原始 body 并 deserializeJson：
             // 必须用 JSON Content-Type（apiPostJson）；apiPost 的表单编码 body
             // 走参数解析路径不触发 onData，会得到空 body 返回 400 Missing JSON body
@@ -288,17 +286,17 @@
                 .then(function(res) {
                     if (res && res.success) {
                         var secs = (res.data && res.data.rebootIn) || 3;
-                        Notification.success(t('fc-save-success', '配置已保存，设备将在') + ' ' + secs + ' ' + t('fc-save-success-suffix', '秒后重启生效'));
+                        Notification.success('配置已保存，设备将在' + ' ' + secs + ' ' + '秒后重启生效');
                         // 重启后刷新页面加载最新状态
                         setTimeout(function() { location.reload(); }, (secs + 5) * 1000);
                     } else {
-                        Notification.error((res && (res.error || res.message)) || t('common-save-fail', '保存失败'));
-                        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = t('fc-save-reboot', '保存并重启'); }
+                        Notification.error((res && (res.error || res.message)) || '保存失败');
+                        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并重启'; }
                     }
                 })
                 .catch(function() {
                     Notification.error(t('common-save-retry', '保存失败，请重试'));
-                    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = t('fc-save-reboot', '保存并重启'); }
+                    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并重启'; }
                 });
         },
 

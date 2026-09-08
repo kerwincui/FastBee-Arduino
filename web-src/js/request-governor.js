@@ -21,6 +21,46 @@
         SEVERE: 2,
         CRITICAL: 3
     });
+    const MEMORY_PRESSURE_NOTICE_COOLDOWN_MS = 5000;
+    var lastMemoryPressureNoticeAt = 0;
+
+    function isMemoryPressure503(data) {
+        if (!data) return false;
+
+        var text = [data.message, data.error, data.reason]
+            .filter(function (value) { return value != null; })
+            .join(' ')
+            .toLowerCase();
+
+        // 503 is also used for authentication/rule-lock busy states. Only show
+        // the memory-protection notice when the response identifies pressure.
+        return /low\s+memory|critical\s+memory|memory\s+pressure|insufficient\s+memory|内存紧张|内存压力|低内存|资源紧张/.test(text);
+    }
+
+    function memoryPressureNotice(data) {
+        var retryAfter = Number(data && data.retryAfter);
+        if (!isFinite(retryAfter) || retryAfter <= 0) retryAfter = 0;
+        var retryText = retryAfter > 0
+            ? '，约 ' + Math.ceil(retryAfter) + ' 秒后可重试'
+            : '，请稍后重试';
+        return '设备当前内存紧张，已暂时拒绝此操作' + retryText;
+    }
+
+    function renderMemoryPressureNotice(level) {
+        if (typeof document === 'undefined') return;
+        var normalized = normalizeGuardLevel(level);
+        var rank = GUARD_LEVEL_RANK[normalized];
+        var notices = document.querySelectorAll('[data-memory-pressure-notice]');
+        for (var i = 0; i < notices.length; i++) {
+            var notice = notices[i];
+            var visible = rank >= GUARD_LEVEL_RANK.SEVERE;
+            notice.textContent = visible
+                ? '设备处于内存保护状态（' + normalized + '），部分重型接口可能暂时返回 503，后台刷新已自动放缓。'
+                : '';
+            notice.classList.toggle('fb-hidden', !visible);
+            notice.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        }
+    }
 
     function toUrlEncoded(data) {
         if (!data) return '';
@@ -289,7 +329,16 @@
                 Notification.error('服务器内部错误，请检查设备状态', '服务器错误');
                 break;
             case 503:
-                Notification.error('服务暂时不可用', '服务不可用');
+                if (isMemoryPressure503(data)) {
+                    var now = Date.now();
+                    renderMemoryPressureNotice('SEVERE');
+                    if (now - lastMemoryPressureNoticeAt >= MEMORY_PRESSURE_NOTICE_COOLDOWN_MS) {
+                        Notification.warning(memoryPressureNotice(data), '设备内存保护');
+                        lastMemoryPressureNoticeAt = now;
+                    }
+                } else {
+                    Notification.error('服务暂时不可用', '服务不可用');
+                }
                 break;
             default:
                 Notification.warning(errMsg, '请求失败(' + status + ')');
@@ -300,6 +349,9 @@
         if (err && err._pageAborted) return '';
         if (err && err._handled) return '';
         if (err && err.name === 'AbortError') return '\u8bf7\u6c42\u8d85\u65f6\uff0c\u8bbe\u5907\u53ef\u80fd\u6b63\u5fd9\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
+        if (err && err.status === 503 && isMemoryPressure503(err.data)) {
+            return memoryPressureNotice(err.data);
+        }
         if (err && err.status === 503) return '\u8bbe\u5907\u8d44\u6e90\u7d27\u5f20\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
         if (err && err.status === 504) return '\u8bbe\u5907\u54cd\u5e94\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
         if (err instanceof TypeError || (err && err.message && /fetch/i.test(err.message))) {
@@ -572,6 +624,7 @@
             this._pressureState.level = level;
             this._pressureState.updatedAt = now;
             this._pressureState.source = source || 'runtime';
+            renderMemoryPressureNotice(level);
 
             if (recoveryMs > 0) {
                 this._pressureState.recoveryUntil = now + recoveryMs;

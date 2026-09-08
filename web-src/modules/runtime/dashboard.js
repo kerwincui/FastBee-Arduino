@@ -156,6 +156,15 @@
 
                     const data = res.data || {};
 
+                    // Feed the device memory guard state back into the shared
+                    // request governor. The compact batch response includes
+                    // this field so no extra health request is needed; under
+                    // pressure the governor stretches background polling and
+                    // blocks silent work before the firmware returns 503.
+                    if (typeof apiReportRuntimePressure === 'function') {
+                        apiReportRuntimePressure(data, 'dashboard');
+                    }
+
                     // 设备信息
                     const device = data.device || {};
                     this._setText('monitor-chip-model', device.chipModel || 'ESP32');
