@@ -20,21 +20,23 @@ Unified Architecture v2.0 落地后，`platformio.ini` 中同时存在两套几�
 
 - 命名：保留现有 `FXRX` 格式，不重新设计；
 - 合并方向：以基础环境名为准，删除 `-unified` 环境；
-- OTA 规则：**`FASTBEE_ENABLE_OTA` 跟随硬件能力——有 PSRAM 的板开启，无 PSRAM 的 4MB 板一律关闭**
-  （4MB 分区表 `partitions/fastbee.csv` 只有单 app 分区，无法做双分区 OTA）；
+- OTA 规则：**`FASTBEE_ENABLE_OTA` 跟随分区能力——8MB/16MB A/B 双 app 分区开启，4MB 单 app 分区关闭**
+  （4MB 分区表 `partitions/4MB.csv` 只有单 app 分区，无法做双分区 OTA）；
+- DS18B20 规则：统一镜像始终编译传感器驱动，C3/C6 使用兼容 GPIO 寄存器访问的 OneWire 固定版本，
+  用户通过功能配置中的 `ds18b20` 开关控制运行时初始化；
 - 运行时参数：本次不调整。
 
 ## 合并后的环境矩阵（7 个设备环境 + native）
 
 | 环境 | 芯片 | Flash | PSRAM | 分区表 | OTA | 串口 |
 |---|---|---|---|---|---|---|
-| `esp32-F4R0`（默认） | ESP32 | 4MB | 无 | fastbee.csv | 关 | COM16 |
-| `esp32-F8R4` | ESP32 | 8MB | 4MB | fastbee-8MB.csv | 开 | — |
-| `esp32c3-F4R0` | ESP32-C3 | 4MB | 无 | fastbee.csv | 关 | COM13 |
-| `esp32c6-F4R0` | ESP32-C6 | 4MB | 无 | fastbee.csv | 关 | COM11 |
-| `esp32s3-F8R0` | ESP32-S3 | 8MB | 有 | fastbee-8MB.csv | 开 | COM6 |
-| `esp32s3-F8R4` | ESP32-S3 | 8MB | 4MB | fastbee-8MB.csv | 开 | — |
-| `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB | fastbee-16MB.csv | 开 | COM15 |
+| `esp32-F4R0`（默认） | ESP32 | 4MB | 无 | 4MB.csv | 关 | COM16 |
+| `esp32-F8R4` | ESP32 | 8MB | 4MB | 8MB.csv | 开 | — |
+| `esp32c3-F4R0` | ESP32-C3 | 4MB | 无 | 4MB.csv | 关 | COM13 |
+| `esp32c6-F4R0` | ESP32-C6 | 4MB | 无 | 4MB.csv | 关 | COM11 |
+| `esp32s3-F8R0` | ESP32-S3 | 8MB | 有 | 8MB.csv | 开 | COM6 |
+| `esp32s3-F8R4` | ESP32-S3 | 8MB | 4MB | 8MB.csv | 开 | — |
+| `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB | 16MB.csv | 开 | COM15 |
 
 ## 逐环境合并动作
 
@@ -45,7 +47,8 @@ Unified Architecture v2.0 落地后，`platformio.ini` 中同时存在两套几�
 
 ### `esp32c3-F4R0`
 - 并入 `-unified` 版：`-DFASTBEE_ENABLE_OTA=0`、`-DFASTBEE_ENABLE_OTA_FS=0`、
-  `-DFASTBEE_ENABLE_DS18B20=0`（C3 OneWire 不兼容）、`-DFASTBEE_USE_PSRAM=0`；
+  `-DFASTBEE_USE_PSRAM=0`；DS18B20 依赖随统一镜像编译，C3/C6 使用固定的
+  OneWire 上游修复版本并由运行时功能开关控制；
 - 保留基础版的 `build_src_filter = ${lite_src_filter...}`（排除 Cellular/Ethernet，节省 4MB Flash）；
 - `lib_ignore = NimBLE-Arduino` 已有。
 
@@ -53,7 +56,7 @@ Unified Architecture v2.0 落地后，`platformio.ini` 中同时存在两套几�
 - 并入 `-unified` 版：`-DFASTBEE_ENABLE_OTA=0`、`-DFASTBEE_ENABLE_OTA_FS=0`、
   `-DFASTBEE_USE_PSRAM=0`，以及 `board_upload.flash_size = 4MB`、
   `board_upload.maximum_size = 4194304`（devkitc-1 默认 8MB，实际模组 4MB，必须显式覆盖）；
-- `-DFASTBEE_ENABLE_DS18B20=0`、`lib_ignore = NimBLE-Arduino, OneWire, DallasTemperature`、
+- `lib_ignore = NimBLE-Arduino`、
   `lite_src_filter` 基础版已有，保留。
 
 ### `esp32-F8R4`、`esp32s3-F8R0`

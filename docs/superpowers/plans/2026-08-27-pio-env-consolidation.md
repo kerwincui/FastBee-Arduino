@@ -4,7 +4,7 @@
 
 **Goal:** 删除 5 个冗余 `-unified` 构建环境，配置合并进同名基础环境，按硬件能力统一 OTA 开关，并为每个环境补充硬件说明注释。
 
-**Architecture:** 纯 `platformio.ini` 结构整理 + 2 个部署脚本的环境名同步。不改任何运行时参数、分区表、固件产物规则。合并规则：无 PSRAM 的 4MB 板（F4R0/C3/C6）关闭 OTA；有 PSRAM 的板（F8R4/S3-F8R0/S3-F8R4/F16R8）保持 OTA 开启。
+**Architecture:** 纯 `platformio.ini` 结构整理 + 2 个部署脚本的环境名同步。不改任何运行时参数、分区表、固件产物规则。合并规则：4MB 单 app 分区板（F4R0/C3/C6）关闭 OTA；8MB/16MB A/B 双 app 分区板保持 OTA 开启。DS18B20/OneWire 随统一镜像编译，运行时由功能配置开关控制。
 
 **Tech Stack:** PlatformIO（platformio.ini INI 配置）、PowerShell 部署脚本、pio CLI 编译验证。
 
@@ -45,7 +45,7 @@ build_flags =
 
 注意：保留原有的 `-DFASTBEE_ENABLE_OTA=0` / `-DFASTBEE_ENABLE_OTA_FS=0` 两行不动，只在其上方插入注释行、在其下方追加 `-DFASTBEE_USE_PSRAM=0`。
 
-- [ ] **Step 2: 修改 `esp32c3-F4R0`——并入 OTA=0、DS18B20=0、USE_PSRAM=0**
+- [ ] **Step 2: 修改 `esp32c3-F4R0`——并入 OTA=0、USE_PSRAM=0，保留 DS18B20 统一编译**
 
 在 `[env:esp32c3-F4R0]` 前加注释，`build_flags` 追加标志。修改后关键部分：
 
@@ -60,8 +60,7 @@ build_flags =
 	; 无 PSRAM：关闭 OTA（4MB 分区表只有单 app 分区）
 	-DFASTBEE_ENABLE_OTA=0
 	-DFASTBEE_ENABLE_OTA_FS=0
-	; C3 OneWire 不兼容
-	-DFASTBEE_ENABLE_DS18B20=0
+	; DS18B20/OneWire 随统一镜像编译，运行时由功能配置门控
 	-DFASTBEE_USE_PSRAM=0
 build_src_filter = ${lite_src_filter.build_src_filter}
 ```
@@ -87,7 +86,6 @@ build_flags =
 	${esp32_base.build_flags}
 	${esp32c6_runtime_flags.build_flags}
 	${unified_flags.build_flags}
-	-DFASTBEE_ENABLE_DS18B20=0
 	; 无 PSRAM：关闭 OTA（4MB 分区表只有单 app 分区）
 	-DFASTBEE_ENABLE_OTA=0
 	-DFASTBEE_ENABLE_OTA_FS=0
