@@ -4,7 +4,6 @@ These files are the editable source modules for the admin area:
 
 - `users.js`
 - `logs.js`
-- `files.js`
 - `rule-script.js`
 
 Runtime does not load these files directly.

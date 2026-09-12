@@ -8,9 +8,11 @@ const MATRIX_PATH = path.join(ROOT_DIR, 'scripts', 'device-api-test-matrix.json'
 const SMOKE_SCRIPT_PATH = path.join(ROOT_DIR, 'scripts', 'smoke-test-device.ps1');
 const SOAK_SCRIPT_PATH = path.join(ROOT_DIR, 'scripts', 'soak-test-device.ps1');
 const HANDLER_DIR = path.join(ROOT_DIR, 'src', 'network', 'handlers');
-const PROFILES = new Set(['lite', 'standard', 'full']);
+// Production images use one unified profile; legacy profiles remain accepted
+// for experimental custom builds.
+const PROFILES = new Set(['lite', 'standard', 'full', 'unified']);
 const METHODS = new Set(['GET', 'POST']);
-const TYPES = new Set(['', 'multi-session', 'bearer-over-cookie', 'expect-unavailable', 'expect-error', 'mqtt-ntp-sync', 'batch-stress']);
+const TYPES = new Set(['', 'multi-session', 'bearer-over-cookie', 'expect-unavailable', 'expect-error', 'capability-optional', 'mqtt-ntp-sync', 'batch-stress']);
 const SEMANTIC_ONLY_CHECKS = new Set([
     'config-transfer-export',
     'config-transfer-import'
@@ -184,7 +186,7 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
     });
 
     const allowedStatuses = Array.isArray(check && check.allowedStatuses) ? check.allowedStatuses : [];
-    if (type === 'expect-unavailable' || type === 'expect-error') {
+    if (type === 'expect-unavailable' || type === 'expect-error' || type === 'capability-optional') {
         if (allowedStatuses.length === 0) {
             issues.push(`${label} (${name}): ${type} requires allowedStatuses`);
         }
@@ -194,7 +196,7 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
             }
         });
     } else if (allowedStatuses.length > 0) {
-        issues.push(`${label} (${name}): allowedStatuses is only valid for expect-* checks`);
+        issues.push(`${label} (${name}): allowedStatuses is only valid for expect-* or capability-optional checks`);
     }
 
     if (check && Object.prototype.hasOwnProperty.call(check, 'jsonBody')) {
@@ -221,8 +223,11 @@ function validateRequiredProfiles(checksByName, issues) {
             issues.push(`matrix: missing required all-profile check '${name}'`);
             return;
         }
-        if (!arrayEqualsAsSet(check.profiles || [], ['lite', 'standard', 'full'])) {
-            issues.push(`matrix: '${name}' must cover lite, standard, full`);
+        const profiles = check.profiles || [];
+        const legacyCoverage = arrayEqualsAsSet(profiles, ['lite', 'standard', 'full']);
+        const unifiedCoverage = arrayEqualsAsSet(profiles, ['unified']);
+        if (!legacyCoverage && !unifiedCoverage) {
+            issues.push(`matrix: '${name}' must cover unified (or lite, standard, full for legacy builds)`);
         }
     });
 
@@ -232,8 +237,10 @@ function validateRequiredProfiles(checksByName, issues) {
             issues.push(`matrix: missing required profile check '${name}'`);
             return;
         }
-        if (!arrayEqualsAsSet(check.profiles || [], profiles)) {
-            issues.push(`matrix: '${name}' must cover ${profiles.join(', ')}`);
+        const actual = check.profiles || [];
+        const unifiedCoverage = arrayEqualsAsSet(actual, ['unified']);
+        if (!arrayEqualsAsSet(actual, profiles) && !unifiedCoverage) {
+            issues.push(`matrix: '${name}' must cover unified or ${profiles.join(', ')}`);
         }
     });
 }
@@ -304,7 +311,7 @@ function main() {
     const registered = collectRegisteredApiPaths();
     const names = new Set();
     const checksByName = new Map();
-    const profileCounts = { lite: 0, standard: 0, full: 0 };
+    const profileCounts = { lite: 0, standard: 0, full: 0, unified: 0 };
 
     if (!Number.isInteger(matrix.version) || matrix.version < 1) {
         issues.push('matrix: version must be a positive integer');
@@ -321,7 +328,8 @@ function main() {
     const semanticCount = validateSemanticParity(checksByName, issues);
 
     Object.entries(profileCounts).forEach(([profile, count]) => {
-        if (count < 20) {
+        // Unified is mandatory for production; legacy profiles are optional.
+        if (profile === 'unified' && count < 20) {
             issues.push(`matrix: ${profile} profile has too few checks (${count})`);
         }
     });
@@ -332,7 +340,7 @@ function main() {
         process.exit(1);
     }
 
-    console.log(`FastBee device API matrix OK: checks=${checks.length}, semantics=${semanticCount}, lite=${profileCounts.lite}, standard=${profileCounts.standard}, full=${profileCounts.full}`);
+    console.log(`FastBee device API matrix OK: checks=${checks.length}, semantics=${semanticCount}, lite=${profileCounts.lite}, standard=${profileCounts.standard}, full=${profileCounts.full}, unified=${profileCounts.unified}`);
 }
 
 main();

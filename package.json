@@ -6,39 +6,29 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "npm run test:all",
-    "test:e2e": "playwright test",
-    "test:e2e:device": "playwright test --project=chromium",
-    "test:e2e:debug": "playwright test --debug",
+    "test": "npm run test:host",
+    "test:host": "npm run test:static && npm run test:contracts && npm run test:unit",
+    "test:regression": "npm run test:host && npm run test:native",
+    "test:native": "node scripts/run-native-tests.js",
+    "test:firmware": "node scripts/run-firmware-tests.js",
+    "test:e2e": "npm --prefix test/browser run test",
+    "test:e2e:collect": "npm --prefix test/browser run test -- --list",
+    "test:e2e:device": "npm --prefix test/browser run test -- --project=smoke",
+    "test:e2e:debug": "npm --prefix test/browser run test -- --debug",
     "test:discover": "node test/e2e/helpers/discover-devices.js",
-    "test:e2e:html": "playwright test --reporter=html && npx playwright show-report",
+    "test:e2e:html": "npm --prefix test/browser run test -- --reporter=html",
     "test:partition": "node scripts/test-partition-validation.js",
+    "test:memory": "node scripts/test-memory-regressions.js",
     "test:artifacts": "node scripts/test-build-artifacts.js",
     "test:health": "node scripts/test-device-health.js",
-    "test:unit": "python -m unittest discover -s test/unit -p 'test-*.py'",
-    "test:all": "echo 'Running all tests...' && npm run test:partition && npm run test:artifacts && npm run test:unit",
-    "precommit": "npm run test:partition && echo 'Pre-commit validation passed!'",
+    "test:device-config": "node scripts/test-device-config-ui.js",
+    "test:web-assets": "node scripts/build-web-assets.js && node scripts/web-smoke-test.js && node scripts/test-gzip-www-contract.js --publish-only && node scripts/gzip-www.js --no-upload --no-monitor --stage-dir=.pio/test-fs-stage && node scripts/web-smoke-test.js && node scripts/test-gzip-www-contract.js --stage-dir=.pio/test-fs-stage",
+    "test:unit": "node scripts/run-unit-tests.js",
+    "test:static": "node scripts/check-utf8-text.js README.md README.en.md docs scripts test web-src include src data/config/peripherals.json data/config/periph_exec.json data/config/users.json && node scripts/validate-test-coverage.js && node scripts/validate-device-api-matrix.js && node scripts/validate-device-config-examples.js && node scripts/validate-mqtt-ntp-lifecycle.js && node scripts/validate-build-matrix.js && node scripts/validate-doc-links.js && node scripts/validate-stability-thresholds.js && node scripts/validate-config-defaults.js && node scripts/validate-i18n.js && node scripts/validate-file-sizes.js && node scripts/validate-rule-script-profile.js && node scripts/validate-libdeps-patches.js && node scripts/validate-feature-budgets.js && node scripts/validate-project-hygiene.js && node scripts/test-fim-manifest-validator.js && node scripts/validate-generic-architecture.js && node scripts/validate-network-ui.js && npm run test:web-assets && npm run test:meta && git diff --check",
+    "test:meta": "node scripts/test-config-sanitizer.js && node scripts/test-project-hygiene-credentials.js && node scripts/test-deploy-pio-observability.js && node scripts/test-test-all-contract.js && node scripts/test-test-coverage-validator.js && node scripts/test-build-artifacts-validator.js && node scripts/test-device-config-examples-validator.js && node scripts/test-native-runner.js && node scripts/test-utf8-checker.js && node scripts/test-device-discovery.js",
+    "test:contracts": "npm run test:partition && npm run test:memory && npm run test:device-config",
+    "test:all": "npm run test:host",
+    "precommit": "npm run test:static && npm run test:contracts && echo 'Pre-commit validation passed!'",
     "postbuild": "node scripts/test-build-artifacts.js --quiet"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.61.1",
-    "canvas": "^3.2.3",
-    "docx": "^9.7.1"
-  },
-  "husky": {
-    "hooks": {
-      "pre-commit": "npm run precommit",
-      "pre-push": "npm run test:all"
-    }
-  },
-  "lint-staged": {
-    "partitions/*.csv": [
-      "node scripts/test-partition-validation.js",
-      "git add"
-    ],
-    "scripts/fastbee-artifacts.py": [
-      "python -m unittest test.unit.test-fastbee-artifacts.TestFastBeeArtifacts -v",
-      "git add"
-    ]
   }
 }

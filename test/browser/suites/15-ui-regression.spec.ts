@@ -1,4 +1,4 @@
-﻿import { test, expect, env, waitForDeviceReady } from '../fixtures/base.fixture';
+import { test, expect, env, waitForDeviceReady } from '../fixtures/base.fixture';
 
 /** 带重试的 page.goto（设备可能临时不可达） */
 async function gotoWithRetry(page: import('@playwright/test').Page, maxRetries = 3) {
@@ -300,16 +300,11 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     }
   });
 
-  test('UI-023: 禁用状态样式', async ({ authPage, navigateTo }) => {
-    await navigateTo('data');
-    const editor = authPage.locator('#file-editor');
-    if (await editor.isVisible()) {
-      const isDisabled = await editor.isDisabled();
-      if (isDisabled) {
-        // 禁用状态应有视觉反馈
-        await expect(editor).toBeDisabled();
-      }
-    }
+  test('UI-023: 配置导入导出入口位于设备高级配置', async ({ authPage, navigateTo }) => {
+    await navigateTo('device');
+    await authPage.locator('[data-tab="dev-advanced"]').click();
+    await expect(authPage.locator('#dev-config-import-btn')).toBeVisible();
+    await expect(authPage.locator('#dev-config-export-btn')).toBeVisible();
   });
 
   // ========== 下拉菜单 ==========

@@ -131,9 +131,13 @@
                 });
             }
 
-            // 懒加载完整 OTA 升级分片（在线升级/本地上传）；
-            // compact 配置不含该分片，加载失败时保留内联精简面板作为兜底
-            this._loadOtaFragment();
+            // OTA 分片和交互模块只在用户首次打开 OTA 页签时加载。无 PSRAM
+            // 设备进入“设备配置”首页时不再额外争用静态响应槽和 DRAM。
+            const otaTab = document.querySelector('#device-page .config-tab[data-tab="dev-ota"]');
+            if (otaTab && !otaTab._fastbeeOtaLazyBound) {
+                otaTab._fastbeeOtaLazyBound = true;
+                otaTab.addEventListener('click', () => this._loadOtaFragment());
+            }
 
         },
 
@@ -666,12 +670,13 @@
         },
 
         _configTransferFetch(url) {
-            const headers = {};
-            const token = localStorage.getItem('auth_token');
-            if (token) headers.Authorization = 'Bearer ' + token;
+            // Current firmware authenticates browser requests with the
+            // same-origin HttpOnly session cookie.  Do not attach a legacy
+            // bearer token from localStorage: the server gives an explicit
+            // Authorization header precedence, so a stale token would mask a
+            // valid cookie and turn config transfer into a misleading 401.
             return fetch(url, {
                 method: 'GET',
-                headers,
                 credentials: 'include',
                 cache: 'no-store'
             });
@@ -1107,9 +1112,11 @@
             if (typeof PageLoader === 'undefined') return;
             const container = document.getElementById('device-ota-container');
             if (!container) return;
+            if (this._otaFragmentLoading || document.getElementById('ota-url-form')) return;
+            this._otaFragmentLoading = true;
 
             const self = this;
-            PageLoader.loadFragment('device-ota-container', 'device-ota', function() {
+            Promise.resolve(PageLoader.loadFragment('device-ota-container', 'device-ota', function() {
                 // 分片加载成功：隐藏内联兜底面板，按需加载交互模块
                 const inline = document.getElementById('dev-ota-inline-panel');
                 if (inline) inline.classList.add('is-hidden');
@@ -1118,6 +1125,8 @@
                         AppState.setupDeviceOta();
                     }
                 });
+            })).finally(function() {
+                self._otaFragmentLoading = false;
             });
 
             // 失败兜底：保留 PageLoader 的错误提示，避免 OTA tab 退化为只有标题的空白页

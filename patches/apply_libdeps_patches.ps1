@@ -6,12 +6,10 @@
 #
 #   AsyncTCP 3.4.10:
 #     - AsyncTCP.cpp / AsyncTCP.h：async_tcp 任务卡滞诊断（心跳/阻塞检测）
-#   ESPAsyncWebServer 3.11.1:
-#     - WebResponseImpl.h / WebResponses.cpp：
-#       2872B 固定发送缓冲改为动态容量 + nothrow 降级回退
-#       （低 DRAM 时小缓冲仍能完成响应，避免 new OOM → abort 整机重启）
-#     - WebServer.cpp：连接接受回调 new AsyncWebServerRequest 改 nothrow
-#       （高并发 DRAM 耗尽时 throwing new(368) 直接 abort，2026-08-24 实测崩溃环）
+#   ESPAsyncWebServer 3.11.1 (legacy snapshot): source review/reference only.
+#   Current builds use the version-checked 3.12.0 hook at
+#   scripts/apply-libdeps-patches.py. It patches the installed source before
+#   compilation and fails closed if the upstream markers drift.
 #
 # 用法：powershell -ExecutionPolicy Bypass -File patches\apply_libdeps_patches.ps1
 # 补丁与库版本绑定：脚本校验 library.json 版本，版本不符时跳过并告警
@@ -74,3 +72,27 @@ Get-ChildItem $patchRoot -Directory | ForEach-Object {
 }
 
 Write-Host "[patch] 完成：应用 $applied 处，跳过 $skipped 处。应用后需 pio run 重新编译。"
+
+# Apply the current 3.12.0 patch to every already-installed environment too.
+# PlatformIO normally invokes this through platformio.ini; this extra pass is
+# useful when a developer refreshes .pio/libdeps manually.
+$runtimePatch = Join-Path $root 'scripts\apply-libdeps-patches.py'
+$pythonCandidates = @(
+    (Join-Path $env:USERPROFILE '.platformio\penv\Scripts\python.exe'),
+    (Join-Path $env:USERPROFILE '.platformio\penv\bin\python'),
+    'python3',
+    'python'
+)
+$python = $pythonCandidates | Where-Object {
+    if ([System.IO.Path]::IsPathRooted($_)) { Test-Path $_ } else { $null -ne (Get-Command $_ -ErrorAction SilentlyContinue) }
+} | Select-Object -First 1
+if ($python -and (Test-Path $runtimePatch)) {
+    Get-ChildItem $libdeps -Directory | ForEach-Object {
+        & $python $runtimePatch --project-dir $root --env $_.Name
+        if ($LASTEXITCODE -ne 0) {
+            throw "runtime dependency patch failed for $($_.Name)"
+        }
+    }
+} else {
+    Write-Host "[patch] Python 3 not found; run a PlatformIO build to apply the runtime patch." -ForegroundColor Yellow
+}

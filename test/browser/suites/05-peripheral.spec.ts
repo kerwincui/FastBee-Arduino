@@ -1,4 +1,4 @@
-﻿import { test, expect, waitForDevice, waitForDeviceReady } from '../fixtures/base.fixture';
+import { test, expect, waitForDevice, waitForDeviceReady } from '../fixtures/base.fixture';
 import { Locator, Page } from '@playwright/test';
 
 /** 通过精确 value 选择下拉选项 */
@@ -69,6 +69,50 @@ async function savePeriphModal(page: Page) {
   // 等待 modal 关闭（表示保存成功）
   await page.locator('#peripheral-modal').waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
   await waitForDevice(page, 3000);
+}
+
+async function getPeripheralTestCapacity(page: Page) {
+  return page.evaluate(async () => {
+    const apiGetFreshFn = (window as any).apiGetFresh;
+    if (typeof apiGetFreshFn !== 'function') return { error: 'apiGetFresh unavailable' };
+    const types = await apiGetFreshFn('/api/peripherals/types');
+    if (!types?.success || !types.hardware) return { error: 'hardware capabilities unavailable' };
+
+    const usedPins: number[] = [];
+    let pageNumber = 1;
+    let total = 0;
+    do {
+      const response = await apiGetFreshFn('/api/peripherals', { page: pageNumber, pageSize: 20 });
+      if (!response?.success || !Array.isArray(response.data)) return { error: 'peripheral list unavailable' };
+      response.data.forEach((item: any) => {
+        if (Array.isArray(item.pins)) usedPins.push(...item.pins.map(Number));
+      });
+      total = Number(response.total || response.data.length);
+      pageNumber += 1;
+    } while ((pageNumber - 1) * 20 < total);
+
+    return {
+      adcPins: Array.isArray(types.hardware.adcPins) ? types.hardware.adcPins.map(Number) : [],
+      inputPins: Array.isArray(types.hardware.inputPins) ? types.hardware.inputPins.map(Number) : [],
+      remaining: Number(types.profile?.remaining ?? 0),
+      usedPins,
+    };
+  });
+}
+
+async function removeOwnedTestPeripherals(page: Page, names: string[]) {
+  await page.evaluate(async (ownedNames) => {
+    const apiGetFreshFn = (window as any).apiGetFresh;
+    const apiDeleteFn = (window as any).apiDelete;
+    if (typeof apiGetFreshFn !== 'function' || typeof apiDeleteFn !== 'function') return;
+    const response = await apiGetFreshFn('/api/peripherals', { page: 1, pageSize: 20 });
+    if (!response?.success || !Array.isArray(response.data)) return;
+    for (const item of response.data) {
+      if (ownedNames.includes(String(item.name || ''))) {
+        await apiDeleteFn('/api/peripherals/', { id: item.id }).catch(() => {});
+      }
+    }
+  }, names).catch(() => {});
 }
 
 test.describe('Suite-05: 外设配置', () => {
@@ -803,5 +847,87 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#ir-manage-section')).not.toBeVisible();
     await authPage.locator('#cancel-peripheral-btn').click();
     await authPage.waitForTimeout(500);
+  });
+
+  test('PER-083: AI和DI参数新增保存、编辑回填及清理闭环', async ({ authPage }) => {
+    test.setTimeout(120_000);
+    test.skip(await authPage.locator('#add-peripheral-btn').isDisabled(), '需要启用开发环境功能');
+
+    const capacity = await getPeripheralTestCapacity(authPage);
+    test.skip(!!capacity.error, String(capacity.error || '无法读取硬件能力'));
+    const usedPins = new Set((capacity.usedPins || []).map(Number));
+    const adcPin = (capacity.adcPins || []).find((pin: number) => !usedPins.has(pin));
+    const diPin = (capacity.inputPins || []).find((pin: number) => !usedPins.has(pin) && pin !== adcPin);
+    test.skip(capacity.remaining < 2, '当前资源档位没有两个可用外设名额');
+    test.skip(adcPin === undefined || diPin === undefined, '当前硬件没有空闲的 ADC/DI 引脚');
+
+    const suffix = String(Date.now()).slice(-7);
+    const aiName = `test-ai-${suffix}`;
+    const diName = `test-di-${suffix}`;
+
+    try {
+      await test.step('AI 4-20mA 工程量配置保存并完整回填', async () => {
+        await openAddModal(authPage);
+        await selectPeriphType(authPage, '26');
+        await fillPeriphForm(authPage, aiName, String(adcPin));
+        await authPage.locator('#adc-signal-mode').selectOption('3');
+        await expect(authPage.locator('#adc-input-min')).toHaveValue('4');
+        await expect(authPage.locator('#adc-input-max')).toHaveValue('20');
+        await authPage.locator('#adc-conversion-enabled').check({ force: true });
+        await authPage.locator('#adc-clamp-enabled').check({ force: true });
+        await authPage.locator('#adc-sample-count').selectOption('8');
+        await authPage.locator('#adc-filter-mode').selectOption('1');
+        await authPage.locator('#adc-engineering-min').fill('-40');
+        await authPage.locator('#adc-engineering-max').fill('85');
+        await authPage.locator('#adc-engineering-offset').fill('0.5');
+        await authPage.locator('#adc-decimal-places').fill('1');
+        await savePeriphModal(authPage);
+
+        const row = authPage.locator('#peripheral-table-body tr').filter({ hasText: aiName }).first();
+        await expect(row).toBeVisible({ timeout: 15_000 });
+        await row.locator('[data-peripheral-action="edit"]').click();
+        await expect(authPage.locator('#peripheral-original-id')).not.toHaveValue('', { timeout: 10_000 });
+        await expect(authPage.locator('#adc-signal-mode')).toHaveValue('3');
+        await expect(authPage.locator('#adc-conversion-enabled')).toBeChecked();
+        await expect(authPage.locator('#adc-clamp-enabled')).toBeChecked();
+        await expect(authPage.locator('#adc-sample-count')).toHaveValue('8');
+        await expect(authPage.locator('#adc-filter-mode')).toHaveValue('1');
+        await expect(authPage.locator('#adc-input-min')).toHaveValue('4');
+        await expect(authPage.locator('#adc-input-max')).toHaveValue('20');
+        await expect(authPage.locator('#adc-engineering-min')).toHaveValue('-40');
+        await expect(authPage.locator('#adc-engineering-max')).toHaveValue('85');
+        await expect(authPage.locator('#adc-engineering-offset')).toHaveValue('0.5');
+        await expect(authPage.locator('#adc-decimal-places')).toHaveValue('1');
+        await authPage.locator('#cancel-peripheral-btn').click();
+      });
+
+      await test.step('DI 电气模式、反相、去抖和上报方式保存并完整回填', async () => {
+        await openAddModal(authPage);
+        await selectPeriphType(authPage, '11');
+        await fillPeriphForm(authPage, diName, String(diPin));
+        await expect(authPage.locator('#gpio-input-mode')).toBeVisible();
+        await authPage.locator('#gpio-input-mode').selectOption('2');
+        await authPage.locator('#gpio-invert-logic').check({ force: true });
+        await authPage.locator('#gpio-debounce-ms').fill('120');
+        await authPage.locator('#gpio-report-mode').selectOption('2');
+        await savePeriphModal(authPage);
+
+        const row = authPage.locator('#peripheral-table-body tr').filter({ hasText: diName }).first();
+        await expect(row).toBeVisible({ timeout: 15_000 });
+        await row.locator('[data-peripheral-action="edit"]').click();
+        await expect(authPage.locator('#peripheral-original-id')).not.toHaveValue('', { timeout: 10_000 });
+        await expect(authPage.locator('#gpio-input-mode')).toHaveValue('2');
+        await expect(authPage.locator('#gpio-invert-logic')).toBeChecked();
+        await expect(authPage.locator('#gpio-debounce-ms')).toHaveValue('120');
+        await expect(authPage.locator('#gpio-report-mode')).toHaveValue('2');
+        await authPage.locator('#cancel-peripheral-btn').click();
+      });
+    } finally {
+      if (await authPage.locator('#peripheral-modal').isVisible().catch(() => false)) {
+        await authPage.locator('#cancel-peripheral-btn').click().catch(() => {});
+      }
+      await removeOwnedTestPeripherals(authPage, [aiName, diName]);
+      await authPage.locator('#peripheral-refresh-btn').click().catch(() => {});
+    }
   });
 });

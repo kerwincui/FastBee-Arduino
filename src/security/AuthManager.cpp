@@ -404,6 +404,7 @@ AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccess
     
     SessionStatus status = validateSession(session);
     if (!status.valid) {
+        const String invalidUsername = session.username;
         if (status.expired) {
             result.errorMessage = "Session expired";
         } else if (status.locked) {
@@ -416,7 +417,7 @@ AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccess
             activeSessions.erase(it);
         }
         
-        logAuthEvent("session_invalid", session.username, result.errorMessage, false);
+        logAuthEvent("session_invalid", invalidUsername, result.errorMessage, false);
         return result;
     }
     

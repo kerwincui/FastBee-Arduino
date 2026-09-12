@@ -1,4 +1,4 @@
-﻿import { test, expect, env, waitForDevice, restoreNetworkConfig, waitForHealth, fetchDeviceFeatureFlags } from '../fixtures/base.fixture';
+import { test, expect, env, waitForDevice, restoreNetworkConfig, waitForHealth, fetchDeviceFeatureFlags } from '../fixtures/base.fixture';
 
 test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
 
@@ -143,9 +143,9 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
 
   test('NET-015: 输入WiFi密码', async ({ authPage }) => {
     const pwdInput = authPage.locator('#wifi-password');
-    await pwdInput.fill('15208747707');
+    await pwdInput.fill('test-wifi-password');
     const value = await pwdInput.inputValue();
-    expect(value).toBe('15208747707');
+    expect(value).toBe('test-wifi-password');
     // 密码框应为password类型
     const type = await pwdInput.getAttribute('type');
     expect(type).toBe('password');

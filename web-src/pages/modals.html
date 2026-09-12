@@ -233,6 +233,36 @@
                                         <input type="number" id="gpio-ao-max-pct" class="" value="100"
                                             min="0" max="100">
                                     </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label for="gpio-input-mode">输入电气模式</label>
+                                        <select id="gpio-input-mode" class="">
+                                            <option value="0" selected>自动（按外设类型）</option>
+                                            <option value="1">浮空输入</option>
+                                            <option value="2">内部上拉</option>
+                                            <option value="3">内部下拉</option>
+                                        </select>
+                                        <small>需要外部电阻时选择浮空；按钮通常选上拉或下拉。</small>
+                                    </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="gpio-invert-logic">
+                                            <span>反相逻辑</span>
+                                        </label>
+                                        <small>启用后，上报的 0/1 与物理电平相反。</small>
+                                    </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label for="gpio-debounce-ms">去抖时间 (ms)</label>
+                                        <input type="number" id="gpio-debounce-ms" value="50" min="0" max="5000" step="1">
+                                    </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label for="gpio-report-mode">上报方式</label>
+                                        <select id="gpio-report-mode" class="">
+                                            <option value="0" selected>状态变化/事件（默认）</option>
+                                            <option value="1">周期上报</option>
+                                            <option value="2">仅规则事件</option>
+                                        </select>
+                                        <small>按钮选择默认即可；需要定时上报按钮电平时选择周期上报。</small>
+                                    </div>
                                 </div>
 
                                 <!-- UART参数 -->
@@ -338,6 +368,11 @@
                                         </select>
                                     </div>
                                     <div class="fb-form-group">
+                                        <label for="adc-sample-rate">采样率提示 (SPS, 0=自动)</label>
+                                        <input type="number" id="adc-sample-rate" min="0" max="65535" value="0">
+                                        <small>实际采样节奏由外设执行规则决定；此项用于保留配置兼容。</small>
+                                    </div>
+                                    <div class="fb-form-group">
                                         <label for="adc-sample-count">采样次数 (滤波)</label>
                                         <select id="adc-sample-count" class="">
                                             <option value="1" selected>1次 (单次采样)</option>
@@ -353,6 +388,105 @@
                                             <option value="0" selected>均值滤波</option>
                                             <option value="1">中值滤波 (抗尖峰)</option>
                                         </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="adc-signal-mode">信号类型</label>
+                                        <select id="adc-signal-mode" class="">
+                                            <option value="0" selected>原始 ADC 计数</option>
+                                            <option value="1">0-10V (必须使用分压/隔离前端)</option>
+                                            <option value="2">0-20mA</option>
+                                            <option value="3">4-20mA</option>
+                                            <option value="4">自定义线性映射</option>
+                                        </select>
+                                        <small>ESP32 ADC 引脚不可直接接入超过芯片允许范围的电压或电流，请先配置安全的硬件调理电路。</small>
+                                    </div>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label class="fb-checkbox fb-m-0">
+                                                <input type="checkbox" id="adc-conversion-enabled">
+                                                <span>启用工程量转换</span>
+                                            </label>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label class="fb-checkbox fb-m-0">
+                                                <input type="checkbox" id="adc-clamp-enabled">
+                                                <span>输入越界时钳位</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label for="adc-engineering-min">工程量下限</label>
+                                            <input type="number" id="adc-engineering-min" step="any" value="0">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="adc-engineering-max">工程量上限</label>
+                                            <input type="number" id="adc-engineering-max" step="any" value="100">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="adc-engineering-offset">工程量偏移</label>
+                                            <input type="number" id="adc-engineering-offset" step="any" value="0">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="adc-decimal-places">小数位数</label>
+                                            <input type="number" id="adc-decimal-places" min="0" max="6" value="2">
+                                        </div>
+                                    </div>
+                                    <details class="adc-advanced-params">
+                                        <summary>高级输入校准（通常保持自动）</summary>
+                                        <div class="fb-grid-2">
+                                            <div class="fb-form-group">
+                                                <label for="adc-input-min">输入下限 (V/mA/raw)</label>
+                                                <input type="number" id="adc-input-min" step="any" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-input-max">输入上限 (V/mA/raw)</label>
+                                                <input type="number" id="adc-input-max" step="any" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-vref">ADC 参考电压 (V)</label>
+                                                <input type="number" id="adc-vref" step="any" min="0" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-voltage-ratio">电压分压还原倍数</label>
+                                                <input type="number" id="adc-voltage-ratio" step="any" min="0" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-shunt-resistance">电流分流电阻 (ohm)</label>
+                                                <input type="number" id="adc-shunt-resistance" step="any" min="0" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-input-gain">前端增益</label>
+                                                <input type="number" id="adc-input-gain" step="any" min="0" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-input-offset">前端电压偏移 (V)</label>
+                                                <input type="number" id="adc-input-offset" step="any" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-raw-min">自定义原始下限</label>
+                                                <input type="number" id="adc-raw-min" min="0" max="65535" value="0">
+                                            </div>
+                                            <div class="fb-form-group">
+                                                <label for="adc-raw-max">自定义原始上限</label>
+                                                <input type="number" id="adc-raw-max" min="0" max="65535" value="0">
+                                            </div>
+                                        </div>
+                                    </details>
+                                </div>
+
+                                <!-- 通用传感器参数 -->
+                                <div id="generic-sensor-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">通用传感器参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="generic-sensor-type">传感器类型 ID</label>
+                                        <input type="number" id="generic-sensor-type" value="0" min="0" max="255">
+                                        <small>用于逻辑/外部数据源标识，不会假定具体厂商协议</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="generic-sensor-interval">采样间隔 (ms)</label>
+                                        <input type="number" id="generic-sensor-interval" value="1000" min="100" max="86400000" step="100">
+                                        <small>允许 100ms 至 24h；无本地引脚时仍可作为逻辑数据源</small>
                                     </div>
                                 </div>
 

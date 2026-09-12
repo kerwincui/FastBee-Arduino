@@ -12,12 +12,36 @@
 #include <soc/gpio_periph.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <atomic>
+#include <math.h>
 
 // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DHT 导致内存泄漏
 static inline bool sensor_pin_valid(uint8_t pin) {
     if (pin == 255) return false;
     if (pin > GPIO_NUM_MAX - 1) return false;
     return GPIO_IS_VALID_GPIO(pin);
+}
+
+static bool adc_calibration_equal(const ADCSensorCalibration& a,
+                                  const ADCSensorCalibration& b) {
+    return a.vRef == b.vRef && a.sensitivity == b.sensitivity &&
+           a.offset == b.offset && a.ratio == b.ratio &&
+           a.adcMax == b.adcMax;
+}
+
+static bool current_loop_calibration_equal(const CurrentLoopCalibration& a,
+                                           const CurrentLoopCalibration& b) {
+    return a.shuntResistance == b.shuntResistance &&
+           a.inputGain == b.inputGain && a.inputOffset == b.inputOffset &&
+           a.loopMinMa == b.loopMinMa && a.loopMaxMa == b.loopMaxMa &&
+           a.engineeringMin == b.engineeringMin &&
+           a.engineeringMax == b.engineeringMax && a.vRef == b.vRef &&
+           a.adcMax == b.adcMax && a.sampleCount == b.sampleCount &&
+           a.mapToEngineering == b.mapToEngineering;
+}
+
+static bool finite_positive(float value) {
+    return !isnan(value) && !isinf(value) && value > 0.0f;
 }
 
 // ============ 单总线传感器并发互斥 ============
@@ -29,32 +53,191 @@ static inline bool sensor_pin_valid(uint8_t pin) {
 // （现场：两条定时规则同秒触发并发读 dht11 → Guru Meditation）。
 // 用全局总线互斥锁串行化所有物理读取；持锁期间读缓存/读硬件，第二个任务
 // 拿锁后双检缓存通常直接命中。拿锁超时则不做强读（避免回到危险路径），
-// 返回旧缓存或 NAN。
+// 直接返回 NAN；不能在未持锁时访问实例 map。
 static constexpr uint32_t SENSOR_BUS_LOCK_TIMEOUT_MS = 3000;
+static constexpr uint32_t DHT_STALE_CACHE_WINDOW_MS = 10000;
+static constexpr uint32_t SENSOR_FAILURE_BACKOFF_INITIAL_MS = 5000;
+static constexpr uint32_t SENSOR_FAILURE_BACKOFF_MAX_MS = 60000;
+#if defined(ARDUINO_ARCH_ESP32)
+// pulseIn() keeps interrupts enabled on the ESP32 Arduino core. Bound each
+// edge and the complete transaction so a disconnected/stuck DHT line cannot
+// enter the Adafruit library's long InterruptLock polling loop.
+static constexpr uint32_t DHT_EDGE_TIMEOUT_US = 1500;
+static constexpr uint32_t DHT_START_EDGE_TIMEOUT_US = 3000;
+static constexpr uint32_t DHT_TRANSACTION_TIMEOUT_US = 150000;
+#endif
 
+// The mutex is created lazily from the SensorDriver singleton constructor. The
+// atomic CAS keeps the fallback safe even if a read arrives before that
+// constructor has completed (for example during an unusual startup race).
 static SemaphoreHandle_t sensor_bus_mutex() {
-    static SemaphoreHandle_t busMutex = nullptr;
-    if (!busMutex) {
-        busMutex = xSemaphoreCreateMutex();
+    static std::atomic<SemaphoreHandle_t> busMutex(nullptr);
+    SemaphoreHandle_t mutex = busMutex.load(std::memory_order_acquire);
+    if (mutex) {
+        return mutex;
     }
-    return busMutex;
+
+    SemaphoreHandle_t created = xSemaphoreCreateMutex();
+    if (!created) {
+        return nullptr;
+    }
+
+    SemaphoreHandle_t expected = nullptr;
+    if (busMutex.compare_exchange_strong(expected, created,
+                                         std::memory_order_release,
+                                         std::memory_order_acquire)) {
+        return created;
+    }
+
+    // Another task won the race. Do not leak the unused candidate semaphore.
+    vSemaphoreDelete(created);
+    return expected;
 }
 
 // RAII 总线锁：acquired==false 时调用方必须放弃物理读取
 struct SensorBusLock {
+    SemaphoreHandle_t mutex;
     bool acquired;
-    SensorBusLock() : acquired(false) {
-        SemaphoreHandle_t m = sensor_bus_mutex();
-        if (m && xSemaphoreTake(m, pdMS_TO_TICKS(SENSOR_BUS_LOCK_TIMEOUT_MS)) == pdTRUE) {
+    SensorBusLock() : mutex(sensor_bus_mutex()), acquired(false) {
+        if (mutex && xSemaphoreTake(mutex, pdMS_TO_TICKS(SENSOR_BUS_LOCK_TIMEOUT_MS)) == pdTRUE) {
             acquired = true;
         }
     }
     ~SensorBusLock() {
-        if (acquired) {
-            xSemaphoreGive(sensor_bus_mutex());
+        if (acquired && mutex) {
+            xSemaphoreGive(mutex);
         }
     }
 };
+
+static inline bool retry_pending(unsigned long now, uint32_t retryAt) {
+    // Signed subtraction is wrap-safe for the 32-bit millis() clock as long as
+    // no individual backoff exceeds INT32_MAX (ours is at most one minute).
+    return retryAt != 0 &&
+           static_cast<int32_t>(static_cast<uint32_t>(now) - retryAt) < 0;
+}
+
+static uint32_t failure_backoff_ms(uint8_t consecutiveFailures) {
+    if (consecutiveFailures == 0) {
+        return SENSOR_FAILURE_BACKOFF_INITIAL_MS;
+    }
+
+    const uint8_t shift = (consecutiveFailures > 4) ? 4 :
+                          static_cast<uint8_t>(consecutiveFailures - 1);
+    uint32_t delayMs = SENSOR_FAILURE_BACKOFF_INITIAL_MS << shift;
+    if (delayMs > SENSOR_FAILURE_BACKOFF_MAX_MS) {
+        delayMs = SENSOR_FAILURE_BACKOFF_MAX_MS;
+    }
+    return delayMs;
+}
+
+static inline float dht_cached_field(const SensorReadResult& reading,
+                                     const String& field) {
+    return (field == "humidity") ? reading.humidity : reading.temperature;
+}
+
+#if defined(ARDUINO_ARCH_ESP32)
+// Read one DHT frame without the Adafruit DHT library's InterruptLock. The
+// protocol is simple pulse-width coding: every bit starts with a ~50us low
+// pulse, followed by a short (0) or long (1) high pulse. pulseIn() provides a
+// hardware-cycle timeout while allowing the WiFi/idle tasks to keep running.
+static bool readDhtBounded(uint8_t pin, SensorDriverType type,
+                           float& humidity, float& temperature) {
+    // A held-low line is a common short/disconnected failure and can be
+    // rejected before driving the start pulse.
+    pinMode(pin, INPUT_PULLUP);
+    if (digitalRead(pin) != HIGH) {
+        return false;
+    }
+
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    if (type == SensorDriverType::DHT11) {
+        delay(20);       // DHT11 requires at least 18ms
+    } else {
+        delay(2);        // DHT22/AM2302 requires at least 1ms
+    }
+    pinMode(pin, INPUT_PULLUP);
+    delayMicroseconds(40);
+
+    const uint32_t startUs = micros();
+    auto abortRead = [&]() -> bool {
+        pinMode(pin, INPUT_PULLUP);
+        return false;
+    };
+    auto boundedPulse = [&](uint8_t state, uint32_t edgeTimeoutUs) -> unsigned long {
+        const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startUs);
+        if (elapsedUs >= DHT_TRANSACTION_TIMEOUT_US) {
+            return 0;
+        }
+        const uint32_t remainingUs = DHT_TRANSACTION_TIMEOUT_US - elapsedUs;
+        if (edgeTimeoutUs > remainingUs) {
+            edgeTimeoutUs = remainingUs;
+        }
+        return edgeTimeoutUs == 0 ? 0 : pulseIn(pin, state, edgeTimeoutUs);
+    };
+
+    // Sensor response preamble: low ~80us, high ~80us.
+    if (boundedPulse(LOW, DHT_START_EDGE_TIMEOUT_US) == 0 ||
+        boundedPulse(HIGH, DHT_START_EDGE_TIMEOUT_US) == 0) {
+        return abortRead();
+    }
+
+    uint8_t data[5] = {0, 0, 0, 0, 0};
+    for (uint8_t bit = 0; bit < 40; ++bit) {
+        const unsigned long lowUs = boundedPulse(LOW, DHT_EDGE_TIMEOUT_US);
+        const unsigned long highUs = boundedPulse(HIGH, DHT_EDGE_TIMEOUT_US);
+        // Reject missing/implausible pulses instead of decoding line noise as
+        // a valid frame. A healthy DHT low/high pulse is well below 150us.
+        if (lowUs == 0 || highUs == 0 || lowUs > 500 || highUs > 500) {
+            return abortRead();
+        }
+        data[bit / 8] <<= 1;
+        if (highUs > lowUs) {
+            data[bit / 8] |= 1;
+        }
+    }
+
+    pinMode(pin, INPUT_PULLUP);
+    if (data[4] != static_cast<uint8_t>((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
+        return false;
+    }
+
+    if (type == SensorDriverType::DHT11) {
+        humidity = static_cast<float>(data[0]) +
+                   static_cast<float>(data[1]) * 0.1f;
+        // DHT11 stores the sign in bit 7 of the temperature byte; remove it
+        // before composing the magnitude or a negative value is overstated.
+        const float magnitude = static_cast<float>(data[2] & 0x7F) +
+                                static_cast<float>(data[3]) * 0.1f;
+        temperature = (data[2] & 0x80) ? -magnitude : magnitude;
+    } else {
+        const uint16_t rawHumidity =
+            (static_cast<uint16_t>(data[0]) << 8) | data[1];
+        const uint16_t rawTemperature =
+            (static_cast<uint16_t>(data[2] & 0x7F) << 8) | data[3];
+        humidity = static_cast<float>(rawHumidity) * 0.1f;
+        temperature = static_cast<float>(rawTemperature) * 0.1f;
+        if (data[2] & 0x80) {
+            temperature = -temperature;
+        }
+    }
+
+    // Basic frame sanity checks protect the cache and downstream actions from
+    // electrically plausible but invalid noise frames.
+    return !isnan(humidity) && !isinf(humidity) &&
+           !isnan(temperature) && !isinf(temperature) &&
+           humidity >= 0.0f && humidity <= 100.0f &&
+           temperature >= -40.0f && temperature <= 125.0f;
+}
+#endif
+
+SensorDriver::SensorDriver() {
+    // Force one-time mutex creation during singleton startup rather than on a
+    // worker's first physical read. The CAS in sensor_bus_mutex() remains a
+    // defensive guard for unusual early-call races.
+    (void)sensor_bus_mutex();
+}
 
 SensorDriver& SensorDriver::getInstance() {
     static SensorDriver instance;
@@ -82,11 +265,8 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
     SensorBusLock busLock;
     if (!busLock.acquired) {
         LOGGER.warningf("[SensorDriver] DHT bus lock timeout on pin %d, skip physical read", pin);
-        auto jt = _dhtInstances.find(pin);
-        if (jt != _dhtInstances.end() && jt->second.lastRead.success) {
-            return (field == "humidity") ? jt->second.lastRead.humidity
-                                         : jt->second.lastRead.temperature;
-        }
+        // The instance map is owned by the bus lock. Returning NAN here keeps
+        // the timeout path from racing a concurrent map update/initialization.
         return NAN;
     }
 
@@ -116,26 +296,58 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
     DHT* dht = static_cast<DHT*>(inst.dht);
     unsigned long now = millis();
 
+    // A failed DHT transaction can spend tens of milliseconds with interrupts
+    // disabled. Do not immediately start another physical transaction from a
+    // second rule/field; serve a still-fresh stale value when available.
+    if (!inst.lastRead.success && retry_pending(now, inst.nextRetryAt)) {
+        if (inst.lastRead.timestamp != 0 &&
+            (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS) {
+            return dht_cached_field(inst.lastRead, field);
+        }
+        return NAN;
+    }
+
     // 缓存有效性检查：避免过于频繁读取
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < DHT_MIN_INTERVAL) {
         // 使用缓存值
-        if (field == "humidity") return inst.lastRead.humidity;
-        return inst.lastRead.temperature;
+        return dht_cached_field(inst.lastRead, field);
     }
 
-    // 执行实际读取
-    float humidity = dht->readHumidity();
-    float temperature = dht->readTemperature();
+    // 执行实际读取。ESP32 使用有界 pulseIn 采集，避免 Adafruit DHT 库
+    // 在异常线路上进入长时间 InterruptLock；其他 Arduino 平台保留原库路径。
+    float humidity = NAN;
+    float temperature = NAN;
+#if defined(ARDUINO_ARCH_ESP32)
+    (void)dht; // The object still owns begin()/lifetime compatibility.
+    const bool boundedReadOk = readDhtBounded(pin, type, humidity, temperature);
+    if (!boundedReadOk) {
+        humidity = NAN;
+        temperature = NAN;
+    }
+#else
+    humidity = dht->readHumidity();
+    // If the first transaction failed, avoid repeating a timing-critical read
+    // on libraries/configurations that do not cache a failed result.
+    temperature = isnan(humidity) ? NAN : dht->readTemperature();
+#endif
 
     if (isnan(humidity) || isnan(temperature)) {
         LOGGER.warningf("[SensorDriver] DHT read failed on pin %d", pin);
-        // 如果有旧缓存且未超过 10s，仍返回旧值
-        if (inst.lastRead.success && (now - inst.lastRead.timestamp) < 10000) {
-            if (field == "humidity") return inst.lastRead.humidity;
-            return inst.lastRead.temperature;
+        const bool hasStaleValue =
+            inst.lastRead.success &&
+            (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS;
+        const float staleValue = dht_cached_field(inst.lastRead, field);
+
+        if (inst.consecutiveFailures < 255) {
+            ++inst.consecutiveFailures;
         }
         inst.lastRead.success = false;
-        return NAN;
+        inst.nextRetryAt = static_cast<uint32_t>(now) +
+                           failure_backoff_ms(inst.consecutiveFailures);
+
+        // Keep the last successful value/timestamp for the bounded stale
+        // fallback, while marking the transaction itself as failed.
+        return hasStaleValue ? staleValue : NAN;
     }
 
     // 更新缓存
@@ -143,6 +355,8 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
     inst.lastRead.temperature = temperature;
     inst.lastRead.humidity = humidity;
     inst.lastRead.timestamp = now;
+    inst.consecutiveFailures = 0;
+    inst.nextRetryAt = 0;
 
     LOGGER.debugf("[SensorDriver] DHT pin=%d temp=%.1f humi=%.1f", pin, temperature, humidity);
 
@@ -173,10 +387,8 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
     SensorBusLock busLock;
     if (!busLock.acquired) {
         LOGGER.warningf("[SensorDriver] DS18B20 bus lock timeout on pin %d, skip physical read", pin);
-        auto jt = _ds18b20Instances.find(pin);
-        if (jt != _ds18b20Instances.end() && jt->second.lastRead.success) {
-            return jt->second.lastRead.temperature;
-        }
+        // Do not inspect _ds18b20Instances without the bus lock; map access
+        // races with lazy initialization and can corrupt the pooled node.
         return NAN;
     }
     auto it = _ds18b20Instances.find(pin);
@@ -203,6 +415,14 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
     DallasTemperature* sensors = static_cast<DallasTemperature*>(inst.sensors);
     unsigned long now = millis();
 
+    if (!inst.lastRead.success && retry_pending(now, inst.nextRetryAt)) {
+        if (inst.lastRead.timestamp != 0 &&
+            (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS) {
+            return inst.lastRead.temperature;
+        }
+        return NAN;
+    }
+
     // 缓存有效性检查
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < DS18B20_MIN_INTERVAL) {
         return inst.lastRead.temperature;
@@ -214,18 +434,25 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
 
     if (temperature == DEVICE_DISCONNECTED_C || temperature == -127.0f) {
         LOGGER.warningf("[SensorDriver] DS18B20 read failed on pin %d index %d", pin, index);
-        // 返回旧缓存（10s 内有效）
-        if (inst.lastRead.success && (now - inst.lastRead.timestamp) < 10000) {
-            return inst.lastRead.temperature;
+        const bool hasStaleValue =
+            inst.lastRead.success &&
+            (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS;
+        const float staleValue = inst.lastRead.temperature;
+        if (inst.consecutiveFailures < 255) {
+            ++inst.consecutiveFailures;
         }
         inst.lastRead.success = false;
-        return NAN;
+        inst.nextRetryAt = static_cast<uint32_t>(now) +
+                           failure_backoff_ms(inst.consecutiveFailures);
+        return hasStaleValue ? staleValue : NAN;
     }
 
     // 更新缓存
     inst.lastRead.success = true;
     inst.lastRead.temperature = temperature;
     inst.lastRead.timestamp = now;
+    inst.consecutiveFailures = 0;
+    inst.nextRetryAt = 0;
 
     LOGGER.debugf("[SensorDriver] DS18B20 pin=%d idx=%d temp=%.2f", pin, index, temperature);
     return temperature;
@@ -255,10 +482,8 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
     SensorBusLock busLock;
     if (!busLock.acquired) {
         LOGGER.warningf("[SensorDriver] Ultrasonic bus lock timeout on trig=%d, skip physical read", trigPin);
-        auto jt = _ultrasonicInstances.find(trigPin);
-        if (jt != _ultrasonicInstances.end() && jt->second.lastRead.success) {
-            return jt->second.lastRead.value;
-        }
+        // The instance map is protected by the bus lock; do not read it from
+        // this timeout path while another task may be initializing an entry.
         return NAN;
     }
 
@@ -365,6 +590,20 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
     }
 
     ADCSensorInstance& inst = it->second;
+    // A pin can be re-used after a rule/configuration change. Refresh the
+    // calibration and invalidate the cached value instead of serving a value
+    // calculated with the previous sensor type.
+    if (inst.type != SensorDriverType::CURRENT || !adc_calibration_equal(inst.cal, cal)) {
+        inst.type = SensorDriverType::CURRENT;
+        inst.cal = cal;
+        inst.lastRead = {false, NAN, 0};
+    }
+    if (!finite_positive(inst.cal.vRef) || inst.cal.adcMax == 0 ||
+        !finite_positive(inst.cal.sensitivity)) {
+        LOGGER.warningf("[SensorDriver] Current calibration invalid on pin %d", pin);
+        inst.lastRead = {false, NAN, millis()};
+        return NAN;
+    }
     unsigned long now = millis();
 
     // 缓存有效性检查
@@ -386,9 +625,7 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
 
     // 电压转电流： I = (V - Voffset) / sensitivity
     float current = 0.0f;
-    if (inst.cal.sensitivity > 0.001f) {  // 避免除零
-        current = (voltage - inst.cal.offset) / inst.cal.sensitivity;
-    }
+    current = (voltage - inst.cal.offset) / inst.cal.sensitivity;
 
     // 更新缓存
     inst.lastRead.success = true;
@@ -397,6 +634,105 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
 
     LOGGER.debugf("[SensorDriver] Current pin=%d adc=%.0f V=%.3f I=%.3fA", pin, adcAvg, voltage, current);
     return current;
+}
+
+// ========== 4-20 mA current loop (shunt resistor) ==========
+
+float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& cal) {
+    if (!sensor_pin_valid(pin)) {
+        static unsigned long s_lastWarn = 0;
+        const unsigned long now = millis();
+        if (now - s_lastWarn > 60000UL) {
+            LOGGER.errorf("[SensorDriver] 4-20mA invalid pin %u", (unsigned)pin);
+            s_lastWarn = now;
+        }
+        return NAN;
+    }
+
+    // Reject malformed configuration before touching the ADC. This avoids
+    // divide-by-zero and keeps a bad remote rule from poisoning the cache.
+    if (!finite_positive(cal.shuntResistance) || !finite_positive(cal.inputGain) ||
+        !finite_positive(cal.vRef) || cal.adcMax == 0 ||
+        !finite_positive(cal.loopMaxMa - cal.loopMinMa) ||
+        isnan(cal.engineeringMin) || isinf(cal.engineeringMin) ||
+        isnan(cal.engineeringMax) || isinf(cal.engineeringMax) ||
+        cal.engineeringMin == cal.engineeringMax) {
+        LOGGER.warningf("[SensorDriver] 4-20mA calibration invalid on pin %d", pin);
+        return NAN;
+    }
+
+    auto it = _adcSensorInstances.find(pin);
+    if (it == _adcSensorInstances.end()) {
+        analogReadResolution(12);
+        analogSetAttenuation(ADC_11db);
+
+        ADCSensorInstance inst;
+        inst.initialized = true;
+        inst.type = SensorDriverType::CURRENT_LOOP;
+        inst.cal = ADCSensorCalibration();
+        inst.loopCal = cal;
+        inst.lastRead = {false, NAN, 0};
+        _adcSensorInstances[pin] = inst;
+        it = _adcSensorInstances.find(pin);
+        LOGGER.infof("[SensorDriver] 4-20mA initialized pin=%d shunt=%.2f ohm range=%.2f..%.2f mA",
+                     pin, cal.shuntResistance, cal.loopMinMa, cal.loopMaxMa);
+    }
+
+    ADCSensorInstance& inst = it->second;
+    if (inst.type != SensorDriverType::CURRENT_LOOP ||
+        !current_loop_calibration_equal(inst.loopCal, cal)) {
+        inst.type = SensorDriverType::CURRENT_LOOP;
+        inst.loopCal = cal;
+        inst.lastRead = {false, NAN, 0};
+    }
+
+    const unsigned long now = millis();
+    if (inst.lastRead.success &&
+        (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
+        return inst.lastRead.value;
+    }
+
+    uint8_t sampleCount = cal.sampleCount;
+    if (sampleCount == 0) sampleCount = 1;
+    if (sampleCount > 32) sampleCount = 32;
+    uint32_t adcSum = 0;
+    for (uint8_t i = 0; i < sampleCount; ++i) {
+        adcSum += static_cast<uint32_t>(analogRead(pin));
+        delayMicroseconds(100);
+    }
+
+    const float adcAvg = static_cast<float>(adcSum) / static_cast<float>(sampleCount);
+    const float measuredVoltage = adcAvg * cal.vRef / static_cast<float>(cal.adcMax);
+    const float shuntVoltage = (measuredVoltage - cal.inputOffset) / cal.inputGain;
+    const float currentMa = shuntVoltage * 1000.0f / cal.shuntResistance;
+    const float toleranceMa = 1.0f;
+
+    if (isnan(currentMa) || isinf(currentMa) ||
+        currentMa < (cal.loopMinMa - toleranceMa) ||
+        currentMa > (cal.loopMaxMa + toleranceMa)) {
+        inst.lastRead = {false, NAN, now};
+        static unsigned long s_lastRangeWarn = 0;
+        if (now - s_lastRangeWarn > 30000UL) {
+            LOGGER.warningf("[SensorDriver] 4-20mA pin=%d out of range: %.3f mA (expected %.3f..%.3f)",
+                            pin, currentMa, cal.loopMinMa, cal.loopMaxMa);
+            s_lastRangeWarn = now;
+        }
+        return NAN;
+    }
+
+    float value = currentMa;
+    if (cal.mapToEngineering) {
+        const float clampedMa = constrain(currentMa, cal.loopMinMa, cal.loopMaxMa);
+        value = cal.engineeringMin +
+                (clampedMa - cal.loopMinMa) *
+                (cal.engineeringMax - cal.engineeringMin) /
+                (cal.loopMaxMa - cal.loopMinMa);
+    }
+
+    inst.lastRead = {true, value, now};
+    LOGGER.debugf("[SensorDriver] 4-20mA pin=%d adc=%.0f V=%.3f I=%.3f mA value=%.3f",
+                  pin, adcAvg, measuredVoltage, currentMa, value);
+    return value;
 }
 
 // ========== 电压传感器 (分压器 ADC) ==========

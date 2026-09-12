@@ -10,6 +10,7 @@
 #include "./protocols/MQTTClient.h"
 #include "./core/FastBeeFramework.h"
 #include "./systems/ConfigStorage.h"
+#include "./systems/HealthMonitor.h"
 #include "./systems/SystemRebooter.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -92,7 +93,11 @@ static bool restoreMqttConfigFromBackup() {
 // 自动恢复检查（在主循环中周期调用）
 // 当测试连接成功或超时后，自动恢复原始 MQTT 配置并重启客户端
 // ============================================================================
-static bool loadMqttStatusConfig(bool& enabled, String& server, int& port, String& clientId); // forward decl
+static bool loadMqttStatusConfig(bool& enabled,
+                                 String& server,
+                                 int& port,
+                                 String& clientId,
+                                 bool* disabledByMemory = nullptr); // forward decl
 static unsigned long s_lastRestoreCheck = 0;
 
 void MqttRouteHandler::checkPendingTestRestore() {
@@ -326,11 +331,16 @@ static double jsonVariantToDouble(JsonVariantConst v) {
     return s.isEmpty() ? 0.0 : s.toDouble();
 }
 
-static bool loadMqttStatusConfig(bool& enabled, String& server, int& port, String& clientId) {
+static bool loadMqttStatusConfig(bool& enabled,
+                                 String& server,
+                                 int& port,
+                                 String& clientId,
+                                 bool* disabledByMemory) {
     enabled = false;
     server = "";
     port = 0;
     clientId = "";
+    if (disabledByMemory) *disabledByMemory = false;
 
     JsonDocument doc;
     if (!ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
@@ -346,13 +356,119 @@ static bool loadMqttStatusConfig(bool& enabled, String& server, int& port, Strin
     server = jsonVariantToString(mqtt["server"]);
     port = mqtt["port"] | 1883;
     clientId = jsonVariantToString(mqtt["clientId"]);
-    return true;
+    // HealthMonitor writes the canonical marker below when it disables MQTT
+    // under memory pressure. Accept the older alias as well so devices that
+    // reboot with an earlier protocol.json still expose the right reason.
+    if (disabledByMemory) {
+        *disabledByMemory = (mqtt["disabled_by_memory"] | false) ||
+                            (mqtt["disable_mqtt_by_memory"] | false);
+    }
+
+    // A syntactically valid JSON object is not necessarily a usable MQTT
+    // configuration.  When MQTT is enabled, reject an empty broker or an
+    // invalid port here so a stale in-memory MQTTClient cannot make the status
+    // endpoint report a misleading connected/OK state after a failed reload.
+    // An explicitly disabled MQTT section remains "loaded" even when the
+    // broker fields are empty; that is a valid user choice and should render
+    // as "MQTT 已禁用" rather than as a configuration error.
+    if (!enabled) return true;
+    return !server.isEmpty() && port > 0 && port <= 65535;
 }
 
 static bool mqttHasValidRuntimeConfig(MQTTClient* mqtt) {
     if (!mqtt) return false;
     MQTTConfig cfg = mqtt->getConfig();
     return (cfg.server != nullptr && cfg.server[0] != '\0' && cfg.port > 0);
+}
+
+// Status-only code emitted when the persisted MQTT section is missing or
+// invalid. Keeping it separate from PubSubClient's return codes prevents the
+// API from reporting lastError=0/OK alongside a configuration failure reason.
+static constexpr int MQTT_STATUS_CONFIG_ERROR = -12;
+// Distinguishes an automatic low-memory disable from an ordinary user choice
+// (enabled=false), so the Web UI can give a recovery action instead of saying
+// only that MQTT is offline.
+static constexpr int MQTT_STATUS_DISABLED_BY_MEMORY = -13;
+// A severe-memory episode can stop MQTT temporarily before the 30s persistent
+// disable threshold is reached. Keep that state distinct from a user stop so
+// the Web UI explains that the client will be restored automatically.
+static constexpr int MQTT_STATUS_STOPPED_BY_MEMORY = -14;
+
+// Keep MQTT failure reporting allocation-free and stable for the Web UI.  The
+// numeric PubSubClient code remains in `lastError` for compatibility; these
+// fields let callers distinguish a broker rejection from a local network or
+// TLS-memory failure without scraping serial logs.
+static const char* mqttErrorName(int code) {
+    switch (code) {
+        case 0:  return "OK";
+        case -1: return "MQTT_DISCONNECTED";
+        case -2: return "MQTT_CONNECT_FAILED";
+        case -3: return "MQTT_CONNECTION_LOST";
+        case -4: return "MQTT_CONNECTION_TIMEOUT";
+        case -5: return "MQTTS_FEATURE_DISABLED";
+        case -11: return "MQTT_CLIENT_INIT_FAILED";
+        case MQTT_STATUS_CONFIG_ERROR: return "MQTT_CONFIG_INVALID";
+        case MQTT_STATUS_DISABLED_BY_MEMORY: return "MQTT_DISABLED_BY_MEMORY";
+        case MQTT_STATUS_STOPPED_BY_MEMORY: return "MQTT_STOPPED_BY_MEMORY";
+        case 1:  return "MQTT_BAD_PROTOCOL";
+        case 2:  return "MQTT_BAD_CLIENT_ID";
+        case 3:  return "MQTT_UNAVAILABLE";
+        case 4:  return "MQTT_BAD_CREDENTIALS";
+        case 5:  return "MQTT_UNAUTHORIZED";
+        default: return "MQTT_UNKNOWN";
+    }
+}
+
+static const char* mqttErrorClass(int code, bool tlsMemoryFailure) {
+    if (code == 0) return "none";
+    if (code == -5) return "feature";
+    if (code == -11) return "resource";
+    if (code == MQTT_STATUS_CONFIG_ERROR) return "config";
+    if (code == MQTT_STATUS_DISABLED_BY_MEMORY) return "resource";
+    if (code == MQTT_STATUS_STOPPED_BY_MEMORY) return "resource";
+    if (tlsMemoryFailure) return "memory";
+    if (code >= 1 && code <= 3) return "broker";
+    if (code == 4 || code == 5) return "auth";
+    if (code >= -4 && code <= -1) return "network";
+    return "unknown";
+}
+
+static const char* mqttErrorMessage(int code, bool networkConnected, bool tlsMemoryFailure) {
+    switch (code) {
+        case 0:  return "";
+        case -1: return "MQTT 客户端未连接";
+        case -2: return networkConnected
+                    ? "无法连接 MQTT Broker（DNS/TCP）"
+                    : "网络未连接，无法访问 MQTT Broker";
+        case -3: return "MQTT 连接已断开，正在重连";
+        case -4: return tlsMemoryFailure
+                    ? "TLS 内存不足，已进入慢速重试；建议切换 mqtt"
+                    : "MQTT 连接超时，请检查 Broker 地址和端口";
+        case -5: return "MQTTS 功能未启用，请在功能配置中启用";
+        case -11: return "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        case MQTT_STATUS_CONFIG_ERROR: return "MQTT 配置未加载或格式无效，请检查网络配置";
+        case MQTT_STATUS_DISABLED_BY_MEMORY: return "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        case MQTT_STATUS_STOPPED_BY_MEMORY: return "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        case 1:  return "Broker 拒绝：协议版本不支持";
+        case 2:  return "Broker 拒绝：客户端 ID 无效或重复";
+        case 3:  return "Broker 当前不可用";
+        case 4:  return "Broker 拒绝：用户名或密码错误";
+        case 5:  return "Broker 拒绝：客户端未授权";
+        default: return "MQTT 连接失败，请查看错误码";
+    }
+}
+
+static void setMqttErrorFields(JsonObject data, MQTTClient* mqtt, bool networkConnected) {
+    const int code = mqtt ? mqtt->getLastErrorCode() : 0;
+    const bool tlsMemoryFailure = mqtt && mqtt->isLastMqttsTlsMemoryFailure();
+    data["lastError"] = code;  // legacy field
+    data["lastErrorCode"] = code;
+    data["lastErrorName"] = mqttErrorName(code);
+    data["lastErrorClass"] = mqttErrorClass(code, tlsMemoryFailure);
+    data["lastErrorMessage"] = mqttErrorMessage(code, networkConnected, tlsMemoryFailure);
+    // errorMessage is consumed by older Web bundles; keep it as an alias.
+    data["errorMessage"] = mqttErrorMessage(code, networkConnected, tlsMemoryFailure);
+    data["tlsMemoryFailure"] = tlsMemoryFailure;
 }
 
 static bool tryAutoStartMqttForStatus(ProtocolManager* pm,
@@ -364,6 +480,20 @@ static bool tryAutoStartMqttForStatus(ProtocolManager* pm,
     attempted = false;
     started = false;
     if (!pm || !configLoaded || !configEnabled) return false;
+
+    // A status read must never undo an active memory-protection decision.
+    // During the short window before `disabled_by_memory` is persisted, the
+    // client can look like an ordinary stopped instance; rebuilding it here
+    // would immediately reclaim the memory that HealthMonitor just freed and
+    // could repeat on every REST poll.  The persisted marker is checked by the
+    // caller as well, while these live flags close that race.
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* health = fw ? fw->getHealthMonitor() : nullptr;
+    if ((health && (health->isMqttStoppedForMemory() ||
+                    health->isMqttDisabledForMemory())) ||
+        (mqtt && (mqtt->isStoppedByMemory() || mqtt->isDisabledByMemory()))) {
+        return false;
+    }
 
     bool needsStart = !mqttHasValidRuntimeConfig(mqtt);
 
@@ -596,21 +726,44 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
                 bool serverMatch = (cfg.server == server && cfg.port == port);
                 bool schemeMatch = (cfg.scheme == scheme);
                 if (serverMatch && schemeMatch) {
+                    bool networkConnected = false;
+                    if (ctx->networkManager) {
+                        networkConnected = static_cast<FBNetworkManager*>(ctx->networkManager)->isNetworkConnected();
+                    }
                     JsonDocument doc;
                     doc["success"] = true;
-                    if (existingMqtt->getIsConnected()) {
+                    JsonObject data = doc["data"].to<JsonObject>();
+                    const bool connected = existingMqtt->getIsConnected();
+                    if (connected) {
                         // 已连接：直接返回成功
-                        doc["data"]["connected"] = true;
-                        doc["data"]["alreadyConnected"] = true;
+                        data["connected"] = true;
+                        data["alreadyConnected"] = true;
                     } else {
-                        // 正在连接/重连中：返回deferred，让前端等状态轮询确认
-                        doc["data"]["connected"] = false;
-                        doc["data"]["deferred"] = true;
+                        // 正在连接/重连中：仍允许前端轮询，但把已有的
+                        // 错误码和可读原因一并返回。此前这里只返回
+                        // deferred=true，导致已知的认证、DNS 或内存失败
+                        // 被 Web 页面显示成无原因的“连接中”。
+                        data["connected"] = false;
+                        data["deferred"] = true;
+                        const int errorCode = existingMqtt->getLastErrorCode();
+                        if (errorCode != 0) {
+                            data["failureKnown"] = true;
+                            data["statusReason"] = mqttErrorMessage(
+                                errorCode,
+                                networkConnected,
+                                existingMqtt->isLastMqttsTlsMemoryFailure());
+                        } else if (!networkConnected) {
+                            data["statusReason"] = "网络未连接，无法连接 MQTT Broker";
+                        } else {
+                            data["statusReason"] = "正在连接 MQTT Broker";
+                        }
                     }
-                    doc["data"]["server"] = cfg.server;
-                    doc["data"]["port"] = cfg.port;
-                    doc["data"]["clientId"] = cfg.clientId;
-                    doc["data"]["scheme"] = cfg.scheme;
+                    data["server"] = cfg.server;
+                    data["port"] = cfg.port;
+                    data["clientId"] = cfg.clientId;
+                    data["scheme"] = cfg.scheme;
+                    data["networkConnected"] = networkConnected;
+                    setMqttErrorFields(data, existingMqtt, networkConnected);
                     HandlerUtils::sendJsonStream(request, doc);
                     return;
                 }
@@ -644,7 +797,12 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         if (clientId.isEmpty() || !clientId.startsWith("E&")) {
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -8;
+            doc["data"]["lastErrorCode"] = -8;
+            doc["data"]["lastErrorName"] = "MQTT_AES_CLIENT_ID_INVALID";
+            doc["data"]["lastErrorClass"] = "config";
             doc["data"]["errorMessage"] = "AES clientId requires E&deviceNum&productId&userId format";
+            doc["data"]["statusReason"] = "加密认证客户端ID格式无效，应为 E&设备编号&产品编号&用户ID";
+            doc["success"] = false;
             HandlerUtils::sendJsonStream(request, doc);
             return;
         }
@@ -655,7 +813,12 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         if (encryptedPassword.isEmpty()) {
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -7;
+            doc["data"]["lastErrorCode"] = -7;
+            doc["data"]["lastErrorName"] = "MQTT_AES_PASSWORD_FAILED";
+            doc["data"]["lastErrorClass"] = "config";
             doc["data"]["errorMessage"] = aesErr.isEmpty() ? "AES password generation failed" : aesErr;
+            doc["data"]["statusReason"] = doc["data"]["errorMessage"];
+            doc["success"] = false;
             HandlerUtils::sendJsonStream(request, doc);
             return;
         }
@@ -698,7 +861,12 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     if (!saved) {
         doc["data"]["connected"] = false;
         doc["data"]["error"] = -10;
+        doc["data"]["lastErrorCode"] = -10;
+        doc["data"]["lastErrorName"] = "MQTT_CONFIG_SAVE_FAILED";
+        doc["data"]["lastErrorClass"] = "config";
         doc["data"]["errorMessage"] = "Failed to save config to protocol.json";
+        doc["data"]["statusReason"] = "MQTT 配置保存失败，请检查存储空间或配置格式";
+        doc["success"] = false;
         HandlerUtils::sendJsonStream(request, doc);
         return;
     }
@@ -749,7 +917,14 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     doc["data"]["port"] = port;
     if (!deferred) {
         doc["data"]["error"] = -11;
-        doc["data"]["errorMessage"] = "Deferred restart failed (heap or config)";
+        doc["data"]["lastErrorCode"] = -11;
+        doc["data"]["lastErrorName"] = "MQTT_CLIENT_INIT_FAILED";
+        doc["data"]["lastErrorClass"] = "resource";
+        doc["data"]["errorMessage"] = "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        doc["data"]["statusReason"] = "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        doc["success"] = false;
+    } else {
+        doc["data"]["statusReason"] = "MQTT 配置已应用，正在后台连接";
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -770,24 +945,44 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
 
     // 检查网络状态
     bool internetAvailable = false;
+    bool networkConnected = false;
     if (ctx->networkManager) {
         FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         NetworkStatusInfo netInfo = netMgr->getStatusInfo();
         internetAvailable = netInfo.internetAvailable;
+        networkConnected = netMgr->isNetworkConnected();
     }
 
     bool mqttConfigEnabled = false;
     String configuredServer;
     int configuredPort = 0;
     String configuredClientId;
+    bool mqttDisabledByMemory = false;
+    bool mqttStoppedByMemory = false;
     bool mqttConfigLoaded = loadMqttStatusConfig(
         mqttConfigEnabled,
         configuredServer,
         configuredPort,
-        configuredClientId
+        configuredClientId,
+        &mqttDisabledByMemory
     );
 
     MQTTClient* mqtt = pm->getMQTTClient();
+
+    // The persisted marker is authoritative across reboots, but there is a
+    // short window while HealthMonitor is writing protocol.json (or while the
+    // client is being stopped) in which disk state still says enabled. Merge
+    // the live flags so the UI does not offer a futile reconnect.
+    FastBeeFramework* statusFw = FastBeeFramework::getInstance();
+    HealthMonitor* statusHealth = statusFw ? statusFw->getHealthMonitor() : nullptr;
+    if ((statusHealth && statusHealth->isMqttDisabledForMemory()) ||
+        (mqtt && mqtt->isDisabledByMemory())) {
+        mqttDisabledByMemory = true;
+    }
+    if ((statusHealth && statusHealth->isMqttStoppedForMemory()) ||
+        (mqtt && mqtt->isStoppedByMemory())) {
+        mqttStoppedByMemory = true;
+    }
 
     // 防御性检查：MQTT 配置已禁用但客户端仍在运行（如保存配置后重启前的窗口期）
     // 立即停止客户端，确保不会在禁用状态下继续保持与 Broker 的连接
@@ -805,7 +1000,11 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         autoStartAttempted,
         autoStartStarted
     );
-    if (autoStartStarted) {
+    // restartMQTTDeferred() may destroy the old client before returning false
+    // when the heap admission check rejects a rebuild.  Refresh the pointer
+    // after every actual attempt, not only after success, to avoid dereferencing
+    // a freed MQTTClient in the status serialization path.
+    if (autoStartAttempted) {
         mqtt = pm->getMQTTClient();
     }
 
@@ -826,6 +1025,30 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     // loaded. The UI and telemetry consumers must not branch on key presence.
     data["autoReconnect"] = false;
     data["reconnectCount"] = 0;
+    data["networkConnected"] = networkConnected;
+    // Always expose this field so older Web bundles can safely branch on it.
+    // It is set only from the persisted HealthMonitor marker, never merely
+    // because the user selected enabled=false.
+    data["disabledByMemory"] = mqttDisabledByMemory;
+    data["stoppedByMemory"] = mqttStoppedByMemory;
+    data["lastError"] = 0;
+    data["lastErrorCode"] = 0;
+    data["lastErrorName"] = "OK";
+    data["lastErrorClass"] = "none";
+    data["lastErrorMessage"] = "";
+    data["errorMessage"] = "";
+    data["tlsMemoryFailure"] = false;
+    data["statusReason"] = mqttConfigLoaded
+        ? (mqttConfigEnabled ? "" : "MQTT 已禁用")
+        : "MQTT 配置未加载";
+    if (!mqttConfigLoaded) {
+        data["lastError"] = MQTT_STATUS_CONFIG_ERROR;
+        data["lastErrorCode"] = MQTT_STATUS_CONFIG_ERROR;
+        data["lastErrorName"] = "MQTT_CONFIG_INVALID";
+        data["lastErrorClass"] = "config";
+        data["lastErrorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+        data["errorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+    }
 
     // 测试连接结果：在restore前记录的连接状态
     if (testWasConnected || testJustRestored) {
@@ -839,7 +1062,10 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         MQTTConfig cfg = mqtt->getConfig();
         bool hasValidConfig = mqttHasValidRuntimeConfig(mqtt);
 
-        if (hasValidConfig) {
+        // Both the persisted section and the in-memory client must be valid.
+        // A previous client may still exist after a failed file reload; do not
+        // expose it as initialized/connected in that case.
+        if (hasValidConfig && mqttConfigLoaded) {
             data["initialized"] = true;
 
             // MQTT连接状态：配置禁用时强制报告未连接，即使客户端对象仍存在
@@ -849,36 +1075,149 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
             data["connecting"] = mqttConfigEnabled && !mqttConnected && cfg.autoReconnect && !mqtt->isStopped();
             data["stopped"] = mqtt->isStopped();
             data["internetAvailable"] = internetAvailable;
+            data["networkConnected"] = networkConnected;
             data["server"] = cfg.server;
             data["port"] = cfg.port;
             data["clientId"] = cfg.clientId;
-            data["lastError"] = mqtt->getLastErrorCode();
+            // A stale in-memory client can outlive a failed config reload.
+            // Preserve the explicit configuration error instead of replacing
+            // it with the old client's (often zero/OK) transport status.
+            if (mqttConfigLoaded) {
+                setMqttErrorFields(data, mqtt, networkConnected);
+            }
             data["reconnectCount"] = mqtt->getReconnectCount();
             data["autoReconnect"] = cfg.autoReconnect;
             data["scheme"] = cfg.scheme;
             data["tlsAllocated"] = mqtt->isTlsTransportAllocated();
             data["webPausedForMqtts"] = mqtt->isWebPausedForMqtts();
+            const int lastError = mqtt->getLastErrorCode();
+            const bool tlsMemoryFailure = mqtt->isLastMqttsTlsMemoryFailure();
+            if (mqttConfigEnabled && !mqttConnected) {
+                if (lastError != 0) {
+                    data["statusReason"] = mqttErrorMessage(lastError, networkConnected, tlsMemoryFailure);
+                } else if (!networkConnected) {
+                    data["statusReason"] = "网络未连接";
+                } else if (data["connecting"].as<bool>()) {
+                    data["statusReason"] = "正在连接 MQTT Broker";
+                } else {
+                    data["statusReason"] = "MQTT 未连接";
+                }
+            }
             unsigned long connTime = mqtt->getLastConnectedTime();
             data["lastConnectedMs"] = connTime > 0 ? (millis() - connTime) / 1000 : 0;
         } else {
-            // MQTT 对象存在但配置未加载
+            // MQTT 配置或客户端初始化无效。区分持久化配置错误和低内存/
+            // 客户端重建失败，便于 Web 页面给出正确的处理建议。
             data["initialized"] = false;
             data["connected"] = false;
             data["connecting"] = mqttConfigEnabled && autoStartAttempted;
             data["internetAvailable"] = internetAvailable;
+            data["networkConnected"] = networkConnected;
             if (!configuredServer.isEmpty()) data["server"] = configuredServer;
             if (configuredPort > 0) data["port"] = configuredPort;
             if (!configuredClientId.isEmpty()) data["clientId"] = configuredClientId;
-            data["error"] = "MQTT config not loaded";
+            if (!mqttConfigLoaded) {
+                data["error"] = "MQTT config not loaded";
+                data["lastError"] = MQTT_STATUS_CONFIG_ERROR;
+                data["lastErrorCode"] = MQTT_STATUS_CONFIG_ERROR;
+                data["lastErrorName"] = "MQTT_CONFIG_INVALID";
+                data["lastErrorClass"] = "config";
+                data["lastErrorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+                data["errorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+                data["statusReason"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+            } else if (!mqttConfigEnabled) {
+                data["error"] = "MQTT disabled";
+                data["lastErrorClass"] = "none";
+                data["statusReason"] = "MQTT 已禁用";
+            } else {
+                data["error"] = "MQTT client not initialized";
+                data["lastError"] = -11;
+                data["lastErrorCode"] = -11;
+                data["lastErrorName"] = "MQTT_CLIENT_INIT_FAILED";
+                data["lastErrorClass"] = "resource";
+                data["lastErrorMessage"] = "MQTT 客户端未初始化，可能是内存不足或启动失败";
+                data["errorMessage"] = "MQTT 客户端未初始化，可能是内存不足或启动失败";
+                data["statusReason"] = "MQTT 客户端未初始化，可能是内存不足或启动失败";
+            }
         }
     } else {
         data["initialized"] = false;
         data["connected"] = false;
         data["connecting"] = mqttConfigEnabled && autoStartAttempted;
         data["internetAvailable"] = internetAvailable;
+        data["networkConnected"] = networkConnected;
         if (!configuredServer.isEmpty()) data["server"] = configuredServer;
         if (configuredPort > 0) data["port"] = configuredPort;
         if (!configuredClientId.isEmpty()) data["clientId"] = configuredClientId;
+        if (!mqttConfigLoaded) {
+            data["lastError"] = MQTT_STATUS_CONFIG_ERROR;
+            data["lastErrorCode"] = MQTT_STATUS_CONFIG_ERROR;
+            data["lastErrorName"] = "MQTT_CONFIG_INVALID";
+            data["lastErrorClass"] = "config";
+            data["lastErrorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+            data["errorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+        } else if (mqttConfigEnabled) {
+            data["lastError"] = -11;
+            data["lastErrorCode"] = -11;
+            data["lastErrorName"] = "MQTT_CLIENT_INIT_FAILED";
+            data["lastErrorClass"] = "resource";
+            data["lastErrorMessage"] = "MQTT 客户端未初始化，可能是内存不足或启动失败";
+            data["errorMessage"] = "MQTT 客户端未初始化，可能是内存不足或启动失败";
+        } else {
+            data["lastErrorClass"] = "none";
+        }
+        data["statusReason"] = mqttConfigLoaded
+            ? (mqttConfigEnabled ? "MQTT 客户端未初始化" : "MQTT 已禁用")
+            : "MQTT 配置未加载";
+    }
+
+    // A deferred auto-start can fail before an MQTTClient object exists (most
+    // commonly because the low-memory admission check rejected the rebuild).
+    // Report that attempted failure explicitly; otherwise the branches above
+    // look identical to a normal first boot and the UI says only “初始化中”.
+    // Do this only for an actual attempt so rate-limited/non-enabled states do
+    // not become false alarms.
+    if (mqttConfigEnabled && autoStartAttempted && !autoStartStarted) {
+        data["lastError"] = -11;
+        data["lastErrorCode"] = -11;
+        data["lastErrorName"] = "MQTT_CLIENT_INIT_FAILED";
+        data["lastErrorClass"] = "resource";
+        data["lastErrorMessage"] = "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        data["errorMessage"] = "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        data["statusReason"] = "MQTT 客户端启动失败，可能是内存不足或配置无效";
+    }
+
+    // HealthMonitor may have stopped the client and persisted enabled=false
+    // before this request arrived. Override the generic "MQTT 已禁用"
+    // diagnostics with a stable, actionable explanation while preserving the
+    // disabled state itself.
+    if (mqttDisabledByMemory) {
+        static constexpr const char* kMemoryDisabledReason =
+            "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        data["enabled"] = false;
+        data["connected"] = false;
+        data["connecting"] = false;
+        data["disabledByMemory"] = true;
+        data["lastError"] = MQTT_STATUS_DISABLED_BY_MEMORY;
+        data["lastErrorCode"] = MQTT_STATUS_DISABLED_BY_MEMORY;
+        data["lastErrorName"] = "MQTT_DISABLED_BY_MEMORY";
+        data["lastErrorClass"] = "resource";
+        data["lastErrorMessage"] = kMemoryDisabledReason;
+        data["errorMessage"] = kMemoryDisabledReason;
+        data["statusReason"] = kMemoryDisabledReason;
+    } else if (mqttStoppedByMemory) {
+        static constexpr const char* kMemoryStoppedReason =
+            "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        data["connected"] = false;
+        data["connecting"] = false;
+        data["stoppedByMemory"] = true;
+        data["lastError"] = MQTT_STATUS_STOPPED_BY_MEMORY;
+        data["lastErrorCode"] = MQTT_STATUS_STOPPED_BY_MEMORY;
+        data["lastErrorName"] = "MQTT_STOPPED_BY_MEMORY";
+        data["lastErrorClass"] = "resource";
+        data["lastErrorMessage"] = kMemoryStoppedReason;
+        data["errorMessage"] = kMemoryStoppedReason;
+        data["statusReason"] = kMemoryStoppedReason;
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -897,8 +1236,99 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         return;
     }
 
-    // 如果 MQTT 已连接，直接返回成功（无需重建）
+    // 先读取持久化配置，再判断“已经连接”的快速路径。内存保护会把
+    // mqtt.enabled 写为 false；如果先检查旧的 MQTTClient 指针，配置刚写入
+    // 到客户端停止之间的窗口会错误地返回 connected=true，前端也就看不到
+    // “内存自动禁用”的恢复建议。
     MQTTClient* mqtt = pm->getMQTTClient();
+    bool mqttEnabled = false;
+    String dummyServer;
+    int dummyPort = 0;
+    String dummyClientId;
+    bool mqttDisabledByMemory = false;
+    bool mqttStoppedByMemory = false;
+    const bool statusConfigLoaded = loadMqttStatusConfig(
+        mqttEnabled, dummyServer, dummyPort, dummyClientId, &mqttDisabledByMemory);
+
+    // Use the live memory-guard state as well as the persisted marker. This
+    // closes the write/stop race and prevents a reconnect from rebuilding MQTT
+    // while HealthMonitor is actively recovering the heap.
+    FastBeeFramework* reconnectFw = FastBeeFramework::getInstance();
+    HealthMonitor* reconnectHealth = reconnectFw ? reconnectFw->getHealthMonitor() : nullptr;
+    if ((reconnectHealth && reconnectHealth->isMqttDisabledForMemory()) ||
+        (mqtt && mqtt->isDisabledByMemory())) {
+        mqttDisabledByMemory = true;
+    }
+    if (reconnectHealth && reconnectHealth->isMqttStoppedForMemory()) {
+        mqttStoppedByMemory = true;
+    }
+
+    // 检查 MQTT 是否已启用：禁用时拒绝重连/重启
+    // 前端自动重连逻辑可能在禁用状态下误调用此接口（如轮询时序竞态）
+    // 后端必须兜底：禁用时不触发任何重连或设备重启
+    {
+        if (!statusConfigLoaded) {
+            JsonDocument doc;
+            doc["success"] = false;
+            doc["data"]["connected"] = false;
+            doc["data"]["lastError"] = MQTT_STATUS_CONFIG_ERROR;
+            doc["data"]["lastErrorCode"] = MQTT_STATUS_CONFIG_ERROR;
+            doc["data"]["lastErrorName"] = "MQTT_CONFIG_INVALID";
+            doc["data"]["lastErrorClass"] = "config";
+            doc["data"]["errorMessage"] = "MQTT 配置未加载或格式无效，请检查 Broker 地址和端口";
+            doc["data"]["statusReason"] = "MQTT 配置未加载或格式无效，请检查 Broker 地址和端口";
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+        if (mqttDisabledByMemory) {
+            JsonDocument doc;
+            doc["success"] = false;
+            doc["data"]["connected"] = false;
+            doc["data"]["reconnecting"] = false;
+            doc["data"]["mqttDisabled"] = true;
+            doc["data"]["disabledByMemory"] = true;
+            doc["data"]["lastError"] = MQTT_STATUS_DISABLED_BY_MEMORY;
+            doc["data"]["lastErrorCode"] = MQTT_STATUS_DISABLED_BY_MEMORY;
+            doc["data"]["lastErrorName"] = "MQTT_DISABLED_BY_MEMORY";
+            doc["data"]["lastErrorClass"] = "resource";
+            doc["data"]["errorMessage"] =
+                "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+            doc["data"]["statusReason"] =
+                "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+        if (mqttStoppedByMemory) {
+            JsonDocument doc;
+            doc["success"] = false;
+            doc["data"]["connected"] = false;
+            doc["data"]["reconnecting"] = false;
+            doc["data"]["stoppedByMemory"] = true;
+            doc["data"]["lastError"] = MQTT_STATUS_STOPPED_BY_MEMORY;
+            doc["data"]["lastErrorCode"] = MQTT_STATUS_STOPPED_BY_MEMORY;
+            doc["data"]["lastErrorName"] = "MQTT_STOPPED_BY_MEMORY";
+            doc["data"]["lastErrorClass"] = "resource";
+            doc["data"]["errorMessage"] =
+                "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+            doc["data"]["statusReason"] =
+                "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+        if (!mqttEnabled) {
+            JsonDocument doc;
+            doc["success"] = true;
+            doc["data"]["connected"] = false;
+            doc["data"]["mqttDisabled"] = true;
+            doc["data"]["message"] = "MQTT is disabled, reconnect rejected";
+            doc["data"]["statusReason"] = "MQTT 已禁用，请先在协议配置中启用";
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+    }
+
+    // 如果 MQTT 已连接，直接返回成功（无需重建）。必须放在配置保护之后，
+    // 避免旧客户端对象掩盖用户禁用或内存保护状态。
     if (mqtt && mqtt->getIsConnected()) {
         JsonDocument doc;
         doc["success"] = true;
@@ -906,27 +1336,6 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         doc["data"]["reconnecting"] = false;
         HandlerUtils::sendJsonStream(request, doc);
         return;
-    }
-
-    // 检查 MQTT 是否已启用：禁用时拒绝重连/重启
-    // 前端自动重连逻辑可能在禁用状态下误调用此接口（如轮询时序竞态）
-    // 后端必须兜底：禁用时不触发任何重连或设备重启
-    {
-        bool mqttEnabled = false;
-        String dummyServer;
-        int dummyPort = 0;
-        String dummyClientId;
-        if (loadMqttStatusConfig(mqttEnabled, dummyServer, dummyPort, dummyClientId)) {
-            if (!mqttEnabled) {
-                JsonDocument doc;
-                doc["success"] = true;
-                doc["data"]["connected"] = false;
-                doc["data"]["mqttDisabled"] = true;
-                doc["data"]["message"] = "MQTT is disabled, reconnect rejected";
-                HandlerUtils::sendJsonStream(request, doc);
-                return;
-            }
-        }
     }
 
     // 检查 autoReconnect 配置：用户关闭自动重连时，不应自动触发重连
@@ -938,6 +1347,7 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
             doc["success"] = true;
             doc["data"]["connected"] = false;
             doc["data"]["autoReconnectDisabled"] = true;
+            doc["data"]["statusReason"] = "自动重连已关闭，请在协议配置中开启";
             HandlerUtils::sendJsonStream(request, doc);
             return;
         }
@@ -962,6 +1372,7 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         doc["data"]["connected"] = false;
         doc["data"]["rebooting"] = true;
         doc["data"]["message"] = "Device will reboot to reconnect MQTTS cleanly";
+        doc["data"]["statusReason"] = "设备将重启以重新连接 MQTTS";
 
         HandlerUtils::sendJsonStream(request, doc);
 
@@ -977,12 +1388,28 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
     bool deferredOk = pm->restartMQTTDeferred(true);
 
     JsonDocument doc;
-    doc["success"] = true;
+    // The request itself is handled successfully, but the operation can fail
+    // when the heap admission guard rejects rebuilding the client.  Returning
+    // success=true in that case made generic API callers report a false
+    // success even though the payload already said reconnecting=false.
+    doc["success"] = deferredOk;
     doc["data"]["connected"] = false;
     doc["data"]["reconnecting"] = deferredOk;
     doc["data"]["message"] = deferredOk
         ? "MQTT client rebuilt, reconnecting in background"
         : "MQTT rebuild failed, insufficient memory";
+    if (!deferredOk) {
+        doc["data"]["failureKnown"] = true;
+        doc["data"]["retryable"] = true;
+        doc["data"]["lastError"] = -11;  // legacy field
+        doc["data"]["lastErrorCode"] = -11;
+        doc["data"]["lastErrorName"] = "MQTT_CLIENT_INIT_FAILED";
+        doc["data"]["lastErrorClass"] = "resource";
+        doc["data"]["errorMessage"] = "MQTT 客户端重建失败，可能是内存不足";
+        doc["data"]["statusReason"] = "设备当前内存不足，MQTT 重连已跳过，请稍后重试";
+    } else {
+        doc["data"]["statusReason"] = "MQTT 客户端已重建，正在后台连接";
+    }
 
     HandlerUtils::sendJsonStream(request, doc);
 }

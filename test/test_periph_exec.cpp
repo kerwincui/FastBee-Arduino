@@ -21,6 +21,9 @@
 #include "mocks/MockLogger.h"
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
+
+using namespace FastBeeTest;
+
 // 前向声明 WorkerPool 常量，避免引入完整的头文件链（防止与 MockPeripheral.h 中的 PeriphExecRule 定义冲突）
 // WORKER_STACK 镜像自 PeriphExecWorkerPool.h 的 clamp 逻辑：max(SIMPLE_TASK_STACK, 6144)
 // C3/C6 的 SIMPLE_TASK_STACK=4096 必须被抬升（实机 HWM 仅剩 ~948B，濒临栈溢出重启）

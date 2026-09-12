@@ -13,6 +13,14 @@
 #include <ArduinoJson.h>
 
 // 模拟 unified 全量编译宏（FeatureFlags.h 内均为 #ifndef 保护，可预先定义）
+#ifdef FASTBEE_ENABLE_MDNS
+#undef FASTBEE_ENABLE_MDNS
+#endif
+#define FASTBEE_ENABLE_MDNS 1
+#ifdef FASTBEE_ENABLE_WEB_SERVER
+#undef FASTBEE_ENABLE_WEB_SERVER
+#endif
+#define FASTBEE_ENABLE_WEB_SERVER 1
 #define FASTBEE_ENABLE_LCD 1
 #define FASTBEE_ENABLE_LCD_GB2312 1
 #define FASTBEE_ENABLE_NEOPIXEL 1
@@ -64,6 +72,7 @@ using FastBee::RuntimeFeatureManager;
 static void resetMockFs() {
     g_mockFiles.clear();
     g_mockFileTimes.clear();
+    ConfigStorage::getInstance().setSaveFailureCount(0);
 }
 
 // Test 1: 首次加载生成默认配置（计划 7.1 Test 1）
@@ -73,6 +82,8 @@ void test_rfm_first_run_generates_defaults() {
     TEST_ASSERT_TRUE(mgr.loadConfig());
     TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json"));
     // 统一镜像默认只保留管理入口；外设/协议由功能配置显式启用。
+    TEST_ASSERT_TRUE(mgr.shouldEnable("webServer"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("mdns"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("lcd"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("neopixel"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("modbus"));
@@ -81,6 +92,113 @@ void test_rfm_first_run_generates_defaults() {
     TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("rfid"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("lcdGb2312"));
+
+    JsonDocument saved;
+    TEST_ASSERT_FALSE(deserializeJson(saved, g_mockFiles["/config/features.json"]));
+    JsonObject savedFeatures = saved["features"];
+    TEST_ASSERT_EQUAL(mgr.featureCount(), savedFeatures.size());
+    for (size_t i = 0; i < mgr.featureCount(); ++i) {
+        const auto* meta = mgr.getFeatureAt(i);
+        TEST_ASSERT_NOT_NULL(meta);
+        TEST_ASSERT_TRUE(savedFeatures[meta->key]["enabled"].is<bool>());
+    }
+}
+
+// 旧版稀疏配置首次加载后补全一次；第二次加载完整快照不得重复写盘。
+void test_rfm_sparse_config_canonicalized_once() {
+    resetMockFs();
+    g_mockFiles["/config/features.json"] =
+        "{\"version\":1,\"features\":{\"mdns\":{\"enabled\":true},"
+        "\"lcd\":{\"enabled\":true}}}";
+
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("lcd"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("webServer"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("mdns"));
+
+    JsonDocument canonical;
+    TEST_ASSERT_FALSE(deserializeJson(canonical, g_mockFiles["/config/features.json"]));
+    TEST_ASSERT_EQUAL(mgr.featureCount(), canonical["features"].size());
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json.bak"));
+    const String legacyBackup = g_mockFiles["/config/features.json.bak"];
+
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_EQUAL_STRING(legacyBackup.c_str(),
+                             g_mockFiles["/config/features.json.bak"].c_str());
+    TEST_ASSERT_TRUE(mgr.hasExplicitSetting("webServer"));
+    TEST_ASSERT_TRUE(mgr.hasExplicitSetting("mdns"));
+}
+
+// mDNS 缺失时需等待 NetworkManager 从旧 network.json 迁移，不能先把
+// 新默认值写成显式用户配置并覆盖旧值。
+void test_rfm_sparse_config_defers_missing_mdns() {
+    resetMockFs();
+    const String sparse =
+        "{\"version\":1,\"features\":{\"lcd\":{\"enabled\":true}}}";
+    g_mockFiles["/config/features.json"] = sparse;
+
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("lcd"));
+    TEST_ASSERT_FALSE(mgr.hasExplicitSetting("mdns"));
+    TEST_ASSERT_EQUAL_STRING(sparse.c_str(), g_mockFiles["/config/features.json"].c_str());
+    TEST_ASSERT_FALSE(LittleFS.exists("/config/features.json.bak"));
+}
+
+void test_rfm_update_save_failure_restores_memory_snapshot() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("mdns"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("lcd"));
+
+    JsonDocument update;
+    update["features"]["mdns"]["enabled"] = false;
+    update["features"]["lcd"]["enabled"] = true;
+    ConfigStorage::getInstance().setSaveFailureCount(2);  // saveCurrentConfig retries once
+    RuntimeFeatureManager::UserConfigSnapshot previous;
+    const auto result = mgr.updateAndSave(update, &previous);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(RuntimeFeatureManager::ConfigUpdateResult::SAVE_FAILED),
+                      static_cast<int>(result));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("mdns"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("lcd"));
+    TEST_ASSERT_FALSE(mgr.hasExplicitSetting("mdns"));
+    TEST_ASSERT_TRUE(mgr.restoreUserConfig(previous));
+}
+
+void test_rfm_reset_restores_complete_defaults() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.setUserEnabled("mdns", false));
+    TEST_ASSERT_TRUE(mgr.setUserEnabled("lcd", true));
+    TEST_ASSERT_TRUE(mgr.saveCurrentConfig());
+
+    TEST_ASSERT_TRUE(mgr.resetToDefaults());
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("webServer"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("mdns"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("lcd"));
+    TEST_ASSERT_TRUE(mgr.hasExplicitSetting("mdns"));
+
+    JsonDocument restored;
+    TEST_ASSERT_FALSE(deserializeJson(restored, g_mockFiles["/config/features.json"]));
+    TEST_ASSERT_EQUAL(mgr.featureCount(), restored["features"].size());
+}
+
+void test_rfm_reset_save_failure_preserves_live_state() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.setUserEnabled("mdns", false));
+    TEST_ASSERT_TRUE(mgr.setUserEnabled("lcd", true));
+    TEST_ASSERT_TRUE(mgr.saveCurrentConfig());
+
+    ConfigStorage::getInstance().setSaveFailureCount(2);
+    TEST_ASSERT_FALSE(mgr.resetToDefaults());
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("mdns"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("lcd"));
 }
 
 // Test 2: 配置持久化与重载
@@ -205,6 +323,28 @@ void test_rfm_status_json() {
     JsonObject summary = doc["summary"];
     TEST_ASSERT_TRUE(summary["totalFlashKB"].as<uint32_t>() > 0);
     TEST_ASSERT_TRUE(summary["activeFlashKB"].as<uint32_t>() > 0);
+
+    // 低内存 Web 路由逐项输出必须与完整状态保持同一字段/激活语义。
+    for (size_t i = 0; i < mgr.featureCount(); ++i) {
+        JsonDocument itemDoc;
+        TEST_ASSERT_TRUE(mgr.getFeatureStatusJson(i, itemDoc.to<JsonObject>()));
+        TEST_ASSERT_EQUAL_STRING(features[i]["key"].as<const char*>(),
+                                 itemDoc["key"].as<const char*>());
+        TEST_ASSERT_EQUAL(features[i]["compiled"].as<bool>(), itemDoc["compiled"].as<bool>());
+        TEST_ASSERT_EQUAL(features[i]["userEnabled"].as<bool>(), itemDoc["userEnabled"].as<bool>());
+        TEST_ASSERT_EQUAL(features[i]["active"].as<bool>(), itemDoc["active"].as<bool>());
+    }
+    JsonDocument streamedSummary;
+    mgr.getStatusSummaryJson(streamedSummary.to<JsonObject>());
+    TEST_ASSERT_EQUAL(summary["totalFlashKB"].as<uint32_t>(),
+                      streamedSummary["totalFlashKB"].as<uint32_t>());
+    TEST_ASSERT_EQUAL(summary["activeFlashKB"].as<uint32_t>(),
+                      streamedSummary["activeFlashKB"].as<uint32_t>());
+    TEST_ASSERT_EQUAL(summary["activeRamB"].as<uint32_t>(),
+                      streamedSummary["activeRamB"].as<uint32_t>());
+    JsonDocument invalidItem;
+    TEST_ASSERT_FALSE(mgr.getFeatureStatusJson(mgr.featureCount(),
+                                               invalidItem.to<JsonObject>()));
 }
 
 // Test 9: 预算拒绝联动 - FeatureBudgetRegistry 拒绝的功能即使启用也不生效
@@ -251,6 +391,11 @@ void test_rfm_modbus_slave_removed() {
 
 void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_first_run_generates_defaults);
+    RUN_TEST(test_rfm_sparse_config_canonicalized_once);
+    RUN_TEST(test_rfm_sparse_config_defers_missing_mdns);
+    RUN_TEST(test_rfm_update_save_failure_restores_memory_snapshot);
+    RUN_TEST(test_rfm_reset_restores_complete_defaults);
+    RUN_TEST(test_rfm_reset_save_failure_preserves_live_state);
     RUN_TEST(test_rfm_persist_and_reload);
     RUN_TEST(test_rfm_dependency_cascade);
     RUN_TEST(test_rfm_corrupted_json_fallback);

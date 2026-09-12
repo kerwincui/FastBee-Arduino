@@ -45,6 +45,13 @@ public:
     // 初始化（加载配置、创建信号量）
     bool initialize();
 
+    // 内存保护：释放常驻 worker 栈和队列，保留规则配置；恢复到
+    // NORMAL 后重新创建 worker，失败时继续使用同步/跳过降级路径。
+    bool suspendWorkersForMemory();
+    bool resumeWorkersAfterMemory();
+    bool areWorkersSuspendedForMemory() const { return _workersSuspendedForMemory; }
+    bool isWorkerSuspensionPending() const { return _workerSuspensionPending; }
+
     // ========== CRUD ==========
     bool addRule(const PeriphExecRule& rule);
     bool addRule(const PeriphExecRule& rule, String& errorMsg);
@@ -251,6 +258,10 @@ public:
     // 包含执行规则、清理 _runningRuleIds、归还信号量、归还对象池等完整生命周期
     void executeWorkerJob(AsyncExecContext* ctx);
 
+    // 取消尚未被 Worker 取出的上下文（内存降级/关闭时使用）。归还
+    // 运行集合、任务槽和固定上下文池，避免暂停后永久耗尽异步配额。
+    void cancelWorkerJob(AsyncExecContext* ctx);
+
     // 执行规则的所有动作（供异步任务调用）
     // reportCountOut（可选）：回填本次实际上报的动作结果数量
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
@@ -388,6 +399,8 @@ private:
 
     // ========== 常驻 Worker 任务池（D 方案：消除运行期 xTaskCreate 碎片）==========
     std::unique_ptr<PeriphExecWorkerPool> _workerPool;
+    bool _workersSuspendedForMemory = false;
+    bool _workerSuspensionPending = false;
 
     // ========== 待上报数据缓存（MQTT 未连接时缓存，恢复后重试） ==========
     static const size_t MAX_PENDING_REPORTS = 5;           // 最大缓存条数

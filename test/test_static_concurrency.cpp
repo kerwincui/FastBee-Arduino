@@ -135,6 +135,55 @@ void test_small_asset_bypass_locked() {
 }
 
 /**
+ * @brief Compressed text assets must be selected first and retain logical MIME.
+ */
+void test_gzip_static_selection_locked() {
+    TestLog::testStart("Static Files: Gzip Selection And Headers Locked");
+
+    std::string src = readStaticConcurrencyFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!src.empty(), "WebHandlerContext.cpp must be readable");
+
+    const size_t serveStart = src.find("bool WebHandlerContext::serveStaticFile");
+    const size_t serveEnd = src.find("void WebHandlerContext::serveGzippedFile", serveStart);
+    TEST_ASSERT_TRUE_MESSAGE(serveStart != std::string::npos && serveEnd != std::string::npos,
+        "serveStaticFile implementation block must be discoverable");
+    const std::string block = src.substr(serveStart, serveEnd - serveStart);
+
+    const size_t normalizePos = block.find("const bool gzipPathRequested = path.endsWith(\".gz\")");
+    const size_t mimePos = block.find("getContentType(logicalPath)");
+    const size_t gzipOpenPos = block.find("LittleFS.open(gzipPath, \"r\")");
+    const size_t rawOpenPos = block.find("LittleFS.open(logicalPath, \"r\")");
+    TEST_ASSERT_TRUE_MESSAGE(normalizePos != std::string::npos && mimePos > normalizePos,
+        "Explicit .gz URLs must be normalized before MIME selection");
+    TEST_ASSERT_TRUE_MESSAGE(gzipOpenPos != std::string::npos && rawOpenPos > gzipOpenPos,
+        "HTML/JS/CSS must try the gzip representation before the optional custom-filesystem fallback");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("if (!openFile && !gzipPathRequested)") != std::string::npos,
+        "An explicit .gz request must not silently fall back to uncompressed bytes");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("response->addHeader(\"Content-Encoding\", \"gzip\")") != std::string::npos,
+        "Compressed responses must advertise Content-Encoding: gzip");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("new AsyncFileResponse(openFile, path, contentType, false)") != std::string::npos,
+        "AsyncFileResponse must receive the logical MIME selected for the request");
+
+    const size_t setupStart = src.find("void WebHandlerContext::sendBuiltinSetupPage");
+    const size_t setupEnd = src.find("// ============ 文件服务方法", setupStart);
+    TEST_ASSERT_TRUE_MESSAGE(setupStart != std::string::npos && setupEnd != std::string::npos,
+        "sendBuiltinSetupPage implementation block must be discoverable");
+    const std::string setupBlock = src.substr(setupStart, setupEnd - setupStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        setupBlock.find("serveStaticFile(request, \"/www/setup.html\")") != std::string::npos,
+        "The setup entry point must reuse gzip-aware static-file serving");
+    TEST_ASSERT_TRUE_MESSAGE(
+        setupBlock.find("request->send(LittleFS, \"/www/setup.html.gz\"") == std::string::npos,
+        "The setup entry point must not send explicit gzip bytes without negotiated headers");
+
+    TestLog::step("gzip-first release selection, optional custom-filesystem fallback, MIME and encoding contracts verified");
+    TestLog::testEnd(true);
+}
+
+/**
  * @brief 锁定核心入口被拒时返回自动重试 HTML 而非 JSON 白屏
  * 旧行为：主文档被限流/内存门控拒绝 → 浏览器停留在 503 JSON 白屏
  */
@@ -174,10 +223,10 @@ void test_busy_retry_page_locked() {
         "All core-entry rejection paths (2 mem gates + rate limit) must send the retry page");
     TestLog::step("Retry page wired into all core-entry rejection paths");
 
-    // 4) 核心入口识别：index.html / setup.html（含 gz 变体）
-    TEST_ASSERT_TRUE_MESSAGE(src.find("/www/index.html.gz") != std::string::npos &&
-                             src.find("/www/setup.html.gz") != std::string::npos,
-        "Core entry list must cover index.html and setup.html (incl. gz)");
+    // 4) 核心入口识别基于去除 .gz 后的逻辑路径，两个表示自动共用策略。
+    TEST_ASSERT_TRUE_MESSAGE(src.find("logicalPath == \"/www/index.html\"") != std::string::npos &&
+                             src.find("logicalPath == \"/www/setup.html\"") != std::string::npos,
+        "Core entry list must cover logical index.html and setup.html paths");
     TestLog::step("Core entry list verified");
 
     TestLog::testEnd(true);
@@ -268,6 +317,44 @@ void test_frontend_module_loader_backoff_locked() {
     TEST_ASSERT_TRUE_MESSAGE(main.find("setTimeout(applyCssHref, 600 * cssAttempts)") != std::string::npos,
         "CSS retry backoff must stay 600*attempts");
     TestLog::step("CSS 600*n backoff verified");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief A truncated/busy 200 response must not poison PageLoader's cache.
+ */
+void test_page_loader_response_integrity_locked() {
+    TestLog::testStart("Page Loader: Response Integrity Locked");
+
+    std::string loader = readStaticConcurrencyFile("web-src/js/page-loader.js");
+    TEST_ASSERT_TRUE_MESSAGE(!loader.empty(), "Failed to read web-src/js/page-loader.js");
+
+    size_t loadStart = loader.find("async loadPage(pageId, pageMapping)");
+    size_t catchStart = loader.find("} catch(e) {", loadStart);
+    size_t finallyStart = loader.find("} finally {", catchStart);
+    TEST_ASSERT_TRUE_MESSAGE(loadStart != std::string::npos &&
+                             catchStart != std::string::npos &&
+                             finallyStart != std::string::npos,
+        "PageLoader loadPage try/catch structure must remain detectable");
+
+    std::string loadBlock = loader.substr(loadStart, finallyStart - loadStart);
+    std::string catchBlock = loader.substr(catchStart, finallyStart - catchStart);
+    size_t rootCheck = loadBlock.find("wrapper.querySelector('#' + rootId)");
+    size_t appendPage = loadBlock.find("container.appendChild(wrapper.firstChild)");
+    size_t markLoaded = loadBlock.find("this._loadedPages[moduleName] = true");
+    TEST_ASSERT_TRUE_MESSAGE(rootCheck != std::string::npos &&
+                             appendPage > rootCheck && markLoaded > appendPage,
+        "Expected page root must be verified before DOM insertion and loaded caching");
+    TEST_ASSERT_TRUE_MESSAGE(loadBlock.find("Page response missing expected root") != std::string::npos,
+        "A 200 response without the expected page root must fail");
+    TEST_ASSERT_TRUE_MESSAGE(loadBlock.find("root.remove()") != std::string::npos &&
+                             loadBlock.find("wasActive") != std::string::npos,
+        "Successful retry must replace a previous fallback root");
+    TEST_ASSERT_TRUE_MESSAGE(catchBlock.find("delete this._loadedPages[moduleName]") != std::string::npos,
+        "Failure must clear the loaded cache entry so a later click retries");
+    TEST_ASSERT_TRUE_MESSAGE(catchBlock.find("this._loadedPages[moduleName] = true") == std::string::npos,
+        "Fallback UI must not be cached as a successfully loaded page");
 
     TestLog::testEnd(true);
 }
@@ -363,7 +450,7 @@ void test_limiter_watchdog_recovery() {
     TestLog::testEnd(true);
 }
 
-// 登录页资源清单（首次导航实测 ~12 个资源）
+// 登录页资源清单（当前三分片首屏）
 struct LoginResource {
     const char* path;
     bool compressible;   // html/js/css = true（占限流槽）
@@ -374,11 +461,9 @@ static const LoginResource LOGIN_PAGE_RESOURCES[] = {
     {"/index.html",         true,  40},   // 主文档（core entry）
     {"/assets/favicon.ico", false, 15},
     {"/assets/logo.png",    false, 15},
-    {"/chunk-1-core-a.js",  true,  60},
-    {"/chunk-2-core-b.js",  true,  60},
-    {"/chunk-3-i18n.js",    true,  60},
-    {"/chunk-8-state-1.js", true,  60},
-    {"/chunk-9-state-2.js", true,  60},
+    {"/chunk-1-core.js",  true,  60},
+    {"/chunk-2-app.js",   true,  60},
+    {"/chunk-3-state.js", true,  60},
     {"/css/main.css",       true,  50},
     // API 请求不经静态限流器（路由处理器直接响应），计入清单仅作突发量参考，
     // 模拟时直接放行
@@ -390,7 +475,7 @@ static constexpr int LOGIN_RESOURCE_COUNT =
     sizeof(LOGIN_PAGE_RESOURCES) / sizeof(LOGIN_PAGE_RESOURCES[0]);
 
 /**
- * @brief 模拟登录页 ~12 资源突发：3 槽 + 小资源豁免下全部可完成，无死锁
+ * @brief 模拟登录页资源突发：3 槽 + 小资源豁免下全部可完成，无死锁
  * 修复前：上限 1 + Connection: close，6 并发仅 1 成功，其余 RST/超时/503
  * 上限 2 仍导致大部分请求被 503 → 串行重试，页面加载 >5s
  */
@@ -463,31 +548,32 @@ void test_login_page_burst_completes() {
 }
 
 /**
- * @brief 串行链长度对比：上限 1 → 3 后，可压缩资源的排队批次大幅减少
+ * @brief 串行链长度对比：上限 1 -> 3 后，可压缩资源的排队批次大幅减少
  */
 void test_serial_chain_halved() {
-    TestLog::testStart("Serial Chain: Halved by Cap 1 -> 2");
+    TestLog::testStart("Serial Chain: Halved by Cap 1 -> 3");
 
     // 登录页可压缩资源数（html + js + css，见 LOGIN_PAGE_RESOURCES）
     int compressibleCount = 0;
     for (const auto& res : LOGIN_PAGE_RESOURCES) {
         if (res.compressible) compressibleCount++;
     }
-    TEST_ASSERT_EQUAL(7, compressibleCount);  // 1 html + 5 chunk + 1 css
+    TEST_ASSERT_EQUAL(5, compressibleCount);  // 1 html + 3 chunks + 1 css
 
-    // 向上取整的排队批次：旧上限 1 vs 新上限 2
-    int batchesOld = compressibleCount;                    // cap=1
-    int batchesNew = (compressibleCount + 1) / 2;          // cap=2
-    TEST_ASSERT_TRUE_MESSAGE(batchesNew * 2 <= batchesOld + 1,
+    // 向上取整的排队批次：旧上限 1 vs 当前上限 3
+    constexpr int currentCap = 3;
+    int batchesOld = compressibleCount;
+    int batchesNew = (compressibleCount + currentCap - 1) / currentCap;
+    TEST_ASSERT_TRUE_MESSAGE(batchesNew <= (batchesOld + 1) / 2,
         "New cap must at least halve the serial chain length");
-    TestLog::step("Serial batches: 7 (old cap=1) -> 4 (new cap=2)");
+    TestLog::step("Serial batches: 5 (old cap=1) -> 2 (new cap=3)");
 
-    // 叠加前端提速：5 个 boot chunk 的间隔开销由 80ms*4+100ms 降到 30ms*4+20ms
+    // 叠加前端提速：旧 5 分片到当前 3 分片，间隔开销进一步降低。
     unsigned long oldChunkOverhead = 100 + 80 * 4;   // 启动延迟 + 4 个间隔
-    unsigned long newChunkOverhead = 20 + 30 * 4;
+    unsigned long newChunkOverhead = 20 + 30 * 2;
     TEST_ASSERT_LESS_THAN(oldChunkOverhead, (int)newChunkOverhead);
-    TEST_ASSERT_LESS_OR_EQUAL(150, (int)newChunkOverhead);
-    TestLog::step("Chunk overhead: 420ms -> 140ms");
+    TEST_ASSERT_LESS_OR_EQUAL(100, (int)newChunkOverhead);
+    TestLog::step("Chunk overhead: 420ms -> 80ms");
 
     // 重试总预算：新退避 300/1200/2700 总和 4200ms，仍显著小于旧的 7000ms
     unsigned long newBackoffTotal = 300 + 1200 + 2700;
@@ -506,9 +592,11 @@ void test_static_concurrency_group() {
     // 源码常量锁定
     RUN_TEST(test_static_limiter_constants_locked);
     RUN_TEST(test_small_asset_bypass_locked);
+    RUN_TEST(test_gzip_static_selection_locked);
     RUN_TEST(test_busy_retry_page_locked);
     RUN_TEST(test_frontend_loader_timings_locked);
     RUN_TEST(test_frontend_module_loader_backoff_locked);
+    RUN_TEST(test_page_loader_response_integrity_locked);
 
     // 限流器行为模拟
     RUN_TEST(test_limiter_concurrency_behavior);

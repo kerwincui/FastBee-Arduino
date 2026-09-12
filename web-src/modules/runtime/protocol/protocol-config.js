@@ -100,6 +100,9 @@
                     return this._protocolConfig;
                 })
                 .catch(err => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) {
+                        return null;
+                    }
                     console.error('加载协议配置失败:', err);
                     throw err;
                 });
@@ -261,7 +264,24 @@
                         this._protocolConfig = null;
                         if (res.data && res.data.mqttHotRestart) {
                             // 后端热重建 MQTT（不重启设备），连接进度由状态轮询展示
+                            const pendingReason = res.data.mqttStatusReason || 'MQTT 配置已应用，正在后台连接';
                             Notification.success('配置已应用，MQTT 正在重新连接', '通信协议');
+                            const mqttResult = document.getElementById('mqtt-test-result');
+                            if (mqttResult) {
+                                mqttResult.textContent = pendingReason;
+                                mqttResult.style.color = '#909399';
+                            }
+                            // The hot restart is consumed by loopTask after
+                            // this response. Trigger an early status read so a
+                            // known DNS/auth/memory failure reaches the same
+                            // reason field without waiting for the normal poll.
+                            if (typeof this._loadMqttStatus === 'function') {
+                                setTimeout(() => this._loadMqttStatus(), 1200);
+                            }
+                            if (res.data.mqttLastErrorMessage && mqttResult) {
+                                mqttResult.textContent = res.data.mqttLastErrorMessage;
+                                mqttResult.style.color = '#e6a23c';
+                            }
                         } else if (res.data && res.data.mqttDisconnected) {
                             Notification.success('MQTT已断开连接', '通信协议');
                         } else if (res.data && typeof res.data.mqttReconnected !== 'undefined') {

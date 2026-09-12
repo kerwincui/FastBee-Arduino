@@ -53,11 +53,9 @@ function generateManifest() {
         '/',
         '/index.html',
         '/css/main.css',
-        '/js/chunk-1-core-a.js',
-        '/js/chunk-2-core-b.js',
-        '/js/chunk-3-i18n-engine.js',
-        '/js/chunk-8-state-1.js',
-        '/js/chunk-9-state-2.js',
+        '/js/chunk-1-core.js',
+        '/js/chunk-2-app.js',
+        '/js/chunk-3-state.js',
         '/assets/logo.png'
     ]);
 

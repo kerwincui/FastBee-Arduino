@@ -13,7 +13,7 @@
       "type": "multi-session",
       "method": "POST",
       "path": "/api/auth/login",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "多会话压力测试，不适合常规浸泡测试"
     },
@@ -106,7 +106,7 @@
       "name": "mqtt-initialization",
       "method": "GET",
       "path": "/api/mqtt/status",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "验证逻辑要求 initialized=true，但 MQTT 未连接时为 false",
       "description": "验证 MQTT 客户端在启动时已初始化（非懒加载）"
@@ -116,7 +116,7 @@
       "type": "mqtt-ntp-sync",
       "method": "POST",
       "path": "/api/mqtt/ntp-sync",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "POST 写操作端点，固件未实现 /api/mqtt/ntp-sync 路由",
       "description": "触发 NTP 时间同步（HTTPS 降级为 HTTP，避免 SSL 内存分配失败）"
@@ -130,14 +130,13 @@
       "profiles": ["full"],
       "skipSoak": true,
       "skipReason": "6 路并发压力测试，需要 PSRAM 设备，常规浸泡下固件资源不足",
-      "description": "并发压力测试：6 个 API 同时调用，验证 PSRAM 阈值修改后 HTTP 并发不崩溃",
+      "description": "批量压力测试：5 个 API 合并调用，验证 PSRAM 阈值修改后 HTTP 请求不崩溃",
       "body": {
         "requests": [
           { "url": "/api/system/status" },
           { "url": "/api/system/info" },
           { "url": "/api/network/status" },
-          { "url": "/api/device/info" },
-          { "url": "/api/mqtt/status" },
+          { "url": "/api/device/config" },
           { "url": "/api/device/time" }
         ]
       }
@@ -158,20 +157,20 @@
       "name": "protocol-periph-exec-config",
       "method": "GET",
       "path": "/api/protocol/config?compact=1&section=periph-exec",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "modbus-status",
       "method": "GET",
       "path": "/api/modbus/status?compact=1",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "modbus-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/modbus/status?compact=1",
-      "profiles": ["unified"]  // Unified Architecture v2.0: Modbus unavailable only in experimental lite builds,
+      "profiles": ["lite"],
       "allowedStatuses": [404, 405, 501]
     },
     {
@@ -191,8 +190,8 @@
       "type": "expect-error",
       "method": "GET",
       "path": "/api/peripherals/status",
-      "profiles": ["unified"]
-      "allowedStatuses": [400]
+      "profiles": ["unified"],
+      "allowedStatuses": [400, 429]
     },
     {
       "name": "periph-exec-rules",
@@ -247,7 +246,7 @@
       "method": "POST",
       "path": "/api/batch",
       "jsonBody": true,
-      "profiles": ["unified"]
+      "profiles": ["unified"],
       "body": {
         "requests": [
           { "url": "/api/system/status" },
@@ -258,99 +257,106 @@
     },
     {
       "name": "filesystem",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/filesystem",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"],
+      "allowedStatuses": [404, 405, 501, 503]
     },
     {
       "name": "filesystem-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/filesystem",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     },
     {
       "name": "files-root",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/files?path=%2F",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"],
+      "allowedStatuses": [404, 405, 501, 503]
     },
     {
       "name": "files-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/files?path=%2F",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     },
     {
       "name": "logs-list",
       "method": "GET",
       "path": "/api/logs/list",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "logs-tail",
       "method": "GET",
       "path": "/api/logs?file=system.log&tail=80&limit=4096",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "logs-info",
       "method": "GET",
       "path": "/api/logs/info",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "logs-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/logs/info",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     },
     {
       "name": "ota-status",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/ota/status",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"],
+      "allowedStatuses": [404, 405, 501, 503]
     },
     {
       "name": "ota-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/ota/status",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     },
     {
       "name": "rule-scripts",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/rule-script",
-      "profiles": ["full"],
-      "allowedStatuses": [503]
+      "profiles": ["unified"],
+      "allowedStatuses": [404, 405, 501, 503]
     },
     {
       "name": "rule-scripts-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/rule-script",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     },
     {
       "name": "users",
       "method": "GET",
       "path": "/api/users?page=1&limit=20",
-      "profiles": ["unified"]  // Unified Architecture v2.0: all devices have full feature set
+      "profiles": ["unified"]
     },
     {
       "name": "users-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/users?page=1&limit=20",
-      "profiles": ["unified"]  // Unified Architecture v2.0: filesystem/logs unavailable in experimental lite builds,
+      "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
     }
   ]

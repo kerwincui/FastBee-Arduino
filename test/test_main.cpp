@@ -82,7 +82,9 @@ void setUp() {
 void tearDown() {
     // 每个测试后的清理
     Serial.println("[TEST] Tearing down test environment...");
+#ifndef UNIT_TEST
     delay(100);  // 给系统一些时间稳定
+#endif
 }
 
 // 测试主函数

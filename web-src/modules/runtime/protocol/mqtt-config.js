@@ -230,8 +230,10 @@
             const btn = document.querySelector('#mqtt-form [data-action="refreshMqttStatus"]');
             const resultEl = document.getElementById('mqtt-test-result');
 
-            // MQTT 已禁用时，直接显示“未连接”，不调用后端 API
-            // 避免后端返回 connected=true（客户端可能仍在运行的窗口期）
+            // MQTT 已禁用时不启动轮询或自动重连，但仍查询一次状态。
+            // HealthMonitor 可能把 enabled=false 作为内存保护动作持久化；
+            // 完全跳过 API 会把“内存自动禁用”误显示成普通的“MQTT已禁用”，
+            // 用户也就看不到切换 mqtt/释放外设后的恢复建议。
             var enabledCheckbox = document.getElementById('mqtt-enabled');
             if (enabledCheckbox && !enabledCheckbox.checked) {
                 if (btn) { btn.disabled = false; btn.textContent = '刷新状态'; }
@@ -242,6 +244,18 @@
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
                     badge.textContent = '未连接';
                 }
+                this._setMqttStatusReason('MQTT 已禁用');
+                this._loadMqttStatus();
+                setTimeout(() => {
+                    if (!resultEl) return;
+                    const currentBadge = document.getElementById('mqtt-status-badge');
+                    const currentReason = document.getElementById('mqtt-status-reason');
+                    if (currentBadge && currentBadge.textContent === '内存保护') {
+                        resultEl.textContent = currentReason && currentReason.textContent
+                            ? currentReason.textContent : '设备内存紧张，MQTT 已自动禁用';
+                        resultEl.style.color = '#e6a23c';
+                    }
+                }, 800);
                 setTimeout(() => { if (resultEl) resultEl.textContent = ''; }, 3000);
                 return;
             }
@@ -299,12 +313,113 @@
         _mqttErrorCodeToText(code) {
             const map = {
                 '-5': 'MQTTS 功能未启用（请到功能配置页启用）',
-                '-4': 'MQTT_CONNECTION_TIMEOUT', '-3': 'MQTT_CONNECTION_LOST',
-                '-2': 'MQTT_CONNECT_FAILED', '-1': 'MQTT_DISCONNECTED',
-                '1': 'MQTT_BAD_PROTOCOL', '2': 'MQTT_BAD_CLIENT_ID',
-                '3': 'MQTT_UNAVAILABLE', '4': 'MQTT_BAD_CREDENTIALS', '5': 'MQTT_UNAUTHORIZED'
+                '-11': 'MQTT_CLIENT_INIT_FAILED（可能是内存不足或配置无效）',
+                '-12': 'MQTT 配置未加载或格式无效，请检查网络配置',
+                '-13': '设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用',
+                '-14': '设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连',
+                '-4': '连接 MQTT Broker 超时，请检查地址和端口',
+                '-3': 'MQTT 连接已断开，设备正在重连',
+                '-2': '无法连接 MQTT Broker，请检查 DNS、网络和端口',
+                '-1': 'MQTT 客户端当前未连接',
+                '1': 'Broker 拒绝：协议版本不支持',
+                '2': 'Broker 拒绝：客户端 ID 无效或重复',
+                '3': 'Broker 当前不可用，请稍后重试',
+                '4': 'Broker 拒绝：用户名或密码错误',
+                '5': 'Broker 拒绝：客户端未授权'
             };
             return map[String(code)] || ('Error ' + code);
+        },
+
+        _setMqttStatusReason(reason) {
+            const el = document.getElementById('mqtt-status-reason');
+            if (!el) return;
+            const text = reason === undefined || reason === null || String(reason).trim() === ''
+                ? '--' : String(reason);
+            el.textContent = text;
+            el.title = text === '--' ? '' : text;
+        },
+
+        _setMqttFailureStatus(reason, badgeText) {
+            const text = reason === undefined || reason === null || String(reason).trim() === ''
+                ? 'MQTT 重连失败，请稍后重试' : String(reason);
+            this._setMqttStatusReason(text);
+            const badge = document.getElementById('mqtt-status-badge');
+            if (badge) {
+                badge.className = 'mqtt-status-badge mqtt-status-offline';
+                badge.textContent = badgeText || '连接失败';
+                badge.title = text;
+            }
+        },
+
+        _getMqttStatusFailureReason(data) {
+            const sources = [];
+            const addSource = (value, depth) => {
+                if (!value || typeof value !== 'object' || depth > 2 || sources.indexOf(value) !== -1) return;
+                sources.push(value);
+                // HTTP failures from request-governor are shaped as
+                // {status, data: {message/error/...}}; API envelopes may nest
+                // an error object one level further. Keep the traversal bounded.
+                addSource(value.data, depth + 1);
+                addSource(value.error, depth + 1);
+            };
+            addSource(data, 0);
+
+            const findText = (fields) => {
+                for (let i = 0; i < sources.length; i++) {
+                    const source = sources[i];
+                    for (let j = 0; j < fields.length; j++) {
+                        const value = source[fields[j]];
+                        if (typeof value === 'string' && value.trim() !== '') return value;
+                    }
+                }
+                return '';
+            };
+            const httpStatus = data && Number(data.status);
+            // Prefer structured backend diagnostics even when an Error wrapper
+            // also carries a generic top-level message.
+            const structured = findText(['statusReason', 'lastErrorMessage', 'errorMessage']);
+            if (structured) return structured;
+
+            // Fetch and AbortController errors otherwise leak browser-specific
+            // English strings ("Failed to fetch", "signal is aborted...")
+            // into the device UI.  Keep page-navigation aborts silent in the
+            // caller, but make genuine timeout/network failures actionable.
+            const errorName = data && String(data.name || '');
+            const errorText = data && typeof data.message === 'string' ? data.message : '';
+            if (errorName === 'AbortError' && data && data._requestTimeout) {
+                return '状态接口请求超时，请检查设备响应或稍后重试';
+            }
+            if (errorName === 'TypeError' || /failed to fetch|networkerror|connection reset|网络错误|网络连接/i.test(errorText)) {
+                return '无法连接设备，请检查网络连接';
+            }
+
+            // The firmware deliberately keeps the 401/503 response body small
+            // (`error: "Unauthorized"`, or a short memory-guard message).  Do
+            // not expose those implementation strings directly in the MQTT
+            // panel; turn them into an actionable explanation instead.
+            if (httpStatus === 401) return '登录已过期，请重新登录';
+            if (httpStatus === 403) return '请求被拒绝，请检查当前用户权限';
+            if (httpStatus === 503) {
+                const httpText = findText(['message', 'error', 'reason']).toLowerCase();
+                if (/low\s+memory|critical\s+memory|memory\s+pressure|insufficient\s+memory|内存紧张|内存压力|低内存|资源紧张/.test(httpText)) {
+                    return '设备当前内存紧张，已暂时拒绝此操作，请稍后重试';
+                }
+            }
+            const explicitError = findText(['error']);
+            if (explicitError) return explicitError;
+            const message = findText(['message', 'reason']);
+            if (message) return message;
+            for (let i = 0; i < sources.length; i++) {
+                const source = sources[i];
+                if (source.lastError !== undefined && source.lastError !== null && Number(source.lastError) !== 0) {
+                    return this._mqttErrorCodeToText(source.lastError);
+                }
+            }
+            if (httpStatus === 503) return '服务暂时不可用，请稍后重试';
+            // Preserve an otherwise useful HTTP diagnostic when the server did
+            // not provide a body, while leaving ordinary status payloads quiet.
+            if (httpStatus >= 400) return 'HTTP ' + httpStatus;
+            return '';
         },
 
         _clearMqttDeferredTestTimer() {
@@ -418,6 +533,7 @@
                 .then(function(res) {
                     if (!res || !res.success) {
                         self._mqttApiFailCount++;
+                        self._setMqttStatusReason(self._getMqttStatusFailureReason(res) || '状态接口返回失败');
                         self._handleMqttApiFail();
                         // 快速重试：首次失败后3秒再试一次（避免与其他请求叠加）
                         if (self._mqttApiFailCount === 1) {
@@ -432,7 +548,34 @@
                     self._updateMqttStatusUI(res.data || {});
                 })
                 .catch(function(err) {
+                    // Navigation/unmount cancellation is expected and must not
+                    // turn the MQTT badge into a false connection failure.
+                    if (err && (
+                        err._pageAborted ||
+                        (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err))
+                    )) return;
+                    // Preserve diagnostics from request-governor handled HTTP
+                    // failures, but do not replace them with a generic message.
+                    const diagnostic = self._getMqttStatusFailureReason(err);
+                    if (diagnostic) self._setMqttStatusReason(diagnostic);
+                    if (err && err._handled) {
+                        // A handled 401/403 can still leave the old green
+                        // badge visible when another page request triggered
+                        // the global session handler.  Make the MQTT panel
+                        // self-consistent immediately while the login overlay
+                        // is being shown.
+                        self._mqttApiFailCount++;
+                        const httpStatus = Number(err.status || 0);
+                        const badgeText = httpStatus === 401 ? '登录已过期'
+                            : (httpStatus === 403 ? '访问受限' : '状态不可用');
+                        self._setMqttFailureStatus(
+                            diagnostic || 'MQTT 状态接口请求失败',
+                            badgeText
+                        );
+                        return;
+                    }
                     self._mqttApiFailCount++;
+                    self._setMqttStatusReason(diagnostic || '状态接口不可用，请检查设备连接');
                     self._handleMqttApiFail();
                     // 快速重试：首次失败后3秒再试一次
                     if (self._mqttApiFailCount === 1) {
@@ -483,13 +626,24 @@
             const serverEl = document.getElementById('mqtt-status-server');
             const clientEl = document.getElementById('mqtt-status-clientid');
             const reconnEl = document.getElementById('mqtt-status-reconnects');
+            const reasonEl = document.getElementById('mqtt-status-reason');
+            if (reasonEl) {
+                const reason = this._getMqttStatusFailureReason(d);
+                reasonEl.textContent = reason || '--';
+                reasonEl.title = reason || '';
+            }
             if (badge) {
                 // connecting: 后端确认客户端处于自动重连状态（非 stopped、非 connected、autoReconnect=true）
                 // 注意：autoStartStarted 仅表示 restartMQTTDeferred() 已被调用，不等同于 connecting
                 // 如果后端没有返回 connecting 字段（如 MQTT 对象不存在），则只根据后端实际状态判断
                 const connecting = !!(d.connecting);
                 const autoStarted = !!(d.autoStartStarted);  // 后端已发起自动启动
-                const hasError = d.lastError && d.lastError !== 0;
+                const errorCode = d.lastErrorCode !== undefined && d.lastErrorCode !== null
+                    ? d.lastErrorCode : d.lastError;
+                const errorClass = String(d.lastErrorClass || '');
+                const hasError = (errorCode !== undefined && errorCode !== null && Number(errorCode) !== 0)
+                    || (errorClass && errorClass !== 'none' && errorClass !== 'config')
+                    || d.tlsMemoryFailure === true;
 
                 // 自动重连：首次检测到 MQTT 已启用且 autoReconnect 为 true 但未连接时，触发非阻塞 deferred 重连
                 // ⚠️ 绝对不能加 !connecting 条件！autoStartStarted/connecting=true 仅表示
@@ -501,7 +655,40 @@
                     if (!d.connected) {
                         var self = this;
                         if (typeof apiPostSilent === 'function') {
-                            apiPostSilent('/api/mqtt/reconnect', {}).then(function() {
+                            apiPostSilent('/api/mqtt/reconnect', {}).then(function(reconnectRes) {
+                                const reconnectData = reconnectRes && reconnectRes.data
+                                    ? reconnectRes.data : {};
+                                // The firmware reports some local guard failures
+                                // as HTTP 200 with `reconnecting:false` so the
+                                // caller can remain non-blocking.  Handle that
+                                // envelope explicitly; otherwise the UI would
+                                // keep polling and claim it is still connecting.
+                                if (!reconnectRes || reconnectRes.success === false) {
+                                    self._setMqttFailureStatus(
+                                        self._getMqttStatusFailureReason(reconnectRes) || 'MQTT 重连请求失败，请稍后重试'
+                                    );
+                                    return;
+                                }
+                                if (reconnectData.mqttDisabled) {
+                                    self._setMqttFailureStatus('MQTT 已禁用', '未连接');
+                                    return;
+                                }
+                                if (reconnectData.autoReconnectDisabled) {
+                                    self._setMqttFailureStatus('自动重连已关闭', '未连接');
+                                    return;
+                                }
+                                if (reconnectData.rebooting) {
+                                    self._setMqttStatusReason('设备将重启以重新连接 MQTTS');
+                                    return;
+                                }
+                                if (reconnectData.reconnecting === false && reconnectData.connected !== true) {
+                                    var immediateReason = self._getMqttStatusFailureReason(reconnectRes);
+                                    if (/insufficient\s+memory|low\s+memory|内存紧张|内存压力|低内存/i.test(immediateReason)) {
+                                        immediateReason = '设备当前内存紧张，MQTT 重连已跳过，请切换 mqtt 或稍后重试';
+                                    }
+                                    self._setMqttFailureStatus(immediateReason || 'MQTT 重连失败，请稍后重试');
+                                    return;
+                                }
                                 // deferred 重连已启动，用跟踪的定时器轮询状态
                                 var pollCount = 0;
                                 var maxPolls = 6; // 最多 6 次，覆盖 30s
@@ -520,7 +707,19 @@
                                     }
                                 }
                                 self._mqttAutoReconnPollTimer = setTimeout(pollStatus, 3000);
-                            }).catch(function(){});
+                            }).catch(function(err) {
+                                // Reconnect is intentionally silent at the
+                                // notification layer, but its failure still
+                                // belongs in the MQTT status panel.  Otherwise
+                                // a 401/503/low-memory response is swallowed
+                                // until (or unless) the next status poll.
+                                if (err && (
+                                    err._pageAborted ||
+                                    (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err))
+                                )) return;
+                                var diagnostic = self._getMqttStatusFailureReason(err);
+                                self._setMqttFailureStatus(diagnostic || 'MQTT 重连请求失败，请稍后重试');
+                            });
                         }
                     }
                 }
@@ -531,6 +730,29 @@
                     badge.textContent = '测试成功';
                     this._mqttConnectingStartTime = 0;
                     this._mqttTestConnectedDetected = true;  // 通知 deferred poll 停止
+                } else if (d.disabledByMemory === true) {
+                    // HealthMonitor intentionally persists this state across
+                    // reboot. Keep it distinct from a normal user-disabled
+                    // MQTT setting and show the recovery reason prominently.
+                    const memoryReason = this._getMqttStatusFailureReason(d) ||
+                        '设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用';
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '内存保护';
+                    badge.title = memoryReason;
+                    this._setMqttStatusReason(memoryReason);
+                    this._mqttConnectingStartTime = 0;
+                } else if (d.stoppedByMemory === true || Number(errorCode) === -14) {
+                    // Severe pressure can stop MQTT temporarily before the
+                    // persistent-disable threshold. Keep this distinct from
+                    // a user-selected stop and explain that recovery is
+                    // automatic once the heap is healthy.
+                    const memoryReason = this._getMqttStatusFailureReason(d) ||
+                        '设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连';
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '内存保护';
+                    badge.title = memoryReason;
+                    this._setMqttStatusReason(memoryReason);
+                    this._mqttConnectingStartTime = 0;
                 } else if (!d.enabled) {
                     // MQTT 已禁用：优先显示“未连接”，不检查 connected 字段
                     // 即使后端客户端仍在运行（重启前窗口期），前端也必须显示禁用状态
@@ -541,9 +763,11 @@
                     badge.className = 'mqtt-status-badge mqtt-status-online';
                     badge.textContent = '已连接';
                     this._mqttConnectingStartTime = 0; // 重置超时计时
-                } else if (d.internetAvailable === false) {
-                    // 网络本身不可用时（如 4G 失败回退 AP、以太网断线），
-                    // 显示“网络未连接”而非泛泛的“未连接”，帮助用户定位根因
+                } else if (d.networkConnected === false ||
+                           (d.networkConnected === undefined && d.internetAvailable === false)) {
+                    // 只有底层 STA/以太网确实断开时才显示“网络未连接”。
+                    // internetAvailable 可能只是 DNS/外网探测滞后；若 STA
+                    // 仍在线，MQTT 可能正在连接 Broker，不能误导用户。
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
                     badge.textContent = '网络未连接';
                     this._mqttConnectingStartTime = 0;
@@ -562,14 +786,22 @@
                     }
                 } else if (connecting && hasError) {
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    if (d.lastError === -5) {
+                    if (Number(errorCode) === -5) {
                         // MQTTS 功能门控拒绝：明确告知原因与解决路径
                         badge.textContent = 'MQTTS 功能未启用';
                         badge.title = '请先到「功能配置」页启用「MQTTS 加密传输」（TLS 需约 42KB 内存）';
                     } else {
                         badge.textContent = '连接失败';
-                        badge.title = '';
+                        badge.title = this._getMqttStatusFailureReason(d) || '';
                     }
+                    this._mqttConnectingStartTime = 0;
+                } else if (hasError) {
+                    // autoReconnect may be disabled, or the runtime may have
+                    // stopped after a memory/TLS failure.  Keep the reason
+                    // visible instead of reducing a known failure to "未连接".
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = Number(errorCode) === -5 ? 'MQTTS 功能未启用' : '连接失败';
+                    badge.title = this._getMqttStatusFailureReason(d) || '';
                     this._mqttConnectingStartTime = 0;
                 } else if (!d.initialized) {
                     badge.className = 'mqtt-status-badge mqtt-status-connecting';
@@ -595,6 +827,7 @@
             const badge = document.getElementById('mqtt-status-badge');
             const serverEl = document.getElementById('mqtt-status-server');
             const clientEl = document.getElementById('mqtt-status-clientid');
+            this._setMqttStatusReason(connected ? '' : '未连接');
             if (badge) {
                 if (connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
                 else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }

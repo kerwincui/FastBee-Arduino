@@ -56,7 +56,7 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
   test('PERF-004: 各页面加载时间基准 < 4秒', async ({ authPage }) => {
     const menuPages = [
       'dashboard', 'device', 'network', 'peripheral', 'periph-exec',
-      'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'
+      'protocol', 'device-control', 'rule-script', 'logs', 'users'
     ];
     for (const menuPage of menuPages) {
       const start = Date.now();
@@ -269,14 +269,6 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
     console.log(`用户列表渲染: ${usersRender}ms`);
     expect(usersRender).toBeLessThan(2000);
     await expect(authPage.locator('#app-container')).toBeVisible();
-
-    // 文件管理渲染
-    await authPage.click('.menu-item[data-page="data"]');
-    const start3 = Date.now();
-    await authPage.waitForLoadState('networkidle');
-    const filesRender = Date.now() - start3;
-    console.log(`文件管理渲染: ${filesRender}ms`);
-    expect(filesRender).toBeLessThan(2000);
   });
 
   test('PERF-014: Tab标签切换流畅', async ({ authPage }) => {

@@ -128,7 +128,6 @@ class AsyncFileResponse : public AsyncAbstractResponse {
 
 private:
   File _content;
-  uint8_t _fillZeroRetries{0};  // FastBee patch: transient zero-read retry budget
   void _setContentTypeFromPath(const String &path);
 
 public:

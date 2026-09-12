@@ -4,10 +4,13 @@
  * Steps:
  * 1. Remove old .gz files.
  * 2. Compress all .html/.js/.css files into fresh .gz files.
- * 3. Delete uncompressed originals (only .gz + assets/ remain).
+ * 3. Delete uncompressed HTML/JS/CSS publish copies.
+ * 4. Stage only .gz representations of HTML/JS/CSS for LittleFS.
  *
  * Usage:
- *   node scripts/gzip-www.js
+ *   node scripts/gzip-www.js                         # build/stage only
+ *   node scripts/gzip-www.js --upload --env=esp32-F4R0
+ *   node scripts/gzip-www.js --upload --no-monitor --env=esp32-F4R0
  */
 
 const fs = require('fs');
@@ -122,6 +125,26 @@ function forceRemovePath(targetPath) {
 
 function isCompressiblePath(relPath) {
     return COMPRESS_EXTENSIONS.has(path.extname(relPath).toLowerCase());
+}
+
+function findUncompressedTextAssets(rootDir) {
+    const files = [];
+    walkDir(rootDir, (filePath) => {
+        if (filePath.endsWith('.gz')) return;
+        if (!COMPRESS_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return;
+        files.push(normalizeRelativePath(path.relative(rootDir, filePath)));
+    });
+    return files.sort();
+}
+
+function assertGzipOnlyTree(rootDir, label) {
+    if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) {
+        throw new Error(`${label} directory does not exist: ${rootDir}`);
+    }
+    const rawFiles = findUncompressedTextAssets(rootDir);
+    if (rawFiles.length > 0) {
+        throw new Error(`${label} contains uncompressed HTML/JS/CSS: ${rawFiles.join(', ')}`);
+    }
 }
 
 function shouldTouchWwwFile(filePath) {
@@ -272,22 +295,16 @@ function stagePublishArtifacts(buildResult) {
         const compressedPath = `${sourcePath}.gz`;
         const stageRelPath = `www/${relPath}`;
 
-        const ext = path.extname(relPath).toLowerCase();
-        
-        // For JS/CSS: include BOTH uncompressed and gzipped versions!
-        if (ext === '.js' || ext === '.css') {
-            if (fs.existsSync(sourcePath)) {
-                copyFileToStage(sourcePath, stageRelPath, stageState);
+        // Release LittleFS images carry one representation of text assets.
+        // The server supplies the logical MIME type and Content-Encoding.
+        if (isCompressiblePath(relPath)) {
+            const stagedCompressedPath = `${stageRelPath}.gz`;
+            if (!fs.existsSync(compressedPath)) {
+                stageState.missing.push(stagedCompressedPath);
+                return;
             }
-            if (fs.existsSync(compressedPath)) {
-                copyFileToStage(compressedPath, `${stageRelPath}.gz`, stageState);
-            }
-            return;
-        }
-        
-        // For HTML and other compressible files: prefer gzipped version
-        if (isCompressiblePath(relPath) && fs.existsSync(compressedPath)) {
-            copyFileToStage(compressedPath, `${stageRelPath}.gz`, stageState);
+            copyFileToStage(compressedPath, stagedCompressedPath, stageState);
+            console.log(`  [gzip-only] ${relPath} (${stageState.totalBytes} bytes total)`);
             return;
         }
         if (fs.existsSync(sourcePath)) {
@@ -327,6 +344,8 @@ function stagePublishArtifacts(buildResult) {
         copyFileToStage(sourcePath, entry, stageState);
     });
 
+    assertGzipOnlyTree(STAGING_WWW_DIR, 'LittleFS staging www');
+
     console.log(`  Staging data dir: ${STAGING_DATA_DIR}`);
     console.log(`  Staged files: ${stageState.fileCount}`);
     console.log(`  Staged size: ${stageState.totalBytes} bytes`);
@@ -335,8 +354,9 @@ function stagePublishArtifacts(buildResult) {
         stageState.transformed.forEach((item) => console.log(`    - ${item}`));
     }
     if (stageState.missing.length > 0) {
-        console.log(`  Missing staged source(s): ${stageState.missing.length}`);
-        stageState.missing.forEach((item) => console.log(`    Skip: ${item}`));
+        console.error(`  Missing required staged source(s): ${stageState.missing.length}`);
+        stageState.missing.forEach((item) => console.error(`    Missing: ${item}`));
+        throw new Error('LittleFS staging is incomplete; required publish artifacts are missing');
     }
 
     return {
@@ -418,22 +438,11 @@ function compressAllFiles() {
 }
 
 function deleteOriginals() {
-    const ASSETS_DIR = path.join(WWW_DIR, 'assets');
     console.log('\n[Step 3] Cleaning up uncompressed originals...');
 
     let deleted = 0;
     walkDir(WWW_DIR, (filePath) => {
-        if (filePath.startsWith(ASSETS_DIR + path.sep) || filePath.startsWith(ASSETS_DIR)) return;
         const ext = path.extname(filePath).toLowerCase();
-        
-        // Keep uncompressed .js and .css files for browser compatibility!
-        // Only delete .html originals since browsers handle them differently.
-        if (ext === '.js' || ext === '.css') {
-            console.log(`  Skipped delete (kept uncompressed): ${path.relative(WWW_DIR, filePath)}`);
-            return;
-        }
-        
-        if (ext !== '.html') return;
         if (!COMPRESS_EXTENSIONS.has(ext)) return;
         if (!shouldTouchWwwFile(filePath)) return;
         if (fs.existsSync(filePath + '.gz')) {
@@ -446,7 +455,8 @@ function deleteOriginals() {
         }
     });
 
-    console.log(`  Deleted ${deleted} uncompressed originals`);
+    assertGzipOnlyTree(WWW_DIR, 'data/www');
+    console.log(`  Deleted ${deleted} uncompressed HTML/JS/CSS publish copies`);
 }
 
 function getActiveEnvFromPlatformioIni(targetEnvOverride = null) {
@@ -456,7 +466,7 @@ function getActiveEnvFromPlatformioIni(targetEnvOverride = null) {
     }
     const content = fs.readFileSync(iniPath, 'utf-8');
     const lines = content.split(/\r?\n/);
-    
+
     // 如果提供了目标环境覆盖，优先使用
     if (targetEnvOverride) {
         const envLine = lines.find(line => line.trim() === `[env:${targetEnvOverride}]`);
@@ -530,8 +540,16 @@ function runPioCommand(args, label, options = {}) {
 
 async function main() {
     const args = process.argv.slice(2);
+    // Asset generation must be safe to run in CI and on a workstation with
+    // several boards attached. Hardware access is opt-in so a plain gzip
+    // command can never flash the first upload_port from platformio.ini.
+    const upload = args.includes('--upload');
     const noUpload = args.includes('--no-upload');
     const noMonitor = args.includes('--no-monitor');
+
+    if (upload && noUpload) {
+        throw new Error('--upload and --no-upload cannot be used together');
+    }
     
     // 支持 --env 参数指定目标环境
     let targetEnv = null;
@@ -547,6 +565,9 @@ async function main() {
     console.log('========================================');
     console.log(`Target directory: ${WWW_DIR}`);
     console.log(`Staging directory: ${STAGING_WWW_DIR}`);
+
+    // ALWAYS enable device-control bundle
+    process.env.FASTBEE_ENABLE_DEVICE_CONTROL = '1';
 
     console.log('\n[Step 0] Building web modules...');
     const buildResult = buildWebModules();
@@ -570,6 +591,9 @@ async function main() {
 
     deleteOldGzFiles();
     compressAllFiles();
+    if (stats.failedCompress > 0) {
+        throw new Error(`Failed to create ${stats.failedCompress} gzip publish artifact(s)`);
+    }
     deleteOriginals();
     const stageResult = stagePublishArtifacts(buildResult);
 
@@ -577,9 +601,9 @@ async function main() {
     console.log('  Compression completed');
     console.log('========================================');
 
-    if (noUpload) {
+    if (!upload || noUpload) {
         console.log(`\nStaging package ready: ${stageResult.wwwDir}`);
-        console.log('\n提示: 已跳过上传和监视（--no-upload）');
+        console.log('\n提示: 已跳过上传和监视；如需烧录请显式传入 --upload');
         return;
     }
 
@@ -608,11 +632,19 @@ async function main() {
     await runPioCommand(['device', 'monitor', '--environment', envName], 'Monitor', { allowFailure: true });
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exit(1);
-});
+if (require.main === module) {
+    main().catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });
+}
 
 function ROOT_DIR() {
     return path.join(__dirname, '..');
 }
+
+module.exports = {
+    assertGzipOnlyTree,
+    findUncompressedTextAssets,
+    stagePublishArtifacts
+};

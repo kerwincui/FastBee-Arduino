@@ -1,21 +1,13 @@
 /**
  * Build the core app chunks from individual JS source files.
  *
- * Splits the legacy single app-bundle.js (~35KB gz) into 9 small chunks
- * (each ≤5KB gz) so each file fits within the ESP32 single-largest-free-block
- * constraint observed in production (~6KB after fragmentation), avoiding
- * OOM-induced timeout / cascading deadlock when one chunk fails to allocate.
+ * Splits the legacy single app-bundle.js into three pressure-aware chunks so
+ * each response remains practical on fragmented ESP32 heaps.
  *
  * Chunks (loaded sequentially via <script defer> in index.html):
- *   1. chunk-1-core-a.js        : utils + ui-components + request-governor
- *   2. chunk-2-core-b.js        : notification + page-loader + module-loader + api-preloader
- *   3. chunk-3-i18n-engine.js   : i18n-engine
- *   4. chunk-4-i18n-zh-1.js     : i18n-zh-CN quarter 1
- *   5. chunk-5-i18n-zh-2.js     : i18n-zh-CN quarter 2
- *   6. chunk-6-i18n-zh-3.js     : i18n-zh-CN quarter 3
- *   7. chunk-7-i18n-zh-4.js     : i18n-zh-CN quarter 4 (sets _zhLoaded=true)
- *   8. chunk-8-state-1.js       : state + state-theme + state-session
- *   9. chunk-9-state-2.js       : state-sse + state-ui + main
+ *   1. chunk-1-core.js  : utils + ui-components + request-governor
+ *   2. chunk-2-app.js   : notification + page/module loaders + API preloader
+ *   3. chunk-3-state.js : state modules + main
  *
  * The prod web build keeps a single zh-CN language pack.
  *
@@ -120,12 +112,15 @@ function buildI18nZhChunk() {
 // Old single-bundle outputs that should be cleaned up
 const OBSOLETE_OUTPUTS = [
     'app-bundle.js',
-    'app-bundle.js.gz',
+    'chunk-1-core-a.js',
+    'chunk-2-core-b.js',
     'chunk-3-i18n-engine.js',
     'chunk-4-i18n-zh-1.js',
     'chunk-5-i18n-zh-2.js',
     'chunk-6-i18n-zh-3.js',
-    'chunk-7-i18n-zh-4.js'
+    'chunk-7-i18n-zh-4.js',
+    'chunk-8-state-1.js',
+    'chunk-9-state-2.js'
 ];
 
 function readChunkSource(dir, file) {
@@ -174,10 +169,12 @@ function buildAppChunks() {
 
     // Remove obsolete single-bundle outputs (and any stale .gz left from previous builds)
     OBSOLETE_OUTPUTS.forEach((fname) => {
-        const fp = path.join(WWW_JS_DIR, fname);
-        if (fs.existsSync(fp)) {
-            try { fs.unlinkSync(fp); } catch (_) { /* ignore */ }
-        }
+        [fname, `${fname}.gz`].forEach((target) => {
+            const fp = path.join(WWW_JS_DIR, target);
+            if (fs.existsSync(fp)) {
+                try { fs.unlinkSync(fp); } catch (_) { /* ignore */ }
+            }
+        });
     });
 
     return {

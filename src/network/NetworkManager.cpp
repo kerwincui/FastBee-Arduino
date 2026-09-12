@@ -45,6 +45,28 @@
 
 static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
+// A configuration can outlive the firmware image that created it.  When a
+// board is rebuilt without an optional adapter, normalize stale Ethernet/4G
+// selections before the state machine starts so it can still use WiFi STA/AP.
+static bool normalizeUnsupportedNetworkType(WiFiConfig& config) {
+    bool changed = false;
+#if !FASTBEE_ENABLE_ETHERNET
+    if (config.networkType == NetworkType::NET_ETHERNET) {
+        config.networkType = NetworkType::NET_WIFI;
+        changed = true;
+        LOG_WARNING("NetworkManager: Ethernet is not compiled; falling back to WiFi");
+    }
+#endif
+#if !FASTBEE_ENABLE_CELLULAR
+    if (config.networkType == NetworkType::NET_4G) {
+        config.networkType = NetworkType::NET_WIFI;
+        changed = true;
+        LOG_WARNING("NetworkManager: cellular adapter is not compiled; falling back to WiFi");
+    }
+#endif
+    return changed;
+}
+
 // ESP32 NVS key 长度不能超过 15 字符（含结尾 null 共 16 字节）
 // 下方 static_assert 在编译期检查所有 NVS key，防止运行时出现 KEY_TOO_LONG 错误
 namespace NvsKeys {
@@ -168,11 +190,40 @@ bool FBNetworkManager::initialize() {
 
     // 加载网络配置
     ets_printf("[NET] Loading network config...\n");
+    bool networkConfigNeedsSave = false;
     if (!loadNetworkConfig()) {
         ets_printf("[NET] Using default network configuration\n");
         // 生成默认备用IP
         ipManager->generateBackupIPs();
-        saveNetworkConfig();
+        networkConfigNeedsSave = true;
+    } else if (normalizeUnsupportedNetworkType(wifiConfig)) {
+        networkConfigNeedsSave = true;
+    }
+
+    // features.json 是 mDNS 启停的权威配置。旧版只在 network.json 保存
+    // enableMDNS；仅当功能文件没有显式 mdns 键时迁移该旧值，之后
+    // network.json 中的同名字段只作为兼容镜像。
+    auto& runtimeFeatures = FastBee::RuntimeFeatureManager::instance();
+    if (!runtimeFeatures.hasExplicitSetting("mdns")) {
+        bool accepted = runtimeFeatures.setUserEnabled("mdns", wifiConfig.enableMDNS);
+        if (!accepted && wifiConfig.enableMDNS) {
+            // A configuration can move to a build without mDNS.  Persist the
+            // only usable value so the sparse migration does not repeat forever.
+            accepted = runtimeFeatures.setUserEnabled("mdns", false);
+        }
+        if (accepted) {
+            if (!runtimeFeatures.saveCurrentConfig()) {
+                LOG_WARNING("NetworkManager: failed to persist legacy mDNS feature migration");
+            }
+        }
+    }
+    const bool configuredMDNS = runtimeFeatures.isUserEnabled("mdns");
+    if (wifiConfig.enableMDNS != configuredMDNS) {
+        wifiConfig.enableMDNS = configuredMDNS;
+        networkConfigNeedsSave = true;
+    }
+    if (networkConfigNeedsSave && !saveNetworkConfig()) {
+        LOG_WARNING("NetworkManager: failed to persist normalized network configuration");
     }
     
     // 同步冲突检测和故障转移配置到 IPManager
@@ -221,6 +272,7 @@ bool FBNetworkManager::initialize() {
         LOG_ERROR("NetworkManager: Failed to initialize DNS manager");
         return false;
     }
+    dnsManager->setMDNSEnabled(shouldRunMDNS());
 
     // WiFi 事件回调已在 WiFiManager::initialize() 中注册，此处不再重复注册
     // 重复注册会导致每个事件在 arduino_events 栈上执行两次，引发栈溢出崩溃
@@ -273,7 +325,7 @@ bool FBNetworkManager::initialize() {
             }
             
             // 启动 mDNS（必须在所有 netif 就绪后启动，确保绑定到正确的网络接口）
-            if (wifiConfig.enableMDNS) {
+            if (shouldRunMDNS()) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
             
@@ -334,7 +386,7 @@ bool FBNetworkManager::initialize() {
             }
             
             // 启动 mDNS（需在 AP 启动后，使 mDNS 绑定到 AP 接口）
-            if (wifiConfig.enableMDNS) {
+            if (shouldRunMDNS()) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
             
@@ -674,7 +726,8 @@ void FBNetworkManager::update() {
                       wifiConfig.customDomain.c_str());
             pendingMDNSRestart = false;
             pendingMDNSRestartTime = 0;
-            if (dnsManager) {
+            if (dnsManager && shouldRunMDNS()) {
+                dnsManager->setMDNSEnabled(true);
                 dnsManager->setCustomDomain(wifiConfig.customDomain);
                 dnsManager->restartMDNS(wifiConfig.customDomain);
             }
@@ -709,7 +762,7 @@ void FBNetworkManager::update() {
                 LOGGER.infof("NetworkManager: Ethernet reconnected, IP: %s",
                              ethernetAdapter ? ethernetAdapter->localIP().toString().c_str() : "?");
                 // 重连成功后重启mDNS确保绑定正确接口
-                if (wifiConfig.enableMDNS) {
+                if (shouldRunMDNS()) {
                     dnsManager->stopMDNS();
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
@@ -733,7 +786,7 @@ void FBNetworkManager::update() {
                 cellReconnectPending = false;
                 LOGGER.infof("NetworkManager: 4G reconnected, IP: %s",
                              cellularAdapter ? cellularAdapter->localIP().toString().c_str() : "?");
-                if (wifiConfig.enableMDNS) {
+                if (shouldRunMDNS()) {
                     dnsManager->stopMDNS();
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
@@ -843,7 +896,7 @@ void FBNetworkManager::update() {
                     // 确保 AP 热点始终可用，作为用户回退配置的入口
                     ensureLastResortAP();
                     // 接口已从以太网切换到 AP，必须 restartMDNS 重新绑定（startMDNS 会因 mdnsStarted 提前返回）
-                    if (wifiConfig.enableMDNS) {
+                    if (shouldRunMDNS()) {
                         dnsManager->restartMDNS(wifiConfig.customDomain);
                     }
                 }
@@ -880,7 +933,7 @@ void FBNetworkManager::update() {
                         statusInfo.ipAddress = cellIP.toString();
                     }
                 }
-                if (wifiConfig.enableMDNS) {
+                if (shouldRunMDNS()) {
                     dnsManager->restartMDNS(wifiConfig.customDomain);
                 }
             } else if (wifiConfig.networkType == NetworkType::NET_4G) {
@@ -893,7 +946,7 @@ void FBNetworkManager::update() {
                     LOG_WARNING("NetworkManager: 4G auto-reconnect exhausted, keeping AP fallback available");
                     ensureLastResortAP();
                     // 接口已从 4G 切换到 AP，必须 restartMDNS 重新绑定（startMDNS 会因 mdnsStarted 提前返回）
-                    if (wifiConfig.enableMDNS) {
+                    if (shouldRunMDNS()) {
                         dnsManager->restartMDNS(wifiConfig.customDomain);
                     }
                 }
@@ -911,7 +964,7 @@ void FBNetworkManager::update() {
         // Web 前台活动时跳过；空闲时降至 5min 一次（同名收敛属慢过程，足够）
         static unsigned long lastMdnsHealthMs = 0;
         if (currentTime - lastMdnsUpdate >= 30000) {
-            if (wifiConfig.enableMDNS) {
+            if (shouldRunMDNS()) {
                 // Web 前台门控：避免阻塞 AsyncTCP 事件循环
                 auto* fwMdns = FastBeeFramework::getInstance();
                 auto* webGate = fwMdns ? fwMdns->getWebConfigManager() : nullptr;
@@ -970,7 +1023,7 @@ void FBNetworkManager::update() {
         _bootConnectRetries = 0;    // 连接成功，清零开机重试计数
         
         // 重新启动mDNS以更新IP绑定
-        if (wifiConfig.enableMDNS) {
+        if (shouldRunMDNS()) {
             LOG_INFOF("NetworkManager: WiFi connected, restarting mDNS for STA IP");
             // 使用dnsManager重启mDNS，让它检测并使用正确的IP
             dnsManager->restartMDNS(wifiConfig.customDomain);
@@ -1237,7 +1290,7 @@ void FBNetworkManager::update() {
     // Web 前台活动时跳过；空闲时降至 5min 一次（同名收敛属慢过程，足够）
     static unsigned long lastMdnsHealthMs = 0;
     if (currentTime - lastMdnsUpdate >= 30000) {
-        if (wifiConfig.enableMDNS) {
+        if (shouldRunMDNS()) {
             // Web 前台门控：避免阻塞 AsyncTCP 事件循环
             auto* fwMdns = FastBeeFramework::getInstance();
             auto* webGate = fwMdns ? fwMdns->getWebConfigManager() : nullptr;
@@ -1561,6 +1614,9 @@ bool FBNetworkManager::saveNetworkConfig() {
         LOG_INFO("NetworkManager: Config saved to /config/network.json");
     } else {
         LOG_WARNING("NetworkManager: Failed to write /config/network.json");
+        // Keep the prior NVS generation aligned with the prior JSON file.  A
+        // failed request must not become successful later through NVS fallback.
+        return false;
     }
 
     // ===== 同步写入 NVS（备份） =====
@@ -1643,7 +1699,7 @@ bool FBNetworkManager::startAPMode() {
     }
 
     // 启动mDNS服务（使用customDomain作为hostname）
-    if (wifiConfig.enableMDNS) {
+    if (shouldRunMDNS()) {
         dnsManager->startMDNS(wifiConfig.customDomain);
     }
 
@@ -1915,11 +1971,13 @@ bool FBNetworkManager::configureDHCP() {
 }
 
 bool FBNetworkManager::startMDNS() {
+    if (!dnsManager || !shouldRunMDNS()) return false;
+    dnsManager->setMDNSEnabled(true);
     return dnsManager->startMDNS(wifiConfig.customDomain);
 }
 
 void FBNetworkManager::stopMDNS() {
-    dnsManager->stopMDNS();
+    if (dnsManager) dnsManager->stopMDNS();
 }
 
 
@@ -1978,8 +2036,14 @@ void FBNetworkManager::updateStatusInfo() {
         return;  // 非 WiFi 联网方式状态更新完成
     }
 
-    // ========== WiFi 联网方式：同步 WiFiManager 的完整状态 ==========
+    // ========== WiFi 联网方式：同步 WiFiManager 的实时状态 ==========
+    // FBNetworkManager owns retry/backoff/AP-fallback.  WiFiManager keeps a
+    // separate transport snapshot whose reconnectAttempts is not advanced by
+    // this state machine, so copying it wholesale would reset the retry budget
+    // whenever a Web/API status request calls updateStatusInfo().
+    const uint16_t ownedReconnectAttempts = statusInfo.reconnectAttempts;
     statusInfo = wifiManager->getStatusInfo();
+    statusInfo.reconnectAttempts = ownedReconnectAttempts;
 }
 
 // updateIPConflictStatus 方法已移至 IPManager 类
@@ -2180,7 +2244,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
 
         LOGGER.infof("[WiFi-AP] Probing WiFi [%s] (async STA switch)...",
                      wifiConfig.staSSID.c_str());
-        if (wifiConfig.enableMDNS && dnsManager) {
+        if (dnsManager && dnsManager->isMDNSStarted()) {
             dnsManager->stopMDNS();
         }
         _apProbeState = ApProbeState::MDNS_SETTLE;
@@ -2193,7 +2257,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
         // Recheck immediately before taking AP down; a client may have joined
         // while mDNS was settling.
         if (WiFi.softAPgetStationNum() > 0) {
-            if (wifiConfig.enableMDNS && dnsManager) {
+            if (shouldRunMDNS() && dnsManager) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
             const unsigned long interval =
@@ -2271,7 +2335,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
             _staDisconnectedSince = 0;
             _apFallbackAuto = false;
             _apProbeFailCount = 0;
-            if (wifiConfig.enableMDNS && dnsManager) {
+            if (shouldRunMDNS() && dnsManager) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
 #if FASTBEE_ENABLE_MQTT
@@ -2316,7 +2380,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
     if (_apProbeState == ApProbeState::RESTORE_AP) {
         if ((now - _apProbeStateSince) < AP_PROBE_AP_SETTLE_MS) return;
         if (startAPMode()) {
-            if (wifiConfig.enableMDNS && dnsManager) {
+            if (shouldRunMDNS() && dnsManager) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
             LOGGER.infof("[WiFi-AP] Probe failed, AP restored: %s IP=%s",
@@ -2364,6 +2428,11 @@ void FBNetworkManager::triggerEvent(NetworkStatus status, const String& message)
 
 WiFiConfig FBNetworkManager::getConfig() const {
     return wifiConfig;
+}
+
+bool FBNetworkManager::shouldRunMDNS() const {
+    return wifiConfig.enableMDNS &&
+           FastBee::RuntimeFeatureManager::instance().shouldEnable("mdns");
 }
 
 NetworkStatusInfo FBNetworkManager::getStatusInfo() const {
@@ -2477,7 +2546,7 @@ bool FBNetworkManager::restartNetwork() {
             return false;
         }
         // 启动mDNS服务
-        if (wifiConfig.enableMDNS) {
+        if (shouldRunMDNS()) {
             dnsManager->startMDNS(wifiConfig.customDomain);
             LOG_INFO("NetworkManager: mDNS service restarted after network restart");
         }
@@ -2569,7 +2638,7 @@ bool FBNetworkManager::restartNetwork() {
                 // 确保状态保持 CONNECTED（以太网是主网络，不受 AP 状态影响）
                 statusInfo.status = NetworkStatus::CONNECTED;
                 
-                if (wifiConfig.enableMDNS) {
+                if (shouldRunMDNS()) {
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
             } else {
@@ -2581,7 +2650,9 @@ bool FBNetworkManager::restartNetwork() {
                 wifiConfig.networkType = NetworkType::NET_WIFI;
                 wifiConfig.mode = NetworkMode::NETWORK_AP;
                 ensureLastResortAP();
-                dnsManager->startMDNS(wifiConfig.customDomain);
+                if (shouldRunMDNS() && dnsManager) {
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
                 ok = false;
             }
         }
@@ -2618,7 +2689,7 @@ bool FBNetworkManager::restartNetwork() {
                 // 确保状态保持 CONNECTED（4G是主网络）
                 statusInfo.status = NetworkStatus::CONNECTED;
                 
-                if (wifiConfig.enableMDNS) {
+                if (shouldRunMDNS()) {
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
                 // 通知 MQTT 客户端 4G 网络已恢复，立即尝试重连
@@ -2641,7 +2712,9 @@ bool FBNetworkManager::restartNetwork() {
                 wifiConfig.mode = NetworkMode::NETWORK_AP;
                 cellReconnectPending = false;
                 ensureLastResortAP();
-                dnsManager->startMDNS(wifiConfig.customDomain);
+                if (shouldRunMDNS() && dnsManager) {
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
                 ok = false;
             }
         }
@@ -2762,39 +2835,73 @@ String FBNetworkManager::getConfigJSON() {
 }
 
 bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
+    WiFiConfig effectiveConfig = newConfig;
+    normalizeUnsupportedNetworkType(effectiveConfig);
+    auto& runtimeFeatures = FastBee::RuntimeFeatureManager::instance();
+    const auto previousFeatureState = runtimeFeatures.captureUserConfig();
+    const bool previousFeatureMDNS = runtimeFeatures.isUserEnabled("mdns");
+    bool mdnsFeatureChanged = false;
+    if (effectiveConfig.enableMDNS != previousFeatureMDNS) {
+        if (!runtimeFeatures.setUserEnabled("mdns", effectiveConfig.enableMDNS,
+                                            &mdnsFeatureChanged)) {
+            LOG_WARNING("NetworkManager: mDNS cannot be enabled because it is not compiled into this firmware");
+            effectiveConfig.enableMDNS = previousFeatureMDNS;
+        }
+    }
+
+    const WiFiConfig previousConfig = wifiConfig;
     bool restartRequired = false;
     
     // 检查是否需要重启网络
-    if (newConfig.mode != wifiConfig.mode ||
-        newConfig.apSSID != wifiConfig.apSSID ||
-        newConfig.staSSID != wifiConfig.staSSID ||
-        newConfig.ipConfigType != wifiConfig.ipConfigType ||
-        newConfig.networkType != wifiConfig.networkType ||
-        newConfig.ethernet.spiMosi != wifiConfig.ethernet.spiMosi ||
-        newConfig.ethernet.spiMiso != wifiConfig.ethernet.spiMiso ||
-        newConfig.ethernet.spiSck != wifiConfig.ethernet.spiSck ||
-        newConfig.ethernet.csPin != wifiConfig.ethernet.csPin ||
-        newConfig.ethernet.rstPin != wifiConfig.ethernet.rstPin ||
-        newConfig.ethernet.intPin != wifiConfig.ethernet.intPin ||
-        newConfig.cellular.txPin != wifiConfig.cellular.txPin ||
-        newConfig.cellular.rxPin != wifiConfig.cellular.rxPin ||
-        newConfig.cellular.pwrPin != wifiConfig.cellular.pwrPin ||
-        newConfig.cellular.baudRate != wifiConfig.cellular.baudRate ||
-        newConfig.cellular.apn != wifiConfig.cellular.apn) {
+    if (effectiveConfig.mode != wifiConfig.mode ||
+        effectiveConfig.apSSID != wifiConfig.apSSID ||
+        effectiveConfig.staSSID != wifiConfig.staSSID ||
+        effectiveConfig.ipConfigType != wifiConfig.ipConfigType ||
+        effectiveConfig.networkType != wifiConfig.networkType ||
+        effectiveConfig.ethernet.spiMosi != wifiConfig.ethernet.spiMosi ||
+        effectiveConfig.ethernet.spiMiso != wifiConfig.ethernet.spiMiso ||
+        effectiveConfig.ethernet.spiSck != wifiConfig.ethernet.spiSck ||
+        effectiveConfig.ethernet.csPin != wifiConfig.ethernet.csPin ||
+        effectiveConfig.ethernet.rstPin != wifiConfig.ethernet.rstPin ||
+        effectiveConfig.ethernet.intPin != wifiConfig.ethernet.intPin ||
+        effectiveConfig.cellular.txPin != wifiConfig.cellular.txPin ||
+        effectiveConfig.cellular.rxPin != wifiConfig.cellular.rxPin ||
+        effectiveConfig.cellular.pwrPin != wifiConfig.cellular.pwrPin ||
+        effectiveConfig.cellular.baudRate != wifiConfig.cellular.baudRate ||
+        effectiveConfig.cellular.apn != wifiConfig.cellular.apn) {
         restartRequired = true;
     }
     
     // 检查 mDNS/域名配置变更（不需要重启网络，但需立即重启 mDNS 服务）
-    bool mdnsConfigChanged = (newConfig.customDomain != wifiConfig.customDomain ||
-                              newConfig.enableMDNS != wifiConfig.enableMDNS);
+    bool mdnsConfigChanged = (effectiveConfig.customDomain != wifiConfig.customDomain ||
+                              effectiveConfig.enableMDNS != wifiConfig.enableMDNS);
     
-    wifiConfig = newConfig;
+    wifiConfig = effectiveConfig;
     
     // 保存配置到存储
     bool saveSuccess = true;
     if (saveToStorage) {
+        // 网络页面保留兼容的 enableMDNS 开关，但用户期望状态统一由
+        // features.json 持久化。任一文件保存失败都恢复内存状态，并尽力
+        // 把已经落盘的功能配置回滚，避免两个入口长期显示不同状态。
+        if (mdnsFeatureChanged && !runtimeFeatures.saveCurrentConfig()) {
+            runtimeFeatures.restoreUserConfig(previousFeatureState);
+            wifiConfig = previousConfig;
+            LOG_ERROR("NetworkManager: Failed to save mDNS feature configuration");
+            return false;
+        }
         saveSuccess = saveNetworkConfig();
         if (!saveSuccess) {
+            wifiConfig = previousConfig;
+            if (mdnsFeatureChanged) {
+                runtimeFeatures.restoreUserConfig(previousFeatureState);
+                if (!runtimeFeatures.saveCurrentConfig()) {
+                    LOG_ERROR("NetworkManager: Failed to roll back mDNS feature configuration");
+                    // Re-read the authoritative on-disk generation so runtime
+                    // state cannot disagree with whatever survived the failure.
+                    runtimeFeatures.loadConfig();
+                }
+            }
             LOG_ERROR("NetworkManager: Failed to save network configuration");
             return false;
         }
@@ -2803,16 +2910,16 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
     
     // mDNS 配置变更：如果已有设备重启调度，跳过 mDNS 运行时重启（重启后 mDNS 会自动初始化）
     if (mdnsConfigChanged && !restartRequired && dnsManager) {
+        dnsManager->setMDNSEnabled(shouldRunMDNS());
         if (SystemRebooter::isScheduled()) {
             LOG_INFO("NetworkManager: mDNS config changed but device reboot already scheduled, skipping mDNS runtime restart");
-        } else if (wifiConfig.enableMDNS) {
+        } else if (shouldRunMDNS()) {
             LOG_INFOF("NetworkManager: mDNS config changed, scheduling delayed restart with hostname '%s'",
                       wifiConfig.customDomain.c_str());
             pendingMDNSRestart = true;
             pendingMDNSRestartTime = 0;  // 在 update() 中记录时间戳
         } else {
             LOG_INFO("NetworkManager: mDNS disabled by config change, stopping mDNS");
-            dnsManager->setMDNSEnabled(false);
         }
     }
     
@@ -2948,10 +3055,18 @@ bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
 
 bool FBNetworkManager::resetToDefaults() {
     wifiConfig = WiFiConfig();
-    preferences.clear();
+    clearPersistentFallback();
     
     LOG_INFO("NetworkManager: Network configuration reset to defaults");
     return restartNetwork();
+}
+
+bool FBNetworkManager::clearPersistentFallback() {
+    if (!preferences.clear()) {
+        LOG_ERROR("NetworkManager: Failed to clear NVS fallback configuration");
+        return false;
+    }
+    return true;
 }
 
 String FBNetworkManager::getStatistics() {

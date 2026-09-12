@@ -17,10 +17,12 @@
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
 #include "systems/SystemRebooter.h"
+#include "utils/StringUtils.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <memory>
+#include <new>
 
 #if FASTBEE_ENABLE_MQTT
 static bool configureMqttTransport(MQTTClient* mqttClient) {
@@ -76,6 +78,24 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
     return true;
 }
 #endif
+
+static String formatAnalogReportValue(const PeripheralConfig& config,
+                                      PeripheralManager& pm,
+                                      AnalogInputQuality* quality = nullptr) {
+    if (config.params.adc.conversionEnabled &&
+        config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+        const uint16_t rawValue = pm.readAnalog(config.id);
+        const float value = pm.convertAnalogRawValue(config.id, rawValue, quality);
+        if (isnan(value) || isinf(value)) return String();
+        uint8_t decimals = config.params.adc.decimalPlaces;
+        if (decimals > 6) decimals = 6;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+        return String(buf);
+    }
+    if (quality) *quality = AnalogInputQuality::VALID;
+    return String(pm.readAnalog(config.id));
+}
 
 ProtocolManager::ProtocolManager()
     : isInitialized(false)
@@ -358,6 +378,40 @@ void ProtocolManager::handle() {
     }
 #endif
 
+    // Modbus 延迟恢复必须在通用重型协议早退之前消费。通用闸门采用
+    // 30KB/16KB 的保守阈值，而 Modbus 重建只需受控的 JSON/UART 资源；
+    // 在满足专用准入线时仍可安全重建，否则保留 pending 供下一轮重试。
+#if FASTBEE_ENABLE_MODBUS
+    if (modbusRestartPending) {
+        const uint32_t modbusFree = FastBee::MemoryBudget::dram8Free();
+        const uint32_t modbusLargest = FastBee::MemoryBudget::dram8Largest();
+        const bool modbusRestartReady =
+            modbusFree >= FastBee::MemoryBudget::MODBUS_RESTART_MIN_DRAM &&
+            modbusLargest >= FastBee::MemoryBudget::MODBUS_RESTART_MIN_LARGEST;
+        if (modbusRestartReady) {
+            modbusRestartPending = false;
+            LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
+            const ModbusRestartResult result = restartModbus();
+            if (result == ModbusRestartResult::Failed) {
+                // HealthMonitor will retain/requeue its recovery state when a
+                // configuration or runtime feature gate still rejects start.
+                LOG_WARNING("[Modbus] Deferred restart was rejected; recovery remains pending");
+            } else if (result == ModbusRestartResult::IdleNoEnabledTargets) {
+                LOG_INFO("[Modbus] Deferred restart completed: no enabled targets, transport remains idle");
+            }
+        } else {
+            static unsigned long lastModbusRestartWaitMs = 0;
+            const unsigned long now = millis();
+            if (now - lastModbusRestartWaitMs > 10000UL) {
+                lastModbusRestartWaitMs = now;
+                LOG_WARNINGF("[Modbus] Deferred restart waiting for DRAM (free=%lu largest=%lu)",
+                             (unsigned long)modbusFree,
+                             (unsigned long)modbusLargest);
+            }
+        }
+    }
+#endif
+
     // 堆保护：低于阈值时跳过其余重型协议处理
     if (!heapSufficient) {
         static unsigned long lastWarnMs = 0;
@@ -369,14 +423,6 @@ void ProtocolManager::handle() {
         return;
     }
 
-    // 检查延迟重启标志（在 loopTask 16KB 栈中安全执行）
-#if FASTBEE_ENABLE_MODBUS
-    if (modbusRestartPending) {
-        modbusRestartPending = false;
-        LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
-        restartModbus();
-    }
-#endif
 #if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) modbusHandler->handle();
 #endif
@@ -479,8 +525,15 @@ bool ProtocolManager::restartMQTT() {
         mqttClient.reset();
     }
 
-    // 重新创建并初始化
-    mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
+    // 重新创建并初始化。低内存/碎片化场景下即使通过了堆门槛，
+    // 构造函数内部的 mutex/queue 分配仍可能失败；使用 nothrow 让本次
+    // 重建安全失败，由上层状态接口报告原因，而不是触发异常/abort。
+    MQTTClient* freshClient = new (std::nothrow) MQTTClient();
+    if (!freshClient) {
+        LOG_WARNING("Protocol Manager: MQTT restart allocation failed (nothrow)");
+        return false;
+    }
+    mqttClient.reset(freshClient);
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
@@ -636,8 +689,15 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
         }
     }
 
-    // 重新创建并初始化（仅加载配置，不阻塞连接）
-    mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
+    // 重新创建并初始化（仅加载配置，不阻塞连接）。即使堆门槛通过，
+    // 构造函数内部的小块分配也可能失败，必须避免 throwing new 在
+    // C3/经典 ESP32 上把低内存问题升级为异常重启。
+    MQTTClient* freshClient = new (std::nothrow) MQTTClient();
+    if (!freshClient) {
+        LOG_WARNING("Protocol Manager: MQTT deferred restart allocation failed (nothrow)");
+        return false;
+    }
+    mqttClient.reset(freshClient);
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
@@ -705,27 +765,36 @@ void ProtocolManager::requestMqttRestartAsync() {
 #endif // FASTBEE_ENABLE_MQTT (restartMQTT + restartMQTTDeferred + stopMQTT)
 
 #if FASTBEE_ENABLE_MODBUS
-bool ProtocolManager::restartModbus() {
+ModbusRestartResult ProtocolManager::restartModbus() {
     LOG_INFO("Protocol Manager: Restarting Modbus...");
+    modbusRestartResultAvailable = false;
+    const auto completeRestart = [this](ModbusRestartResult result) {
+        modbusLastRestartResult = result;
+        modbusRestartResultAvailable = true;
+        return result;
+    };
 
     // 运行时功能门控：用户可在 Web UI 禁用 modbus
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
         LOG_WARNING("Protocol Manager: Modbus disabled by runtime feature config, skipping");
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     // 内存预算门控：编译启用但启动时 DRAM 不足则自动降级
     if (FastBee::FeatureBudgetRegistry::instance().isDenied("modbus")) {
         LOG_WARNING("Protocol Manager: Modbus disabled by memory budget, skipping");
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
-    // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()
-    uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 15000) {
-        LOG_WARNINGF("Protocol Manager: Heap too low for Modbus restart (heap=%lu), skipping",
-                     (unsigned long)freeHeap);
-        return false;
+    // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()。
+    // 使用实际可分配的内部 8-bit DRAM，避免 PSRAM/IRAM 统计放行边缘重建。
+    const uint32_t freeHeap = FastBee::MemoryBudget::dram8Free();
+    const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
+    if (freeHeap < FastBee::MemoryBudget::MODBUS_RESTART_MIN_DRAM ||
+        largestBlock < FastBee::MemoryBudget::MODBUS_RESTART_MIN_LARGEST) {
+        LOG_WARNINGF("Protocol Manager: Heap too low for Modbus restart (free=%lu largest=%lu), skipping",
+                     (unsigned long)freeHeap, (unsigned long)largestBlock);
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     // 停止现有实例
@@ -737,7 +806,7 @@ bool ProtocolManager::restartModbus() {
     // 读取 protocol.json 配置
     if (!LittleFS.exists("/config/protocol.json")) {
         LOG_WARNING("Protocol Manager: No protocol config found for Modbus");
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     // 优化：使用 Filter 仅反序列化 modbusRtu 子节点，堆峰值从 ~15KB 降至 ~12KB
@@ -748,20 +817,20 @@ bool ProtocolManager::restartModbus() {
         File f = LittleFS.open("/config/protocol.json", "r");
         if (!f) {
             LOG_ERROR("Protocol Manager: Failed to open protocol config");
-            return false;
+            return completeRestart(ModbusRestartResult::Failed);
         }
         DeserializationError err = deserializeJson(doc, f);
         f.close();
         if (err) {
             LOG_ERRORF("Protocol Manager: JSON parse error: %s", err.c_str());
-            return false;
+            return completeRestart(ModbusRestartResult::Failed);
         }
     }
 
     JsonVariant rtu = doc["modbusRtu"];
     if (!rtu.is<JsonObject>()) {
         LOG_WARNING("Protocol Manager: No modbusRtu config found");
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     // 从嵌套的 modbusRtu 配置构建 ModbusConfig
@@ -771,18 +840,18 @@ bool ProtocolManager::restartModbus() {
     String peripheralId = rtu["peripheralId"] | "";
     if (peripheralId.isEmpty()) {
         LOG_ERROR("Modbus RTU: No peripheralId configured, cannot start");
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     PeripheralConfig periph;
     if (!PeripheralManager::getInstance().getPeripheralSnapshot(peripheralId, periph)) {
         LOG_ERRORF("Modbus RTU: Peripheral '%s' not found", peripheralId.c_str());
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     if (periph.type != PeripheralType::UART) {
         LOG_ERRORF("Modbus RTU: Peripheral '%s' is not UART type", peripheralId.c_str());
-        return false;
+        return completeRestart(ModbusRestartResult::Failed);
     }
 
     // 引脚约定: pins[0]=RX, pins[1]=TX
@@ -805,6 +874,8 @@ bool ProtocolManager::restartModbus() {
     modbusConfig.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
 
     // 解析 Master 配置
+    bool hasEnabledPollTask = false;
+    bool hasEnabledSubDevice = false;
     if (rtu.containsKey("master")) {
         JsonObject masterObj = rtu["master"];
         modbusConfig.master.responseTimeout = masterObj["responseTimeout"] | (uint16_t)1000;
@@ -824,6 +895,7 @@ bool ProtocolManager::restartModbus() {
                 task.quantity     = t["quantity"] | (uint16_t)10;
                 task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
+                if (task.enabled) hasEnabledPollTask = true;
                 // 向后兼容：优先读取 name，回退到 label
                 const char* taskName = t["name"] | (t["label"] | "");
                 strlcpy(task.name, taskName, sizeof(task.name));
@@ -841,8 +913,7 @@ bool ProtocolManager::restartModbus() {
                         mapping.scaleFactor = m["scaleFactor"] | 1.0f;
                         mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
                         const char* sid = m["sensorId"] | "";
-                        strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
-                        mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        StringUtils::copyUtf8(mapping.sensorId, sizeof(mapping.sensorId), sid);
                         const char* u = m["unit"] | "";
                         strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
                         mapping.unit[sizeof(mapping.unit) - 1] = '\0';
@@ -863,14 +934,11 @@ bool ProtocolManager::restartModbus() {
                 JsonObject d = dv.as<JsonObject>();
                 ModbusSubDevice& dev = modbusConfig.master.devices[modbusConfig.master.deviceCount];
                 const char* dName = d["name"] | "Device";
-                strncpy(dev.name, dName, sizeof(dev.name) - 1);
-                dev.name[sizeof(dev.name) - 1] = '\0';
+                StringUtils::copyUtf8(dev.name, sizeof(dev.name), dName);
                 const char* sid = d["sensorId"] | "";
-                strncpy(dev.sensorId, sid, sizeof(dev.sensorId) - 1);
-                dev.sensorId[sizeof(dev.sensorId) - 1] = '\0';
+                StringUtils::copyUtf8(dev.sensorId, sizeof(dev.sensorId), sid);
                 const char* dType = d["deviceType"] | "relay";
-                strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
-                dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
+                StringUtils::copyUtf8(dev.deviceType, sizeof(dev.deviceType), dType);
                 dev.slaveAddress    = d["slaveAddress"] | (uint8_t)1;
                 dev.channelCount    = d["channelCount"] | (uint8_t)2;
                 dev.coilBase        = d["coilBase"] | (uint16_t)0;
@@ -892,6 +960,7 @@ bool ProtocolManager::restartModbus() {
                 dev.motorMoveStep = d["motorMoveStep"] | (int32_t)0;
                 dev.motorLastPulse = d["motorLastPulse"] | (uint16_t)0;
                 dev.enabled         = d["enabled"] | true;
+                if (dev.enabled) hasEnabledSubDevice = true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
                     for (int i = 0; i < 6 && i < (int)pa.size(); i++)
@@ -907,10 +976,28 @@ bool ProtocolManager::restartModbus() {
         }
     }
 
+    // A master configuration can intentionally contain disabled templates
+    // (for example the S3 deployment ships Modbus sensor/relay templates
+    // before the installer knows the real slave addresses/register map). Do
+    // not open UART buffers or keep a polling handler alive in that state.
+    // The configuration remains available to the Web UI; enabling a task or
+    // sub-device later calls restartModbus() and starts the transport then.
+    if (modbusConfig.mode == MODBUS_MASTER &&
+        !hasEnabledPollTask && !hasEnabledSubDevice) {
+        LOG_INFO("Protocol Manager: Modbus master has no enabled tasks/devices; keeping transport stopped");
+        return completeRestart(ModbusRestartResult::IdleNoEnabledTargets);
+    }
+
     ModbusHandler::sanitizeConfig(modbusConfig);
 
-    // 创建新实例并设置回调
-    modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
+    // 创建新实例并设置回调。低内存恢复路径必须以可控失败结束，
+    // 不能让 throwing new 把设备直接带入异常重启。
+    ModbusHandler* freshModbus = new (std::nothrow) ModbusHandler();
+    if (!freshModbus) {
+        LOG_WARNING("Protocol Manager: Modbus allocation failed (nothrow)");
+        return completeRestart(ModbusRestartResult::Failed);
+    }
+    modbusHandler.reset(freshModbus);
 
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
         // 统一通过 dispatchModbusData 分发（LiveCallback 路径：MQTT + SSE + 规则匹配）
@@ -950,12 +1037,14 @@ bool ProtocolManager::restartModbus() {
     } else {
         LOG_WARNING("Protocol Manager: Modbus restart failed");
     }
-    return ok;
+    return completeRestart(ok ? ModbusRestartResult::Started
+                              : ModbusRestartResult::Failed);
 }
 
 void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
     modbusRestartPending = false;  // 取消待执行的延迟重启
+    modbusRestartResultAvailable = false;
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
     PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
 
@@ -969,7 +1058,17 @@ void ProtocolManager::stopModbus() {
 
 bool ProtocolManager::restartModbusDeferred() {
     LOG_INFO("Protocol Manager: Modbus restart deferred to loopTask");
+    modbusRestartResultAvailable = false;
     modbusRestartPending = true;
+    return true;
+}
+
+bool ProtocolManager::consumeModbusRestartResult(ModbusRestartResult& result) {
+    if (!modbusRestartResultAvailable) {
+        return false;
+    }
+    result = modbusLastRestartResult;
+    modbusRestartResultAvailable = false;
     return true;
 }
 
@@ -1252,8 +1351,14 @@ bool ProtocolManager::initMQTT(void* config) {
 
     MQTTConfig* mqttConfig = static_cast<MQTTConfig*>(config);
 
-    // 使用自定义的 make_unique 实现
-    mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
+    // 使用非抛出分配：启动期或内存降级期都应返回可读失败状态，
+    // 而不是因 MQTT 客户端构造失败触发异常重启。
+    MQTTClient* freshClient = new (std::nothrow) MQTTClient();
+    if (!freshClient) {
+        LOG_WARNING("Protocol Manager: MQTT init allocation failed (nothrow)");
+        return false;
+    }
+    mqttClient.reset(freshClient);
 
     // 设置回调
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
@@ -1313,7 +1418,12 @@ bool ProtocolManager::initModbus(void* config) {
     }
 
     ModbusConfig* modbusConfig = static_cast<ModbusConfig*>(config);
-    modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
+    ModbusHandler* freshModbus = new (std::nothrow) ModbusHandler();
+    if (!freshModbus) {
+        LOG_WARNING("Protocol Manager: Modbus init allocation failed (nothrow)");
+        return false;
+    }
+    modbusHandler.reset(freshModbus);
 
     // 设置回调
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
@@ -1455,35 +1565,55 @@ String ProtocolManager::collectLocalSensorData() const {
         // （如 GPIO_DIGITAL_OUTPUT=12 / GPIO_ANALOG_OUTPUT=16 / GPIO_PWM_OUTPUT=17 / DAC=27）
         if (!isInputType(config.type)) continue;
 
-        // 排除按键事件型外设（GPIO_DIGITAL_INPUT_PULLUP=13 / GPIO_DIGITAL_INPUT_PULLDOWN=14）
-        // 这些外设由按键事件检测线程驱动，属于事件型而非定时采样型，不应纳入实时监测扫描
-        // 实时监测仅上报由 ACTION_SENSOR_READ / ACTION_MODBUS_POLL 类语义对应的传感器外设
-        if (supportsButtonEvent(config.type)) continue;
+        // DI 的上报策略由配置控制：事件型按键默认由按键线程上报，
+        // 选择“周期上报”后才纳入这里的定时采样；EVENT_ONLY 始终跳过。
+        if (isGpioDigitalInputType(config.type)) {
+            const uint8_t reportMode = config.params.gpio.reportMode;
+            if (!shouldReportDigitalInputPeriodically(reportMode)) {
+                continue;
+            }
+        }
 
         int typeVal = static_cast<int>(config.type);
         String value;
-        if (isDigitalInputType(config.type)) {
-            // 数字输入（已排除按键，仅剩 GPIO_DIGITAL_INPUT=11 普通数字传感器）
+        AnalogInputQuality analogQuality = AnalogInputQuality::VALID;
+        bool reportAnalogQuality = false;
+        if (isGpioDigitalInputType(config.type)) {
+            // PERIODIC 数字输入；ON_CHANGE 由 DI 去抖线程在稳定变化时上报。
             GPIOState state = pm.readPin(config.id);
             if (state == GPIOState::STATE_UNDEFINED) continue;
             value = (state == GPIOState::STATE_HIGH) ? "1" : "0";
         } else if (typeVal == 15 || typeVal == 26) {
-            // 模拟输入 (GPIO_ANALOG_INPUT=15) 或 ADC=26
-            uint16_t analog = pm.readAnalog(config.id);
-            char analogBuf[8];
-            snprintf(analogBuf, sizeof(analogBuf), "%u", analog);
-            value = analogBuf;
+            // 模拟输入/ADC：启用工程量转换时统一上报转换值，否则保持
+            // 历史行为上报原始 ADC 计数。
+            reportAnalogQuality = config.params.adc.conversionEnabled &&
+                config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW);
+            value = formatAnalogReportValue(config, pm, &analogQuality);
         } else {
             continue;
         }
 
-        if (!first) json += ",";
-        json += "{\"id\":\"";
-        json += config.id;
-        json += "\",\"value\":\"";
-        json += value;
-        json += "\",\"remark\":\"local\"}";
-        first = false;
+        if (!value.isEmpty()) {
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += config.id;
+            json += "\",\"value\":\"";
+            json += value;
+            json += "\",\"remark\":\"local\"}";
+            first = false;
+        }
+
+        // A separate property preserves the existing numeric property ID and
+        // payload while making invalid, clamped and recovered states visible.
+        if (reportAnalogQuality) {
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += config.id;
+            json += "_quality\",\"value\":\"";
+            json += analogInputQualityName(analogQuality);
+            json += "\",\"remark\":\"quality\"}";
+            first = false;
+        }
     }
 
 #if FASTBEE_ENABLE_PERIPH_EXEC

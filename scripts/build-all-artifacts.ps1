@@ -4,16 +4,20 @@
 #
 # BUILD MATRIX (All environments use unified full profile):
 #   • esp32-F4R0       → ESP32 Classic, 4MB Flash, no PSRAM
+#   • esp32-F8R0       → ESP32 Classic, 8MB Flash, no PSRAM
+#   • esp32-F8R8       → ESP32 Classic/WROVER, 8MB Flash + 8MB PSRAM
 #   • esp32c3-F4R0     → ESP32-C3, 4MB Flash, no PSRAM
 #   • esp32c6-F4R0     → ESP32-C6, 4MB Flash, no PSRAM
-#   • esp32s3-F8R4     → ESP32-S3, 8MB Flash + 4MB PSRAM
+#   • esp32c6-F8R0     → ESP32-C6, 8MB Flash, no PSRAM
+#   • esp32s3-F8R0     → ESP32-S3, 8MB Flash, no PSRAM
+#   • esp32s3-F8R8     → ESP32-S3, 8MB Flash + 8MB PSRAM
 #   • esp32s3-F16R8    → ESP32-S3, 16MB Flash + 8MB PSRAM
 #
 # DEPRECATED: No longer distinguish lite/standard/full product tiers
 #              All features compile into single firmware; runtime budget control via FeatureBudget
 #
 # USAGE:
-#   powershell scripts\build-all-artifacts.ps1                    # Build all 5 variants
+#   powershell scripts\build-all-artifacts.ps1                    # Build all 9 variants
 #   powershell scripts\build-all-artifacts.ps1 -Env s3,F4R0       # Build specific env(s)
 #
 # OUTPUT:
@@ -24,7 +28,11 @@
 #   fastbee-esp32-F4R0.bin
 #   fastbee-esp32c3-F4R0.bin
 #   fastbee-esp32c6-F4R0.bin
-#   fastbee-esp32s3-F8R4.bin
+#   fastbee-esp32-F8R0.bin
+#   fastbee-esp32-F8R8.bin
+#   fastbee-esp32c6-F8R0.bin
+#   fastbee-esp32s3-F8R0.bin
+#   fastbee-esp32s3-F8R8.bin
 #   fastbee-esp32s3-F16R8.bin
 #
 
@@ -32,9 +40,13 @@
 param(
     [string[]]$Environments = @(
         "esp32-F4R0",
+        "esp32-F8R0",
+        "esp32-F8R8",
         "esp32c3-F4R0",
         "esp32c6-F4R0",
-        "esp32s3-F8R4",
+        "esp32c6-F8R0",
+        "esp32s3-F8R0",
+        "esp32s3-F8R8",
         "esp32s3-F16R8"
     ),
     [string]$OutputDir = "dist\firmware\all-latest",
@@ -43,6 +55,39 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# All supported targets use the same unified runtime/web profile. Keep this
+# explicit so manifest commands do not depend on an undefined shell variable.
+$Profile = "full"
+
+function ConvertTo-Hashtable {
+    param([Parameter(Mandatory = $true, ValueFromPipeline = $true)][object]$InputObject)
+
+    if ($null -eq $InputObject) { return $null }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $table = @{}
+        foreach ($key in $InputObject.Keys) {
+            $table[$key] = ConvertTo-Hashtable $InputObject[$key]
+        }
+        return $table
+    }
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and
+        $InputObject -isnot [string]) {
+        return @($InputObject | ForEach-Object { ConvertTo-Hashtable $_ })
+    }
+
+    if ($InputObject -is [pscustomobject]) {
+        $table = @{}
+        foreach ($property in $InputObject.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-Hashtable $property.Value
+        }
+        return $table
+    }
+
+    return $InputObject
+}
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 
@@ -72,16 +117,24 @@ Kill-StaleProcesses
 # Examples: fastbee-esp32-F4R0.bin, fastbee-esp32s3-F16R8.bin
 $OutputNameByEnv = @{
     "esp32-F4R0"     = "fastbee-esp32-F4R0.bin"
+    "esp32-F8R0"     = "fastbee-esp32-F8R0.bin"
+    "esp32-F8R8"     = "fastbee-esp32-F8R8.bin"
     "esp32c3-F4R0"   = "fastbee-esp32c3-F4R0.bin"
     "esp32c6-F4R0"   = "fastbee-esp32c6-F4R0.bin"
-    "esp32s3-F8R4"   = "fastbee-esp32s3-F8R4.bin"
+    "esp32c6-F8R0"   = "fastbee-esp32c6-F8R0.bin"
+    "esp32s3-F8R0"   = "fastbee-esp32s3-F8R0.bin"
+    "esp32s3-F8R8"   = "fastbee-esp32s3-F8R8.bin"
     "esp32s3-F16R8"  = "fastbee-esp32s3-F16R8.bin"
 }
 $HardwareByEnv = @{
     "esp32-F4R0"     = "ESP32 4MB Flash"
+    "esp32-F8R0"     = "ESP32 8MB Flash"
+    "esp32-F8R8"     = "ESP32 8MB Flash + 8MB PSRAM"
     "esp32c3-F4R0"   = "ESP32-C3 4MB Flash"
     "esp32c6-F4R0"   = "ESP32-C6 4MB Flash"
-    "esp32s3-F8R4"   = "ESP32-S3 8MB Flash + 4MB PSRAM"
+    "esp32c6-F8R0"   = "ESP32-C6 8MB Flash"
+    "esp32s3-F8R0"   = "ESP32-S3 8MB Flash"
+    "esp32s3-F8R8"   = "ESP32-S3 8MB Flash + 8MB PSRAM"
     "esp32s3-F16R8"  = "ESP32-S3 16MB Flash + 8MB PSRAM"
 }
 # 只收集完整固件文件(包含 bootloader + partitions + firmware + filesystem)
@@ -214,6 +267,30 @@ function Get-FileSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-EnvironmentMetadata {
+    param([string]$Environment)
+
+    $match = [regex]::Match($Environment, '^(esp32|esp32c3|esp32c6|esp32s3)-F(4|8|16)R(0|8)$')
+    if (-not $match.Success) {
+        throw "Unsupported release environment metadata: $Environment"
+    }
+    $flashMB = [int]$match.Groups[2].Value
+    $psramMB = [int]$match.Groups[3].Value
+    return [ordered]@{
+        chip = $match.Groups[1].Value
+        flashMB = $flashMB
+        psramMB = $psramMB
+        partition = "partitions/$($flashMB)MB.csv"
+        otaCapable = $flashMB -ge 8
+        otaSlots = if ($flashMB -ge 8) { 2 } else { 1 }
+        signature = [ordered]@{
+            signed = $false
+            algorithm = "none"
+            reason = "Secure Boot signing key is not configured for this open build"
+        }
+    }
+}
+
 function Copy-Artifact {
     param(
         [string]$SourceDir,
@@ -289,6 +366,7 @@ foreach ($EnvName in $Environments) {
 
     Write-Host ""
     Write-Host "=== FastBee $EnvName ===" -ForegroundColor Green
+    $Metadata = Get-EnvironmentMetadata -Environment $EnvName
 
     if (-not $SkipBuild) {
         Test-BuildCacheIntegrity -BuildEnv $EnvName
@@ -306,6 +384,13 @@ foreach ($EnvName in $Environments) {
         environment = $EnvName
         filesystemProfile = $Profile
         hardware = $HardwareByEnv[$EnvName]
+        chip = $Metadata.chip
+        flashMB = $Metadata.flashMB
+        psramMB = $Metadata.psramMB
+        partition = $Metadata.partition
+        otaCapable = $Metadata.otaCapable
+        otaSlots = $Metadata.otaSlots
+        signature = $Metadata.signature
         releaseFile = $ReleaseName
         deployCommand = "powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env $EnvName -Port COMx"
         sourceDir = Get-ProjectRelativePath $EnvDist
@@ -349,25 +434,44 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($ManifestPath, $ManifestJson, $Utf8NoBom)
 
 # ─── WP-71: 构建体积 delta 摘要和红线门禁 ──────────────────────────────
-$ReportPath = Join-Path $ProjectDir "scripts\build-size-report.json"
+$ReportPath = Join-Path $ProjectDir "artifacts\build-size-report.json"
 $BaselinePath = Join-Path $ProjectDir "scripts\.pio\build-baseline.json"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
 
-function Get-FirmwareSize {
-    param([string]$BinPath)
-    if (Test-Path $BinPath) {
-        return (Get-Item $BinPath).Length
+function Get-FirmwareSizeInfo {
+    param([string]$Environment)
+
+    # PlatformIO normally emits firmware.bin. Some post-processing flows only
+    # keep factory.bin, so accept it as a fallback; never silently turn a
+    # missing artifact into a zero-byte baseline.
+    $candidates = @(
+        (Join-Path $ProjectDir ".pio\build\$Environment\firmware.bin"),
+        (Join-Path $ProjectDir ".pio\build\$Environment\factory.bin"),
+        (Join-Path $ProjectDir "dist\firmware\$Environment\firmware.bin"),
+        (Join-Path $ProjectDir "dist\firmware\$Environment\factory.bin")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $item = Get-Item -LiteralPath $candidate
+            return [pscustomobject]@{
+                size = [int64]$item.Length
+                path = Get-ProjectRelativePath $candidate
+            }
+        }
     }
-    return 0
+    throw "No firmware.bin or factory.bin found for $Environment; build artifacts are required for size reporting."
 }
 
 $currentSizes = @{}
 foreach ($env in $Environments) {
-    $binPath = Join-Path $ProjectDir ".pio\build\$env\firmware.bin"
-    $size = Get-FirmwareSize $binPath
+    $sizeInfo = Get-FirmwareSizeInfo $env
+    $size = $sizeInfo.size
     $currentSizes[$env] = @{
         firmwareBin = $size
-        factoryBin = (Get-FirmwareSize ($binPath -replace 'firmware\.bin', 'firmware.factory.bin'))
-        total = $size + (Get-FirmwareSize ($binPath -replace 'firmware\.bin', 'firmware.factory.bin'))
+        firmwarePath = $sizeInfo.path
+        # Compare the application image only. factory-with-fs.bin is a padded
+        # full-flash image and must not be added to the application size.
+        total = $size
     }
 }
 
@@ -387,17 +491,49 @@ $deltaReport = [ordered]@{
 $totalDeltaKB = 0
 $thresholdFlashKB = 2048  # 2KB 红线
 $thresholdWarningKB = 512 # 500B 警告
+$appCapacityByFlashMB = @{
+    4 = 0x330000  # partitions/4MB.csv app0 (3.1875MB; single app)
+    8 = 0x380000  # partitions/8MB.csv app0/app1
+    16 = 0x700000 # partitions/16MB.csv app0/app1
+}
+$capacityWarningPercent = 90
+$capacityBlockPercent = 98
+
+function Get-FlashSizeMBFromEnvironment {
+    param([string]$Environment)
+    $match = [regex]::Match($Environment, '-F(4|8|16)R(?:0|4|8)$')
+    if ($match.Success) { return [int]$match.Groups[1].Value }
+    return 0
+}
 
 foreach ($env in $currentSizes.Keys) {
-    if (-not $baseline[$env]) {
+    $flashMB = Get-FlashSizeMBFromEnvironment $env
+    $appCapacity = $appCapacityByFlashMB[$flashMB]
+    $usagePercent = if ($appCapacity) {
+        [math]::Round(($currentSizes[$env].total / $appCapacity) * 100, 2)
+    } else { 0 }
+    $capacityGate = "pass"
+    if ($usagePercent -ge $capacityBlockPercent) {
+        $capacityGate = "block"
+    } elseif ($usagePercent -ge $capacityWarningPercent) {
+        $capacityGate = "warn"
+    }
+
+    $baselineEntry = $baseline[$env]
+    $baselineTotal = if ($baselineEntry) { [int64]$baselineEntry.total } else { 0 }
+    if (-not $baselineEntry -or $baselineTotal -le 0) {
         $deltaReport[$env] = @{
-            status = "new-environment"
+            status = "baseline-reset"
             flashKB = [math]::Round($currentSizes[$env].total / 1024, 2)
             deltaKB = "N/A (baseline missing)"
             gate = "pass"
+            artifact = $currentSizes[$env].firmwarePath
+            appCapacityKB = [math]::Round($appCapacity / 1024, 2)
+            usagePercent = $usagePercent
+            capacityGate = $capacityGate
         }
     } else {
-        $prev = $baseline[$env].total
+        $prev = $baselineTotal
         $curr = $currentSizes[$env].total
         $delta = $curr - $prev
         $deltaKB = [math]::Round($delta / 1024, 2)
@@ -415,14 +551,20 @@ foreach ($env in $currentSizes.Keys) {
             flashKB = [math]::Round($curr / 1024, 2)
             prevKB = [math]::Round($prev / 1024, 2)
             deltaKB = $deltaKB
-            gate = $gate
+            gate = if ($capacityGate -eq "block" -or $gate -eq "block") { "block" } elseif ($capacityGate -eq "warn" -or $gate -eq "warn") { "warn" } else { "pass" }
+            artifact = $currentSizes[$env].firmwarePath
+            appCapacityKB = [math]::Round($appCapacity / 1024, 2)
+            usagePercent = $usagePercent
+            capacityGate = $capacityGate
             explanation = $null  # 超过 500B 需要人工补充解释字段
         }
     }
 }
 
 $deltaReport.totalDeltaAcrossAllEnvsKB = [math]::Round($totalDeltaKB, 2)
-$deltaReport.gateSummary = if ($totalDeltaKB -gt $thresholdFlashKB) { "BLOCKED (>2KB)" } elseif ($totalDeltaKB -gt $thresholdWarningKB) { "WARNING (>500B)" } else { "PASSED" }
+$hasCapacityBlock = @($deltaReport.Keys | Where-Object { $_ -match '^esp32' -and $deltaReport[$_].capacityGate -eq 'block' }).Count -gt 0
+$hasCapacityWarning = @($deltaReport.Keys | Where-Object { $_ -match '^esp32' -and $deltaReport[$_].capacityGate -eq 'warn' }).Count -gt 0
+$deltaReport.gateSummary = if ($hasCapacityBlock -or $totalDeltaKB -gt $thresholdFlashKB) { "BLOCKED" } elseif ($hasCapacityWarning -or $totalDeltaKB -gt $thresholdWarningKB) { "WARNING" } else { "PASSED" }
 
 # 保存报告
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -434,7 +576,7 @@ foreach ($env in $currentSizes.Keys) {
     $currentBaseline[$env] = @{
         total = $currentSizes[$env].total
         firmwareBin = $currentSizes[$env].firmwareBin
-        factoryBin = $currentSizes[$env].factoryBin
+        firmwarePath = $currentSizes[$env].firmwarePath
         recordedAt = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
     }
 }
@@ -443,12 +585,12 @@ if (-not (Test-Path (Split-Path $BaselinePath -Parent))) {
 }
 [System.IO.File]::WriteAllText($BaselinePath, ($currentBaseline | ConvertTo-Json -Depth 3), $Utf8NoBom)
 
-if ($deltaReport.gateSummary -eq "BLOCKED (>2KB)") {
-    Write-Host "[WP-71 GATE] BUILD BLOCKED: Total delta exceeds 2KB threshold!" -ForegroundColor Red
+if ($deltaReport.gateSummary -eq "BLOCKED") {
+    Write-Host "[WP-71 GATE] BUILD BLOCKED: size delta or app partition capacity threshold exceeded!" -ForegroundColor Red
     Write-Host "Details: $ReportPath" -ForegroundColor Red
     exit 1
-} elseif ($deltaReport.gateSummary -eq "WARNING (>500B)") {
-    Write-Host "[WP-71 GATE] WARNING: Total delta exceeds 500B, review required!" -ForegroundColor Yellow
+} elseif ($deltaReport.gateSummary -eq "WARNING") {
+    Write-Host "[WP-71 GATE] WARNING: size delta or app partition usage requires review!" -ForegroundColor Yellow
     Write-Host "Details: $ReportPath" -ForegroundColor Yellow
 } else {
     Write-Host "[WP-71] Build size delta within limits: $($deltaReport.totalDeltaAcrossAllEnvsKB) KB" -ForegroundColor Green

@@ -173,14 +173,7 @@
         </div>
     </div>
 
-    <!-- 核心依赖（独立页面需要完整加载） -->
-    <script src="../js/chunk-1-core-a.js"></script>
-    <script src="../js/notification.js"></script>
-    <script src="../js/chunk-3-i18n-engine.js"></script>
-    <script src="../js/chunk-4-i18n-zh-1.js"></script>
-    <script src="../js/chunk-5-i18n-zh-2.js"></script>
-    <script src="../js/chunk-6-i18n-zh-3.js"></script>
-    <script src="../js/chunk-7-i18n-zh-4.js"></script>
+    <!-- 独立大屏使用模块内置的轻量 fetch，避免加载主应用核心包。 -->
     <script src="../js/modules/dashboard-fullscreen.js"></script>
 </body>
 </html>

@@ -30,6 +30,16 @@
 // 日志文件固定路径（与 SystemConstants::FileSystem 对应）
 static constexpr const char* LOG_FILE_PATH = "/logs/system.log";
 
+// no-PSRAM 设备在 RuntimeFeatureManager 读取 features.json 之前就会初始化
+// Logger。统一镜像虽然把 fileLogging 编译进固件，但启动阶段默认写 LittleFS
+// 会先占用堆并放大碎片；配置加载完成后仍可通过 enableFileLogging(true)
+// 显式开启。PSRAM 目标保留原有编译默认行为。
+#if FASTBEE_USE_PSRAM
+static constexpr bool LOGGER_STARTUP_FILE_LOGGING = (FASTBEE_ENABLE_FILE_LOGGING != 0);
+#else
+static constexpr bool LOGGER_STARTUP_FILE_LOGGING = false;
+#endif
+
 // 静态成员初始化
 vprintf_like_t LoggerSystem::originalEspLogFunc = nullptr;
 
@@ -39,7 +49,7 @@ LoggerSystem::LoggerSystem()
     : currentLevel(LOG_INFO),  // 生产默认 INFO 级别（启动后由 device.json 覆盖）
       outputStream(&Serial),
       serialEnabled(true),
-      fileLoggingEnabled(FASTBEE_ENABLE_FILE_LOGGING != 0),
+      fileLoggingEnabled(LOGGER_STARTUP_FILE_LOGGING),
       initialized(false),
       espLogCaptureEnabled(false),   // 默认禁用 ESP 日志捕获（降低 LittleFS/堆碎片压力）
       logFileSizeLimit(CHIP_DEFAULT_LOG_FILE_SIZE_LIMIT) {

@@ -17,70 +17,128 @@ const README_PATHS = [
 const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);
 const LEGACY_ENV_NAMES = ['esp32-full', 'esp32s3-full'];
 
-// Unified Architecture v2.0：所有出厂环境统一编译全部源码，运行时 FeatureBudget 门控。
-// OTA 策略：跟随硬件能力——有 PSRAM + 双 app 分区（8MB/16MB）才开启，无 PSRAM 一律关闭。
+// Unified Architecture v2.0：功能基线统一，外部网络适配器按硬件环境裁剪；
+// 运行时 FeatureBudget 继续负责是否实际启用。
+// DS18B20：所有环境统一编译，运行时由功能配置开关控制（C3/C6 使用兼容版 OneWire）。
+// OTA 策略：跟随分区能力——有 A/B 双 app 分区（8MB/16MB）才开启，4MB 单 app 仅保留明确的不可用状态。
 // ENV_EXPECTATIONS 不再使用 profile 字段。
 const ENV_EXPECTATIONS = {
     'esp32-F4R0': {
         board: 'esp32dev',
         mcu: 'esp32',
-        partition: 'partitions/fastbee.csv',
+        partition: 'partitions/4MB.csv',
         psram: false,
+        ds18b20: true,
         ota: false,
-        libIgnore: ['NimBLE-Arduino']
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: false, cellular: false },
+        adapterSourceFilter: 'lite',
+        forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
-    'esp32-F8R4': {
+    'esp32-F8R0': {
         board: 'esp32dev',
         mcu: 'esp32',
-        partition: 'partitions/fastbee-8MB.csv',
+        partition: 'partitions/8MB.csv',
+        flashSize: '8MB',
+        psram: false,
+        ds18b20: true,
+        ota: true,
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: true, cellular: true },
+        adapterSourceFilter: 'full',
+        requiredAdapterLibs: ['TinyGSM', 'SSLClient']
+    },
+    'esp32-F8R8': {
+        board: 'esp32dev',
+        mcu: 'esp32',
+        partition: 'partitions/8MB.csv',
         flashSize: '8MB',
         psram: true,
-        ota: true
+        ds18b20: true,
+        ota: true,
+        networkAdapters: { ethernet: true, cellular: true },
+        adapterSourceFilter: 'full',
+        requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32c3-F4R0': {
         board: 'esp32-c3-devkitm-1',
-        partition: 'partitions/fastbee.csv',
+        partition: 'partitions/4MB.csv',
         psram: false,
+        ds18b20: true,
         ota: false,
-        libIgnore: ['NimBLE-Arduino']
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: false, cellular: false },
+        adapterSourceFilter: 'lite',
+        forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32s3-F8R0': {
         board: 'esp32-s3-devkitc-1',
-        partition: 'partitions/fastbee-8MB.csv',
+        partition: 'partitions/8MB.csv',
         flashSize: '8MB',
-        psram: true,
-        ota: true
+        psram: false,
+        ds18b20: true,
+        ota: true,
+        networkAdapters: { ethernet: true, cellular: true },
+        adapterSourceFilter: 'full',
+        requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32c6-F4R0': {
         board: 'esp32-c6-devkitc-1',
-        partition: 'partitions/fastbee.csv',
+        partition: 'partitions/4MB.csv',
         // devkitc-1 默认 8MB，实际模组 4MB，通过 board_upload.flash_size 显式覆盖
         uploadFlashSize: '4MB',
         psram: false,
+        ds18b20: true,
         ota: false,
-        libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: false, cellular: false },
+        adapterSourceFilter: 'lite',
+        forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
-    'esp32s3-F8R4': {
+    'esp32c6-F8R0': {
+        board: 'esp32-c6-devkitc-1',
+        partition: 'partitions/8MB.csv',
+        flashSize: '8MB',
+        uploadFlashSize: '8MB',
+        psram: false,
+        ds18b20: true,
+        ota: true,
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: false, cellular: false },
+        adapterSourceFilter: 'lite',
+        forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
+    },
+    'esp32s3-F8R8': {
         board: 'esp32-s3-devkitc-1',
-        partition: 'partitions/fastbee-8MB.csv',
+        partition: 'partitions/8MB.csv',
         flashSize: '8MB',
         psram: true,
+        ds18b20: true,
         ota: true,
-        libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino']
+        libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino'],
+        networkAdapters: { ethernet: true, cellular: true },
+        adapterSourceFilter: 'full',
+        requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32s3-F16R8': {
         board: 'esp32-s3-devkitc1-n16r8',
-        partition: 'partitions/fastbee-16MB.csv',
+        partition: 'partitions/16MB.csv',
         flashSize: '16MB',
         psram: true,
+        ds18b20: true,
         ota: true,
-        libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino']
+        // F16R8 keeps IR/RF compiled; only BLE is omitted from the unified image.
+        libIgnore: ['NimBLE-Arduino'],
+        networkAdapters: { ethernet: true, cellular: true },
+        adapterSourceFilter: 'full',
+        requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     }
 };
 
-// 非出厂环境：开发/参考板，不进发布产物流水线（test-all/build-all-artifacts 不覆盖）。
-// 其 platformio.ini 配置仍受 ENV_EXPECTATIONS 校验。
-const SPECIAL_PURPOSE_ENVS = ['esp32-F8R4', 'esp32s3-F8R0'];
+// All nine memory-qualified environments are formal release targets. Extra
+// vendor-specific board definitions should be kept outside the release set
+// or added here with their own partition and runtime expectations.
+const SPECIAL_PURPOSE_ENVS = [];
 
 const FLAG_SECTION_REQUIREMENTS = {
     esp32c3_runtime_flags: [
@@ -121,9 +179,9 @@ const FLAG_SECTION_REQUIREMENTS = {
  * Feature flag -> source files that must NOT be excluded when flag is enabled.
  * Ensures build_src_filter does not accidentally strip files for active features.
  *
- * NOTE: FASTBEE_ENABLE_OTA is NOT listed here — under Unified Architecture v2.0
- * OTA sources are compiled in every environment and gated at runtime; OTA
- * enablement is enforced by validateEnvExpectations (flag value + partition).
+ * NOTE: FASTBEE_ENABLE_OTA is NOT listed here — OTA is a partition-capability
+ * gate: 8/16MB A/B environments compile it, while 4MB single-slot images
+ * explicitly omit it and expose the reason through the feature-status API.
  */
 const FEATURE_FLAG_TO_SOURCES = {
     FASTBEE_ENABLE_RULE_SCRIPT: ['core/RuleScriptManager.cpp', 'network/handlers/RuleScriptRouteHandler.cpp'],
@@ -137,12 +195,12 @@ const FEATURE_FLAG_TO_SOURCES = {
  * Feature flag -> lib_deps tokens that must NOT appear when flag is disabled (=0).
  * Prevents PlatformIO LDF from scanning unused third-party libraries.
  *
- * NOTE: CELLULAR keeps an empty list on purpose — unified environments declare
- * TinyGSM/SSLClient in lib_deps so the runtime feature-config page can enable
- * cellular later; sources are still excluded via build_src_filter where set.
+ * TinyGSM/SSLClient are only declared by environments that compile cellular.
+ * This keeps PlatformIO's dependency graph and the runtime feature registry
+ * aligned instead of presenting a feature that cannot be linked.
  */
 const FEATURE_FLAG_FORBID_LIBS = {
-    FASTBEE_ENABLE_CELLULAR: [],
+    FASTBEE_ENABLE_CELLULAR: ['TinyGSM', 'SSLClient'],
     FASTBEE_ENABLE_ETHERNET: []
 };
 
@@ -313,6 +371,62 @@ function forbidTokens(label, actual, forbidden, issues) {
     });
 }
 
+function getLastBuildFlagValue(flags, macroName) {
+    let value = null;
+    flags.forEach((flag) => {
+        const match = flag.match(new RegExp(`^-D${escapeRegex(macroName)}=(.*)$`));
+        if (match) value = match[1];
+    });
+    return value;
+}
+
+function validateAdapterExpectations(platformioText, sectionName, expectation, issues) {
+    if (!expectation.networkAdapters) return;
+
+    const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
+    const flags = resolveIniBuildFlags(platformioText, sectionName);
+    const excluded = extractExcludedSources(platformioText, sectionName);
+    const libDeps = extractIniList(platformioText, sectionName, 'lib_deps');
+    const expectedAdapters = expectation.networkAdapters;
+
+    Object.entries({
+        FASTBEE_ENABLE_ETHERNET: expectedAdapters.ethernet,
+        FASTBEE_ENABLE_CELLULAR: expectedAdapters.cellular
+    }).forEach(([macroName, expected]) => {
+        const actual = getLastBuildFlagValue(flags, macroName);
+        const expectedValue = expected ? '1' : '0';
+        if (actual !== expectedValue) {
+            issues.push(`${label}: ${macroName} must resolve to ${expectedValue}, got ${actual === null ? '(missing)' : actual}`);
+        }
+    });
+
+    const adapterSources = ['network/CellularAdapter.cpp', 'network/EthernetAdapter.cpp'];
+    if (expectation.adapterSourceFilter === 'lite') {
+        adapterSources.forEach((source) => {
+            if (!excluded.includes(source)) {
+                issues.push(`${label}: lite adapter profile must exclude '${source}'`);
+            }
+        });
+    } else if (expectation.adapterSourceFilter === 'full') {
+        adapterSources.forEach((source) => {
+            if (excluded.includes(source)) {
+                issues.push(`${label}: full adapter profile must compile '${source}'`);
+            }
+        });
+    }
+
+    (expectation.forbiddenAdapterLibs || []).forEach((library) => {
+        if (libDeps.some((dep) => dep.includes(library))) {
+            issues.push(`${label}: disabled network adapter must not declare '${library}'`);
+        }
+    });
+    (expectation.requiredAdapterLibs || []).forEach((library) => {
+        if (!libDeps.some((dep) => dep.includes(library))) {
+            issues.push(`${label}: enabled network adapter profile must declare '${library}'`);
+        }
+    });
+}
+
 function validateMapCoverage(label, map, expectedKeys, issues) {
     validateSameSet(label, Array.from(map.keys()), expectedKeys, issues);
 }
@@ -375,6 +489,10 @@ function validateEnvExpectations(platformioText, issues) {
         forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags || [], issues);
 
         const resolvedBuildFlags = resolveIniBuildFlags(platformioText, sectionName);
+        if (expectation.ds18b20) {
+            requireTokens(`${label} resolved build_flags`, resolvedBuildFlags,
+                ['-DFASTBEE_ENABLE_SENSOR_DRIVER=1', '-DFASTBEE_ENABLE_DS18B20=1'], issues);
+        }
         if (expectation.psram) {
             requireTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'], issues);
         } else {
@@ -392,6 +510,8 @@ function validateEnvExpectations(platformioText, issues) {
 
         const libIgnore = extractIniList(platformioText, sectionName, 'lib_ignore');
         requireTokens(`${label} lib_ignore`, libIgnore, expectation.libIgnore || [], issues);
+
+        validateAdapterExpectations(platformioText, sectionName, expectation, issues);
     });
 }
 
@@ -542,8 +662,7 @@ function validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, is
             defines.get(name).push(value);
         });
 
-        // env 段自身直接声明的宏属于有意覆盖（PlatformIO 后出现者优先，
-        // 如 full_unified_flags 的 DS18B20=1 被 C3/C6 env 覆盖为 0），不算冲突
+        // env 段自身直接声明的宏属于有意覆盖（PlatformIO 后出现者优先），不算冲突
         const directMacros = new Set();
         extractIniList(platformioText, sectionName, 'build_flags').forEach((entry) => {
             const direct = entry.match(/^-D([^=\s]+)/);
@@ -717,6 +836,18 @@ function validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEn
     }
 }
 
+function validateGzipWwwHardwareOptIn(gzipWwwText, issues) {
+    if (!gzipWwwText.includes("const upload = args.includes('--upload')")) {
+        issues.push(`${rel(GZIP_WWW_PATH)}: hardware upload must require an explicit --upload flag`);
+    }
+    if (!gzipWwwText.includes('if (!upload || noUpload)')) {
+        issues.push(`${rel(GZIP_WWW_PATH)}: default asset generation must stop before uploadfs`);
+    }
+    if (!gzipWwwText.includes("upload && noUpload")) {
+        issues.push(`${rel(GZIP_WWW_PATH)}: conflicting --upload/--no-upload flags must be rejected`);
+    }
+}
+
 function validatePartitionTables(platformioText, issues) {
     const PARTITION_DIR = path.join(ROOT_DIR, 'partitions');
     const partitionEnvs = Object.entries(ENV_EXPECTATIONS);
@@ -760,7 +891,8 @@ function validatePartitionTables(platformioText, issues) {
 
         const hasOta0 = rows.some((r) => r.subtype === 'ota_0');
         const hasOta1 = rows.some((r) => r.subtype === 'ota_1');
-        const hasSpiffs = rows.some((r) => r.subtype === 'spiffs');
+        const hasSpiffs = rows.some((r) => r.type === 'data' &&
+            (r.subtype === 'littlefs' || (r.name === 'spiffs' && r.subtype === 'spiffs')));
         const hasNvs = rows.some((r) => r.subtype === 'nvs');
         const hasOtadata = rows.some((r) => r.subtype === 'ota' && r.type === 'data');
 
@@ -776,7 +908,7 @@ function validatePartitionTables(platformioText, issues) {
 
         // 4MB partition should have single app slot (ota_0 only)
         // 8MB/16MB partition should have dual app slots (ota_0 + ota_1)
-        const isSmallPartition = partitionFile.includes('fastbee.csv') && !partitionFile.includes('8MB') && !partitionFile.includes('16MB');
+        const isSmallPartition = partitionFile.endsWith('4MB.csv');
 
         if (isSmallPartition) {
             if (hasOta1) {
@@ -813,13 +945,13 @@ function validatePartitionTables(platformioText, issues) {
     // Verify OTA environments use dual-slot partitions, non-OTA use single-slot
     otaEnvs.forEach((envName) => {
         const partition = ENV_EXPECTATIONS[envName].partition;
-        if (partition.includes('fastbee.csv') && !partition.includes('8MB') && !partition.includes('16MB')) {
+        if (partition.endsWith('4MB.csv')) {
             issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: OTA-capable environment should use dual-slot partition table`);
         }
     });
     nonOtaEnvs.forEach((envName) => {
         const partition = ENV_EXPECTATIONS[envName].partition;
-        if (partition.includes('8MB') || partition.includes('16MB')) {
+        if (partition.endsWith('8MB.csv') || partition.endsWith('16MB.csv')) {
             issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: non-OTA environment should use single-slot partition table`);
         }
     });
@@ -901,6 +1033,7 @@ function main() {
     validateOutputNames(outputNameByEnv, collectEnvMap, releaseEnvs, issues);
     validateReadmeScriptExamples(releaseEnvs, allPlatformioEnvs, outputNameByEnv, issues);
     validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
+    validateGzipWwwHardwareOptIn(gzipWwwText, issues);
     validatePartitionTables(platformioText, issues);
 
     if (issues.length > 0) {

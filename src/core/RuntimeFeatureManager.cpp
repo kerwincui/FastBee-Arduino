@@ -35,7 +35,11 @@ void RuntimeFeatureManager::registerFeature(const FeatureMeta& meta) {
     FeatureState& st = features_[count_++];
     st.meta = meta;
     st.userEnabled = meta.compiled && meta.defaultEnabled;
+    st.explicitlyConfigured = false;
     st.budgetPassed = true;
+    st.runtimeDisabled = false;
+    st.runtimeReason[0] = '\0';
+    runtimeDegraded_ = false;
 }
 
 RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(const char* key) {
@@ -44,6 +48,42 @@ RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(const ch
         if (strcmp(features_[i].meta.key, key) == 0) return &features_[i];
     }
     return nullptr;
+}
+
+void RuntimeFeatureManager::setRuntimeDisabled(const char* key, const char* reason) {
+    auto* feature = findFeature(key);
+    if (!feature) return;
+    feature->runtimeDisabled = true;
+    feature->runtimeReason[0] = '\0';
+    if (reason && reason[0] != '\0') {
+        strncpy(feature->runtimeReason, reason, sizeof(feature->runtimeReason) - 1);
+        feature->runtimeReason[sizeof(feature->runtimeReason) - 1] = '\0';
+    }
+    runtimeDegraded_ = true;
+}
+
+void RuntimeFeatureManager::clearRuntimeDisabled(const char* key) {
+    auto* feature = findFeature(key);
+    if (!feature) return;
+    feature->runtimeDisabled = false;
+    feature->runtimeReason[0] = '\0';
+    runtimeDegraded_ = false;
+    for (size_t i = 0; i < count_; ++i) {
+        if (features_[i].runtimeDisabled) {
+            runtimeDegraded_ = true;
+            break;
+        }
+    }
+}
+
+bool RuntimeFeatureManager::isRuntimeDisabled(const char* key) const {
+    const auto* feature = findFeature(key);
+    return feature && feature->runtimeDisabled;
+}
+
+const char* RuntimeFeatureManager::runtimeDisableReason(const char* key) const {
+    const auto* feature = findFeature(key);
+    return feature ? feature->runtimeReason : nullptr;
 }
 
 const RuntimeFeatureManager::FeatureState* RuntimeFeatureManager::findFeature(const char* key) const {
@@ -200,13 +240,12 @@ void RuntimeFeatureManager::buildConfigDoc(JsonDocument& doc) const {
     }
     JsonObject features = doc["features"].to<JsonObject>();
     
-    // WP-93: 稀疏覆盖 - 只保存用户显式修改的项，不写入默认值
+    // 保存完整的用户期望状态。配置导出、Web 功能页和 LittleFS 文件因而
+    // 使用同一份可读快照；运行期预算/自动降级状态仍只通过状态 API 暴露，
+    // 不会覆盖用户选择。
     for (size_t i = 0; i < count_; ++i) {
-        // 只有当 userEnabled 与 defaultEnabled 不同时才写入
-        if (features_[i].userEnabled != features_[i].meta.defaultEnabled) {
-            JsonObject entry = features[features_[i].meta.key].to<JsonObject>();
-            entry["enabled"] = features_[i].userEnabled;
-        }
+        JsonObject entry = features[features_[i].meta.key].to<JsonObject>();
+        entry["enabled"] = features_[i].userEnabled;
     }
 }
 
@@ -249,38 +288,45 @@ bool RuntimeFeatureManager::loadConfig() {
         return true;
     }
 
-    // 用文件中的值覆盖默认配置
+    // 用文件中的值覆盖默认配置。旧版允许只保存少量覆盖项；缺失项继续
+    // 使用当前安全默认值，并在本次加载末尾一次性改写为完整快照。
     JsonObjectConst features = doc["features"];
+    bool needsCanonicalRewrite = features.isNull() || doc["version"].as<int>() != 1;
+    // network.json.enableMDNS was the legacy source of truth.  Do not persist
+    // the new default into a missing mdns slot until NetworkManager has had a
+    // chance to migrate that legacy value.  Otherwise a reset between the two
+    // startup stages turns the generated default into an explicit user value.
+    const bool needsLegacyMDNSMigration =
+        features.isNull() || !features["mdns"]["enabled"].is<bool>();
+    size_t recognizedEntries = 0;
     for (JsonPairConst kv : features) {
         auto* f = findFeature(kv.key().c_str());
         if (f && kv.value()["enabled"].is<bool>()) {
             f->userEnabled = kv.value()["enabled"].as<bool>();
+            f->explicitlyConfigured = true;
+            ++recognizedEntries;
+        } else {
+            // 丢弃未知旧键和无效值，避免它们永久污染导出配置。
+            needsCanonicalRewrite = true;
         }
     }
 
-    // 升级兼容迁移：旧版固件的 features.json 不含 webServer/mdns 键（当时无此开关，
-    // Web 服务常驻）。若直接套用新默认值（禁用），升级后的 STA 设备将失去 Web 入口
-    // 且无法通过页面重新启用。因此旧配置文件缺失这两个键时保持启用，
-    // 并回写文件完成迁移；全新部署（无文件）仍遵循出厂全禁用策略。
-    if (features["webServer"].isNull() || features["mdns"].isNull()) {
-        const char* legacyKeys[] = {"webServer", "mdns"};
-        for (const char* key : legacyKeys) {
-            if (features[key].isNull()) {
-                auto* f = findFeature(key);
-                if (f) f->userEnabled = true;
-            }
-        }
-        loaded_ = true;
-        syncBudgetState();
-        applyDependencyRules();
-        LOGGER.info("[FeatureCfg] Migrated legacy config: webServer/mdns kept enabled");
-        saveCurrentConfig();
-        return true;
+    if (recognizedEntries != count_) {
+        needsCanonicalRewrite = true;
     }
 
     loaded_ = true;
     syncBudgetState();
     applyDependencyRules();
+
+    if (needsCanonicalRewrite && !needsLegacyMDNSMigration) {
+        LOGGER.info("[FeatureCfg] Normalizing legacy sparse config to full snapshot");
+        if (!saveCurrentConfig()) {
+            LOGGER.warning("[FeatureCfg] Legacy config loaded but canonical rewrite failed");
+        }
+    } else if (needsCanonicalRewrite) {
+        LOGGER.info("[FeatureCfg] Deferring sparse config rewrite until legacy mDNS migration");
+    }
     return true;
 }
 
@@ -299,6 +345,7 @@ bool RuntimeFeatureManager::shouldEnable(const char* key) const {
     const auto* f = findFeature(key);
     if (!f) return false;
     if (!(f->meta.compiled && f->userEnabled && f->budgetPassed)) return false;
+    if (f->runtimeDisabled) return false;
     // 延迟初始化门控: requiresNetwork 的功能在网络子系统就绪前不激活，
     // 把重型外设/协议的内存分配错峰到 WiFi 启动之后（抬高启动期可用 DRAM）
     if (f->meta.requiresNetwork && !networkReady_) return false;
@@ -312,6 +359,72 @@ bool RuntimeFeatureManager::shouldEnable(const char* key) const {
     return true;
 }
 
+bool RuntimeFeatureManager::isUserEnabled(const char* key) const {
+    const auto* feature = findFeature(key);
+    return feature && feature->userEnabled;
+}
+
+bool RuntimeFeatureManager::hasExplicitSetting(const char* key) const {
+    const auto* feature = findFeature(key);
+    return feature && feature->explicitlyConfigured;
+}
+
+bool RuntimeFeatureManager::setUserEnabled(const char* key, bool enabled, bool* changed) {
+    if (changed) *changed = false;
+    auto* feature = findFeature(key);
+    if (!feature) return false;
+    if (enabled && !feature->meta.compiled) return false;
+
+    const bool didChange = feature->userEnabled != enabled;
+    feature->userEnabled = enabled;
+    feature->explicitlyConfigured = true;
+    if (didChange) applyDependencyRules();
+    if (changed) *changed = didChange;
+    return true;
+}
+
+bool RuntimeFeatureManager::resetToDefaults() {
+    if (count_ == 0) generateDefaults();
+
+    // Stage the complete default document without changing live state.  A
+    // failed flash write must not make the status API claim that reset worked.
+    JsonDocument defaults;
+    defaults["version"] = 1;
+    JsonObject values = defaults["features"].to<JsonObject>();
+    for (size_t i = 0; i < count_; ++i) {
+        values[features_[i].meta.key]["enabled"] =
+            features_[i].meta.compiled && features_[i].meta.defaultEnabled;
+    }
+    if (!saveConfig(defaults)) {
+        LOGGER.warning("[FeatureCfg] Default config save failed, retrying once");
+        if (!saveConfig(defaults)) return false;
+    }
+
+    for (size_t i = 0; i < count_; ++i) {
+        features_[i].userEnabled =
+            features_[i].meta.compiled && features_[i].meta.defaultEnabled;
+        features_[i].explicitlyConfigured = true;
+        features_[i].runtimeDisabled = false;
+        features_[i].runtimeReason[0] = '\0';
+    }
+    loaded_ = true;
+    runtimeDegraded_ = false;
+    syncBudgetState();
+    applyDependencyRules();
+
+    // Factory defaults must not retain a previous generation containing user
+    // choices; ConfigStorage normally keeps .bak for ordinary edits.
+    const String backupPath = String(kConfigPath) + ".bak";
+    const String tmpPath = String(kConfigPath) + ".tmp";
+    bool historyRemoved = true;
+    if (LittleFS.exists(backupPath) && !LittleFS.remove(backupPath)) historyRemoved = false;
+    if (LittleFS.exists(tmpPath) && !LittleFS.remove(tmpPath)) historyRemoved = false;
+    if (!historyRemoved) {
+        LOGGER.error("[FeatureCfg] Defaults saved but old config history could not be removed");
+    }
+    return historyRemoved;
+}
+
 bool RuntimeFeatureManager::updateFromJson(const JsonDocument& doc) {
     JsonObjectConst features = doc["features"];
     if (features.isNull()) return false;
@@ -323,11 +436,46 @@ bool RuntimeFeatureManager::updateFromJson(const JsonDocument& doc) {
         if (!f->meta.compiled) continue;
         if (kv.value()["enabled"].is<bool>()) {
             f->userEnabled = kv.value()["enabled"].as<bool>();
+            f->explicitlyConfigured = true;
             changed = true;
         }
     }
     if (changed) applyDependencyRules();
     return changed;
+}
+
+RuntimeFeatureManager::UserConfigSnapshot RuntimeFeatureManager::captureUserConfig() const {
+    UserConfigSnapshot snapshot;
+    snapshot.featureCount = static_cast<uint8_t>(count_);
+    for (size_t i = 0; i < count_; ++i) {
+        const uint32_t bit = uint32_t{1} << i;
+        if (features_[i].userEnabled) snapshot.enabledMask |= bit;
+        if (features_[i].explicitlyConfigured) snapshot.explicitMask |= bit;
+    }
+    return snapshot;
+}
+
+bool RuntimeFeatureManager::restoreUserConfig(const UserConfigSnapshot& snapshot) {
+    if (snapshot.featureCount != count_) return false;
+    for (size_t i = 0; i < count_; ++i) {
+        const uint32_t bit = uint32_t{1} << i;
+        features_[i].userEnabled = (snapshot.enabledMask & bit) != 0;
+        features_[i].explicitlyConfigured = (snapshot.explicitMask & bit) != 0;
+    }
+    return true;
+}
+
+RuntimeFeatureManager::ConfigUpdateResult RuntimeFeatureManager::updateAndSave(
+    const JsonDocument& doc, UserConfigSnapshot* previousState) {
+    const UserConfigSnapshot before = captureUserConfig();
+    if (previousState) *previousState = before;
+    if (!updateFromJson(doc)) return ConfigUpdateResult::NO_VALID_ENTRIES;
+    if (saveCurrentConfig()) return ConfigUpdateResult::SAVED;
+
+    if (!restoreUserConfig(before)) {
+        LOGGER.error("[FeatureCfg] Failed to restore in-memory state after save failure");
+    }
+    return ConfigUpdateResult::SAVE_FAILED;
 }
 
 uint32_t RuntimeFeatureManager::estimateFlashKB() const {
@@ -372,53 +520,78 @@ void RuntimeFeatureManager::estimateFromJson(const JsonDocument& doc, uint32_t& 
     }
 }
 
-void RuntimeFeatureManager::getStatusJson(JsonVariant dst) const {
-    dst.to<JsonObject>();
-    JsonArray arr = dst["features"].to<JsonArray>();
+bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) const {
+    if (index >= count_ || obj.isNull()) return false;
+
+    const auto& st = features_[index];
+    obj["key"] = st.meta.key;
+    obj["name"] = st.meta.displayName;
+    obj["group"] = st.meta.group;
+    obj["compiled"] = st.meta.compiled;
+    obj["userEnabled"] = st.userEnabled;
+    // Report the same effective state that the initialization gates use.
+    // A feature can be compiled and user-enabled while still being held
+    // back by the startup budget, a dependency, network deferral, or a
+    // runtime memory-recovery override. Counting it as active in that
+    // situation makes the Web resource summary overstate live usage.
+    const bool active = shouldEnable(st.meta.key);
+    obj["active"] = active;
+    obj["runtimeDisabled"] = st.runtimeDisabled;
+    if (st.runtimeDisabled && st.runtimeReason[0] != '\0') {
+        obj["runtimeDisableReason"] = st.runtimeReason;
+    }
+    obj["flashKB"] = st.meta.flashKB;
+    obj["ramB"] = st.meta.ramB;
+    if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
+    if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
+    // 延迟初始化标记：true 表示该功能在网络就绪后才激活（错峰启动）
+    if (st.meta.requiresNetwork) obj["deferred"] = true;
+    if (!st.meta.compiled) {
+        obj["locked"] = true;
+        // OTA 在 4MB 单 app 分区中是硬件/分区能力限制，不是统一代码
+        // 缺失；将原因透传给页面，避免误导用户重新编译无效固件。
+        if (st.meta.key && strcmp(st.meta.key, "ota") == 0) {
+            obj["lockReason"] = "当前分区不支持 OTA（需要带 ota_1 的 A/B 双分区）";
+        } else {
+            obj["lockReason"] = "Not compiled into firmware";
+        }
+    }
+    return true;
+}
+
+void RuntimeFeatureManager::getStatusSummaryJson(JsonObject summary) const {
+    if (summary.isNull()) return;
+
     uint32_t totalFlashKB = 0;
     uint32_t activeFlashKB = 0;
     uint32_t activeRamB = 0;
-
     for (size_t i = 0; i < count_; ++i) {
         const auto& st = features_[i];
         if (st.meta.compiled) totalFlashKB += st.meta.flashKB;
-        JsonObject obj = arr.add<JsonObject>();
-        obj["key"] = st.meta.key;
-        obj["name"] = st.meta.displayName;
-        obj["group"] = st.meta.group;
-        obj["compiled"] = st.meta.compiled;
-        obj["userEnabled"] = st.userEnabled;
-        obj["active"] = shouldEnable(st.meta.key);
-        obj["flashKB"] = st.meta.flashKB;
-        obj["ramB"] = st.meta.ramB;
-        if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
-        if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
-        // 延迟初始化标记：true 表示该功能在网络就绪后才激活（错峰启动）
-        if (st.meta.requiresNetwork) obj["deferred"] = true;
-        if (!st.meta.compiled) {
-            obj["locked"] = true;
-            // OTA 在 4MB 单 app 分区中是硬件/分区能力限制，不是统一代码
-            // 缺失；将原因透传给页面，避免误导用户重新编译无效固件。
-            if (st.meta.key && strcmp(st.meta.key, "ota") == 0) {
-                obj["lockReason"] = "当前分区不支持 OTA（需要带 ota_1 的 A/B 双分区）";
-            } else {
-                obj["lockReason"] = "Not compiled into firmware";
-            }
-        }
-        if (st.meta.compiled && st.userEnabled) {
+        const bool active = shouldEnable(st.meta.key);
+        if (active) {
             activeFlashKB += st.meta.flashKB;
             activeRamB += st.meta.ramB;
         }
     }
 
-    JsonObject summary = dst["summary"].to<JsonObject>();
     summary["totalFlashKB"] = totalFlashKB;
     summary["activeFlashKB"] = activeFlashKB;
     summary["activeRamB"] = activeRamB;
+    summary["runtimeDegraded"] = runtimeDegraded_;
 #if defined(ESP_PLATFORM)
     summary["free8KB"] = heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024;
     summary["largest8KB"] = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024;
 #endif
+}
+
+void RuntimeFeatureManager::getStatusJson(JsonVariant dst) const {
+    dst.to<JsonObject>();
+    JsonArray arr = dst["features"].to<JsonArray>();
+    for (size_t i = 0; i < count_; ++i) {
+        getFeatureStatusJson(i, arr.add<JsonObject>());
+    }
+    getStatusSummaryJson(dst["summary"].to<JsonObject>());
 }
 
 }  // namespace FastBee

@@ -12,8 +12,8 @@ import { defineConfig, devices } from '@playwright/test';
  * 环境变量:
  *   DEVICE_IP       - 设备 IP 地址（必须）
  *   DEVICE_PORT     - 设备端口（默认 80）
- *   WIFI_SSID       - WiFi SSID（默认 fastbee）
- *   WIFI_PASSWORD   - WiFi 密码（默认 15208747707）
+ *   WIFI_SSID       - WiFi SSID（网络写入测试必须显式提供）
+ *   WIFI_PASSWORD   - WiFi 密码（网络写入测试必须显式提供）
  *   MQTT_BROKER     - MQTT Broker 地址
  *   MQTT_CLIENT_ID  - MQTT 客户端 ID
  *   MQTT_USERNAME   - MQTT 用户名
@@ -60,7 +60,7 @@ export default defineConfig({
     // P0 - 冒烟测试：每次构建必跑
     {
       name: 'smoke',
-      testMatch: /01-auth|02-dashboard|23-memory-pressure-notice|24-web-smooth-access/,
+      testMatch: /01-auth|02-dashboard|22-feature-config|23-memory-pressure-notice|24-web-smooth-access|25-mqtt-status-feedback/,
       use: { ...devices['Desktop Chrome'] },
     },
     // P1 - 核心功能：网络/设备/MQTT
@@ -72,13 +72,13 @@ export default defineConfig({
     // P2 - 功能测试：外设/Modbus/规则/性能
     {
       name: 'features',
-      testMatch: /05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf|19-ir-remote|20-rf-remote/,
+      testMatch: /05-peripheral|06-periph-exec|08-modbus|10-rule-script|17-perf|19-ir-remote|20-rf-remote|22-feature-config/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // P3 - 辅助功能：大屏/日志/文件/用户/联动
+    // P3 - 辅助功能：大屏/日志/用户/联动
     {
       name: 'auxiliary',
-      testMatch: /09-fullscreen|11-logs|12-files|13-users|18-linkage/,
+      testMatch: /09-fullscreen|11-logs|13-users|18-linkage/,
       use: { ...devices['Desktop Chrome'] },
     },
     // P4 - 回归测试：集成/UI/资源加载重试

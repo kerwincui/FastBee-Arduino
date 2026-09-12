@@ -474,6 +474,85 @@ size_t StringUtils::charCount(const String& str) {
     return str.length();
 }
 
+size_t StringUtils::copyUtf8(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+
+    const unsigned char* current = reinterpret_cast<const unsigned char*>(src);
+    size_t copied = 0;
+    const size_t payloadLimit = dstSize - 1; // reserve the NUL terminator
+
+    while (*current != 0 && copied < payloadLimit) {
+        const unsigned char lead = *current;
+        size_t sequenceLength = 0;
+        // Determine the available bytes without reading past the terminating
+        // NUL. This matters for malformed/truncated UTF-8 from configuration
+        // files, where a three-byte lead may be the final non-NUL byte.
+        size_t available = 0;
+        while (available < 4 && current[available] != 0) ++available;
+
+        if (lead < 0x80U) {
+            sequenceLength = 1;
+        } else if (lead >= 0xC2U && lead <= 0xDFU) {
+            // Two-byte sequence: U+0080..U+07FF.
+            if (available < 2 || (current[1] & 0xC0U) != 0x80U) {
+                ++current;
+                continue;
+            }
+            sequenceLength = 2;
+        } else if (lead >= 0xE0U && lead <= 0xEFU) {
+            // Three-byte sequence. E0/ED have restricted second bytes to
+            // exclude overlong encodings and UTF-16 surrogate code points.
+            if (available < 3) {
+                ++current;
+                continue;
+            }
+            const unsigned char second = current[1];
+            const unsigned char third = current[2];
+            if ((second & 0xC0U) != 0x80U || (third & 0xC0U) != 0x80U ||
+                (lead == 0xE0U && second < 0xA0U) ||
+                (lead == 0xEDU && second > 0x9FU)) {
+                ++current;
+                continue;
+            }
+            sequenceLength = 3;
+        } else if (lead >= 0xF0U && lead <= 0xF4U) {
+            // Four-byte sequence: U+10000..U+10FFFF.
+            if (available < 4) {
+                ++current;
+                continue;
+            }
+            const unsigned char second = current[1];
+            const unsigned char third = current[2];
+            const unsigned char fourth = current[3];
+            if ((second & 0xC0U) != 0x80U || (third & 0xC0U) != 0x80U ||
+                (fourth & 0xC0U) != 0x80U ||
+                (lead == 0xF0U && second < 0x90U) ||
+                (lead == 0xF4U && second > 0x8FU)) {
+                ++current;
+                continue;
+            }
+            sequenceLength = 4;
+        } else {
+            // Continuation bytes, overlong leads, and values above U+10FFFF
+            // are not valid UTF-8. Drop only the invalid lead and continue so
+            // a later valid code point can still be retained.
+            ++current;
+            continue;
+        }
+
+        // Do not split a code point when the fixed destination is full.
+        if (copied + sequenceLength > payloadLimit) break;
+        memcpy(dst + copied, current, sequenceLength);
+        copied += sequenceLength;
+        current += sequenceLength;
+    }
+
+    dst[copied] = '\0';
+    return copied;
+}
+
 size_t StringUtils::byteCount(const String& str) {
     return str.length();
 }

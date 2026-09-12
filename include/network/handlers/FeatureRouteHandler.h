@@ -18,6 +18,13 @@ public:
     void setupRoutes(AsyncWebServer* server);
 
 private:
+    enum class PersistResult : uint8_t {
+        SAVED,
+        NO_VALID_ENTRIES,
+        FEATURE_SAVE_FAILED,
+        MDNS_MIRROR_FAILED
+    };
+
     WebHandlerContext* ctx;
 
     void handleStatus(AsyncWebServerRequest* request);
@@ -30,6 +37,7 @@ private:
                         size_t len, size_t index, size_t total);
     // 解析累积的 body，返回是否成功；失败时已向客户端发送错误响应
     bool parseBody(AsyncWebServerRequest* request, JsonDocument& doc);
+    PersistResult persistFeatureUpdate(const JsonDocument& doc);
 
     static constexpr size_t kMaxBodyBytes = 4096;
 };

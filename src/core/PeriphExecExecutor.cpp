@@ -22,6 +22,7 @@
 #include "protocols/MQTTClient.h"
 #endif
 #include "systems/LoggerSystem.h"
+#include "systems/ConfigStorage.h"
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
 #include "core/MemoryBudget.h"
@@ -34,6 +35,7 @@
 #endif
 #include "core/DriverRegistry.h"
 #include "network/WebConfigManager.h"
+#include "network/NetworkManager.h"
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
@@ -1162,23 +1164,26 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
 // 推断值绝不作为上报 ID：上报 ID 的通用规则是"显式 dataField 优先，否则回退
 // 外设配置 id"，避免写死的默认字段与平台物模型标识符不匹配。
 String PeriphExecExecutor::guessSensorDataField(const String& category) {
-    if (category == "dht11" || category == "dht22" || category == "ds18b20") {
+    String normalized = category;
+    normalized.trim();
+    normalized.toLowerCase();
+    if (normalized == "dht11" || normalized == "dht22" || normalized == "ds18b20") {
         return "temperature";
-    } else if (category == "sht31" || category == "SHT31" ||
-               category == "aht20" || category == "AHT20" ||
-               category == "bmp280" || category == "BMP280") {
+    } else if (normalized == "sht30" || normalized == "sht31" ||
+               normalized == "aht20" || normalized == "bmp280") {
         return "temperature";
-    } else if (category == "mpu6050" || category == "MPU6050") {
+    } else if (normalized == "mpu6050") {
         return "accelX";
-    } else if (category == "ultrasonic") {
+    } else if (normalized == "ultrasonic") {
         return "distance";
-    } else if (category == "current") {
+    } else if (normalized == "current" || normalized == "current_loop" ||
+               normalized == "4-20ma" || normalized == "4_20ma") {
         return "current";
-    } else if (category == "voltage") {
+    } else if (normalized == "voltage") {
         return "voltage";
-    } else if (category == "radar") {
+    } else if (normalized == "radar") {
         return "presence";
-    } else if (category == "ntc") {
+    } else if (normalized == "ntc") {
         return "temperature";
     }
     return "value"; // 其它类别的内部通道名兜底
@@ -1191,12 +1196,14 @@ String PeriphExecExecutor::resolveChannelField(const String& category, const Str
     if (!explicitField.isEmpty()) {
         return explicitField;
     }
-    if (category == "dht11" || category == "dht22" ||
-        category == "sht31" || category == "SHT31" ||
-        category == "aht20" || category == "AHT20" ||
-        category == "bmp280" || category == "BMP280" ||
-        category == "mpu6050" || category == "MPU6050") {
-        return guessSensorDataField(category);
+    String normalized = category;
+    normalized.trim();
+    normalized.toLowerCase();
+    if (normalized == "dht11" || normalized == "dht22" ||
+        normalized == "sht30" || normalized == "sht31" ||
+        normalized == "aht20" || normalized == "bmp280" ||
+        normalized == "mpu6050") {
+        return guessSensorDataField(normalized);
     }
     return periphId;
 }
@@ -1216,17 +1223,27 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
 
     const char* periphId = doc["periphId"] | "";
-    const char* category = doc["sensorCategory"] | "analog";
+    // Normalize imported/UI values once so aliases and mixed-case categories
+    // follow exactly the same execution path.
+    String categoryValue = doc["sensorCategory"] | "analog";
+    categoryValue.trim();
+    categoryValue.toLowerCase();
+    const char* category = categoryValue.c_str();
     float scaleFactor = doc["scaleFactor"] | 1.0f;
     float offset = doc["offset"] | 0.0f;
     uint8_t decimals = doc["decimalPlaces"] | 2;
     const char* label = doc["sensorLabel"] | "";
     const char* unit = doc["unit"] | "";
-    // 显式配置的 dataField：唯一可用作上报 ID 的来源（多字段外设如 DHT11 温/湿）
+    // 显式配置的 dataField：唯一可用作上报 ID 的来源（多字段外设如 DHT11 温/湿）。
+    // channelField 可选地指定驱动内部通道，使多个物理传感器能使用全局唯一
+    // dataField，而不影响 SHT/DHT 的 temperature/humidity 通道选择。
     String explicitFieldStr = doc["dataField"] | "";
     // 内部通道字段（缓存键/LCD 条目/通道选择）：与 Web 数据源 sourceId 同规则，
     // 推断值不进入 result.dataField，不会顶替外设配置 id 成为上报 ID
-    String channelFieldStr = resolveChannelField(String(category), String(periphId), explicitFieldStr);
+    String explicitChannelField = doc["channelField"] | "";
+    String channelFieldStr = explicitChannelField.isEmpty()
+                                 ? resolveChannelField(categoryValue, String(periphId), explicitFieldStr)
+                                 : explicitChannelField;
     const char* dataField = channelFieldStr.c_str();
     uint8_t deviceIndex = doc["deviceIndex"] | 0;
 
@@ -1240,7 +1257,11 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 
     if (strcmp(category, "analog") == 0) {
         // 热路径零分配：避免 String(periphId) 每周期堆构造
-        rawValue = (float)pm.readAnalogByCStr(periphId);
+        rawValue = pm.readAnalogValueByCStr(periphId);
+        if (isnan(rawValue) || isinf(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: analog conversion failed on '%s'", periphId);
+            return false;
+        }
     } else if (strcmp(category, "digital") == 0) {
         GPIOState state = pm.readPinByCStr(periphId);
         rawValue = (state == GPIOState::STATE_HIGH) ? 1.0f : 0.0f;
@@ -1387,6 +1408,55 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             LOGGER.warningf("[PeriphExec] Sensor read: current read failed on '%s'", periphId);
             return false;
         }
+    } else if (strcmp(category, "current_loop") == 0 ||
+               strcmp(category, "4-20ma") == 0 ||
+               strcmp(category, "4_20ma") == 0) {
+        // Industrial 4-20 mA input. The loop is converted through an
+        // external shunt/front-end and is rejected when it is disconnected or
+        // outside the configured range.
+        PeripheralConfig cfg;
+        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        const uint8_t pin = cfg.getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: 4-20mA sensor '%s' has no valid pin", periphId);
+            return false;
+        }
+        if (pm.isReservedPin(pin)) {
+            LOGGER.warningf("[PeriphExec] Sensor read blocked: '%s' GPIO%d reserved on %s", periphId, pin, CHIP_NAME);
+            return false;
+        }
+
+        CurrentLoopCalibration cal;
+        auto readFloat = [&doc](const char* primary, const char* alias, float fallback) {
+            JsonVariantConst value = doc[primary];
+            if (value.isNull() && alias) value = doc[alias];
+            return value | fallback;
+        };
+        auto readBool = [&doc](const char* primary, const char* alias, bool fallback) {
+            JsonVariantConst value = doc[primary];
+            if (value.isNull() && alias) value = doc[alias];
+            return value | fallback;
+        };
+        cal.shuntResistance = readFloat("shuntResistance", "shuntOhms", 165.0f);
+        cal.inputGain = readFloat("inputGain", "gain", 1.0f);
+        cal.inputOffset = readFloat("inputOffset", "voltageOffset", 0.0f);
+        cal.loopMinMa = readFloat("loopMinMa", "minMa", 4.0f);
+        cal.loopMaxMa = readFloat("loopMaxMa", "maxMa", 20.0f);
+        cal.engineeringMin = readFloat("engineeringMin", "rangeMin", 0.0f);
+        cal.engineeringMax = readFloat("engineeringMax", "rangeMax", 100.0f);
+        cal.vRef = readFloat("vRef", nullptr, 3.3f);
+        cal.adcMax = static_cast<uint16_t>(doc["adcMax"] | 4095);
+        cal.sampleCount = static_cast<uint8_t>(doc["sampleCount"] | 8);
+        cal.mapToEngineering = readBool("mapToEngineering", "engineeringMapping", false);
+
+        rawValue = SensorDriver::getInstance().readCurrentLoop(pin, cal);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: 4-20mA read failed on '%s'", periphId);
+            return false;
+        }
     } else if (strcmp(category, "voltage") == 0) {
         PeripheralConfig cfg;
         if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
@@ -1526,13 +1596,38 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             JsonDocument doc;
             doc["features"][key.c_str()]["enabled"] = enable;
             auto& fm = FastBee::RuntimeFeatureManager::instance();
-            if (!fm.updateFromJson(doc)) {
-                LOGGER.infof("[PeriphExec] Feature '%s' already %s, no action needed", key.c_str(), enable ? "enabled" : "disabled");
-                return true;
+            FastBee::RuntimeFeatureManager::UserConfigSnapshot previousState;
+            const auto updateResult = fm.updateAndSave(doc, &previousState);
+            if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::NO_VALID_ENTRIES) {
+                LOGGER.warningf("[PeriphExec] Feature toggle rejected for '%s'", key.c_str());
+                return false;
             }
-            if (!fm.saveCurrentConfig()) {
+            if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::SAVE_FAILED) {
                 LOGGER.errorf("[PeriphExec] Feature toggle: failed to save features.json (%s)", key.c_str());
                 return false;
+            }
+
+            if (key == "mdns") {
+                FastBeeFramework* framework = FastBeeFramework::getInstance();
+                FBNetworkManager* network = framework
+                    ? static_cast<FBNetworkManager*>(framework->getNetworkManager())
+                    : nullptr;
+                if (!network) {
+                    fm.restoreUserConfig(previousState);
+                    if (!fm.saveCurrentConfig()) fm.loadConfig();
+                    LOGGER.error("[PeriphExec] Feature toggle: network manager unavailable for mDNS mirror");
+                    return false;
+                }
+                WiFiConfig networkConfig = network->getConfig();
+                if (networkConfig.enableMDNS != enable) {
+                    networkConfig.enableMDNS = enable;
+                    if (!network->updateConfig(networkConfig, true)) {
+                        fm.restoreUserConfig(previousState);
+                        if (!fm.saveCurrentConfig()) fm.loadConfig();
+                        LOGGER.error("[PeriphExec] Feature toggle: failed to save mDNS network mirror");
+                        return false;
+                    }
+                }
             }
             LOGGER.infof("[PeriphExec] Feature '%s' %s, rebooting to apply...", key.c_str(), enable ? "enabled" : "disabled");
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
@@ -1551,30 +1646,33 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             LOGGER.info("[PeriphExec] Executing factory reset...");
             const char* configFiles[] = {
                 "/config/device.json", "/config/network.json", "/config/protocol.json",
-#if !FASTBEE_SINGLE_ADMIN_MODE
-                "/config/users.json",
-#endif
-                "/config/system.json",
-#if FASTBEE_ENABLE_MQTT
-                "/config/mqtt.json",
-#endif
-#if FASTBEE_ENABLE_MODBUS
-                "/config/modbus.json",
-#endif
-                PERIPH_EXEC_CONFIG_FILE,
-#if FASTBEE_ENABLE_RULE_SCRIPT
-                RULE_SCRIPT_CONFIG_FILE,
-#endif
-                "/config/peripherals.json",
-#if FASTBEE_ENABLE_IR_REMOTE
-                "/config/ir_keys.json",
-#endif
+                "/config/features.json", "/config/users.json", "/config/auth.json",
+                "/config/system.json", "/config/mqtt.json", "/config/mqtt-backup.json",
+                "/config/modbus.json", "/config/coap.json", "/config/http.json",
+                "/config/tcp.json", "/config/provision.json", "/config/ble_provision.json",
+                PERIPH_EXEC_CONFIG_FILE, "/config/rule_scripts.json",
+                "/config/peripherals.json", "/config/ir_keys.json", "/config/rf_keys.json"
             };
+            bool resetSucceeded = true;
+            ConfigStorage& storage = ConfigStorage::getInstance();
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
-                if (LittleFS.exists(configFiles[i])) {
-                    LittleFS.remove(configFiles[i]);
+                if (!storage.deleteJSONConfigGenerations(configFiles[i])) {
+                    LOGGER.errorf("[PeriphExec] Factory reset: failed to remove %s generations",
+                                  configFiles[i]);
+                    resetSucceeded = false;
                 }
             }
+
+            FastBeeFramework* framework = FastBeeFramework::getInstance();
+            FBNetworkManager* network = framework
+                ? static_cast<FBNetworkManager*>(framework->getNetworkManager())
+                : nullptr;
+            if (!network || !network->clearPersistentFallback()) {
+                LOGGER.error("[PeriphExec] Factory reset: failed to clear network NVS fallback");
+                resetSucceeded = false;
+            }
+            if (!resetSucceeded) return false;
+
             SystemRebooter::scheduleReboot("PeriphExec factory reset", 1000UL, RestartReason::FACTORY_RESET);
             return true;
         }

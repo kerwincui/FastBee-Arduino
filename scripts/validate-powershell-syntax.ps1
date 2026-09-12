@@ -44,7 +44,9 @@ $Issues = New-Object System.Collections.Generic.List[string]
 foreach ($File in $UniqueFiles) {
     $Tokens = $null
     $ParseErrors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$ParseErrors) | Out-Null
+    # Parse UTF-8 text explicitly so Chinese comments and strings are not decoded as ANSI by Windows PowerShell 5.1.
+    $Content = Get-Content -LiteralPath $File -Raw -Encoding UTF8
+    [System.Management.Automation.Language.Parser]::ParseInput($Content, [ref]$Tokens, [ref]$ParseErrors) | Out-Null
     foreach ($ParseError in $ParseErrors) {
         $RelPath = $File.Substring($ProjectDir.TrimEnd('\','/').Length + 1).Replace('\', '/')
         $Issues.Add(("{0}:{1}:{2}: {3}" -f `

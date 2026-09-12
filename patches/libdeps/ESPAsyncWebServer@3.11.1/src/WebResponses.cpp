@@ -367,7 +367,14 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
   }
 
   if (_chunked || !_sendContentLength || (_sentLength > CONFIG_LWIP_TCP_WND_DEFAULT)) {
-    if (!_in_flight_credit || (ASYNC_RESPONCE_BUFF_SIZE > request->client()->space())) {
+    // FastBee patch: use the actual fallback buffer capacity for the in-flight
+    // guard. The upstream fixed 2*MSS check can defer forever after a
+    // low-memory allocation falls back to a smaller buffer.
+    const size_t tcpWindow = request->client()->space();
+    const size_t responseBufferCap = _send_buffer_cap
+      ? _send_buffer_cap
+      : std::min<size_t>(ASYNC_RESPONCE_BUFF_SIZE, tcpWindow);
+    if (!_in_flight_credit || (responseBufferCap > tcpWindow)) {
       // async_ws_log_d("defer user call in_flight:%u, tcpwin:%u", _in_flight, request->client()->space());
       // take the credit back since we are ignoring this ack and rely on other inflight data acks
       if (len) {
@@ -392,8 +399,13 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
     if (_writtenHeadersLength < _assembled_headers.length()) {
 // we were not able to fit all headers in current buff, send this part here and return later for the rest
 #if ASYNCWEBSERVER_USE_CHUNK_INFLIGHT
-      _in_flight += pcb_written;
-      --_in_flight_credit;  // take a credit
+      // FastBee patch: zero progress must not consume the finite send credit.
+      if (pcb_written) {
+        _in_flight += pcb_written;
+        if (_in_flight_credit) {
+          --_in_flight_credit;  // take a credit only for bytes now in flight
+        }
+      }
 #endif
       if (!request->client()->send()) {
         // something is wrong, what should we do here?
@@ -415,6 +427,10 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
         // data is pending in buffer from a previous call or previous iteration
         size_t const added_len =
           request->client()->add(reinterpret_cast<char *>(_send_buffer.get() + _send_buffer_offset), _send_buffer_len - _send_buffer_offset);
+        // FastBee patch: account bytes accepted by AsyncTCP before a partial
+        // add breaks out. Otherwise the response consumes a send credit without
+        // recording in-flight data and can never regain that credit from ACKs.
+        payloadlen += added_len;
         if (added_len != _send_buffer_len - _send_buffer_offset) {
           // we were not able to add entire buffer's content to tcp buffs, leave it for later
           // (this should not happen normally unless connection's TCP window suddenly changed from remote or mem pressure)
@@ -423,7 +439,6 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
         } else {
           _send_buffer_len = _send_buffer_offset = 0;  // consider buffer empty
         }
-        payloadlen += added_len;
       }
 
       auto tcp_win = request->client()->space();
@@ -513,8 +528,15 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
     request->client()->send();
     _writtenLength += payloadlen;
 #if ASYNCWEBSERVER_USE_CHUNK_INFLIGHT
-    _in_flight += payloadlen;
-    --_in_flight_credit;  // take a credit
+    // FastBee patch: allocation failure, zero TCP space and transient
+    // LittleFS RESPONSE_TRY_AGAIN all produce payloadlen == 0. Preserve the
+    // credit so a later poll can retry instead of deadlocking the response.
+    if (payloadlen) {
+      _in_flight += payloadlen;
+      if (_in_flight_credit) {
+        --_in_flight_credit;  // take a credit only for bytes now in flight
+      }
+    }
 #endif
     if (_send_buffer_len == 0) {
       // buffer empty, we can release mem, otherwise need to keep it till next run (should not happen under normal conditions)
@@ -831,19 +853,18 @@ AsyncFileResponse::AsyncFileResponse(File content, const String &path, const cha
 
 size_t AsyncFileResponse::_fillBuffer(uint8_t *data, size_t len) {
   size_t rd = _content.read(data, len);
-  // FastBee patch: a zero/short read before EOF happens transiently under
-  // flash contention (MQTT/TLS load). The base class treats 0 as
-  // end-of-stream and closes the connection, truncating the page. Retry
-  // synchronously a few times; resuming later via poll is unreliable because
-  // AsyncTCP drops/throttles poll events under queue pressure.
+  // FastBee patch: a transient zero-read before EOF is not end-of-stream.
+  // Retry briefly in place, then let the response layer retry on a later
+  // ACK/poll instead of closing a response with bytes still outstanding.
   if (len > 0 && rd == 0 && _content.position() < _content.size()) {
-    for (uint8_t i = 0; i < 6 && rd == 0; ++i) {
-      delay(2);
+    for (uint8_t retry = 0; retry < 4 && rd == 0; ++retry) {
+      delay(1);
       rd = _content.read(data, len);
     }
-    Serial.printf("[WebFile] zero-read pos=%u/%u retried rd=%u\n", (unsigned)_content.position(), (unsigned)_content.size(), (unsigned)rd);
+    if (rd == 0 && _content.position() < _content.size()) {
+      return RESPONSE_TRY_AGAIN;
+    }
   }
-  _fillZeroRetries = rd ? 0 : _fillZeroRetries;
   return rd;
 }
 

@@ -164,7 +164,37 @@ void test_guard_level_uses_internal_dram_budgets() {
         static_cast<uint8_t>(MemoryBudget::guardLevelForDram(16000 - 1, 20000, 5, false)));
     TEST_ASSERT_EQUAL_UINT8(
         static_cast<uint8_t>(MemoryPressureLevel::CRITICAL),
-        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(60000, 8192 - 1, 5, false)));
+        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(
+            60000, MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK - 1, 5, false)));
+
+    TestLog::testEnd(true);
+}
+
+void test_guard_largest_block_bands_match_service_floors() {
+    TestLog::testStart("MemoryBudget: Largest Block Service Floors");
+
+    using FastBee::MemoryBudget;
+    using FastBee::MemoryPressureLevel;
+
+    TEST_ASSERT_EQUAL_UINT32(8192U, MemoryBudget::GUARD_WARN_LARGEST_BLOCK);
+    TEST_ASSERT_EQUAL_UINT32(4096U, MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK);
+    TEST_ASSERT_EQUAL_UINT32(3072U, MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK);
+
+    // COM7/COM15/COM16 field samples settle around 10-11KB. That remains
+    // NORMAL when total DRAM is healthy; the exact lower boundaries still
+    // enter WARN, SEVERE and CRITICAL respectively.
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::NORMAL),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(60000U, 10228U, 5U, false)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::WARN),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(60000U, 8191U, 5U, false)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::SEVERE),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(60000U, 4095U, 5U, false)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(MemoryPressureLevel::CRITICAL),
+        static_cast<uint8_t>(MemoryBudget::guardLevelForDram(60000U, 3071U, 5U, false)));
 
     TestLog::testEnd(true);
 }
@@ -431,6 +461,52 @@ void test_source_webconfig_maintenance_uses_8bit() {
     TestLog::testEnd(true);
 }
 
+/**
+ * WebGuard recovery hysteresis must fit the measured no-PSRAM ESP32 steady
+ * state.  A 24KB recovery line left the classic ESP32-F4R0 permanently in
+ * ACTIVE at roughly 21.9KB free8 even though its largest block was healthy.
+ */
+void test_web_guard_recovery_threshold_matches_no_psram_baseline() {
+    TestLog::testStart("MemoryBudget: WebGuard recovery threshold");
+
+    using FastBee::MemoryBudget;
+
+    TEST_ASSERT_EQUAL_UINT32(20480U, MemoryBudget::WEB_GUARD_MIN_DRAM_FREE);
+    TEST_ASSERT_EQUAL_UINT32(21504U, MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE);
+    TEST_ASSERT_TRUE(MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE >
+                     MemoryBudget::WEB_GUARD_MIN_DRAM_FREE);
+    // Field sample: COM16 recovered to free8=21912/blk8=10228.  The
+    // recovery line must admit that state while retaining 1KB hysteresis.
+    TEST_ASSERT_TRUE(21912U >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE);
+    TEST_ASSERT_TRUE(10228U >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_BLK8);
+
+    TestLog::step("21.9KB/10.2KB field baseline can leave WebGuard ACTIVE state");
+    TestLog::testEnd(true);
+}
+
+/**
+ * Foreground Web recovery must start before the Web guard's reject state can
+ * become self-sustaining.  A lower MQTT yield threshold leaves the broker
+ * socket allocated while every API retry is already rejected.
+ */
+void test_mqtt_foreground_yield_matches_web_guard_recovery_line() {
+    TestLog::testStart("MemoryBudget: MQTT foreground Web yield threshold");
+
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(mqtt.empty(), "MQTTClient.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("dram8Free >= FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE") !=
+            std::string::npos,
+        "yieldToWeb must use the WebGuard recovery threshold");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("dram8Free < FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE") !=
+            std::string::npos,
+        "MQTT handle foreground pressure must use the WebGuard recovery threshold");
+
+    TestLog::step("MQTT socket yield and WebGuard recovery use one DRAM boundary");
+    TestLog::testEnd(true);
+}
+
 // ========== Profile 可配置化重构守卫（计划五.2） ==========
 
 /**
@@ -551,6 +627,7 @@ void test_memory_budget_group() {
     RUN_TEST(test_mqtts_field_observed_ethernet_restore_budget);
     RUN_TEST(test_mqtts_reconnect_task_stack_budget);
     RUN_TEST(test_guard_level_uses_internal_dram_budgets);
+    RUN_TEST(test_guard_largest_block_bands_match_service_floors);
     RUN_TEST(test_guard_level_uses_dynamic_critical_floor);
     // Task 4: 内存池管理优化测试
     RUN_TEST(test_modbus_buffer_pool_size);
@@ -560,6 +637,8 @@ void test_memory_budget_group() {
     // 8BIT 口径 Web 压力检测
     RUN_TEST(test_severe_web_pressure8_boundary_values);
     RUN_TEST(test_source_webconfig_maintenance_uses_8bit);
+    RUN_TEST(test_web_guard_recovery_threshold_matches_no_psram_baseline);
+    RUN_TEST(test_mqtt_foreground_yield_matches_web_guard_recovery_line);
     // Profile 可配置化重构守卫（计划五.2）
     RUN_TEST(test_async_tcp_platformio_guard);
     RUN_TEST(test_periph_exec_resource_guard);

@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <algorithm>
+#include "core/SystemConstants.h"
 
 /**
  * @brief 联网方式类型（决定物理层通道）
@@ -117,7 +118,7 @@ struct WiFiConfig {
     
     // AP 配置（首次启动或 STA 失败时的配网热点）
     String apSSID = "";                // 留空时自动生成唯一 SSID：deviceName_芯片ID前6位
-    String apPassword = "";            // 开放热点，方便首次配网
+    String apPassword = NetConst::DEFAULT_AP_PASSWORD;  // 缺少配置文件时仍使用安全默认密码
     String apIP = "192.168.4.1";       // AP 固定IP，冲突时自动切换备用网段
     uint8_t apChannel = 1;
     bool apHidden = false;

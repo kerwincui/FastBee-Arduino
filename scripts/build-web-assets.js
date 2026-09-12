@@ -28,6 +28,34 @@ function relFromWww(filePath) {
     return path.relative(WWW_DIR, filePath).replace(/\\/g, '/');
 }
 
+function findUncompressedPublishAssets() {
+    const files = [];
+    walkDir(WWW_DIR, (filePath) => {
+        if (filePath.endsWith('.gz')) return;
+        if (!COMPRESS_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return;
+        files.push(relFromWww(filePath));
+    });
+    return files.sort();
+}
+
+function deleteOldGzipAssets() {
+    const stats = {
+        deleted: 0,
+        skipped: 0
+    };
+    walkDir(WWW_DIR, (filePath) => {
+        if (!filePath.endsWith('.gz')) return;
+        try {
+            fs.unlinkSync(filePath);
+            stats.deleted += 1;
+        } catch (error) {
+            stats.skipped += 1;
+            console.warn(`  stale gzip kept: ${relFromWww(filePath)} (${error.code || error.message})`);
+        }
+    });
+    return stats;
+}
+
 function gzipWebAssets() {
     const stats = {
         files: 0,
@@ -84,10 +112,18 @@ function deleteCompressedOriginals() {
 function runBuild() {
     console.log('Web publish build');
     console.log('=================');
+    process.env.FASTBEE_ENABLE_DEVICE_CONTROL = '1';
     const buildResult = buildWebModules();
 
     console.log('\nGenerating service-worker manifest...');
     const manifest = generateManifest();
+
+    console.log('\nRemoving stale gzip assets...');
+    const staleGzipStats = deleteOldGzipAssets();
+    console.log(`  removed ${staleGzipStats.deleted} stale gzip file(s)`);
+    if (staleGzipStats.skipped > 0) {
+        throw new Error(`Failed to remove ${staleGzipStats.skipped} stale gzip artifact(s)`);
+    }
 
     console.log('\nRefreshing gzip assets...');
     const gzipStats = gzipWebAssets();
@@ -96,20 +132,25 @@ function runBuild() {
         : '0.0';
     console.log(`  gzipped ${gzipStats.files} file(s): ${gzipStats.raw} -> ${gzipStats.gzip} bytes (-${ratio}%)`);
     if (gzipStats.failed > 0) {
-        console.log(`  failed gzip writes: ${gzipStats.failed}`);
+        throw new Error(`Failed to create ${gzipStats.failed} gzip publish artifact(s)`);
     }
 
     console.log('\nRemoving uncompressed publish copies...');
     const cleanupStats = deleteCompressedOriginals();
     console.log(`  removed ${cleanupStats.deleted} original file(s)`);
     if (cleanupStats.skipped > 0) {
-        console.log(`  skipped ${cleanupStats.skipped} locked original file(s)`);
+        throw new Error(`Failed to remove ${cleanupStats.skipped} uncompressed publish artifact(s)`);
+    }
+
+    const rawPublishAssets = findUncompressedPublishAssets();
+    if (rawPublishAssets.length > 0) {
+        throw new Error(`data/www contains uncompressed HTML/JS/CSS: ${rawPublishAssets.join(', ')}`);
     }
 
     const report = createWebAssetReport();
     printWebAssetReport(report);
 
-    return { buildResult, manifest, gzipStats, cleanupStats, report };
+    return { buildResult, manifest, staleGzipStats, gzipStats, cleanupStats, report };
 }
 
 if (require.main === module) {
@@ -123,6 +164,8 @@ if (require.main === module) {
 
 module.exports = {
     runBuild,
+    deleteOldGzipAssets,
     gzipWebAssets,
-    deleteCompressedOriginals
+    deleteCompressedOriginals,
+    findUncompressedPublishAssets
 };

@@ -625,8 +625,11 @@ bool FastBeeFramework::initialize() {
     {
         unsigned long modbusStart = millis();
         ets_printf("[STEP11.2] Starting Modbus handler...\n");
-        if (protocolManager->restartModbus()) {
+        const ModbusRestartResult result = protocolManager->restartModbus();
+        if (result == ModbusRestartResult::Started) {
             ets_printf("[Boot] Modbus handler created: %lu ms\n", millis() - modbusStart);
+        } else if (result == ModbusRestartResult::IdleNoEnabledTargets) {
+            ets_printf("[Boot] Modbus configured with no enabled targets; transport remains idle\n");
         } else {
             ets_printf("[STEP11.2] WARN: Modbus restart failed\n");
         }
@@ -961,6 +964,9 @@ bool FastBeeFramework::initialize() {
         "{\"bootTimeMs\":" + String(bootTime) + "}");
 #endif
 
+    const bool mdnsConfigured = network && network->getConfig().enableMDNS &&
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("mdns");
+
 #if FASTBEE_ENABLE_ETHERNET
     if (network && network->getNetworkType() == NetworkType::NET_ETHERNET && network->getEthernetAdapter()) {
         auto* eth = network->getEthernetAdapter();
@@ -970,7 +976,7 @@ bool FastBeeFramework::initialize() {
         if (ethHasIP && eth->isConnected()) {
             ets_printf("Ethernet IP: %s\n", ethIP.toString().c_str());
             ets_printf("Access URL: http://%s\n", ethIP.toString().c_str());
-            if (network->getConfig().enableMDNS) {
+            if (mdnsConfigured) {
                 ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
             }
         } else {
@@ -993,7 +999,9 @@ bool FastBeeFramework::initialize() {
         ets_printf("DNS: %s\n", WiFi.dnsIP(0).toString().c_str());
         ets_printf("RSSI: %d dBm\n", WiFi.RSSI());
         ets_printf("Access URL: http://%s\n", WiFi.localIP().toString().c_str());
-        ets_printf("mDNS URL: http://fastbee.local\n");
+        if (mdnsConfigured) {
+            ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
+        }
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         ets_printf("Mode: AP (Access Point)\n");
         String apSSID = WiFi.softAPSSID();  // 优先读取实际广播的 SSID
@@ -1007,6 +1015,9 @@ bool FastBeeFramework::initialize() {
         ets_printf("WiFi Pass: %s\n", apPass.c_str());
         ets_printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
         ets_printf("Setup URL: http://%s/setup\n", WiFi.softAPIP().toString().c_str());
+        if (mdnsConfigured) {
+            ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
+        }
     } else {
         ets_printf("Network: Not connected\n");
     }
@@ -1180,8 +1191,12 @@ bool FastBeeFramework::addSystemTasks() {
                             LOG_INFO("[Modbus] Modbus disabled by feature gate/budget, skipping auto-start permanently");
                         } else {
                             LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
-                            if (!framework->protocolManager->restartModbus()) {
+                            const ModbusRestartResult result =
+                                framework->protocolManager->restartModbus();
+                            if (result == ModbusRestartResult::Failed) {
                                 framework->modbusAutoStarted = false;
+                            } else if (result == ModbusRestartResult::IdleNoEnabledTargets) {
+                                LOG_INFO("[Modbus] No enabled tasks/devices; auto-start complete in idle state");
                             }
                         }
                     } else if (!modbusEnabled) {

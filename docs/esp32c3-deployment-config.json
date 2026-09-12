@@ -1,156 +1,24 @@
 {
-  "device": {
-    "deviceId": "FBE_C3_001",
-    "deviceName": "ESP32-C3 温湿度监测设备",
-    "productNumber": 1,
-    "userId": "1",
-    "description": "基于 ESP32-C3 的温湿度监测与 OLED 显示设备",
-    "location": "实验室 A 区",
-    "enableNTP": true,
-    "ntpServer1": "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
-    "ntpServer2": "cn.pool.ntp.org",
-    "timezone": "CST-8",
-    "syncInterval": 3600,
-    "logLevel": "INFO",
-    "developerModeEnabled": true
-  },
-  "network": {
-    "wifiMode": "station",
-    "wifiSSID": "your_wifi_ssid",
-    "wifiPassword": "your_wifi_password",
-    "staticIP": "",
-    "staticGateway": "",
-    "staticSubnet": "",
-    "staticDNS": "",
-    "apSSID": "FastBee-C3-001",
-    "apPassword": "12345678",
-    "hostname": "fastbee-c3-001"
-  },
-  "mqtt": {
-    "server": "iot.fastbee.cn",
-    "port": 1883,
-    "sslEnabled": false,
-    "clientId": "FBE_C3_001",
-    "username": "",
-    "password": "",
-    "keepAlive": 60,
-    "cleanSession": true,
-    "autoReconnect": true,
-    "publishTopic": "fb/iot/FBE_C3_001/data",
-    "subscribeTopic": "fb/iot/FBE_C3_001/cmd"
-  },
-  "peripherals": [
+  "type": "fastbee-config-bundle",
+  "version": 1,
+  "scope": "selected",
+  "files": [
     {
-      "id": "dht11_sensor",
-      "name": "DHT11 温湿度传感器",
-      "type": "SENSOR_DHT11",
-      "enabled": true,
-      "pinCount": 1,
-      "pins": [10],
-      "params": {
-        "sampleInterval": 2000,
-        "timeout": 1000
-      }
+      "name": "device.json",
+      "content": "{\n  \"deviceId\": \"\",\n  \"productNumber\": 0,\n  \"userId\": \"\",\n  \"deviceName\": \"fastbee\",\n  \"location\": \"\",\n  \"description\": \"FastBee-ESP32C3-DHT11-OLED\",\n  \"enableNTP\": true,\n  \"ntpServer1\": \"http://iot.fastbee.cn/prod-api/iot/tool/ntp\",\n  \"ntpServer2\": \"cn.pool.ntp.org\",\n  \"timezone\": \"CST-8\",\n  \"syncInterval\": 3600,\n  \"logLevel\": \"INFO\",\n  \"developerModeEnabled\": true\n}\n"
     },
     {
-      "id": "oled_display",
-      "name": "0.91 英寸 OLED 显示屏",
-      "type": "LCD",
-      "enabled": true,
-      "pinCount": 2,
-      "pins": [5, 6],
-      "params": {
-        "width": 128,
-        "height": 64,
-        "interface": 2,
-        "frequency": 400000,
-        "address": 3,
-        "contrast": 255
-      }
+      "name": "periph_exec.json",
+      "content": "{\n  \"rules\": [\n    {\n      \"id\": \"exec_001\",\n      \"name\": \"温湿度采集上报\",\n      \"enabled\": true,\n      \"execMode\": 0,\n      \"triggers\": [\n        {\n          \"triggerType\": 5,\n          \"triggerPeriphId\": \"\",\n          \"operatorType\": 0,\n          \"compareValue\": \"\",\n          \"timerMode\": 0,\n          \"intervalSec\": 60,\n          \"timePoint\": \"\",\n          \"eventId\": \"\",\n          \"pollResponseTimeout\": 1000,\n          \"pollMaxRetries\": 2,\n          \"pollInterPollDelay\": 100\n        }\n      ],\n      \"actions\": [\n        {\n          \"targetPeriphId\": \"dht11\",\n          \"actionType\": 19,\n          \"actionValue\": \"{\\\"periphId\\\":\\\"dht11\\\",\\\"sensorCategory\\\":\\\"dht11\\\",\\\"scaleFactor\\\":1,\\\"offset\\\":0,\\\"decimalPlaces\\\":1,\\\"sensorLabel\\\":\\\"temperature\\\",\\\"unit\\\":\\\"°C\\\",\\\"dataField\\\":\\\"temperature\\\"}\",\n          \"useReceivedValue\": false,\n          \"syncDelayMs\": 0,\n          \"execMode\": 0\n        },\n        {\n          \"targetPeriphId\": \"dht11\",\n          \"actionType\": 19,\n          \"actionValue\": \"{\\\"periphId\\\":\\\"dht11\\\",\\\"sensorCategory\\\":\\\"dht11\\\",\\\"scaleFactor\\\":1,\\\"offset\\\":0,\\\"decimalPlaces\\\":1,\\\"sensorLabel\\\":\\\"humidity\\\",\\\"unit\\\":\\\"%RH\\\",\\\"dataField\\\":\\\"humidity\\\"}\",\n          \"useReceivedValue\": false,\n          \"syncDelayMs\": 0,\n          \"execMode\": 0\n        },\n        {\n          \"targetPeriphId\": \"oled\",\n          \"actionType\": 27,\n          \"actionValue\": \"T: ${dht11.temperature}°C\\nH: ${dht11.humidity}%RH\\nFASTBEE\",\n          \"useReceivedValue\": false,\n          \"syncDelayMs\": 200,\n          \"execMode\": 0\n        }\n      ],\n      \"protocolType\": 0,\n      \"scriptContent\": \"\",\n      \"reportAfterExec\": true\n    },\n    {\n      \"id\": \"exec_388533\",\n      \"name\": \"打开LED\",\n      \"enabled\": true,\n      \"execMode\": 0,\n      \"triggers\": [\n        {\n          \"triggerType\": 0,\n          \"triggerPeriphId\": \"led\",\n          \"operatorType\": 0,\n          \"compareValue\": \"1\",\n          \"timerMode\": 0,\n          \"intervalSec\": 60,\n          \"timePoint\": \"\",\n          \"eventId\": \"\",\n          \"pollResponseTimeout\": 1000,\n          \"pollMaxRetries\": 2,\n          \"pollInterPollDelay\": 100\n        }\n      ],\n      \"actions\": [\n        {\n          \"targetPeriphId\": \"led\",\n          \"actionType\": 13,\n          \"actionValue\": \"\",\n          \"useReceivedValue\": false,\n          \"syncDelayMs\": 0,\n          \"execMode\": 0\n        }\n      ],\n      \"protocolType\": 0,\n      \"scriptContent\": \"\",\n      \"reportAfterExec\": true\n    },\n    {\n      \"id\": \"exec_410743\",\n      \"name\": \"关闭LED\",\n      \"enabled\": true,\n      \"execMode\": 0,\n      \"triggers\": [\n        {\n          \"triggerType\": 0,\n          \"triggerPeriphId\": \"led\",\n          \"operatorType\": 0,\n          \"compareValue\": \"0\",\n          \"timerMode\": 0,\n          \"intervalSec\": 60,\n          \"timePoint\": \"\",\n          \"eventId\": \"\",\n          \"pollResponseTimeout\": 1000,\n          \"pollMaxRetries\": 2,\n          \"pollInterPollDelay\": 100\n        }\n      ],\n      \"actions\": [\n        {\n          \"targetPeriphId\": \"led\",\n          \"actionType\": 14,\n          \"actionValue\": \"\",\n          \"useReceivedValue\": false,\n          \"syncDelayMs\": 0,\n          \"execMode\": 0\n        }\n      ],\n      \"protocolType\": 0,\n      \"scriptContent\": \"\",\n      \"reportAfterExec\": true\n    }\n  ]\n}\n"
     },
     {
-      "id": "led_indicator",
-      "name": "板载 LED 指示灯",
-      "type": "GPIO_DIGITAL_OUTPUT",
-      "enabled": true,
-      "pinCount": 1,
-      "pins": [8],
-      "params": {
-        "initialState": 0,
-        "passive": false
-      }
+      "name": "peripherals.json",
+      "content": "{\n  \"peripherals\": [\n    {\n      \"id\": \"dht11\",\n      \"name\": \"DHT11温湿度传感器\",\n      \"type\": 38,\n      \"enabled\": true,\n      \"pins\": [\n        10\n      ],\n      \"params\": {}\n    },\n    {\n      \"id\": \"led\",\n      \"name\": \"板载LED\",\n      \"type\": 12,\n      \"enabled\": true,\n      \"pins\": [\n        8\n      ],\n      \"params\": {\n        \"initialState\": 1,\n        \"pwmChannel\": 0,\n        \"pwmFrequency\": 1000,\n        \"pwmResolution\": 8,\n        \"defaultDuty\": 0\n      }\n    },\n    {\n      \"id\": \"oled\",\n      \"name\": \"OLED显示屏\",\n      \"type\": 36,\n      \"enabled\": true,\n      \"pins\": [\n        5,\n        6\n      ],\n      \"params\": {\n        \"width\": 72,\n        \"height\": 40,\n        \"interface\": 2\n      }\n    }\n  ]\n}\n"
+    },
+    {
+      "name": "protocol.json",
+      "content": "{\n  \"mqtt\": {\n    \"enabled\": false,\n    \"scheme\": \"mqtt\",\n    \"server\": \"iot.fastbee.cn\",\n    \"port\": 1883,\n    \"clientId\": \"\",\n    \"username\": \"\",\n    \"password\": \"\",\n    \"keepAlive\": 60,\n    \"autoReconnect\": true,\n    \"authType\": 0,\n    \"mqttSecret\": \"\",\n    \"authCode\": \"\",\n    \"willTopic\": \"\",\n    \"willPayload\": \"\",\n    \"willQos\": 0,\n    \"willRetain\": false,\n    \"longitude\": 0,\n    \"latitude\": 0,\n    \"iccid\": \"\",\n    \"cardPlatformId\": 0,\n    \"summary\": \"\",\n    \"publishTopics\": [\n      {\n        \"topic\": \"/property/post\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 0\n      },\n      {\n        \"topic\": \"/info/post\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 2\n      },\n      {\n        \"topic\": \"/event/post\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 4\n      },\n      {\n        \"topic\": \"/monitor/post\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 3\n      },\n      {\n        \"topic\": \"/ntp/post\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 7\n      },\n      {\n        \"topic\": \"/http/upgrade/reply\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 5\n      },\n      {\n        \"topic\": \"/fetch/upgrade/reply\",\n        \"qos\": 0,\n        \"retain\": false,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 6\n      }\n    ],\n    \"subscribeTopics\": [\n      {\n        \"topic\": \"/function/get\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 1\n      },\n      {\n        \"topic\": \"/info/get\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 2\n      },\n      {\n        \"topic\": \"/monitor/get\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 3\n      },\n      {\n        \"topic\": \"/ntp/get\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 7\n      },\n      {\n        \"topic\": \"/http/upgrade/set\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 5\n      },\n      {\n        \"topic\": \"/fetch/upgrade/set\",\n        \"qos\": 0,\n        \"enabled\": true,\n        \"autoPrefix\": true,\n        \"topicType\": 6\n      }\n    ]\n  },\n  \"version\": 2,\n  \"modbusRtu\": {\n    \"enabled\": true,\n    \"mode\": \"master\"\n  }\n}\n"
     }
   ],
-  "periph_exec": [
-    {
-      "id": "periodic_data_collection",
-      "name": "周期性数据采集上报",
-      "enabled": true,
-      "triggerType": "interval",
-      "interval": 60000,
-      "actions": [
-        {
-          "type": "readPeripheral",
-          "peripheralId": "dht11_sensor",
-          "params": {}
-        },
-        {
-          "type": "updateDisplay",
-          "peripheralId": "oled_display",
-          "params": {
-            "template": "Temp: {{temp}}°C Humi: {{humi}}%RH"
-          }
-        },
-        {
-          "type": "publishData",
-          "params": {
-            "topic": "fb/iot/FBE_C3_001/data",
-            "payloadTemplate": "{\"deviceId\":\"FBE_C3_001\",\"timestamp\":{{timestamp}},\"temperature\":{{temp}},\"humidity\":{{humi}},\"unit\":\"C\"}"
-          }
-        }
-      ]
-    },
-    {
-      "id": "led_control_rule",
-      "name": "LED 状态指示规则",
-      "enabled": true,
-      "triggerType": "command",
-      "commandPattern": "led控制",
-      "actions": [
-        {
-          "type": "writePin",
-          "peripheralId": "led_indicator",
-          "params": {
-            "state": "{{value}}"
-          }
-        }
-      ]
-    }
-  ],
-  "protocol": {
-    "version": "1.0",
-    "dataFormat": "json",
-    "compression": false,
-    "encryption": false,
-    "publishTopics": [
-      "fb/iot/FBE_C3_001/data"
-    ],
-    "subscribeTopics": [
-      "fb/iot/FBE_C3_001/cmd"
-    ],
-    "commands": [
-      {
-        "name": "led控制",
-        "description": "控制 LED 开关",
-        "parameters": [
-          {
-            "name": "value",
-            "type": "integer",
-            "required": true,
-            "description": "LED 状态：0=关闭，1=开启"
-          }
-        ]
-      }
-    ]
-  }
+  "sanitized": true
 }

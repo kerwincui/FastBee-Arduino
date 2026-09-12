@@ -220,6 +220,8 @@ private:
     // ── TCP 连接池健康监测与 Web 服务自动恢复 ──
     void checkAndRecoverWebServer();
     uint16_t countTcpConnections(uint8_t* outTimeWait = nullptr) const;
+    uint16_t countTcpConnectionsOnLocalPort(uint16_t port,
+                                            uint8_t* outTimeWait = nullptr) const;
     uint8_t pruneTimeWaitPcbs(uint8_t maxToKill);
     // 强制回收占用指定本地端口的所有非监听 PCB（active + TIME_WAIT）
     // 用于：1) 软重启前释放端口，避免 tcp_bind 返回 ERR_USE(-8) 永久失败

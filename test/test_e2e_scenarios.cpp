@@ -19,6 +19,8 @@
 #include "helpers/TestLogger.h"
 #include "helpers/NetworkMQTTHelper.h"
 
+using namespace FastBeeTest;
+
 void test_e2e_scenarios_group();
 
 class E2EFastBeeFramework {

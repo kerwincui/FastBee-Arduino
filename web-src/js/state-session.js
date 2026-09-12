@@ -8,16 +8,24 @@
 (function() {
     'use strict';
 
+    // The current firmware authenticates browser requests with an HttpOnly
+    // session cookie.  Older releases stored a bearer token in localStorage;
+    // keeping that token lets it override a fresh cookie because the server
+    // intentionally gives an explicit Authorization header precedence.
+    function clearLegacyAuthArtifacts() {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('sessionId');
+    }
+
     // ============ 会话验证 ============
 
     /**
      * 刷新页面 — 验证当前会话，若无效则尝试自动登录
      */
     AppState.refreshPage = function() {
-        const token = localStorage.getItem('auth_token');
-
-        // Prefer the HttpOnly session cookie. A legacy bearer token is still
-        // accepted when present so an already-open tab can migrate cleanly.
+        // Do not send a stale legacy bearer token alongside the cookie. The
+        // server deliberately prefers Authorization when both are present.
+        clearLegacyAuthArtifacts();
         const savedRemember = localStorage.getItem('remember');
         const savedUsername = localStorage.getItem('username');
 
@@ -55,6 +63,9 @@
      * @private
      */
     AppState._showLoginPage = function() {
+        // A failed/expired session must not leave a legacy token that can
+        // poison the next cookie-authenticated login attempt.
+        clearLegacyAuthArtifacts();
         // Release the long-lived event stream as soon as the session leaves the
         // application. This prevents closed/expired browser sessions from
         // retaining an SSE socket on memory-constrained targets.
@@ -104,9 +115,14 @@
             console.error('[Auth] Failed to prepare app shell:', e);
         }
 
-        // 按功能配置显示/隐藏左侧菜单项（失败静默，不阻塞启动）
+        // 先完成轻量菜单状态请求，再加载首屏模块。C3 上两者并发会争用
+        // AsyncTCP/JSON DRAM，导致 features 501/503 或 dashboard.js 被拒绝。
         if (typeof this.applyFeatureMenuVisibility === 'function') {
-            this.applyFeatureMenuVisibility();
+            try {
+                await this.applyFeatureMenuVisibility();
+            } catch (e) {
+                // 菜单函数已 fail-closed；异常不能阻塞基础页面启动。
+            }
         }
 
         this._loadModule('dashboard', () => {
@@ -234,6 +250,10 @@
         apiPost('/api/auth/login', { username, password })
             .then(res => {
                 if (res && res.success) {
+                    // Login establishes an HttpOnly cookie. Always discard
+                    // credentials left by pre-cookie firmware, including when
+                    // "remember" is selected.
+                    clearLegacyAuthArtifacts();
                     // Authentication is carried by the HttpOnly cookie set by
                     // the server; no session token is persisted in storage.
                     if (remember) {
@@ -241,7 +261,8 @@
                         localStorage.setItem('username', username);
                         // 不再保存密码到 localStorage!
                     } else {
-                        ['remember', 'username', 'sessionId', 'auth_token'].forEach(k => localStorage.removeItem(k));
+                        localStorage.removeItem('remember');
+                        localStorage.removeItem('username');
                         // 同时清理密码字段 (即使之前存在)
                         if (localStorage.getItem('password')) {
                             localStorage.removeItem('password');

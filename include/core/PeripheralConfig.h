@@ -8,6 +8,127 @@
 // GPIO中断回调函数类型
 using GPIOInterruptCallback = void(*)(uint8_t pin, GPIOState state);
 
+// 工业模拟量输入的简化信号类型。数值固定写入 JSON，便于旧固件/新固件
+// 之间保持兼容；0 保持原始 ADC 计数，不改变既有配置行为。
+enum class AnalogSignalMode : uint8_t {
+    RAW = 0,
+    VOLTAGE_0_10V = 1,
+    CURRENT_0_20MA = 2,
+    CURRENT_4_20MA = 3,
+    CUSTOM = 4,
+    // Source compatibility for the descriptive name used by newer paths.
+    CUSTOM_LINEAR = CUSTOM
+};
+
+// AI quality is reported separately from the converted value so existing
+// property identifiers and numeric payloads remain backward compatible.
+enum class AnalogInputQuality : uint8_t {
+    VALID = 0,
+    BELOW_RANGE = 1,
+    ABOVE_RANGE = 2,
+    DISCONNECTED = 3,
+    SHORT_CIRCUIT = 4,
+    INVALID_CONFIG = 5
+};
+
+inline const char* analogInputQualityName(AnalogInputQuality quality) {
+    switch (quality) {
+        case AnalogInputQuality::VALID: return "valid";
+        case AnalogInputQuality::BELOW_RANGE: return "low";
+        case AnalogInputQuality::ABOVE_RANGE: return "high";
+        case AnalogInputQuality::DISCONNECTED: return "disconnected";
+        case AnalogInputQuality::SHORT_CIRCUIT: return "short";
+        default: return "invalid_config";
+    }
+}
+
+inline AnalogInputQuality classifyAnalogInputQuality(uint8_t signalMode,
+                                                      float inputValue,
+                                                      float inputMin,
+                                                      float inputMax,
+                                                      float boundaryTolerance = 0.0f) {
+    if (boundaryTolerance < 0.0f || isnan(boundaryTolerance) || isinf(boundaryTolerance)) {
+        boundaryTolerance = 0.0f;
+    }
+    if (inputValue >= inputMin - boundaryTolerance &&
+        inputValue <= inputMax + boundaryTolerance) {
+        return AnalogInputQuality::VALID;
+    }
+
+    // Keep the existing 4-20mA driver's 1mA fault tolerance: 3..4mA and
+    // 20..21mA are ordinary under/over-range values, while readings beyond
+    // those bands are treated as a broken loop or short/overdrive condition.
+    if (signalMode == static_cast<uint8_t>(AnalogSignalMode::CURRENT_4_20MA)) {
+        if (inputValue < inputMin - 1.0f - boundaryTolerance) {
+            return AnalogInputQuality::DISCONNECTED;
+        }
+        if (inputValue > inputMax + 1.0f + boundaryTolerance) {
+            return AnalogInputQuality::SHORT_CIRCUIT;
+        }
+    }
+    return inputValue < inputMin ? AnalogInputQuality::BELOW_RANGE
+                                 : AnalogInputQuality::ABOVE_RANGE;
+}
+
+// DI 输入模式。AUTO 根据外设类型(11/13/14)推导，避免旧配置必须迁移。
+enum class DigitalInputMode : uint8_t {
+    AUTO = 0,
+    FLOATING = 1,
+    // Avoid Arduino HAL's global PULLUP/PULLDOWN macros (0x04/0x08).
+    PULL_UP = 2,
+    PULL_DOWN = 3
+};
+
+enum class DigitalReportMode : uint8_t {
+    ON_CHANGE = 0,
+    PERIODIC = 1,
+    EVENT_ONLY = 2
+};
+
+constexpr uint16_t DIGITAL_INPUT_DEFAULT_DEBOUNCE_MS = 50;
+
+inline uint16_t effectiveDigitalInputDebounceMs(uint16_t configuredMs) {
+    return configuredMs > 0 ? configuredMs : DIGITAL_INPUT_DEFAULT_DEBOUNCE_MS;
+}
+
+inline bool shouldReportDigitalInputChange(uint8_t reportMode) {
+    return reportMode == static_cast<uint8_t>(DigitalReportMode::ON_CHANGE);
+}
+
+inline bool shouldReportDigitalInputPeriodically(uint8_t reportMode) {
+    return reportMode == static_cast<uint8_t>(DigitalReportMode::PERIODIC);
+}
+
+inline bool digitalInputLogicalLevel(bool rawLevel, bool invertLogic) {
+    return invertLogic ? !rawLevel : rawLevel;
+}
+
+inline bool matchesDigitalInterruptEdge(PeripheralType type, bool logicalLevel) {
+    if (type == PeripheralType::GPIO_INTERRUPT_RISING) return logicalLevel;
+    if (type == PeripheralType::GPIO_INTERRUPT_FALLING) return !logicalLevel;
+    return type == PeripheralType::GPIO_INTERRUPT_CHANGE;
+}
+
+inline uint32_t mapAnalogOutputPercent(uint32_t percent, uint8_t minimumPercent,
+                                       uint8_t maximumPercent, uint8_t resolution) {
+    if (minimumPercent > maximumPercent) {
+        const uint8_t temporary = minimumPercent;
+        minimumPercent = maximumPercent;
+        maximumPercent = temporary;
+    }
+    if (minimumPercent > 100) minimumPercent = 100;
+    if (maximumPercent > 100) maximumPercent = 100;
+    if (resolution < 1) resolution = 1;
+    if (resolution > 16) resolution = 16;
+    if (percent > 100) percent = 100;
+
+    const uint32_t maximumDuty = (1UL << resolution) - 1UL;
+    const uint32_t mappedPercent = minimumPercent +
+        (static_cast<uint32_t>(maximumPercent - minimumPercent) * percent / 100UL);
+    return static_cast<uint32_t>(
+        static_cast<uint64_t>(maximumDuty) * mappedPercent / 100ULL);
+}
+
 // 外设配置结构体
 struct PeripheralConfig {
     String id;                    // 唯一标识符
@@ -55,6 +176,11 @@ struct PeripheralConfig {
             bool aoMode;              // 模拟量输出模式：PWM 输出按 0-100% 映射（无 DAC 芯片的 AO 方案）
             uint8_t aoMinPct;         // AO 映射最小百分比（默认 0）
             uint8_t aoMaxPct;         // AO 映射最大百分比（默认 100）
+            // DI 配置：0/false 表示兼容旧行为，运行时按外设类型补默认值。
+            uint8_t inputMode;        // 0=自动, 1=浮空, 2=上拉, 3=下拉
+            bool invertLogic;         // 逻辑反相（用户看到的高低电平）
+            uint16_t debounceMs;      // 0=使用安全默认 50ms
+            uint8_t reportMode;       // 0=状态变化, 1=周期, 2=仅规则事件
         } gpio;
         
         // ADC参数
@@ -64,6 +190,23 @@ struct PeripheralConfig {
             uint16_t sampleRate;      // 采样率
             uint8_t sampleCount;      // 多采样次数 1-16（0/1=单次，默认1；工业滤波用8）
             uint8_t filterMode;       // 滤波模式 0=均值, 1=中值
+            // AI 工程量转换（全部为可选字段，缺省保持 raw ADC 上报）
+            uint8_t signalMode;       // AnalogSignalMode
+            bool conversionEnabled;   // 是否输出工程量
+            bool clampEnabled;        // 越界时钳位；关闭则返回无效值
+            uint8_t decimalPlaces;    // 上报小数位 0-6
+            float inputMin;           // 输入信号下限(V/mA/raw)，0=按信号类型推导
+            float inputMax;           // 输入信号上限(V/mA/raw)，0=按信号类型推导
+            float engineeringMin;     // 工程量下限
+            float engineeringMax;     // 工程量上限
+            float engineeringOffset;  // 结果偏移修正
+            float vRef;               // ADC 参考电压，0=3.3V
+            float voltageRatio;       // 0-10V 分压还原倍数，0=1
+            float shuntResistance;    // 电流环分流电阻(ohm)，0=165
+            float inputGain;          // 前端增益，0=1
+            float inputOffset;        // 前端电压偏移(V)
+            uint16_t rawMin;          // 自定义原始下限，0=自动
+            uint16_t rawMax;          // 自定义原始上限，0=按分辨率推导
         } adc;
         
         // DAC参数
@@ -217,10 +360,99 @@ struct PeripheralConfig {
     }
 };
 
+inline float positiveAnalogConfigValue(float value, float fallback) {
+    return (!isnan(value) && !isinf(value) && value > 0.0f) ? value : fallback;
+}
+
+// Pure, allocation-free AI conversion shared by runtime reporting and native
+// boundary tests. A disabled conversion deliberately preserves the raw count.
+inline float convertAnalogInputRaw(const PeripheralConfig& config, uint16_t raw,
+                                   AnalogInputQuality* quality = nullptr) {
+    const auto& adc = config.params.adc;
+    const uint8_t mode = adc.signalMode;
+    if (!adc.conversionEnabled || mode == static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+        if (quality) *quality = AnalogInputQuality::VALID;
+        return static_cast<float>(raw);
+    }
+    if (quality) *quality = AnalogInputQuality::INVALID_CONFIG;
+    if (mode > static_cast<uint8_t>(AnalogSignalMode::CUSTOM)) return NAN;
+
+    uint8_t resolution = adc.resolution;
+    if (resolution < 9 || resolution > 12) resolution = 12;
+    const float adcMax = static_cast<float>(1UL << resolution) - 1.0f;
+    const float vRef = positiveAnalogConfigValue(adc.vRef, 3.3f);
+    float inputValue = 0.0f;
+    float inputMin = adc.inputMin;
+    float inputMax = adc.inputMax;
+    float inputLsb = 1.0f;
+
+    if (mode == static_cast<uint8_t>(AnalogSignalMode::CUSTOM_LINEAR)) {
+        inputValue = static_cast<float>(raw);
+        if (inputMin == 0.0f && inputMax == 0.0f) {
+            inputMin = adc.rawMin;
+            inputMax = adc.rawMax > adc.rawMin ? adc.rawMax : adcMax;
+        }
+    } else {
+        const float pinVoltage = static_cast<float>(raw) * vRef / adcMax;
+        if (mode == static_cast<uint8_t>(AnalogSignalMode::VOLTAGE_0_10V)) {
+            const float voltageRatio = positiveAnalogConfigValue(adc.voltageRatio, 1.0f);
+            inputValue = pinVoltage * voltageRatio;
+            inputLsb = (vRef / adcMax) * voltageRatio;
+            if (inputMin == 0.0f && inputMax == 0.0f) {
+                inputMin = 0.0f;
+                inputMax = 10.0f;
+            }
+        } else {
+            const float gain = positiveAnalogConfigValue(adc.inputGain, 1.0f);
+            const float shunt = positiveAnalogConfigValue(adc.shuntResistance, 165.0f);
+            inputValue = ((pinVoltage - adc.inputOffset) / gain) * 1000.0f / shunt;
+            inputLsb = (vRef / adcMax / gain) * 1000.0f / shunt;
+            if (inputMin == 0.0f && inputMax == 0.0f) {
+                inputMin = mode == static_cast<uint8_t>(AnalogSignalMode::CURRENT_4_20MA) ? 4.0f : 0.0f;
+                inputMax = 20.0f;
+            }
+        }
+    }
+
+    if (isnan(inputValue) || isinf(inputValue) ||
+        isnan(inputMin) || isinf(inputMin) || isnan(inputMax) || isinf(inputMax) ||
+        inputMax <= inputMin ||
+        isnan(adc.engineeringMin) || isinf(adc.engineeringMin) ||
+        isnan(adc.engineeringMax) || isinf(adc.engineeringMax) ||
+        adc.engineeringMax == adc.engineeringMin) {
+        return NAN;
+    }
+
+    // ADC values are quantized. Half an input LSB prevents the exact configured
+    // endpoint from becoming an artificial under/over-range fault after a
+    // float roundtrip, without masking a physically distinct ADC code.
+    const float boundaryTolerance = inputLsb * 0.5f;
+    const AnalogInputQuality measuredQuality = classifyAnalogInputQuality(
+        mode, inputValue, inputMin, inputMax, boundaryTolerance);
+    if (quality) *quality = measuredQuality;
+    if (measuredQuality == AnalogInputQuality::VALID) {
+        // Tolerance only affects classification. Normalize the tiny quantized
+        // overshoot before mapping so engineering endpoints remain exact.
+        if (inputValue < inputMin) inputValue = inputMin;
+        if (inputValue > inputMax) inputValue = inputMax;
+    } else {
+        if (!adc.clampEnabled) return NAN;
+        inputValue = inputValue < inputMin ? inputMin : inputMax;
+    }
+
+    const float ratio = (inputValue - inputMin) / (inputMax - inputMin);
+    return adc.engineeringMin +
+           ratio * (adc.engineeringMax - adc.engineeringMin) +
+           adc.engineeringOffset;
+}
+
 // 外设运行时状态
 struct PeripheralRuntimeState {
     String id;
     PeripheralStatus status;
+    // Runtime-only memory protection flag. It is not persisted to
+    // peripherals.json, so recovery never overwrites the user's choice.
+    bool memorySuspended;
     unsigned long initTime;       // 初始化时间
     unsigned long lastActivity;   // 最后活动时间
     uint32_t errorCount;          // 错误计数
@@ -246,8 +478,8 @@ struct PeripheralRuntimeState {
         } analog;
     } state;
     
-    PeripheralRuntimeState() 
-        : status(PeripheralStatus::PERIPHERAL_DISABLED), initTime(0),
+    PeripheralRuntimeState()
+        : status(PeripheralStatus::PERIPHERAL_DISABLED), memorySuspended(false), initTime(0),
           lastActivity(0), errorCount(0) {
         memset(&state, 0, sizeof(state));
     }

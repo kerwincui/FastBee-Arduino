@@ -2,7 +2,7 @@
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
-    [ValidateSet("lite", "standard", "full")]
+    [ValidateSet("lite", "standard", "full", "unified")]
     [string]$Profile = "full",
 
     [string]$Username = "admin",
@@ -241,6 +241,17 @@ function Test-ProfileCapabilities {
                 periphExec = $true
                 ruleScript = $true
                 ota = $true
+                logViewer = $true
+                fileLogging = $true
+            }
+        }
+        "unified" {
+            # 统一镜像：功能由运行时配置启停，基础能力保持与 full 一致。
+            $expected = @{
+                mqtt = $true
+                modbus = $true
+                periphExec = $true
+                ruleScript = $true
                 logViewer = $true
                 fileLogging = $true
             }
@@ -569,6 +580,7 @@ function Invoke-FastBeeApi {
     )
 
     $headers = @{}
+    $headers["X-FastBee-Api-Client"] = "soak-test"
     if ($script:SessionId) {
         $headers["Authorization"] = "Bearer $script:SessionId"
     }
@@ -609,6 +621,38 @@ function Invoke-FastBeeApi {
         $sw.Stop()
         $statusCode = 0
         try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = 0 }
+        # Preserve structured 503 bodies so callers can distinguish deliberate
+        # memory backpressure from transport failures.
+        $bodyObj = $null
+        $bodyText = ""
+        if ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace([string]$_.ErrorDetails.Message)) {
+            $bodyText = [string]$_.ErrorDetails.Message
+        } else {
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                if ($null -ne $stream) {
+                    if ($stream.CanSeek) { $stream.Position = 0 }
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $bodyText = $reader.ReadToEnd()
+                    $reader.Close()
+                }
+            } catch { $bodyText = "" }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($bodyText)) {
+            $bodyObj = $bodyText | ConvertFrom-Json -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $bodyObj -and $bodyObj.PSObject.Properties.Name -contains "success") {
+            if ($bodyObj.PSObject.Properties.Name -notcontains "status") {
+                $bodyObj | Add-Member -NotePropertyName "status" -NotePropertyValue $statusCode
+            }
+            return [pscustomobject]@{
+                Success = ($bodyObj.success -eq $true)
+                Status = $statusCode
+                ElapsedMs = [int]$sw.ElapsedMilliseconds
+                Response = $bodyObj
+                Message = if ($bodyObj.PSObject.Properties.Name -contains "message") { [string]$bodyObj.message } else { $_.Exception.Message }
+            }
+        }
         return [pscustomobject]@{
             Success = $false
             Status = $statusCode
@@ -647,6 +691,7 @@ function Test-Endpoint {
 
     $result = $null
     $passed = $false
+    $degraded = $false
     $attempts = 0
 
     for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
@@ -663,13 +708,28 @@ function Test-Endpoint {
 
         $passed = $result.Success
 
-        if ($result.Response -and
+        # A structured 503 with retryAfter is the firmware's intentional
+        # memory-pressure backpressure response. Record it separately instead
+        # of treating it as a crash, while retaining all other failures.
+        if (-not $passed -and $result.Status -eq 503 -and $null -ne $result.Response) {
+            $responseProps = $result.Response.PSObject.Properties.Name
+            $code = if ($responseProps -contains "code") { [int]$result.Response.code } else { 0 }
+            $retryAfter = $responseProps -contains "retryAfter"
+            $message = if ($responseProps -contains "message") { [string]$result.Response.message } else { "" }
+            if ($code -eq 503 -and $retryAfter -and $message -match "memory pressure|low memory|memory guard|temporarily unavailable") {
+                $passed = $true
+                $degraded = $true
+                $result.Message = "degraded: memory pressure (503 gated, by design)"
+            }
+        }
+
+        if (-not $degraded -and $result.Response -and
             $result.Response.PSObject.Properties.Name -contains "success" -and
             $result.Response.success -eq $false) {
             $passed = $false
         }
 
-        if ($passed) {
+        if ($passed -and -not $degraded) {
             $semanticError = Test-CheckSemantics -Name $Name -Response $result.Response
             if (-not [string]::IsNullOrWhiteSpace($semanticError)) {
                 $passed = $false
@@ -707,6 +767,7 @@ function Test-Endpoint {
         PsramFree = $metrics.PsramFree
         PsramTotal = $metrics.PsramTotal
         UptimeMs = $metrics.UptimeMs
+        Degraded = $degraded
         Message = $result.Message
     }
 
@@ -1161,6 +1222,7 @@ $summary = [ordered]@{
     StabilityThresholds = $script:AppliedStabilityThresholds
     StabilityThresholdSources = $script:StabilityThresholdSources
     Uptime = $uptimeResetStats
+    DegradedCount = @($script:Rows | Where-Object { $_.Degraded -eq $true }).Count
     HeapFree = $heapFreeStats
     HeapMaxAlloc = $heapMaxAllocStats
     PsramFree = $psramFreeStats

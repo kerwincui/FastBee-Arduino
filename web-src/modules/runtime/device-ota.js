@@ -82,12 +82,14 @@
 
             // 4MB 单 app 镜像没有 ota_1，服务端会拒绝 A/B 升级；先探测
             // 能力并在页面上明确说明，避免用户操作到不存在的 OTA 路由。
-            getter('/api/system/capabilities')
+            const capabilityReady = getter('/api/system/capabilities')
                 .then(res => {
                     const caps = (res && res.success && res.data) ? res.data : null;
-                    if (caps && typeof caps.ota === 'boolean') this._applyOtaCapability(caps.ota);
+                    const supported = !!caps && caps.ota === true;
+                    if (caps && typeof caps.ota === 'boolean') this._applyOtaCapability(supported);
+                    return supported;
                 })
-                .catch(() => { /* 能力接口不可用时保留默认可用态 */ });
+                .catch(() => false);
 
             // 固件信息：当前版本、Flash 总量、可升级空间
             getter('/api/system/info')
@@ -122,8 +124,11 @@
                     this._applyNetworkState(false);
                 });
 
-            // OTA 当前状态
-            this._loadOtaStatus();
+            // 能力查询必须先完成。4MB C3/C6 固件没有 OTA 路由，提前
+            // 请求 /api/ota/status 会制造无意义的 404 和控制台错误。
+            capabilityReady.then(supported => {
+                if (supported) this._loadOtaStatus();
+            });
         },
 
         _loadOtaStatus() {

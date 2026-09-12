@@ -101,8 +101,17 @@ private:
     bool _ready = false;
 };
 
+// SHT30 and SHT31 use the same single-shot measurement command and frame
+// format. Keep one implementation so both names work in rules and imported
+// configurations without duplicating I2C code.
+class SHT30RuntimeDriver final : public SHT31RuntimeDriver {
+public:
+    const char* getName() const override { return "SHT30"; }
+};
+
 } // namespace
 
 FASTBEE_REGISTER_SENSOR("SHT31", SHT31RuntimeDriver);
+FASTBEE_REGISTER_SENSOR("SHT30", SHT30RuntimeDriver);
 
 #endif

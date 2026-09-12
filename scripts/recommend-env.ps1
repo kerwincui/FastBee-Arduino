@@ -5,12 +5,16 @@
     given ESP32 chip variant, based on verified flash/RAM budgets.
 
 .DESCRIPTION
-    One production environment per chip spec (simplified 2026-08):
-      - ESP32 classic 4MB   -> esp32-F4R0    (all features in, default disabled)
-      - ESP32-C3   4MB      -> esp32c3-F4R0  (no Serial2)
-      - ESP32-C6   4MB      -> esp32c6-F4R0  (3 UART)
-      - ESP32-S3   8MB      -> esp32s3-F8R4  (PSRAM auto-budget on non-PSRAM boards)
-      - ESP32-S3   16MB     -> esp32s3-F16R8 (flagship, all features)
+    Canonical memory-qualified environments:
+      - ESP32 classic 4MB/0  -> esp32-F4R0
+      - ESP32 classic 8MB/0  -> esp32-F8R0
+      - ESP32 classic 8MB/8  -> esp32-F8R8 (WROVER)
+      - ESP32-C3 4MB/0       -> esp32c3-F4R0
+      - ESP32-C6 4MB/0       -> esp32c6-F4R0
+      - ESP32-C6 8MB/0       -> esp32c6-F8R0
+      - ESP32-S3 8MB/0       -> esp32s3-F8R0
+      - ESP32-S3 8MB/8       -> esp32s3-F8R8
+      - ESP32-S3 16MB/8      -> esp32s3-F16R8
     All environments ship every supported feature compiled in; features are
     enabled/disabled at runtime from the web "Feature Config" page.
     Web images are unified: every environment uses the full profile (2026-08).
@@ -39,18 +43,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Recommendation table: chip + flash -> env, partition csv, web profile, notes
+# Recommendation table: chip + flash + PSRAM -> env, module, partition, notes
 # 2026-08 Web 镜像统一化：所有环境一律 full 档（运行时功能门控）
 $Recommendations = @(
-    [pscustomobject]@{ Chip="esp32";  FlashMB=4;  Env="esp32-F4R0";           Partition="partitions/fastbee.csv";      Web="full"; Notes="Default production target. 4MB flash cap: high-RAM features auto-rejected by boot budget." }
-    [pscustomobject]@{ Chip="esp32c3";FlashMB=4;  Env="esp32c3-F4R0";         Partition="partitions/fastbee.csv";      Web="full"; Notes="2 UART only: cellular uses Serial1. 4MB flash cap applies." }
-    [pscustomobject]@{ Chip="esp32c6";FlashMB=4;  Env="esp32c6-F4R0";         Partition="partitions/fastbee.csv";      Web="full"; Notes="3 UART: cellular may use Serial2. 4MB flash cap applies." }
-    [pscustomobject]@{ Chip="esp32s3";FlashMB=8;  Env="esp32s3-F8R4";         Partition="partitions/fastbee-8MB.csv";  Web="full"; Notes="Non-PSRAM S3 boards degrade gracefully via boot budget." }
-    [pscustomobject]@{ Chip="esp32s3";FlashMB=16; Env="esp32s3-F16R8";        Partition="partitions/fastbee-16MB.csv"; Web="full"; Notes="Flagship: all features incl. heavy peripherals." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=4;  PsramMB=0; Env="esp32-F4R0";   Module="ESP32-WROOM-32E-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Minimum compatibility target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=0; Env="esp32-F8R0";   Module="ESP32-WROOM-32E-N8";   Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="Classic ESP32 no-PSRAM OTA target." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=8; Env="esp32-F8R8";   Module="ESP32-WROVER-B-N8R8";  Partition="partitions/8MB.csv";  Web="full"; Tier="P1"; Notes="Classic ESP32 PSRAM compatibility target." }
+    [pscustomobject]@{ Chip="esp32c3"; FlashMB=4;  PsramMB=0; Env="esp32c3-F4R0"; Module="ESP32-C3-WROOM-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Low-resource target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32c6"; FlashMB=4;  PsramMB=0; Env="esp32c6-F4R0"; Module="ESP32-C6-WROOM-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Constrained C6 target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32c6"; FlashMB=8;  PsramMB=0; Env="esp32c6-F8R0"; Module="ESP32-C6-WROOM-N8";   Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="Official C6 DevKitC-1 class target with A/B OTA." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=0; Env="esp32s3-F8R0"; Module="ESP32-S3-WROOM-1-N8";  Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="S3 no-PSRAM OTA and memory-constraint target." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=8; Env="esp32s3-F8R8"; Module="ESP32-S3-WROOM-1-N8R8"; Partition="partitions/8MB.csv"; Web="full"; Tier="P0"; Notes="Recommended S3 daily development target." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=16; PsramMB=8; Env="esp32s3-F16R8";Module="ESP32-S3-WROOM-1-N16R8";Partition="partitions/16MB.csv"; Web="full"; Tier="P0"; Notes="High-end full-feature and release target." }
 )
 
 function Show-Table([object[]]$rows) {
-    $rows | Format-Table Chip, FlashMB, Env, Partition, Web -AutoSize
+    $rows | Format-Table Chip, FlashMB, PsramMB, Env, Module, Partition, Tier -AutoSize
     foreach ($r in $rows) {
         Write-Host ("  {0}: {1}" -f $r.Env, $r.Notes) -ForegroundColor DarkGray
     }

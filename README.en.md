@@ -1,229 +1,153 @@
-[简体中文](./README.md) | [English](./README.en.md)
-
-<h1 align="center">FastBee-Arduino</h1>
-
-<p align="center">
-  <strong>Zero-code, visual configuration — turn ESP32 into a full-featured IoT device in seconds.</strong>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-ESP32%20|%20S3%20|%20C3%20|%20C6-blue" alt="Platform">
-  <img src="https://img.shields.io/badge/Arduino--ESP32-3.x%20(IDF%205.1)-orange" alt="Framework">
-  <img src="https://img.shields.io/badge/PlatformIO-espressif32%207.x-orange" alt="PlatformIO">
-  <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
-</p>
-
----
+[Simplified Chinese](./README.md) | [English](./README.en.md)
 
 # FastBee-Arduino
 
-> **Unified Architecture v2.0**: Single firmware variant, no product tier differentiation
+> Zero-code Web IoT firmware for the ESP32 family. After flashing, configure networking, peripherals, protocols, and automation rules from a browser.
 
-## Architecture Overview
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 
-FastBee-Arduino is a **zero-code Web IoT firmware framework** for the ESP32 series. Starting from v2.0, the project has fully upgraded to **Unified Architecture** with the following characteristics:
+Source repository: [gitee.com/beecue/fastbee-arduino](https://gitee.com/beecue/fastbee-arduino)
+Automated checks: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
-- **Single Firmware Artifact**: All chip variants (esp32/c3/c6/s3) use unified build configuration (`unified_flags`)
-- **No Product Tiers**: No longer distinguishes between lite/standard/full tiers; all features are compiled by default
-- **Flexible Feature Flags**: Dynamically enable/disable feature modules via `data/config/features.json`
-- **Intelligent Memory Protection**: `FeatureBudget` mechanism detects DRAM watermarks at boot and automatically downgrades memory-intensive features
-- **Reduced Maintenance Cost**: One build pipeline, one E2E test suite, one documentation system
+## Capabilities
 
-### Architecture Evolution Timeline
+- **Browser management**: local Web console for device status, networking, peripherals, protocols, logs, and configuration backup.
+- **Networking**: every release target supports WiFi AP/STA. Selected ESP32 and ESP32-S3 targets also support W5500 Ethernet and EC801E-CN cellular when the hardware is present and the feature is enabled.
+- **Peripherals**: GPIO, ADC/PWM, DHT, DS18B20, AHT20, SHT31, BH1750, BMP280, MPU6050, OLED, LCD1602, TM1637, NeoPixel, servos, stepper motors, RFID, infrared, 433 MHz RF, and Modbus devices.
+- **Local automation**: platform, timer, event, and polling triggers with GPIO, display, motor, Modbus, script, and reporting actions.
+- **Maintenance**: authentication, health monitoring, low-memory protection, SSE updates, configuration transfer, and OTA on A/B-partition targets.
 
-| Version | Release Date | Architecture Characteristics | Notes |
-|---------|--------------|-------------------------------|-------|
-| v1.x    | 2024-Q1      | Three-tier separation (lite/standard/full) | Deprecated |
-| v2.0    | 2026-08      | Unified Architecture           | **Current Version** |
+The release firmware exposes **MQTT/MQTTS and Modbus RTU master** as device communication protocols. The management Web server, HTTP NTP, and HTTP OTA are not a generic HTTP telemetry protocol; raw TCP, Modbus TCP, CoAP, and a generic outbound HTTP client are not release capabilities.
 
-📚 **Migration Guide**: For differences between v1.x upgrade to v2.0, please refer to [`docs/architecture/unified-v2-migration.md`](file:docs/architecture/unified-v2-migration.md).
+## Runtime Model
 
----
+Release targets share the `unified_flags` feature baseline. Hardware-dependent capabilities such as OTA, Ethernet, cellular, and infrared can still be overridden or compiled out per environment. Runtime configuration and memory protection then decide whether a compiled feature is active.
 
-FastBee-Arduino is a zero-code Web IoT firmware for the ESP32 full series. After flashing, configure networking, devices, protocols, peripherals, and rules entirely from a browser. Suitable for ESP32 nodes, lightweight gateways, and field data-acquisition & control terminals. Whether you're a beginner or a professional developer, FastBee-Arduino helps you develop and mass-produce IoT devices quickly and easily.
+## Release Environments
 
-Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
+Build environments are defined by [`platformio.ini`](platformio.ini); the merged-image list is maintained in FastBee-doc at `src/device/fim/manifest.json`:
 
-## Pre-defined Environments
+| Environment | Chip | Flash | PSRAM | OTA |
+| --- | --- | ---: | ---: | :---: |
+| `esp32-F4R0` | ESP32 | 4MB | None | No |
+| `esp32-F8R0` | ESP32 | 8MB | None | Yes |
+| `esp32-F8R8` | ESP32 | 8MB | 8MB | Yes |
+| `esp32c3-F4R0` | ESP32-C3 | 4MB | None | No |
+| `esp32c6-F4R0` | ESP32-C6 | 4MB | None | No |
+| `esp32c6-F8R0` | ESP32-C6 | 8MB | None | Yes |
+| `esp32s3-F8R0` | ESP32-S3 | 8MB | None | Yes |
+| `esp32s3-F8R8` | ESP32-S3 | 8MB | 8MB | Yes |
+| `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB | Yes |
 
-Each chip specification keeps **a single factory environment**: all supported features are compiled in but disabled by default, so there is no edition to choose:
+`F` and `R` identify Flash and PSRAM capacity. `R0` means no PSRAM. The standard release matrix has nine environments and no longer uses `F8R4`.
 
-| PlatformIO Environment | Chip | Flash | PSRAM |
-| --- | --- | --- | --- |
-| `esp32-F4R0` | ESP32 | 4MB | None |
-| `esp32c3-F4R0` | ESP32-C3 | 4MB | None |
-| `esp32c6-F4R0` | ESP32-C6 | 4MB | None |
-| `esp32s3-F8R4` | ESP32-S3 | 8MB | 4MB |
-| `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB |
-
-> All environments use the unified mode: every supported feature is compiled into the firmware, disabled by default, and can be enabled on demand from the Web **"Feature Config"** page (Modbus, rule scripts, dashboard, logs, file management, multi-user, etc.).
-1. Environments with Flash ≥ 8MB support OTA upgrades (4MB environments cannot due to space constraints).
-2. 4MB boards are Flash-constrained (firmware partition 2.94MB + LittleFS 1MB); high-RAM features (e.g. deviceControl) are automatically rejected by the boot budget.
-3. S3 boards without PSRAM can still flash `esp32s3-F8R4`; PSRAM-dependent features are automatically downgraded by the boot budget.
-4. If a predefined environment does not fit, add your own in platformio.ini; the `lite_flags`/`standard_flags`/`full_flags` config sections are kept as customization templates.
-
-> For detailed feature comparison and partition tables, see [Edition Comparison](https://fastbee.cn/doc/device/getting-started/edition-comparison.html).
-
-## Quick Flash
-
-### Online Flash (Recommended for Quick Try)
-
-No tools required — open your browser and flash the firmware instantly to try the system: 👉 **[Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html)**
-
-### Build and Flash from Source
-
-1. Install VSCode + PlatformIO, or install PlatformIO CLI.
-2. Connect the development board and confirm the serial port, e.g., `COM6`.
-3. Run from the project root:
-
-```powershell
-# Windows
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
-
-# Linux / macOS (requires PowerShell Core: pwsh)
-pwsh -File scripts/deploy.ps1 -Env esp32-F4R0 -Port /dev/ttyUSB0
-```
-
-**deploy.ps1 parameters** (build + flash):
-
-| Parameter | Description |
-|-----------|-------------|
-| `-Env` | PlatformIO build environment, e.g. `esp32-F4R0`, see predefined environments above |
-| `-Port` | Serial port, e.g. `COM6` |
-| `-Monitor` | Open serial monitor automatically after flashing |
-| `-BuildOnly` | Compile only without flashing, for CI or quick verification |
-| `-SkipFs` | Skip filesystem (LittleFS) upload |
-| `-SkipFirmware` | Skip firmware flash, only upload filesystem |
-| `-SkipDoctor` | Skip environment diagnostics check |
-| `-SkipWeb` | Skip automatic Web asset generation (has no effect if `.gz` files already exist) |
+The 4MB environments use a single application partition and cannot perform OTA. The 8MB and 16MB environments use A/B application partitions. Ethernet and cellular are compiled out of `esp32-F4R0`, `esp32c3-F4R0`, `esp32c6-F4R0`, and `esp32c6-F8R0`; other targets still require compatible hardware and runtime activation.
 
 ## Quick Start
 
-The device enters AP mode on first boot or when WiFi is not configured:
+### Online Flashing
 
-| Item | Default |
-| --- | --- |
-| WiFi Hotspot | `FastBee-XXXX` |
-| Browser Address | `http://192.168.4.1` or `http://fastbee.local` |
-| Username | `admin` |
-| Password | `admin123` |
+Open the [online flasher](https://fastbee.cn/doc/device/deploy/esp32-flasher.html), select a merged image that exactly matches the chip, Flash, and PSRAM, and flash it at address `0x0`.
 
-```mermaid
-graph LR
-    A[ESP32 Hardware] -->|1. Flash Firmware| B[FastBee-Arduino Firmware]
-    B -->|2. Initialize Device| C[Peripheral Config]
-    B -->|3. Choose Network| D[Network Config]
-    B -->|4. Connect IoT Platform| E[Communication Protocol]
-    B -->|5. Rule Orchestration| F[Peripheral Execution]
-    D -->|WiFi, 4G, Ethernet| G[IoT Platform]
-    E --> G
+### Build and Flash from Source
+
+Install VS Code with PlatformIO, connect the board, and run from the repository root:
+
+```powershell
+# Build Web assets, upload LittleFS, and flash firmware
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -Port <serial-port>
+
+# Build only
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -BuildOnly
 ```
 
-| Step | Phase | What to Do | Page |
-|------|-------|------------|------|
-| 1 | **Flash Firmware** | Flash FastBee-Arduino firmware to ESP32 using PlatformIO | [Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html) |
-| 2 | **Peripheral Config** | Select peripheral types and assign pins in the Web UI to initialize hardware | Peripheral Config |
-| 3 | **Network Config** | Choose connectivity (WiFi / Ethernet / 4G), enter parameters and save | Network Config |
-| 4 | **Communication Protocol** | Configure MQTT / Modbus RTU protocols to connect to IoT platform | Communication Protocol |
-| 5 | **Peripheral Execution** | Set trigger conditions and actions for button-controlled lights, timed linkage, sensor-driven control, etc. | Peripheral Execution |
+Useful switches include `-Monitor`, `-SkipFs`, `-SkipFirmware`, and `-SkipWeb`. A release deployment must keep firmware and LittleFS assets in sync.
 
-> Entirely code-free: Flash firmware → Open browser → Click to configure → Device is ready to use.
+### First-Boot Configuration
 
-## Screenshots
+1. On first boot, the device starts an AP. When `apSSID` is empty, the SSID is `<device-name>-<first-6-chip-id>`; a factory reset uses `fastbee-ap`. The default AP password is `admin123`.
+2. Connect to the AP and open `http://192.168.4.1`.
+3. Sign in with `admin / admin123` and change the password immediately.
+4. Enter local WiFi credentials on **Network Settings**, save, and reconnect through the assigned STA address or `http://fastbee.local`.
+5. Enable only the required features, then configure peripherals, MQTT/Modbus, and execution rules.
 
-<table>
-  <tr>
-    <td><img src="./images/device_01.png" alt="Dashboard"/></td>
-    <td><img src="./images/device_10.png" alt="Device Control Screen"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_11.png" alt="Chinese Interface"/></td>
-    <td><img src="./images/device_12.png" alt="Fullscreen Display"/></td>
-  </tr>
-</table>
+Do not commit real WiFi passwords, broker credentials, tokens, or production network settings. Inject local values during deployment.
 
-## Case Showcase
+## Feature Activation
 
-FastBee-Arduino in action across different chips and hardware platforms.
+`features.json` stores the complete user-requested feature state. Web service and mDNS are enabled by default; all optional features start disabled. A legacy sparse file is preserved and expanded once on first load. A feature is active only when the relevant conditions remain true:
 
-<table>
-<tr>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><img src="./images/case-esp32c6.png" alt="ESP32-C6 Blink" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><b>ESP32-C6 Full-Color LED Quick Start</b></a>
-<br/><sub>Flash firmware on an ESP32-C6 dev board and run an LED blink test within 5 minutes — experience the zero-code onboarding flow.</sub>
-</td>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><img src="./images/case-esp32c3.png" alt="ESP32-C3 Temp & Humidity" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><b>ESP32-C3 Temperature & Humidity Monitor</b></a>
-<br/><sub>Collect ambient temperature and humidity via a DHT11 sensor, display on OLED in real time, and trigger alarms on threshold breach.</sub>
-</td>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><img src="./images/case-device-modbus.png" alt="ESP32 Modbus" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><b>ESP32 Modbus Monitoring & Control</b></a>
-<br/><sub>ESP32 IoT terminal collects Modbus RTU slave data via RS485 for industrial sensor monitoring and remote control.</sub>
-</td>
-</tr>
-<tr>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><img src="./images/case-ecm50a.png" alt="ECM50-A Networking" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><b>ECM50-A 4G/Ethernet/WiFi Networking</b></a>
-<br/><sub>ESP32-S3 based ECM50-A industrial device with auto-switching between 4G cellular, W5500 Ethernet, and WiFi connectivity.</sub>
-</td>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><img src="./images/case-puzhong.png" alt="Puzhong Dev Board" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><b>ESP32 Puzhong Board Full Feature Test</b></a>
-<br/><sub>Comprehensive testing of GPIO, ADC, PWM, I2C, SPI, UART, display, and other peripherals on the Puzhong ESP32 dev board.</sub>
-</td>
-<td align="center" width="33%">
-<a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><img src="./images/case-weixue.png" alt="WaveShare" width="100%"/></a>
-<br/><a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><b>ESP32-S3 WaveShare Industrial Relay</b></a>
-<br/><sub>WaveShare ESP32-S3 board adaptation covering WiFi, sensor acquisition, display driving, and MQTT reporting.</sub>
-</td>
-</tr>
-</table>
+```text
+compiled
+  AND userEnabled
+  AND budgetPassed
+  AND NOT runtimeDisabled
+```
 
-See the [Example Tutorials](https://fastbee.cn/doc/device/examples/) directory for more cases.
+Features that require networking or another feature must also wait for network readiness and satisfy their dependency. MQTTS depends on MQTT, command scripts depend on rule scripts, and the GB2312 font depends on LCD support.
+
+Core navigation such as **Device Config** remains visible. Optional entries including Device Control, Rule Scripts, Device Logs, and User Management are shown only while their corresponding feature is `active`. Inspect `/api/features/status` for compile/user state and `/api/system/status` for effective runtime state.
+
+## Configuration Files
+
+Runtime configuration lives under LittleFS `/config/`:
+
+| File | Purpose |
+| --- | --- |
+| `device.json` | Device identity, NTP, timezone, and log level |
+| `network.json` | WiFi AP/STA, static IP, an mDNS compatibility mirror, Ethernet, and cellular settings |
+| `protocol.json` | MQTT, MQTTS, and Modbus RTU settings |
+| `peripherals.json` | Peripheral types, pins, and parameters |
+| `periph_exec.json` | Triggers, conditions, and actions |
+| `features.json` | Complete requested runtime feature state and authoritative mDNS switch |
+| `rule_scripts.json` | Optional rule scripts |
+| `users.json` / `auth.json` | Users, password hashes, and authentication policy |
+
+Prefer the Web configuration export/import workflow for backups.
+
+The five sanitized bench examples, supported source formats, and deployment rules are maintained in [`docs/README.md`](docs/README.md) (Chinese). Do not interchange device configurations or publish the Git-ignored private backups.
+
+`data/config/` is reserved for the factory template: no device identity, no STA/MQTT credentials, and no peripherals or rules enabled by default. It must not be used as a live-device backup; `npm test` enforces this boundary.
+
+## Validation
+
+```powershell
+# Static checks, native tests, all 9 environments, and firmware artifacts
+powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,native,build,artifacts"
+
+# Device API smoke and paced checks of 16 public pages plus 4 critical scripts
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-sta-ip> -Profile unified -RequireNetworkConnected
+powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-sta-ip> -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000
+
+# Five-device bench: copy the example and replace its lab addresses and ports first
+powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false
+```
+
+The default `test-all.ps1` run performs static/host checks, native tests, and all nine firmware builds. Device checks require an explicit STA URL and the `unified` profile. Host and artifact validation does not prove the LittleFS/configuration content installed on hardware, so verify filesystem data, migration, and reboot recovery separately.
 
 ## Project Structure
 
 ```text
-src/              Firmware source code
-include/          Headers and feature switches
-data/             LittleFS default config and Web artifacts
+src/              Firmware source
 web-src/          Web frontend source
-scripts/          Build, flash, test, and release scripts
-test/             PlatformIO native tests
-test/browser/     Playwright browser automation (18 suites / 625 cases)
-docs/             Test plans and design documents
+data/config/      LittleFS default configuration
+data/www/         Generated gzip-only Web publish assets (do not edit directly)
+partitions/       4MB, 8MB, and 16MB partition tables
+scripts/          Build, deployment, and test tools
+test/             Native, device API, and browser tests
 ```
 
 ## Documentation
 
-📖 **Full online documentation**: https://fastbee.cn/doc/device/
-
-## Resource Limits and Memory Conventions (Soak Test Key Metrics)
-
-This project's core acceptance criteria for long-term stability (72-hour Soak test):
-
-- **Flash increase** ≤ 2KB (new code volume limit)
-- **RAM increase** ≤ 1KB (free8/MALLOC_CAP_8BIT convention)
-
-Serial logs show DRAM heap (`freeHeap`); API returns `heapFree`(INTERNAL convention), `dramFree/free8`(MALLOC_CAP_8BIT convention) for real-time monitoring.
-
-| Document | Content |
-| --- | --- |
-| Quick Start | From flashing to creating your first rule |
-| Deployment | Firmware, LittleFS, release packages, and device verification |
-| Testing | Static checks, native, all-chip build, smoke, and stability tests |
-| Edition Comparison | Lite, Standard, Full feature differences |
-| Project Structure | Directory, module, and build artifact description |
-| User Manual | Web page and feature operation guide |
-| Supported Modules | Modules, sensors, and access methods by edition |
-| Peripheral Docs | GPIO, sensors, displays, RFID, Modbus peripherals |
-| Peripheral Execution | Triggers, actions, and linkage rules |
-| Example Tutorials | LED, relay, sensor, display, and Modbus examples |
+- [Device documentation](https://fastbee.cn/doc/device/)
+- [Quick start](https://fastbee.cn/doc/device/getting-started/quick-start.html)
+- [User manual](https://fastbee.cn/doc/device/getting-started/user-manual.html)
+- [Peripheral reference](https://fastbee.cn/doc/device/peripherals/)
+- [MQTT and Modbus](https://fastbee.cn/doc/device/protocols/)
+- [OTA upgrades](https://fastbee.cn/doc/device/deploy/ota-upgrade.html)
+- [Build configuration](https://fastbee.cn/doc/device/dev/build-config.html)
+- [Testing and release validation](https://fastbee.cn/doc/device/deploy/testing.html)
 
 ## License
 
-This project is licensed under [AGPL-3.0](LICENSE).
+FastBee-Arduino is licensed under [AGPL-3.0](LICENSE).

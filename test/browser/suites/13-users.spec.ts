@@ -1,4 +1,4 @@
-﻿import { test, expect, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
+import { test, expect, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-13: 用户管理', () => {
 

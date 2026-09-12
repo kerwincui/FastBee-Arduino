@@ -441,6 +441,7 @@ void test_factory_reset_writes_defaults() {
     g_mockFiles["/config/protocol.json"] = "{\"version\":2,\"mqtt\":{\"enabled\":true,\"server\":\"my.mqtt.com\"}}";
     g_mockFiles["/config/peripherals.json"] = "{\"peripherals\":[{\"id\":\"led1\"}]}";
     g_mockFiles["/config/periph_exec.json"] = "{\"version\":3,\"rules\":[{\"id\":\"rule1\"}]}";
+    g_mockFiles["/config/features.json"] = "{\"features\":{\"webServer\":{\"enabled\":false},\"lcd\":{\"enabled\":true}}}";
     g_mockFiles["/config/rule_scripts.json"] = "{\"rules\":[{\"id\":\"custom_rule\"}]}";
     g_mockFiles["/config/auth.json"] = "{\"sessions\":[]}";
     g_mockFiles["/config/mqtt.json"] = "{\"enabled\":true}";
@@ -480,6 +481,10 @@ void test_factory_reset_writes_defaults() {
     const char* DEFAULT_PERIPH_EXEC = "{\"rules\":[]}";
     if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) resetCount++;
 
+    // Write complete default features.json (management services enabled)
+    const char* DEFAULT_FEATURES = "{\"version\":1,\"features\":{\"webServer\":{\"enabled\":true},\"mdns\":{\"enabled\":true},\"lcd\":{\"enabled\":false}}}";
+    if (writeDefault("/config/features.json", DEFAULT_FEATURES)) resetCount++;
+
     // Write default rule_scripts.json
     const char* DEFAULT_RULE_SCRIPTS = "{\"rules\":[{\"id\":\"rs_mqtt_report\",\"name\":\"MQTT上报\"},{\"id\":\"rs_mqtt_recv\",\"name\":\"MQTT接收\"}]}";
     if (writeDefault("/config/rule_scripts.json", DEFAULT_RULE_SCRIPTS)) resetCount++;
@@ -488,9 +493,9 @@ void test_factory_reset_writes_defaults() {
     LittleFS.remove("/config/auth.json");
     LittleFS.remove("/config/mqtt.json");
 
-    // Verify: all 7 core files written successfully
-    TEST_ASSERT_EQUAL(7, resetCount);
-    TestLog::step("All 7 core config files reset successfully");
+    // Verify: all 8 core files written successfully
+    TEST_ASSERT_EQUAL(8, resetCount);
+    TestLog::step("All 8 core config files reset successfully");
 
     // Verify: core config files exist with default content
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
@@ -499,6 +504,7 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/rule_scripts.json"));
     TestLog::step("All core config files exist after reset");
 
@@ -553,6 +559,13 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_EQUAL_STRING("{\"rules\":[]}", execContent.c_str());
     TestLog::step("periph_exec.json cleared to empty rules");
 
+    // Verify: feature defaults preserve the Web management entry and mDNS.
+    String featureContent = g_mockFiles["/config/features.json"];
+    TEST_ASSERT_TRUE(featureContent.indexOf("\"webServer\":{\"enabled\":true}") >= 0);
+    TEST_ASSERT_TRUE(featureContent.indexOf("\"mdns\":{\"enabled\":true}") >= 0);
+    TEST_ASSERT_TRUE(featureContent.indexOf("\"lcd\":{\"enabled\":false}") >= 0);
+    TestLog::step("features.json restored with Web and mDNS enabled");
+
     // Verify: rule_scripts.json restored to defaults
     String ruleContent = g_mockFiles["/config/rule_scripts.json"];
     TEST_ASSERT_TRUE(ruleContent.indexOf("rs_mqtt_report") >= 0);
@@ -582,13 +595,14 @@ void test_factory_reset_no_file_missing() {
         return true;
     };
 
-    // Write all defaults (7 core config files)
+    // Write all defaults (8 core config files)
     writeDefault("/config/device.json", "{\"deviceId\":\"\",\"productNumber\":0}");
     writeDefault("/config/network.json", "{\"mode\":0,\"apPassword\":\"admin123\"}");
     writeDefault("/config/users.json", "{\"users\":[]}");
     writeDefault("/config/protocol.json", "{\"mqtt\":{\"enabled\":false}}");
     writeDefault("/config/peripherals.json", "{\"peripherals\":[]}");
     writeDefault("/config/periph_exec.json", "{\"rules\":[]}");
+    writeDefault("/config/features.json", "{\"version\":1,\"features\":{\"webServer\":{\"enabled\":true},\"mdns\":{\"enabled\":true}}}");
     writeDefault("/config/rule_scripts.json", "{\"rules\":[]}");
 
     // All config files should exist - web system can read them without errors
@@ -598,8 +612,9 @@ void test_factory_reset_no_file_missing() {
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/features.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/rule_scripts.json"));
-    TestLog::step("All 7 config files available for web system after reset");
+    TestLog::step("All 8 config files available for web system after reset");
 
     // Simulate web API reading config (should not fail)
     for (const auto& entry : g_mockFiles) {

@@ -199,6 +199,90 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
 #endif
 }
 
+bool ConfigStorage::saveFactoryJSONConfig(const String& filename, const char* jsonContent) {
+    if (!_initialized && !initializeInternal()) return false;
+    if (!jsonContent || jsonContent[0] == '\0') return false;
+
+    JsonDocument parsed;
+    if (deserializeJson(parsed, jsonContent)) {
+        LOG_ERRORF("ConfigStorage: Invalid factory JSON for %s", filename.c_str());
+        return false;
+    }
+
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    // Factory reset supersedes pending debounced writes.  Remove the entry
+    // without flushing it, otherwise stale user data can overwrite defaults.
+    {
+        CacheLock lock(_cacheMutex);
+        if (!lock) return false;
+        ConfigCacheEntry* entry = findInCache(filename);
+        if (entry) {
+            entry->dirty = false;
+            const size_t index = static_cast<size_t>(entry - _cache);
+            if (index < _cacheSize - 1) {
+                _cache[index] = std::move(_cache[_cacheSize - 1]);
+            }
+            --_cacheSize;
+        }
+    }
+#endif
+
+    const String stagedPath = filename + ".factory.tmp";
+    if (LittleFS.exists(stagedPath) && !LittleFS.remove(stagedPath)) return false;
+
+    File file = LittleFS.open(stagedPath, FILE_WRITE);
+    if (!file) return false;
+    const size_t expected = measureJson(parsed);
+    const size_t written = serializeJson(parsed, file);
+    file.flush();
+    file.close();
+    if (written != expected || !verifyJsonFile(stagedPath)) {
+        LittleFS.remove(stagedPath);
+        return false;
+    }
+    if (!atomicReplaceFromTmp(stagedPath, filename)) return false;
+
+    bool historyRemoved = true;
+    const String backupPath = filename + ".bak";
+    const String tmpPath = filename + ".tmp";
+    if (LittleFS.exists(backupPath) && !LittleFS.remove(backupPath)) historyRemoved = false;
+    if (LittleFS.exists(tmpPath) && !LittleFS.remove(tmpPath)) historyRemoved = false;
+    if (!verifyJsonFile(filename)) historyRemoved = false;
+    return historyRemoved;
+}
+
+bool ConfigStorage::deleteJSONConfigGenerations(const String& filename) {
+    if (!_initialized && !initializeInternal()) return false;
+
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    {
+        CacheLock lock(_cacheMutex);
+        if (!lock) return false;
+        ConfigCacheEntry* entry = findInCache(filename);
+        if (entry) {
+            entry->dirty = false;
+            const size_t index = static_cast<size_t>(entry - _cache);
+            if (index < _cacheSize - 1) {
+                _cache[index] = std::move(_cache[_cacheSize - 1]);
+            }
+            --_cacheSize;
+        }
+    }
+#endif
+
+    bool removed = true;
+    const String paths[] = {
+        filename,
+        filename + ".bak",
+        filename + ".tmp",
+        filename + ".factory.tmp"
+    };
+    for (const String& path : paths) {
+        if (LittleFS.exists(path) && !LittleFS.remove(path)) removed = false;
+    }
+    return removed;
+}
+
 bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config) {
     if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE

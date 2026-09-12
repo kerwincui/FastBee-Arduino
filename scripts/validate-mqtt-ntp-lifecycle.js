@@ -32,6 +32,62 @@ function snippetAround(source, needle, before = 300, after = 500) {
     return source.slice(Math.max(0, index - before), index + after);
 }
 
+// Extract a complete JavaScript function/object method without relying on a
+// byte-length window. The status renderer has grown past the old probe size;
+// truncating it caused false failures even when the checked branches existed.
+function balancedBlock(source, needle) {
+    const start = source.indexOf(needle);
+    if (start < 0) return '';
+    const open = source.indexOf('{', start);
+    if (open < 0) return '';
+
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+
+    for (let i = open; i < source.length; i++) {
+        const ch = source[i];
+        const next = source[i + 1];
+
+        if (lineComment) {
+            if (ch === '\n' || ch === '\r') lineComment = false;
+            continue;
+        }
+        if (blockComment) {
+            if (ch === '*' && next === '/') {
+                blockComment = false;
+                i++;
+            }
+            continue;
+        }
+        if (quote) {
+            if (escaped) escaped = false;
+            else if (ch === '\\') escaped = true;
+            else if (ch === quote) quote = '';
+            continue;
+        }
+        if (ch === '/' && next === '/') {
+            lineComment = true;
+            i++;
+            continue;
+        }
+        if (ch === '/' && next === '*') {
+            blockComment = true;
+            i++;
+            continue;
+        }
+        if (ch === '\'' || ch === '"' || ch === '`') {
+            quote = ch;
+            continue;
+        }
+        if (ch === '{') depth++;
+        if (ch === '}' && --depth === 0) return source.slice(start, i + 1);
+    }
+    return '';
+}
+
 function checkNtpLifecycle() {
     const framework = read('src/core/FastBeeFramework.cpp');
     const scheduleSnippet = snippetAround(framework, 'NTP sync scheduled');
@@ -64,14 +120,55 @@ function checkMqttLifecycle() {
     assert(statusHandler.indexOf('tryAutoStartMqttForStatus') < statusHandler.indexOf('JsonDocument doc'), 'MQTT auto-start should happen before status response is built');
     assert(statusHandler.includes('data["autoStartAttempted"]'), 'MQTT status response should expose autoStartAttempted');
     assert(statusHandler.includes('data["autoStartStarted"]'), 'MQTT status response should expose autoStartStarted');
+    assert(statusHandler.includes('if (autoStartAttempted)'), 'MQTT status must refresh the client pointer after failed deferred auto-start');
     assert(statusHandler.includes('data["connecting"]'), 'MQTT status response should expose connecting state');
     assert(statusHandler.includes('configuredServer'), 'MQTT status should return configured server when runtime client is missing');
+    // Failure diagnostics must be available without parsing serial output.
+    assert(statusHandler.includes('networkConnected'), 'MQTT status should expose active network connectivity separately from internetAvailable');
+    assert(statusHandler.includes('lastErrorClass'), 'MQTT status should expose a stable failure class');
+    assert(statusHandler.includes('lastErrorMessage'), 'MQTT status should expose a readable failure message');
+    assert(statusHandler.includes('statusReason'), 'MQTT status should expose a user-facing status reason');
+    assert(statusHandler.includes('data["stoppedByMemory"]'), 'MQTT status should expose temporary memory-stop state');
+    assert(statusHandler.includes('MQTT_STATUS_STOPPED_BY_MEMORY'), 'MQTT status should expose a stable temporary memory-stop code');
+    assert(statusHandler.includes('isLastMqttsTlsMemoryFailure'), 'MQTT status should distinguish TLS memory failures from network failures');
+    assert(statusHandler.includes('autoStartAttempted && !autoStartStarted'), 'MQTT status should report deferred auto-start failures');
+    assert(statusHandler.includes('MQTT_CLIENT_INIT_FAILED'), 'MQTT status should expose a stable client-init failure name');
+    assert(statusHandler.includes('lastErrorClass"] = "resource"'), 'MQTT auto-start failure should use the resource error class');
+    assert(route.includes('case -11: return "MQTT_CLIENT_INIT_FAILED"'), 'MQTT error-name mapping should include client-init failures');
+    assert(route.includes('MQTT_STATUS_CONFIG_ERROR'), 'MQTT status should expose a non-OK code for missing/invalid config');
+    assert(route.includes('MQTT_CONFIG_INVALID'), 'MQTT status should expose a stable config failure name');
+    assert(route.includes('doc["success"] = deferredOk'), 'MQTT reconnect should expose rebuild failure in the response envelope');
+    assert(route.includes('data["failureKnown"] = true'), 'MQTT reconnect failure should include a stable failure marker');
+    assert(route.includes('data["disabledByMemory"] = true'), 'MQTT reconnect should expose persisted memory-disable state');
+    assert(route.indexOf('mqttDisabledByMemory') < route.indexOf('if (mqtt && mqtt->getIsConnected())'), 'MQTT reconnect must check memory-disable marker before connected fast path');
+
+    const mqttClient = read('src/protocols/MQTTClient.cpp');
+    const notifyBlock = snippetBetween(mqttClient, 'void MQTTClient::_notifyStatusChange()', 'MqttTopicType MQTTClient::getTopicTypeByPath');
+    assert(notifyBlock.includes('lastErrorCode'), 'MQTT SSE status should expose the structured error code');
+    assert(notifyBlock.includes('lastErrorMessage'), 'MQTT SSE status should expose a readable failure message');
+    assert(notifyBlock.includes('statusReason'), 'MQTT SSE status should expose a user-facing reason');
+    assert(notifyBlock.includes('networkConnected'), 'MQTT SSE status should expose network connectivity context');
+    assert(notifyBlock.includes('statusNet->isNetworkConnected()'),
+        'MQTT SSE status must use the active network manager for Ethernet/4G/WiFi connectivity');
+    assert(!notifyBlock.includes('const bool networkConnected = _externalClient || WiFi.status() == WL_CONNECTED'),
+        'MQTT SSE status must not infer connectivity from transport pointer or WiFi status alone');
+    assert(notifyBlock.includes('stoppedByMemory'), 'MQTT SSE status should expose temporary memory-stop state');
+    assert(notifyBlock.includes('MQTT_STOPPED_BY_MEMORY'), 'MQTT SSE status should expose a stable temporary memory-stop name');
+    assert(mqttClient.includes('case -14: return "MQTT_STOPPED_BY_MEMORY"'), 'MQTT SSE error mapping should include temporary memory-stop failures');
+    assert(route.includes('return !server.isEmpty() && port > 0 && port <= 65535'), 'MQTT status config loader should reject enabled sections with an empty broker or invalid port');
+    assert(statusHandler.includes('if (hasValidConfig && mqttConfigLoaded)'), 'MQTT status must not trust a stale in-memory client after config reload failure');
+    assert(route.includes('MQTT 配置未加载或格式无效，请检查 Broker 地址和端口'), 'MQTT reconnect should explain malformed broker configuration');
 
     // 2025-06 修复: tryAutoStartMqttForStatus 应在 MQTT 已停止时也能触发重启
     const autoStartFn = snippetBetween(route, 'static bool tryAutoStartMqttForStatus', 'static String buildEncryptedPasswordForMqttTest');
     assert(autoStartFn.includes('mqtt->getIsConnected()'), 'tryAutoStartMqttForStatus should check MQTT connection state');
     assert(autoStartFn.includes('mqtt->isStopped()'), 'tryAutoStartMqttForStatus should check MQTT stopped state');
     assert(autoStartFn.includes('needsStart'), 'tryAutoStartMqttForStatus should use needsStart variable for combined condition');
+    assert(autoStartFn.includes('isMqttStoppedForMemory()') &&
+           autoStartFn.includes('isMqttDisabledForMemory()') &&
+           autoStartFn.includes('isStoppedByMemory()') &&
+           autoStartFn.includes('isDisabledByMemory()'),
+        'MQTT status auto-start must not rebuild a client while memory protection is active');
 
     const ui = read('web-src/modules/runtime/protocol/mqtt-config.js');
     assert(ui.includes('d.connecting'), 'MQTT UI should read connecting state');
@@ -84,14 +181,20 @@ function checkMqttLifecycle() {
     assert(ui.includes('!d.initialized'), 'MQTT UI should check !d.initialized to show initializing state');
 
     // 2025-06 修复: _loadMqttStatus 不应在 401/503 时停止轮询或显示“未授权”
-    const loadStatusFn = ui.match(/_loadMqttStatus\(\)\s*\{[\s\S]{0,800}/);
+    const loadStatusFn = ui.match(/_loadMqttStatus\(\)\s*\{[\s\S]{0,4200}/);
     assert(loadStatusFn, '_loadMqttStatus function should exist');
     assert(!loadStatusFn[0].includes('_stopMqttStatusPolling'), '_loadMqttStatus must NOT stop polling on transient 401/503');
     assert(!loadStatusFn[0].includes("'未授权'"), '_loadMqttStatus must NOT show 未授权 badge during Governor cooldown');
+    assert(loadStatusFn[0].includes('isPageAbortError'), '_loadMqttStatus must ignore page-navigation AbortError');
+    assert(loadStatusFn[0].includes('_handled'), '_loadMqttStatus must not overwrite errors already handled by request-governor');
+    assert(loadStatusFn[0].includes('_setMqttFailureStatus'), '_loadMqttStatus must update the badge for handled HTTP failures');
+    assert(ui.includes("'-12': 'MQTT 配置未加载或格式无效，请检查网络配置'"), 'MQTT UI should map config status failures');
 
     // 2025-06 修复: _loadMqttStatus 应追踪连续失败次数
     assert(loadStatusFn[0].includes('_mqttApiFailCount'), '_loadMqttStatus should track API failure count');
     assert(loadStatusFn[0].includes('_handleMqttApiFail'), '_loadMqttStatus should call _handleMqttApiFail on failure');
+    assert(ui.includes('_getMqttStatusFailureReason(err)'), 'MQTT reconnect failures should surface a readable status reason');
+    assert(ui.includes("this._loadMqttStatus();") && ui.includes("currentBadge.textContent === '内存保护'"), 'MQTT disabled refresh should still query status and surface memory protection');
 
     // _handleMqttApiFail 应存在且在连续失败时更新 badge
     assert(ui.includes('_handleMqttApiFail'), '_handleMqttApiFail helper should exist');
@@ -114,12 +217,22 @@ function checkMqttLifecycle() {
     assert(ui.includes('mqtt-status-detecting'), '_ensureBadgeNotStuck should check for detecting class');
 
     // 2025-06 修复: _updateMqttStatusUI 应利用 lastError 区分"连接中"和"连接失败"
-    const updateUIFn = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,6000}/);
+    // The status mapper also handles stopped/error states and actionable HTTP
+    // diagnostics; keep the inspection window large enough to cover the full
+    // function as those branches evolve.
+    // Anchor on the object-property declaration. A nearby comment may also
+    // mention `_updateMqttStatusUI`; matching the first occurrence made this
+    // check silently inspect the wrong slice as the UI comments grew.
+    const updateUIFn = balancedBlock(ui, '_updateMqttStatusUI: function');
     assert(updateUIFn, '_updateMqttStatusUI function should exist');
-    assert(updateUIFn[0].includes('lastError'), '_updateMqttStatusUI should check lastError field');
-    assert(updateUIFn[0].includes('连接失败'), '_updateMqttStatusUI should show 连接失败 when hasError');
+    assert(updateUIFn.includes('lastError'), '_updateMqttStatusUI should check lastError field');
+    assert(updateUIFn.includes('连接失败'), '_updateMqttStatusUI should show 连接失败 when hasError');
+    assert(updateUIFn.includes('stoppedByMemory'), '_updateMqttStatusUI should show temporary memory protection');
+    assert(updateUIFn.includes('60000'), '_updateMqttStatusUI should use a 60-second connection timeout');
+    assert(updateUIFn.includes('连接超时'), '_updateMqttStatusUI should show connection timeout');
+    assert(ui.includes('statusReason'), 'MQTT UI should render backend statusReason/lastErrorMessage');
     // 不应再使用过于宽泛的 connecting 判断
-    assert(!updateUIFn[0].includes('d.autoStartAttempted'), '_updateMqttStatusUI should NOT use overly broad autoStartAttempted in connecting check');
+    assert(!updateUIFn.includes('d.autoStartAttempted'), '_updateMqttStatusUI should NOT use overly broad autoStartAttempted in connecting check');
 
     // _stopMqttStatusPolling 应清除 _mqttPollInterval
     const stopPollingFn = ui.match(/_stopMqttStatusPolling\(\)\s*\{[\s\S]{0,600}/);
@@ -170,7 +283,7 @@ function checkMqttStatusPollingFix() {
     // ═══════════════════════════════════════════════════════════════════════
     // 规则3：快速重试间隔必须 >= 3000ms
     // ═══════════════════════════════════════════════════════════════════════
-    const loadStatusFn = ui.match(/_loadMqttStatus\(\)\s*\{[\s\S]{0,1500}/);
+    const loadStatusFn = ui.match(/_loadMqttStatus\(\)\s*\{[\s\S]{0,5000}/);
     const loadStatusBody = loadStatusFn ? loadStatusFn[0] : '';
     // 匹配 _mqttRetryTimer = setTimeout(..., XXXX) 中的间隔值
     const retryIntervalMatches = loadStatusBody.match(/_mqttRetryTimer\s*=\s*setTimeout\([\s\S]*?,\s*(\d+)\)/g) || [];
@@ -295,10 +408,10 @@ function checkMqttStatusPollingFix() {
     // 必须包含 _mqttConnectingStartTime、60秒超时、显示"连接超时"
     // 超时阈值必须 > lite路径轮询窗口(48s)，避免轮询期间提前触发超时
     // ═══════════════════════════════════════════════════════════════════════
-    const updateUIFnR12 = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,6000}/);
+    const updateUIFnR12 = balancedBlock(ui, '_updateMqttStatusUI: function');
     assert(updateUIFnR12, '[Rule12] _updateMqttStatusUI 函数应存在');
     if (updateUIFnR12) {
-        const updateUIBody = updateUIFnR12[0];
+        const updateUIBody = updateUIFnR12;
         assert(updateUIBody.includes('_mqttConnectingStartTime'), '[Rule12] _updateMqttStatusUI 必须包含 _mqttConnectingStartTime 超时计时逻辑');
         assert(updateUIBody.includes('60000'), '[Rule12] _updateMqttStatusUI 必须有 60000（60秒）超时判断');
         assert(updateUIBody.includes('连接超时'), '[Rule12] _updateMqttStatusUI 超时后必须显示"连接超时"');
@@ -310,6 +423,8 @@ function checkMqttStatusPollingFix() {
     assert(ui.includes('_mqttAutoReconnectTriggered'), 'MQTT UI should track auto-reconnect state to avoid duplicate triggers');
     assert(ui.includes('/api/mqtt/reconnect'), 'MQTT UI should auto-trigger /api/mqtt/reconnect when offline on first load');
     assert(ui.includes('apiPostSilent'), 'MQTT UI should use apiPostSilent for auto-reconnect to avoid UI disruption');
+    assert(ui.includes('reconnectData.reconnecting === false'), 'MQTT UI should surface immediate reconnect failures returned in a 200 envelope');
+    assert(ui.includes('_setMqttFailureStatus'), 'MQTT UI should expose reconnect failures in the status badge/reason panel');
     // 自动重连条件中禁止检查 connecting 状态（否则 autoStartStarted=true 会阻止触发）
     const reconnectBlock = ui.match(/_mqttAutoReconnectTriggered[\s\S]{0,400}api\/mqtt\/reconnect/);
     assert(reconnectBlock, 'auto-reconnect code block should exist between flag check and reconnect call');

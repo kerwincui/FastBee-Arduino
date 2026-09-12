@@ -25,10 +25,19 @@ const TEXT_EXTENSIONS = new Set([
     '.js',
     '.json',
     '.md',
+    '.mjs',
+    '.py',
+    '.ps1',
+    '.sh',
+    '.ts',
+    '.tsx',
     '.txt',
     '.yaml',
     '.yml'
 ]);
+// Windows PowerShell 5.1 needs a BOM to reliably decode non-ASCII UTF-8
+// scripts. TypeScript sources do not, so keep the repository rule strict there.
+const BOM_ALLOWED_EXTENSIONS = new Set(['.ps1']);
 const SKIP_DIRS = new Set([
     '.git',
     '.pio',
@@ -59,7 +68,8 @@ function checkFile(filePath) {
     const bytes = fs.readFileSync(filePath);
     const text = bytes.toString('utf8');
     const issues = [];
-    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF &&
+        !BOM_ALLOWED_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
         issues.push('UTF-8 BOM');
     }
     if (text.indexOf('\uFFFD') !== -1) {
@@ -96,3 +106,5 @@ function main() {
 if (require.main === module) {
     main();
 }
+
+module.exports = { checkFile, shouldScanFile };

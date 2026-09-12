@@ -19,7 +19,8 @@
 //      运行期只投递 AsyncExecContext* 到队列，消除栈分配抖动。
 //
 // 关键参数（经初版 3×8192 在线验证后下调以保留充足空闲 heap）：
-//   WORKER_COUNT  = 2   符合实测并发峰值，对齐 AsyncExecContextPool=4 的边界
+//   WORKER_COUNT  = 1   ESP32-C3/经典 ESP32，优先保留 Web/认证连续内存
+//                 = 2   ESP32-C6/S3，保留原有并发能力
 //   WORKER_STACK  = max(SIMPLE_TASK_STACK, 6144)
 //     注意：SIMPLE_TASK_STACK 在 C3/C6 环境为 4096（platformio.ini），
 //     实测传感器采集+上报规则在 4096 栈上 HWM 仅剩 ~948B，频繁触发
@@ -27,13 +28,14 @@
 //     日志格式化）会击穿栈 canary 导致 panic 重启，故此处强制 6144 下限。
 //   QUEUE_CAPACITY= 16  突发缓冲（满则走原失败回退分支）
 //
-// 启动期一次性付出：2 × 6144 = 12KB 永久驻留栈（原 3×8192=24KB）
+// 启动期一次性付出：C3/经典 ESP32 为 1 × 6144 = 6KB，C6/S3 为 12KB
 // 运行期增长：0
 //
 
 class PeriphExecWorkerPool {
 public:
-    static constexpr size_t   WORKER_COUNT    = 2;                     // 目标并发 2，与 AsyncExecContextPool 对齐
+    static constexpr size_t   WORKER_COUNT    =
+        (CHIP_IS_CLASSIC_ESP32 || CHIP_IS_ESP32C3) ? 1 : 2;
     static constexpr size_t   QUEUE_CAPACITY  = 16;
     // 强制最小 6144：C3/C6 的 SIMPLE_TASK_STACK=4096 不足以覆盖
     // 传感器采集+JSON 上报路径（实测 HWM 剩 948B，濒临栈溢出重启）
@@ -56,8 +58,10 @@ public:
     // 返回 false 表示队列满或未启动，调用方负责清理 ctx 与释放信号量/退避
     bool enqueue(AsyncExecContext* ctx);
 
-    // 关闭 pool（投递哨兵 + 任务自删除），实际项目跑到 reboot 通常不需要
-    void shutdown();
+    // 关闭 pool（投递哨兵 + 等待任务退出）。只有返回 true 后，调用方
+    // 才可以释放 pool 对象；false 表示仍有 worker 在执行，队列和对象
+    // 必须保持存活并在后续周期重试。
+    bool shutdown(uint32_t timeoutMs = 10000);
 
     // 是否已启动
     bool isStarted() const { return _started; }
@@ -84,6 +88,8 @@ private:
     volatile bool  _shuttingDown;
     SemaphoreHandle_t _exitSemaphore;
     size_t _workersCreated;
+    volatile size_t _workersExited;
+    bool _sentinelsSent;
 };
 
 #endif // PERIPH_EXEC_WORKER_POOL_H

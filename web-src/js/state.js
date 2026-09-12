@@ -27,7 +27,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         'periph-exec-page': 'peripheral',
         'device-control-page': 'peripheral',
         'logs-page': 'logs',
-        'data-page': 'admin',
         'users-page': 'admin',
         'rule-script-page': 'rule-script',
         'features-page': 'features'
@@ -367,7 +366,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             protocol: 'protocol',
             'device-control': 'device-control',
             logs: 'logs',
-            data: 'files',
             users: 'users',
             'rule-script': 'rule-script',
             features: 'feature-config'
@@ -401,7 +399,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 this.loadProtocolConfig('mqtt');
             },
             logs: () => { this.loadLogsPage({ noCache: true }); },
-            data: () => { this.loadFileSystemInfo({ noCache: true }); this.loadFileTree('/', { noCache: true }); },
             users: () => { this.loadUsers({ noCache: true }); },
             'rule-script': () => { this.loadRuleScriptPage({ noCache: true }); },
             features: () => { this.loadFeaturesPage(); },
@@ -558,9 +555,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         ruleScript: 'rule-script',
         deviceControl: 'device-control',   // 设备大屏
         logViewer: 'logs',                 // 设备日志
-        fileManager: 'data',               // 文件管理
-        userAdmin: 'users',                // 用户管理
-        ota: 'device'                      // OTA 升级（在设备配置页面内）
+        userAdmin: 'users'                 // 用户管理
     },
 
     // 最近一次 /api/features/status 的激活状态缓存（key → active）
@@ -568,28 +563,88 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     /**
      * 登录后拉取功能状态，按启用情况显示/隐藏左侧菜单项
-     * 失败时静默保持默认菜单，不阻塞主流程
+     * 完整功能状态在 C3/经典 ESP32 登录资源并发窗口内可能返回 501/503。
+     * 菜单只需要 active 状态，因此优先读取公开且轻量的 system/status；
+     * 仅在轻量端点不可用时回退完整接口，避免与首屏模块争用 DRAM。
      */
     applyFeatureMenuVisibility() {
         if (typeof apiGet !== 'function') return;
         const map = this._featureMenuMap;
         const self = this;
-        apiGet('/api/features/status')
-            .then(res => {
-                if (!res || !res.success || !res.data) return;
-                const active = {};
-                (res.data.features || []).forEach(f => {
-                    active[f.key] = !!f.active;
-                    const page = map[f.key];
-                    if (!page) return;
-                    const item = document.querySelector('.menu-item[data-page="' + page + '"]');
-                    if (item) item.style.display = f.active ? '' : 'none';
-                });
-                self._featureActive = active;
-                // 协议页已加载时同步应用 Modbus tab 隐藏
-                self.applyProtocolFeatureGate();
-            })
-            .catch(() => { /* 静默：菜单保持默认可见 */ });
+        const featureKeys = Object.keys(map);
+        const menuPages = featureKeys.map(function(key) { return map[key]; });
+        const pageToFeature = {};
+        featureKeys.forEach(function(key) { pageToFeature[map[key]] = key; });
+        const setMenuVisible = function(page, visible) {
+            const item = document.querySelector('.menu-item[data-page="' + page + '"]');
+            if (!item) return;
+            item.style.display = visible ? '' : 'none';
+            item.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        };
+        const applyMenuState = function(active) {
+            menuPages.forEach(function(page) {
+                const key = pageToFeature[page];
+                setMenuVisible(page, active[key] === true);
+            });
+            // 设备配置是所有设备都必须保留的基础入口，不受可选功能门控。
+            setMenuVisible('device', true);
+            self._featureActive = active;
+            self.applyProtocolFeatureGate();
+        };
+        const featureGetter = typeof apiGetSilentFresh === 'function'
+            ? apiGetSilentFresh
+            : apiGet;
+
+        // 在状态请求完成前先隐藏可选项，避免 C3 请求失败时展示错误菜单。
+        const pending = {};
+        Object.keys(map).forEach(function(key) { pending[key] = false; });
+        applyMenuState(pending);
+
+        const applyFeatureResponse = function(res) {
+            if (!res || !res.success || !res.data || !Array.isArray(res.data.features)) {
+                throw new Error('feature status unavailable');
+            }
+            const active = {};
+            featureKeys.forEach(function(key) {
+                active[key] = false;
+            });
+            res.data.features.forEach(function(f) {
+                if (f && f.key) {
+                    active[f.key] = f.compiled !== false && f.active === true;
+                }
+            });
+            applyMenuState(active);
+            return res;
+        };
+
+        const applySystemStatusFallback = function(res) {
+            const states = res && res.success && res.data && res.data.features;
+            if (!states || typeof states !== 'object') {
+                throw new Error('system feature status unavailable');
+            }
+            const active = {};
+            Object.keys(states).forEach(function(key) {
+                active[key] = states[key] === 'active';
+            });
+            featureKeys.forEach(function(key) {
+                if (!Object.prototype.hasOwnProperty.call(active, key)) {
+                    active[key] = false;
+                }
+            });
+            applyMenuState(active);
+            return res;
+        };
+
+        return featureGetter('/api/system/status')
+            .then(applySystemStatusFallback)
+            .catch(function() {
+                return featureGetter('/api/features/status')
+                    .then(applyFeatureResponse)
+                    .catch(function() {
+                        // 两个状态接口都不可用时保持可选项隐藏，基础菜单仍可用。
+                        applyMenuState(pending);
+                    });
+            });
     },
 
     /**
@@ -598,11 +653,18 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
      */
     applyProtocolFeatureGate() {
         const active = this._featureActive;
-        if (!active || active.modbus !== false) return;
+        // The protocol status may be temporarily unavailable on constrained
+        // boards. Keep the Modbus tab fail-closed until the backend explicitly
+        // reports the feature as active; restore it when a later fallback
+        // status call confirms that Modbus is running.
+        const enabled = !!active && active.modbus === true;
         const tab = document.querySelector('#protocol-page .config-tab[data-tab="modbus-rtu"]');
-        if (tab) tab.style.display = 'none';
+        if (tab) {
+            tab.style.display = enabled ? '' : 'none';
+            tab.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+        }
         const content = document.getElementById('modbus-rtu');
-        if (content) content.style.display = 'none';
+        if (content) content.style.display = enabled ? '' : 'none';
     },
 
     // ============ 页面切换 ============
@@ -652,7 +714,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-protocol': _t('state-page-protocol') !== 'state-page-protocol' ? _t('state-page-protocol') : '通信协议',
             'page-title-network': _t('state-page-network') !== 'state-page-network' ? _t('state-page-network') : '网络设置',
             'page-title-device': _t('state-page-device') !== 'state-page-device' ? _t('state-page-device') : '设备配置',
-            'page-title-data': _t('state-page-files') !== 'state-page-files' ? _t('state-page-files') : '文件管理',
             'page-title-system': _t('state-page-system') !== 'state-page-system' ? _t('state-page-system') : '系统监控',
             'page-title-logs': _t('state-page-logs') !== 'state-page-logs' ? _t('state-page-logs') : '设备日志',
             'page-title-gpio': _t('state-page-gpio') !== 'state-page-gpio' ? _t('state-page-gpio') : 'GPIO配置',

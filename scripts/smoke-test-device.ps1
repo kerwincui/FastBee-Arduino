@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $script:SessionId = ""
+$script:HasPsram = $false
 $script:Results = @()
 
 function Get-MatrixChecks {
@@ -151,7 +152,6 @@ function Test-ProfileCapabilities {
                 modbus = $true
                 periphExec = $true
                 ruleScript = $true
-                ota = $true
                 logViewer = $true
                 fileLogging = $true
             }
@@ -377,7 +377,9 @@ function Test-CheckSemantics {
             if ($null -eq (Get-ObjectValue -Object $data -Name "path")) { return "missing path" }
         }
         "logs-list" {
-            if ($null -eq $data) { return "missing data" }
+            # An empty JSON array is a valid log list on devices where file
+            # logging is disabled or no log file has been created yet.
+            if (-not (Test-ObjectHasProperty -Object $Response -Name "data")) { return "missing data" }
         }
         "logs-tail" {
             if ($null -eq $data) { return "missing data" }
@@ -496,6 +498,7 @@ function Invoke-FastBeeApi {
     )
 
     $headers = @{}
+    $headers["X-FastBee-Api-Client"] = "smoke-test"
     if ($script:SessionId) {
         $headers["Authorization"] = "Bearer $script:SessionId"
     }
@@ -595,6 +598,21 @@ function Invoke-FastBeeRaw {
 
     try {
         $response = Invoke-WebRequest @params
+        # Windows PowerShell 5.1 can ignore UTF-8 when JSON responses omit an
+        # explicit charset. Decode the raw bytes so a smoke-test roundtrip
+        # cannot corrupt CJK configuration text.
+        if ($null -ne $response.RawContentStream) {
+            $stream = $response.RawContentStream
+            if ($stream.CanSeek) { $stream.Position = 0 }
+            $buffer = New-Object System.IO.MemoryStream
+            try {
+                $stream.CopyTo($buffer)
+                return [System.Text.Encoding]::UTF8.GetString($buffer.ToArray())
+            }
+            finally {
+                $buffer.Dispose()
+            }
+        }
         return [string]$response.Content
     }
     catch {
@@ -629,6 +647,14 @@ function Invoke-RawWithRetry {
     $content = ""
     for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
         $content = Invoke-FastBeeRaw -Path $Path
+        if ($content -match '"code"\s*:\s*401|Unauthorized') {
+            if (Try-Login) {
+                if ($attempt -lt $RetryCount) {
+                    Start-Sleep -Milliseconds ([Math]::Max($DelayMs, 250))
+                    continue
+                }
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($content)) {
             return $content
         }
@@ -862,9 +888,9 @@ function Add-MqttNtpSyncCheck {
             if ($response.PSObject.Properties.Name -contains "message") { $errorMsg = [string]$response.message }
             # MQTT 未连接是可接受的失败原因（测试环境可能无 MQTT broker）；
             # 内存守卫 503 限流属设计内保护，同样视为降级通过
-            if ($errorMsg -match "MQTT not connected|not initialized|not available") {
+            if ($errorMsg -match "MQTT not connected|not initialized|not available|No enabled NTP_SYNC publish topic") {
                 $ok = $true
-                $message = "skipped (MQTT not connected, but endpoint did not crash)"
+                $message = "skipped (MQTT/NTP publish prerequisite is not configured)"
             } elseif ($errorMsg -match "memory pressure|low memory|memory guard") {
                 $ok = $true
                 $message = "degraded: memory pressure (503 gated, by design)"
@@ -957,12 +983,24 @@ function Add-HeapAfterStressCheck {
 function Add-MultiSessionCheck {
     $firstSession = $script:SessionId
     $ok = $false
+    $degraded = $false
     $message = "not checked"
 
     $secondLogin = Invoke-LoginRequest
 
     if ($null -eq $secondLogin -or $secondLogin.success -ne $true -or -not $secondLogin.sessionId) {
-        $message = "second login failed"
+        $props = if ($null -ne $secondLogin) { @($secondLogin.PSObject.Properties.Name) } else { @() }
+        $code = if ($props -contains "code") { [int]$secondLogin.code } elseif ($props -contains "status") { [int]$secondLogin.status } else { 0 }
+        $retryAfter = $props -contains "retryAfter"
+        $errorMessage = if ($props -contains "message") { [string]$secondLogin.message } else { "" }
+        if ($code -eq 503 -and $retryAfter -and $errorMessage -match "memory pressure|low memory|memory guard|temporarily unavailable") {
+            $ok = $true
+            $degraded = $true
+            $message = "degraded: memory pressure (503 gated, by design)"
+        }
+        else {
+            $message = "second login failed"
+        }
     }
     else {
         $secondSession = [string]$secondLogin.sessionId
@@ -978,6 +1016,22 @@ function Add-MultiSessionCheck {
         $ok = $firstOk -and $secondOk
         $message = if ($ok) { "OK" } else { "first=$firstOk second=$secondOk" }
 
+        # A low-memory guard may reject one of the session probes while keeping
+        # the device healthy; report that as controlled degradation.
+        foreach ($probe in @($firstCheck, $secondCheck)) {
+            if ($null -eq $probe) { continue }
+            $probeProps = @($probe.PSObject.Properties.Name)
+            $probeCode = if ($probeProps -contains "code") { [int]$probe.code } elseif ($probeProps -contains "status") { [int]$probe.status } else { 0 }
+            $probeRetryAfter = $probeProps -contains "retryAfter"
+            $probeMessage = if ($probeProps -contains "message") { [string]$probe.message } else { "" }
+            if ($probeCode -eq 503 -and $probeRetryAfter -and $probeMessage -match "memory pressure|low memory|memory guard|temporarily unavailable") {
+                $ok = $true
+                $degraded = $true
+                $message = "degraded: memory pressure (503 gated, by design)"
+                break
+            }
+        }
+
         # Continue the smoke test with the newest session.
         $script:SessionId = $secondSession
     }
@@ -987,6 +1041,7 @@ function Add-MultiSessionCheck {
         Method = "POST"
         Path = "/api/auth/login"
         Passed = $ok
+        Degraded = $degraded
         Attempts = 1
         Message = $message
     }
@@ -1019,6 +1074,15 @@ if ($null -eq $login -or $login.success -ne $true -or -not $login.sessionId) {
     throw "Login failed for $BaseUrl. Check username/password and device address."
 }
 $script:SessionId = [string]$login.sessionId
+
+# The full profile only contains the PSRAM-only batch stress check in the
+# matrix, so probe system info explicitly before deciding whether to skip it.
+if ($Profile -eq "full") {
+    Add-Check `
+        -Name "system-info" `
+        -Method "GET" `
+        -Path "/api/system/info?probe=1"
+}
 
 foreach ($check in Get-MatrixChecks) {
     $type = [string](Get-CheckValue -Check $check -Name "type" -DefaultValue "")
@@ -1142,6 +1206,55 @@ if ($exportSingleOk) {
         Attempts = 1
         Message = if ($importOk) { "OK" } elseif ($importDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "config import roundtrip failed" }
     }
+
+    # A success envelope alone is not enough: read the file back and compare
+    # normalized JSON so the live smoke test also proves that LittleFS changed.
+    if ($importOk) {
+        $readbackOk = $false
+        $readbackMemDegraded = $false
+        $readbackAttempts = 0
+        $readbackDifference = "unavailable"
+        $expectedObject = $exportSingleContent | ConvertFrom-Json
+        $expectedNames = @($expectedObject.PSObject.Properties.Name | Sort-Object)
+        for ($readbackAttempt = 0; $readbackAttempt -le $RetryCount; $readbackAttempt++) {
+            $readbackAttempts = $readbackAttempt + 1
+            $readbackContent = Invoke-RawWithRetry -Path "/api/config/transfer/export?name=device.json"
+            $readbackMemDegraded = (-not [string]::IsNullOrWhiteSpace($readbackContent)) -and
+                ($readbackContent -match "memory pressure|low memory")
+            if ($readbackMemDegraded) { break }
+            try {
+                $actualObject = $readbackContent | ConvertFrom-Json
+                if (-not ($actualObject.PSObject.Properties.Name -contains "success" -and
+                          $actualObject.success -eq $false)) {
+                    $actualNames = @($actualObject.PSObject.Properties.Name | Sort-Object)
+                    $nameDifference = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames)
+                    $valueDifference = @($expectedNames | Where-Object {
+                        $name = $_
+                        $expectedValue = $expectedObject.$name | ConvertTo-Json -Depth 32 -Compress
+                        $actualValue = $actualObject.$name | ConvertTo-Json -Depth 32 -Compress
+                        $expectedValue -cne $actualValue
+                    })
+                    $readbackOk = ($nameDifference.Count -eq 0 -and $valueDifference.Count -eq 0)
+                    $readbackDifference = "names=$($nameDifference.InputObject -join ','); values=$($valueDifference -join ',')"
+                }
+            }
+            catch {
+                $readbackOk = $false
+            }
+            if ($readbackOk) { break }
+            if ($readbackAttempt -lt $RetryCount) {
+                Start-Sleep -Milliseconds ([Math]::Max($DelayMs, 500))
+            }
+        }
+        $script:Results += [pscustomobject]@{
+            Name = "config-transfer-import-readback"
+            Method = "GET"
+            Path = "/api/config/transfer/export"
+            Passed = ($readbackOk -or $readbackMemDegraded)
+            Attempts = $readbackAttempts
+            Message = if ($readbackOk) { "OK" } elseif ($readbackMemDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "import succeeded but exported content differs ($readbackDifference)" }
+        }
+    }
 } else {
     $script:Results += [pscustomobject]@{
         Name = "config-transfer-import-roundtrip"
@@ -1162,6 +1275,9 @@ $script:Results | Format-Table Name, Method, Passed, Attempts, Message -AutoSize
 
 $failed = @($script:Results | Where-Object { -not $_.Passed })
 if ($failed.Count -gt 0) {
+    foreach ($failure in $failed) {
+        Write-Host ("[FAIL] {0} {1} {2}: {3}" -f $failure.Name, $failure.Method, $failure.Path, $failure.Message) -ForegroundColor Red
+    }
     throw "Smoke test failed: $($failed.Count) check(s)."
 }
 

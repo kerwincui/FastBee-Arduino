@@ -318,7 +318,22 @@ public:
      * @return 字符数
      */
     static size_t charCount(const String& str);
-    
+
+    /**
+     * @brief 将 UTF-8 字符串复制到固定大小的缓冲区
+     *
+     * 复制长度按字节计算，但只会写入完整的 UTF-8 码点，避免固定
+     * char 数组在中文或 emoji 中间截断后产生非法 UTF-8。目标缓冲区
+     * 始终保证 NUL 结尾；输入中的非法 UTF-8 字节会被跳过。函数不
+     * 分配堆内存，适合设备配置加载路径。
+     *
+     * @param dst 目标缓冲区
+     * @param dstSize 目标缓冲区总字节数（含 NUL）
+     * @param src 以 NUL 结尾的 UTF-8 输入字符串
+     * @return 实际复制的字节数（不含 NUL）
+     */
+    static size_t copyUtf8(char* dst, size_t dstSize, const char* src);
+
     /**
      * @brief 计算字符串的字节数
      * @param str 输入字符串

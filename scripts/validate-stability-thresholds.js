@@ -5,7 +5,7 @@ const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const THRESHOLDS_PATH = path.join(ROOT_DIR, 'scripts', 'device-stability-thresholds.json');
-const PROFILES = ['lite', 'standard', 'full'];
+const PROFILES = ['lite', 'standard', 'full', 'unified'];
 const REQUIRED_FIELDS = [
     'maxFailureRatePercent',
     'maxP95LatencyMs',

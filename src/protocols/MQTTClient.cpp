@@ -58,6 +58,66 @@ FastBee::StringBufferPool<512, 4> g_mqttPublishPool;
 
 bool g_mqttsMbedtlsAllocatorInstalled = false;
 
+// Keep the SSE payload self-describing.  The REST status route has the same
+// mapping, but MQTTClient is also the producer for asynchronous status events;
+// callers must not have to scrape serial output or wait for the next REST poll
+// to learn why a connection failed.
+const char* mqttStatusErrorName(int code) {
+    switch (code) {
+        case 0:  return "OK";
+        case -1: return "MQTT_DISCONNECTED";
+        case -2: return "MQTT_CONNECT_FAILED";
+        case -3: return "MQTT_CONNECTION_LOST";
+        case -4: return "MQTT_CONNECTION_TIMEOUT";
+        case -5: return "MQTTS_FEATURE_DISABLED";
+        case -11: return "MQTT_CLIENT_INIT_FAILED";
+        case -13: return "MQTT_DISABLED_BY_MEMORY";
+        case -14: return "MQTT_STOPPED_BY_MEMORY";
+        case 1:  return "MQTT_BAD_PROTOCOL";
+        case 2:  return "MQTT_BAD_CLIENT_ID";
+        case 3:  return "MQTT_UNAVAILABLE";
+        case 4:  return "MQTT_BAD_CREDENTIALS";
+        case 5:  return "MQTT_UNAUTHORIZED";
+        default: return "MQTT_UNKNOWN";
+    }
+}
+
+const char* mqttStatusErrorClass(int code, bool tlsMemoryFailure) {
+    if (code == 0) return "none";
+    if (code == -5) return "feature";
+    if (code == -11 || code == -13 || code == -14) return "resource";
+    if (tlsMemoryFailure) return "memory";
+    if (code >= 1 && code <= 3) return "broker";
+    if (code == 4 || code == 5) return "auth";
+    if (code >= -4 && code <= -1) return "network";
+    return "unknown";
+}
+
+const char* mqttStatusErrorMessage(int code, bool networkConnected,
+                                   bool tlsMemoryFailure) {
+    switch (code) {
+        case 0:  return "";
+        case -1: return "MQTT 客户端未连接";
+        case -2: return networkConnected
+                         ? "无法连接 MQTT Broker（DNS/TCP）"
+                         : "网络未连接，无法访问 MQTT Broker";
+        case -3: return "MQTT 连接已断开，正在重连";
+        case -4: return tlsMemoryFailure
+                         ? "TLS 内存不足，已进入慢速重试；建议切换 mqtt"
+                         : "MQTT 连接超时，请检查 Broker 地址和端口";
+        case -5: return "MQTTS 功能未启用，请在功能配置中启用";
+        case -11: return "MQTT 客户端启动失败，可能是内存不足或配置无效";
+        case -13: return "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        case -14: return "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        case 1:  return "Broker 拒绝：协议版本不支持";
+        case 2:  return "Broker 拒绝：客户端 ID 无效或重复";
+        case 3:  return "Broker 当前不可用";
+        case 4:  return "Broker 拒绝：用户名或密码错误";
+        case 5:  return "Broker 拒绝：客户端未授权";
+        default: return "MQTT 连接失败，请查看错误码";
+    }
+}
+
 NetworkType getActiveMqttNetworkType() {
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     FBNetworkManager* netMgr = fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
@@ -284,6 +344,10 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.scheme      = cfg["scheme"]      | "mqtt";
     config.server      = cfg["server"]      | "";
     config.port        = cfg["port"]        | 1883;
+    // Cache the persisted memory-protection marker without another filesystem
+    // read, keeping status callbacks allocation-light on constrained targets.
+    _disabledByMemory = (cfg["disabled_by_memory"] | false) ||
+                        (cfg["disable_mqtt_by_memory"] | false);
 
     // 向后兼容：如果配置中没有 scheme 字段但端口为 8883，自动推断为 mqtts
     // 旧版固件没有保存 scheme，用户通过 Web UI 仅更新了 port，此时应自动启用 TLS
@@ -1133,14 +1197,17 @@ void MQTTClient::yieldToWeb() {
     if (stopped || !isConnected) {
         return;
     }
-    // 仅在内存确实被挤压时让位：free8 <12KB 时 Web 响应必然与
-    // MQTT 套接字缓冲竞争；高于此水位时保持连接（避免无谓 churn）。
+    // Align foreground yielding with the Web guard recovery line. Waiting
+    // until 12KB left a dead zone on classic ESP32: the Web guard already
+    // rejected requests below 20KB while MQTT still retained socket buffers.
+    // Releasing MQTT here lets the next bounded Web retry proceed.
     uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    if (dram8Free >= 12288U) {
+    if (dram8Free >= FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE) {
         return;
     }
-    ets_printf("[MQTT] yieldToWeb: foreground request arrived, free8=%lu < 12KB, sync disconnect\n",
-               (unsigned long)dram8Free);
+    ets_printf("[MQTT] yieldToWeb: foreground request arrived, free8=%lu < %lu, sync disconnect\n",
+               (unsigned long)dram8Free,
+               (unsigned long)FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE);
     isConnected = false;  // 先置位，避免 protocol_handle 并发继续 publish
     wifiClient.stop();
     if (_wifiClientSecure) _wifiClientSecure->stop();
@@ -1163,14 +1230,11 @@ void MQTTClient::handle() {
     // 发送缓冲滞留等），任何小分配都会 new OOM → abort 整机重启。
     // 此时强制断开 MQTT 释放套接字收发缓冲，走正常重连流程恢复。
     if (isConnected) {
-        // 前台让位策略（实测 2026-08-05）：MQTT 连接后其 TLS publish 与
-        // Web 响应竞争 WiFi TX 通道和 lwIP 缓冲——前台活跃时即使 free8
-        // 健康（20KB）也会阻塞 loopTask 8s+ 导致浏览器请求超时
-        // （soak 7/40 挂起，挂起时内存充足，非内存问题）。
-        // 因此 Web 前台活跃时无条件断开 MQTT 让出通道，重连由
-        // 前台推迟门控在用户离开后恢复。
-        // 无前台时 3KB 为危急线（连接后 free8 稳态约 3-5KB，
-        // 10KB/5KB 均误判连接稳态造成 churn）。
+        // 前台让位策略：Web 请求期间暂停 MQTT loop/publish，避免 TLS 或
+        // lwIP 写操作占满 WiFi TX 通道。正常内存时保持 TCP 会话，避免
+        // 每次打开菜单都断开并重连，导致状态接口长期显示
+        // ``connecting=true``。只有前台期间跌破 WebGuard 恢复线，或没有前台
+        // 请求且跌破 3KB 的紧急水位，才释放 socket 让 Web 先恢复。
         bool webForegroundActive = false;
         {
             FastBeeFramework* fwFg = FastBeeFramework::getInstance();
@@ -1178,8 +1242,11 @@ void MQTTClient::handle() {
             webForegroundActive = webFg && webFg->isForegroundRequestActive();
         }
         uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-        if (webForegroundActive || dram8Free < 3072U) {
-            ets_printf("[MQTT] Yield to web (foreground=%d free8=%lu), force disconnect to reclaim TX channel\n",
+        const bool foregroundMemoryPressure = webForegroundActive &&
+            dram8Free < FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE;
+        const bool emergencyMemoryPressure = !webForegroundActive && dram8Free < 3072U;
+        if (foregroundMemoryPressure || emergencyMemoryPressure) {
+            ets_printf("[MQTT] Yield to web (foreground=%d free8=%lu), force disconnect for memory/TX pressure\n",
                        webForegroundActive ? 1 : 0, (unsigned long)dram8Free);
             wifiClient.stop();
             if (_wifiClientSecure) _wifiClientSecure->stop();
@@ -1189,14 +1256,27 @@ void MQTTClient::handle() {
             _notifyStatusChange();
             return;
         }
+        if (webForegroundActive) {
+            // The foreground hold is intentionally short (normally 3.5s).
+            // Skipping loop() here prevents a blocking publish/read from
+            // competing with the response, while the MQTT keepalive window
+            // remains far longer than this pause. publishToTopic() has the
+            // matching web-busy gate, so no queued report is lost.
+            return;
+        }
     }
 
     // 检查网络连接状态：若使用外部 Client 则跳过 WiFi 状态检查
     if (!_externalClient && activeNetworkIsWifi && WiFi.status() != WL_CONNECTED) {
         if (isConnected) {
             isConnected = false;
+            // Preserve a concrete reason for the Web/API status endpoint.
+            // Previously the session silently became offline while
+            // lastErrorCode stayed at 0, so the UI could only say "未连接".
+            lastErrorCode = -3;
             LOG_WARNING("MQTT: WiFi disconnected, marking MQTT offline");
             Serial.println("[MQTT-DBG] WiFi disconnected");
+            _notifyStatusChange();
         }
         return;
     }
@@ -1217,6 +1297,10 @@ void MQTTClient::handle() {
     if (!mqttClient.connected()) {
         if (isConnected) {
             isConnected = false;
+            // The transport was healthy and then dropped between loop calls.
+            // Report that transition explicitly; reconnect() will replace it
+            // with the broker/DNS/auth code when a new attempt fails.
+            lastErrorCode = -3;
             if (config.scheme == "mqtts" && _mqttsMemoryBackoffActive) {
                 lastReconnectAttempt = millis();
             } else if (lastConnectedTime != 0 &&
@@ -1586,9 +1670,67 @@ void MQTTClient::_notifyStatusChange() {
     data["clientId"] = config.clientId;
     data["reconnectCount"] = reconnectCount;
     data["lastError"] = lastErrorCode;
+    data["lastErrorCode"] = lastErrorCode;
+    // Keep asynchronous SSE diagnostics aligned with the REST status route.
+    // The transport pointer only says which Client object was injected; it
+    // does not say that Ethernet/4G is currently registered on the network.
+    // Conversely, Ethernet MQTTS intentionally uses the internal secure
+    // client, so checking WiFi.status() alone would report a healthy Ethernet
+    // link as offline.  Ask the active network manager for the authoritative
+    // connection state and retain the old fallback during early boot, before
+    // the framework has published its manager.
+    bool networkConnected = false;
+    FastBeeFramework* statusFw = FastBeeFramework::getInstance();
+    FBNetworkManager* statusNet = statusFw
+        ? static_cast<FBNetworkManager*>(statusFw->getNetworkManager())
+        : nullptr;
+    if (statusNet) {
+        networkConnected = statusNet->isNetworkConnected();
+    } else {
+        networkConnected = _externalClient || WiFi.status() == WL_CONNECTED;
+    }
+    data["lastErrorName"] = mqttStatusErrorName(lastErrorCode);
+    data["lastErrorClass"] = mqttStatusErrorClass(
+        lastErrorCode, _lastMqttsTlsMemoryFailure);
+    const char* errorMessage = mqttStatusErrorMessage(
+        lastErrorCode, networkConnected, _lastMqttsTlsMemoryFailure);
+    data["lastErrorMessage"] = errorMessage;
+    // Keep the legacy alias used by older Web bundles and make the reason
+    // available to SSE-only pages without waiting for a REST status poll.
+    data["errorMessage"] = errorMessage;
+    data["statusReason"] = errorMessage;
+    data["networkConnected"] = networkConnected;
+    data["autoReconnect"] = config.autoReconnect;
+    data["connecting"] = !stopped && !isConnected && config.autoReconnect;
+    data["tlsMemoryFailure"] = _lastMqttsTlsMemoryFailure;
     data["scheme"] = config.scheme;
     data["tlsAllocated"] = (_wifiClientSecure != nullptr);
     data["webPausedForMqtts"] = _webServerPaused;
+    data["disabledByMemory"] = _disabledByMemory;
+    data["stoppedByMemory"] = _stoppedByMemory;
+    if (_disabledByMemory) {
+        // Match the REST contract even when an SSE consumer receives the
+        // stopped event before its next /api/mqtt/status poll.
+        data["lastError"] = -13;
+        data["lastErrorCode"] = -13;
+        data["lastErrorName"] = "MQTT_DISABLED_BY_MEMORY";
+        data["lastErrorClass"] = "resource";
+        data["lastErrorMessage"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        data["errorMessage"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        data["statusReason"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+    } else if (_stoppedByMemory) {
+        // Keep SSE diagnostics aligned with the REST status contract while a
+        // temporary memory stop is waiting for the next recovery sample.
+        data["connected"] = false;
+        data["connecting"] = false;
+        data["lastError"] = -14;
+        data["lastErrorCode"] = -14;
+        data["lastErrorName"] = "MQTT_STOPPED_BY_MEMORY";
+        data["lastErrorClass"] = "resource";
+        data["lastErrorMessage"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        data["errorMessage"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        data["statusReason"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+    }
     // 队列背压统计（消费者侧监控用）
     data["queueDepth"] = _slotCount;
     data["queueEnqueue"] = _queueStats.enqueueTotal;
@@ -1963,6 +2105,7 @@ bool MQTTClient::reconnect() {
     if (isMqttsReconnect && !_externalClient) {
         ensureTlsTransport();
         if (!_wifiClientSecure) {
+            _lastMqttsTlsMemoryFailure = true;
             lastErrorCode = -4;
             reconnectCount++;
             LOG_WARNING("[MQTT] MQTTS reconnect aborted: WiFiClientSecure allocation failed");
@@ -2021,6 +2164,8 @@ bool MQTTClient::reconnect() {
     }
     uint32_t tlsBeforeDram = 0;
     uint32_t tlsBeforeLargest = 0;
+    uint32_t tlsAfterDram = 0;
+    uint32_t tlsAfterLargest = 0;
     if (isMqtts) {
         tlsBeforeDram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         tlsBeforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
@@ -2041,8 +2186,8 @@ bool MQTTClient::reconnect() {
             connPassword.c_str());
     }
     if (isMqtts) {
-        uint32_t tlsAfterDram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        uint32_t tlsAfterLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        tlsAfterDram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        tlsAfterLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
         ets_printf("[MQTT] TLS connect: DRAM before=%lu/%lu after=%lu/%lu ok=%u\n",
                    (unsigned long)tlsBeforeDram,
                    (unsigned long)tlsBeforeLargest,
@@ -2088,10 +2233,21 @@ bool MQTTClient::reconnect() {
             releaseTlsTransport();
         }
         lastErrorCode = mqttClient.state();
-        if (isMqtts && !_externalClient && lastErrorCode == -2) {
-            _lastMqttsTlsMemoryFailure =
-                tlsBeforeDram < FastBee::MemoryBudget::MQTTS_READY_DRAM_FREE ||
-                tlsBeforeLargest < FastBee::MemoryBudget::MQTTS_READY_LARGEST_BLOCK;
+        if (isMqtts && !_externalClient &&
+            (lastErrorCode == -2 || lastErrorCode == -4)) {
+            // -2 (DNS/TCP) and -4 (timeout) are generic transport errors.
+            // Mark them as memory-related only when the MQTTS admission floor
+            // was actually missed before or after the handshake.  The former
+            // READY/comfort thresholds are intentionally not used here: being
+            // below the comfort zone triggers reclaim, but is not itself a
+            // proof that the connection failed for lack of memory.
+            const bool beforeMemoryPressure =
+                !FastBee::MemoryBudget::canAttemptMqtts(
+                    tlsBeforeDram, tlsBeforeLargest, mqttsTlsUsesPsram());
+            const bool afterMemoryPressure =
+                !FastBee::MemoryBudget::canAttemptMqtts(
+                    tlsAfterDram, tlsAfterLargest, mqttsTlsUsesPsram());
+            _lastMqttsTlsMemoryFailure = beforeMemoryPressure || afterMemoryPressure;
         }
         reconnectCount++;
         ets_printf("[MQTT] Connect FAILED rc=%d (cnt=%lu)\n",
@@ -2255,6 +2411,13 @@ void MQTTClient::doReconnect() {
     _reconnectPending = false;
     _reconnectRunning = true;
 
+    // The flag is specific to the current MQTTS attempt.  Do not carry a
+    // previous TLS-memory diagnosis into a plain MQTT or feature-disabled
+    // status response after the user changes the protocol.
+    if (config.scheme != "mqtts") {
+        _lastMqttsTlsMemoryFailure = false;
+    }
+
     // 运行时功能门控（早于一切内存腾挪）：mqtts 功能被禁用时直接拒绝，
     // 避免为注定被拒的 TLS 握手执行 Web/mDNS 暂停等重操作。
     // reconnect() 入口有同款门控兜底同步 connect() 路径。
@@ -2262,6 +2425,7 @@ void MQTTClient::doReconnect() {
         !FastBee::RuntimeFeatureManager::instance().shouldEnable("mqtts")) {
         ets_printf("[MQTT] Reconnect skipped: mqtts feature disabled\n");
         LOG_WARNING("[MQTT] MQTTS reconnect skipped: 'mqtts' feature disabled in feature settings");
+        _lastMqttsTlsMemoryFailure = false;
         lastErrorCode = -5;
         _notifyStatusChange();
         _reconnectRunning = false;
@@ -2377,6 +2541,8 @@ void MQTTClient::doReconnect() {
         if (!isMqtts) {
             return;
         }
+        // 保留给状态 API：下一次失败是内存准入拒绝，而不是 DNS/TCP 失败。
+        _lastMqttsTlsMemoryFailure = true;
         consecutiveTimeouts = 0;
         reconnectInterval = SLOW_RETRY_INTERVAL;
         lastReconnectAttempt = millis();
@@ -2533,6 +2699,7 @@ void MQTTClient::doReconnect() {
         }
         ensureTlsTransport();
         if (!_wifiClientSecure) {
+            _lastMqttsTlsMemoryFailure = true;
             LOG_WARNING("[MQTT] MQTTS reconnect skipped: TLS transport unavailable after reclaim");
             enterMqttsMemoryBackoff("tls_transport_unavailable");
             resumeWebServices();
@@ -2564,10 +2731,19 @@ void MQTTClient::doReconnect() {
     } else {
         uint32_t failDramFree = needsMqttsDramBudget ? heap_caps_get_free_size(MALLOC_CAP_INTERNAL) : 0;
         uint32_t failDramLargest = needsMqttsDramBudget ? heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) : 0;
+        // A PubSubClient -4 is a generic connection timeout.  It must not be
+        // presented as a TLS-memory failure unless the allocator/transport
+        // path explicitly reported it or the post-failure DRAM is below the
+        // MQTTS admission floor.  Otherwise a normal DNS/TCP/TLS timeout would
+        // incorrectly tell the user to switch from mqtts to mqtt.
+        const bool postHandshakeMemoryPressure =
+            isMqtts && lastErrorCode == -4 &&
+            !FastBee::MemoryBudget::canAttemptMqtts(
+                failDramFree, failDramLargest, mqttsTlsUsesPsram());
         bool mqttsSslMemoryFailure =
             isMqtts &&
             (_lastMqttsTlsMemoryFailure ||
-             lastErrorCode == -4 ||
+             postHandshakeMemoryPressure ||
              !FastBee::MemoryBudget::canAttemptMqtts(failDramFree, failDramLargest,
                                                      mqttsTlsUsesPsram()));
 

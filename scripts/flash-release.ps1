@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("esp32-F4R0", "esp32c3-F4R0", "esp32c6-F4R0", "esp32s3-F8R4", "esp32s3-F16R8")]
+    [ValidateSet("esp32-F4R0", "esp32-F8R0", "esp32-F8R8", "esp32c3-F4R0", "esp32c6-F4R0", "esp32c6-F8R0", "esp32s3-F8R0", "esp32s3-F8R8", "esp32s3-F16R8")]
     [string]$Env = "esp32-F4R0",
 
     [Parameter(Mandatory = $true)]

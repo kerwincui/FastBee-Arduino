@@ -592,7 +592,11 @@ void WebConfigManager::performMaintenance() {
             } else {
                 // WiFi 已连接，进一步检查是否有僵死连接
                 uint8_t timeWaitCount = 0;
-                const uint16_t activeConns = countTcpConnections(&timeWaitCount);
+                // The global active PCB list also contains outbound MQTT/TLS
+                // sockets. Only port-80 PCBs can explain an idle Web listener
+                // and are eligible for the reaper below.
+                const uint16_t activeConns =
+                    countTcpConnectionsOnLocalPort(80, &timeWaitCount);
                 if (activeConns == 0 && timeWaitCount == 0) {
                     // 没有任何 TCP 连接，端口正常监听，仅因无人访问 → 不重启
                     lastRequestSeenMs = millis();
@@ -722,6 +726,28 @@ uint16_t WebConfigManager::countTcpConnections(uint8_t* outTimeWait) const {
     if (outTimeWait) {
         *outTimeWait = timeWait;
     }
+    return total;
+}
+
+uint16_t WebConfigManager::countTcpConnectionsOnLocalPort(
+    uint16_t port, uint8_t* outTimeWait) const {
+    uint16_t total = 0;
+    uint8_t timeWait = 0;
+
+    LOCK_TCPIP_CORE();
+    for (struct tcp_pcb* pcb = tcp_active_pcbs; pcb != nullptr; pcb = pcb->next) {
+        if (pcb->local_port != port) continue;
+        total++;
+        if (pcb->state == TIME_WAIT) timeWait++;
+    }
+    for (struct tcp_pcb* pcb = tcp_tw_pcbs; pcb != nullptr; pcb = pcb->next) {
+        if (pcb->local_port != port) continue;
+        total++;
+        timeWait++;
+    }
+    UNLOCK_TCPIP_CORE();
+
+    if (outTimeWait) *outTimeWait = timeWait;
     return total;
 }
 

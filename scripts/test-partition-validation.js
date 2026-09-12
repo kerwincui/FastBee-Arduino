@@ -63,8 +63,8 @@ class PartitionTableValidator {
         const lines = content.split('\n');
         
         let hasLittleFS = false;
-        let spiffsFound = false;
         let invalidOffsets = false;
+        const partitions = [];
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
@@ -77,14 +77,12 @@ class PartitionTableValidator {
             
             const [name, type, subtype, offsetStr, sizeStr] = parts;
             
-            // Check for deprecated filesystem types
-            if (subtype === 'spiffs') {
-                spiffsFound = true;
-                this.errors.push(`[${fileName}:${i+1}] Deprecated filesystem type 'spiffs' found (${name})`);
-            }
-            
-            // Check for LittleFS support
-            if (type === 'data' && (subtype === 'littlefs' || name.toLowerCase().includes('littlefs'))) {
+            // Arduino-ESP32's LittleFS implementation uses the historical
+            // "spiffs" partition label by default. Accept that exact alias,
+            // while rejecting unrelated SPIFFS partitions.
+            if (type === 'data' &&
+                (subtype === 'littlefs' || name.toLowerCase().includes('littlefs') ||
+                 (name === 'spiffs' && subtype === 'spiffs'))) {
                 hasLittleFS = true;
             }
             
@@ -97,18 +95,48 @@ class PartitionTableValidator {
             // Validate size format
             if (!sizeStr.match(/^0x[0-9a-fA-F]+$/)) {
                 this.errors.push(`[${fileName}:${i+1}] Invalid size format: ${sizeStr} (${name})`);
+            } else if (!invalidOffsets) {
+                partitions.push({
+                    name,
+                    type,
+                    subtype,
+                    offset: parseInt(offsetStr, 16),
+                    size: parseInt(sizeStr, 16),
+                    line: i + 1
+                });
             }
         }
-        
-        // Check requirements based on Flash size hint from filename
-        const is4MB = fileName.includes('4MB') || fileName.includes('fastbee.csv');
+
+        // Check capacity and overlap using the flash size encoded in the name.
+        const sizeMatch = fileName.match(/(4|8|16)MB/i);
+        const flashCapacity = sizeMatch ? parseInt(sizeMatch[1], 10) * 0x100000 : null;
+        if (flashCapacity) {
+            partitions.forEach(partition => {
+                if (partition.offset + partition.size > flashCapacity) {
+                    this.errors.push(`[${fileName}:${partition.line}] Partition '${partition.name}' exceeds ${sizeMatch[1]}MB flash`);
+                }
+            });
+            const sorted = [...partitions].sort((a, b) => a.offset - b.offset);
+            for (let i = 1; i < sorted.length; i++) {
+                const previous = sorted[i - 1];
+                if (previous.offset + previous.size > sorted[i].offset) {
+                    this.errors.push(`[${fileName}] Partitions '${previous.name}' and '${sorted[i].name}' overlap`);
+                }
+            }
+        }
+
+        // 4MB images intentionally use one app slot; larger images retain OTA.
+        const is4MB = fileName.includes('4MB');
+        const appPartitions = partitions.filter(partition => partition.type === 'app');
+        if (is4MB && appPartitions.some(partition => partition.subtype === 'ota_1')) {
+            this.errors.push(`[${fileName}] 4MB layout must not contain an ota_1 application slot`);
+        }
+        if (!is4MB && sizeMatch && appPartitions.length < 2) {
+            this.errors.push(`[${fileName}] ${sizeMatch[1]}MB layout must contain two OTA application slots`);
+        }
+
         if (is4MB && !hasLittleFS) {
             this.warnings.push(`[${fileName}] No LittleFS partition found (expected for 4MB flash)`);
-        }
-        
-        if (spiffsFound) {
-            this.errors.push(`[${fileName}] Contains deprecated SPiFFS filesystem (must use LittleFS)`);
-            return false;
         }
         
         if (invalidOffsets) {
@@ -117,10 +145,10 @@ class PartitionTableValidator {
         }
         
         console.log(`  ✅ Has LittleFS: ${hasLittleFS ? 'Yes' : 'No'}`);
-        console.log(`  ✅ Deprecated SPiFFS: ${spiffsFound ? 'YES (ERROR!)' : 'No'}`);
+        console.log(`  ✅ LittleFS label: ${hasLittleFS ? 'Compatible' : 'Not present'}`);
         console.log(`  ✅ Offset format: ${invalidOffsets ? 'INVALID' : 'Valid'}`);
         
-        return true;
+        return this.errors.filter(error => error.startsWith(`[${fileName}`)).length === 0;
     }
 }
 

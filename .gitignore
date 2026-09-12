@@ -51,14 +51,26 @@ partitions_dump.bin
 
 # Test reports and coverage
 test/browser/test-results/
+test/browser/reports/
 test/browser/test-regression-output.txt
+test/reports/
 playwright-report/
 tmp/test-results/
+/test-results/
+/artifacts/
 body*.txt
-s*.json
 docs/soak-report-*.html
 docs/soak-summary-*.json
 docs/test-report.md
+
+# Device test output and local credentials
+*.cookies
+*-cookie.txt
+*-cookies.txt
+*-headers.txt
+*-metrics.json
+*-mqtt-status.json
+docs/.device-config-backups/
 
 # ESP-IDF sdkconfig generated files
 sdkconfig*

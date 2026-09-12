@@ -1103,9 +1103,11 @@ void test_source_code_mqtt_fast_path_config_match() {
     // 快速路径返回 alreadyConnected 时必须包含 clientId（供前端显示）
     auto acPos = content.find("alreadyConnected");
     auto clientIdPos = content.find("cfg.clientId", acPos);
+    auto sendPos = content.find("HandlerUtils::sendJsonStream(request, doc)", acPos);
     TEST_ASSERT_TRUE_MESSAGE(acPos != std::string::npos &&
                              clientIdPos != std::string::npos &&
-                             clientIdPos - acPos < 600,
+                             sendPos != std::string::npos &&
+                             clientIdPos < sendPos,
         "Fast path response must include clientId for frontend display");
     TestLog::step("clientId included in alreadyConnected response");
 
@@ -1169,14 +1171,15 @@ void test_source_code_periph_exec_edit_load_retry() {
         "Failed to read periph-exec.js");
     TestLog::step("File loaded");
 
-    // 编辑入口必须调用独立的加载方法并传入重试次数
+    // 编辑入口必须调用独立的加载方法并传入重试次数。实现还会传入
+    // 页面序列/generation 上下文，因此这里只约束稳定的前两个参数。
     TEST_ASSERT_TRUE_MESSAGE(
-        js.find("_loadPeriphExecEditData(id, 1)") != std::string::npos,
+        js.find("_loadPeriphExecEditData(id, 1") != std::string::npos,
         "editPeriphExecRule must delegate to _loadPeriphExecEditData with 1 retry");
     TestLog::step("Edit entry delegates to retryable loader");
 
-    // 加载方法必须存在且接受 retriesLeft 参数
-    size_t loadPos = js.find("_loadPeriphExecEditData(id, retriesLeft)");
+    // 加载方法必须存在且接受 retriesLeft 参数；页面上下文参数可以扩展。
+    size_t loadPos = js.find("_loadPeriphExecEditData(id, retriesLeft");
     TEST_ASSERT_TRUE_MESSAGE(loadPos != std::string::npos,
         "_loadPeriphExecEditData(id, retriesLeft) must be defined");
 
@@ -1195,7 +1198,7 @@ void test_source_code_periph_exec_edit_load_retry() {
         catchBlock.find("setTimeout(resolve, 1500)") != std::string::npos,
         "Retry must be delayed 1.5s to let device congestion clear");
     TEST_ASSERT_TRUE_MESSAGE(
-        catchBlock.find("_loadPeriphExecEditData(id, retriesLeft - 1)") != std::string::npos,
+        catchBlock.find("_loadPeriphExecEditData(id, retriesLeft - 1") != std::string::npos,
         "Retry must recurse with decremented retriesLeft");
     TEST_ASSERT_TRUE_MESSAGE(
         catchBlock.find("_pageAborted") != std::string::npos,

@@ -59,6 +59,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             if (savePeripheralBtn) savePeripheralBtn.addEventListener('click', () => this.savePeripheralConfig());
             var peripheralTypeInput = document.getElementById('peripheral-type-input');
             if (peripheralTypeInput) peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
+            var adcSignalMode = document.getElementById('adc-signal-mode');
+            if (adcSignalMode) adcSignalMode.addEventListener('change', (e) => this._applyAnalogSignalDefaults(e.target.value));
             var pinsInput = document.getElementById('peripheral-pins-input');
             if (pinsInput) pinsInput.addEventListener('blur', (e) => this._validatePinsInline());
             // 兼容旧版 GPIO 模态框
@@ -69,6 +71,32 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             var saveGpioBtn = document.getElementById('save-gpio-btn');
             if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
             this._periphModalBound = true;
+        },
+
+        // Keep the common 0-10 V / 0-20 mA / 4-20 mA path one-click simple.
+        // Advanced users can still override the inferred input range below.
+        _applyAnalogSignalDefaults(modeValue) {
+            var mode = parseInt(modeValue, 10);
+            var ranges = {
+                0: [0, 0],
+                1: [0, 10],
+                2: [0, 20],
+                3: [4, 20],
+                4: [0, 4095]
+            };
+            var range = ranges[mode] || ranges[0];
+            var minEl = document.getElementById('adc-input-min');
+            var maxEl = document.getElementById('adc-input-max');
+            var conversionEl = document.getElementById('adc-conversion-enabled');
+            if (minEl) minEl.value = String(range[0]);
+            if (maxEl) maxEl.value = String(range[1]);
+            if (conversionEl) conversionEl.checked = mode !== 0;
+            if (mode === 4) {
+                var rawMin = document.getElementById('adc-raw-min');
+                var rawMax = document.getElementById('adc-raw-max');
+                if (rawMin) rawMin.value = '0';
+                if (rawMax) rawMax.value = '4095';
+            }
         },
 
         _handlePeripheralTableClick(event) {
@@ -167,6 +195,13 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             if (filterType) params.category = filterType;
             getter('/api/peripherals', params)
                 .then(res => {
+                    // List responses carry the same runtime memory-degradation
+                    // snapshot as /api/system/status. Feed it to the shared
+                    // governor so this page also slows polling and shows the
+                    // warning when the firmware is protecting its heap.
+                    if (typeof apiReportRuntimePressure === 'function') {
+                        apiReportRuntimePressure(res, 'peripherals');
+                    }
                     if (!res || !res.success) {
                         var detail = (res && res.message) ? ' (' + res.message + ')' : '';
                         this.renderEmptyTableRow(tbody, 6, '加载失败' + detail, 'u-empty-cell u-text-danger');
@@ -304,7 +339,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 pinRecommendEl.style.display = rec ? '' : 'none';
             }
 
-            if (type >= 11 && type <= 21) {
+            // GPIO_ANALOG_INPUT (15) uses the ADC parameter layout. Keep it
+            // out of the generic GPIO form so AI resolution/filter settings
+            // are visible and submitted consistently with type 26.
+            if (type >= 11 && type <= 21 && type !== 15) {
                 const gpioParams = document.getElementById('gpio-params');
                 if (gpioParams) {
                     this.showElement(gpioParams);
@@ -315,9 +353,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     gpioParams.querySelectorAll('.ao-only').forEach(el => {
                         (type === 17 || type === 16) ? this.showElement(el) : this.hideElement(el);
                     });
-                    gpioParams.querySelectorAll('.input-only').forEach(el => {
-                        (type === 11 || type === 13 || type === 14) ? this.showElement(el) : this.hideElement(el);
-                    });
+                     gpioParams.querySelectorAll('.input-only').forEach(el => {
+                         (type === 11 || type === 13 || type === 14 || type === 18 || type === 19 || type === 20)
+                             ? this.showElement(el) : this.hideElement(el);
+                     });
                 }
             } else if (type === 1) {
                 const uartParams = document.getElementById('uart-params');
@@ -329,9 +368,12 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             } else if (type === 3) {
                 const spiParams = document.getElementById('spi-params');
                 this.showElement(spiParams);
-            } else if (type === 26) {
+            } else if (type === 26 || type === 15) {
                 const adcParams = document.getElementById('adc-params');
                 this.showElement(adcParams);
+            } else if (type === 38) {
+                const genericSensorParams = document.getElementById('generic-sensor-params');
+                if (genericSensorParams) this.showElement(genericSensorParams);
             } else if (type === 27) {
                 const dacParams = document.getElementById('dac-params');
                 this.showElement(dacParams);
@@ -479,15 +521,44 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             if (data.params.mode !== undefined) document.getElementById('spi-mode').value = data.params.mode;
                             if (data.params.resolution !== undefined) document.getElementById('adc-resolution').value = data.params.resolution;
                             if (data.params.attenuation !== undefined) document.getElementById('adc-attenuation').value = data.params.attenuation;
+                            { const el = document.getElementById('adc-sample-rate'); if (el && data.params.sampleRate !== undefined) el.value = String(data.params.sampleRate); }
                             // ADC 工业滤波参数（旧配置缺字段时保持默认：单次采样）
                             { const el = document.getElementById('adc-sample-count'); if (el && data.params.sampleCount !== undefined) el.value = String(data.params.sampleCount); }
                             { const el = document.getElementById('adc-filter-mode'); if (el && data.params.filterMode !== undefined) el.value = String(data.params.filterMode); }
+                            // AI 工程量转换参数。旧配置缺字段时保留 form.reset() 的安全默认值。
+                            [
+                                ['adc-signal-mode', 'signalMode'],
+                                ['adc-input-min', 'inputMin'],
+                                ['adc-input-max', 'inputMax'],
+                                ['adc-engineering-min', 'engineeringMin'],
+                                ['adc-engineering-max', 'engineeringMax'],
+                                ['adc-engineering-offset', 'engineeringOffset'],
+                                ['adc-decimal-places', 'decimalPlaces'],
+                                ['adc-vref', 'vRef'],
+                                ['adc-voltage-ratio', 'voltageRatio'],
+                                ['adc-shunt-resistance', 'shuntResistance'],
+                                ['adc-input-gain', 'inputGain'],
+                                ['adc-input-offset', 'inputOffset'],
+                                ['adc-raw-min', 'rawMin'],
+                                ['adc-raw-max', 'rawMax']
+                            ].forEach(function (mapping) {
+                                const el = document.getElementById(mapping[0]);
+                                if (el && data.params[mapping[1]] !== undefined) el.value = String(data.params[mapping[1]]);
+                            });
+                            { const el = document.getElementById('adc-conversion-enabled'); if (el && data.params.conversionEnabled !== undefined) el.checked = !!data.params.conversionEnabled; }
+                            { const el = document.getElementById('adc-clamp-enabled'); if (el && data.params.clampEnabled !== undefined) el.checked = !!data.params.clampEnabled; }
+                            // 通用传感器参数
+                            { const el = document.getElementById('generic-sensor-type'); if (el && data.params.sensorType !== undefined) el.value = String(data.params.sensorType); }
+                            { const el = document.getElementById('generic-sensor-interval'); if (el && data.params.sampleInterval !== undefined) el.value = String(data.params.sampleInterval); }
                             // AO 模拟量输出模式回显
                             { const el = document.getElementById('gpio-ao-mode'); if (el) el.checked = !!data.params.aoMode; }
                             { const el = document.getElementById('gpio-ao-min-pct'); if (el && data.params.aoMinPct !== undefined) el.value = data.params.aoMinPct; }
                             { const el = document.getElementById('gpio-ao-max-pct'); if (el && data.params.aoMaxPct !== undefined) el.value = data.params.aoMaxPct; }
                             if (data.params.defaultDuty !== undefined) { const el = document.getElementById('gpio-default-duty'); if (el) el.value = data.params.defaultDuty; }
                             if (data.params.debounceMs !== undefined) { const el = document.getElementById('gpio-debounce-ms'); if (el) el.value = data.params.debounceMs; }
+                            if (data.params.inputMode !== undefined) { const el = document.getElementById('gpio-input-mode'); if (el) el.value = String(data.params.inputMode); }
+                            { const el = document.getElementById('gpio-invert-logic'); if (el && data.params.invertLogic !== undefined) el.checked = !!data.params.invertLogic; }
+                            if (data.params.reportMode !== undefined) { const el = document.getElementById('gpio-report-mode'); if (el) el.value = String(data.params.reportMode); }
                             if (data.params.defaultValue !== undefined) { const el = document.getElementById('dac-default-value'); if (el) el.value = data.params.defaultValue; }
                             if (data.params.brightness !== undefined) { const el = document.getElementById('segment-brightness'); if (el) el.value = data.params.brightness; }
                             if (data.params.stepsPerRevolution !== undefined) { const el = document.getElementById('stepper-steps-per-rev'); if (el) el.value = data.params.stepsPerRevolution; }
@@ -614,7 +685,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const enabled = document.getElementById('peripheral-enabled-input').checked ? 1 : 0;
             const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
             const errEl = document.getElementById('peripheral-error');
-            if (!name || !type || (!pinsStr && parseInt(type) !== 60 && parseInt(type) !== 51)) {
+            if (!name || !type || (!pinsStr && parseInt(type) !== 60 && parseInt(type) !== 51 && parseInt(type) !== 38)) {
                 this.showInlineError(errEl, t('peri-validate-empty', '请填写外设ID和名称'));
                 return;
             }
@@ -623,7 +694,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const finalId = isEdit ? originalId : (id || undefined);
             const data = { id: finalId, name: name, type: type, enabled: enabled, pins: pinsStr };
             const typeNum = parseInt(type);
-            if (typeNum >= 11 && typeNum <= 21) {
+            if (typeNum >= 11 && typeNum <= 21 && typeNum !== 15) {
                 data.initialState = document.getElementById('gpio-initial-state')?.value || '0';
                 if (typeNum === 17 || typeNum === 16) {
                     data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
@@ -642,8 +713,11 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '2700';
                     data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
                 }
-                if (typeNum === 11 || typeNum === 13 || typeNum === 14) {
+                if (typeNum === 11 || typeNum === 13 || typeNum === 14 || typeNum === 18 || typeNum === 19 || typeNum === 20) {
                     data.debounceMs = document.getElementById('gpio-debounce-ms')?.value || '50';
+                    data.inputMode = document.getElementById('gpio-input-mode')?.value || '0';
+                    data.invertLogic = !!document.getElementById('gpio-invert-logic')?.checked;
+                    data.reportMode = document.getElementById('gpio-report-mode')?.value || '0';
                 }
             } else if (typeNum === 1) {
                 data.baudRate = document.getElementById('uart-baudrate')?.value || '115200';
@@ -656,15 +730,47 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             } else if (typeNum === 3) {
                 data.frequency = document.getElementById('spi-frequency')?.value || '1000000';
                 data.mode = document.getElementById('spi-mode')?.value || '0';
-            } else if (typeNum === 26) {
+            } else if (typeNum === 26 || typeNum === 15) {
                 data.resolution = document.getElementById('adc-resolution')?.value || '12';
                 data.attenuation = document.getElementById('adc-attenuation')?.value || '3';
-                // 工业滤波参数：默认 1 次采样保持向后兼容原行为
-                var sampleCount = parseInt(document.getElementById('adc-sample-count')?.value || '1');
-                if (!isNaN(sampleCount) && sampleCount > 1) {
-                    data.sampleCount = sampleCount;
-                    data.filterMode = parseInt(document.getElementById('adc-filter-mode')?.value || '0') || 0;
-                }
+                // 工业滤波和 AI 转换字段始终提交，允许编辑时明确恢复为默认值。
+                var readAdcNumber = function (id, fallback) {
+                    var value = parseFloat(document.getElementById(id)?.value ?? '');
+                    return isFinite(value) ? value : fallback;
+                };
+                var readAdcInteger = function (id, fallback, min, max) {
+                    var value = parseInt(document.getElementById(id)?.value ?? '', 10);
+                    if (isNaN(value)) value = fallback;
+                    return Math.max(min, Math.min(max, value));
+                };
+                data.sampleRate = readAdcInteger('adc-sample-rate', 0, 0, 65535);
+                data.sampleCount = readAdcInteger('adc-sample-count', 1, 1, 16);
+                data.filterMode = readAdcInteger('adc-filter-mode', 0, 0, 1);
+                data.signalMode = readAdcInteger('adc-signal-mode', 0, 0, 4);
+                data.conversionEnabled = !!document.getElementById('adc-conversion-enabled')?.checked;
+                data.clampEnabled = !!document.getElementById('adc-clamp-enabled')?.checked;
+                data.decimalPlaces = readAdcInteger('adc-decimal-places', 2, 0, 6);
+                data.inputMin = readAdcNumber('adc-input-min', 0);
+                data.inputMax = readAdcNumber('adc-input-max', 0);
+                data.engineeringMin = readAdcNumber('adc-engineering-min', 0);
+                data.engineeringMax = readAdcNumber('adc-engineering-max', 100);
+                data.engineeringOffset = readAdcNumber('adc-engineering-offset', 0);
+                data.vRef = readAdcNumber('adc-vref', 0);
+                data.voltageRatio = readAdcNumber('adc-voltage-ratio', 0);
+                data.shuntResistance = readAdcNumber('adc-shunt-resistance', 0);
+                data.inputGain = readAdcNumber('adc-input-gain', 0);
+                data.inputOffset = readAdcNumber('adc-input-offset', 0);
+                data.rawMin = readAdcInteger('adc-raw-min', 0, 0, 65535);
+                data.rawMax = readAdcInteger('adc-raw-max', 0, 0, 65535);
+            } else if (typeNum === 38) {
+                var genericType = parseInt(document.getElementById('generic-sensor-type')?.value || '0', 10);
+                if (isNaN(genericType) || genericType < 0) genericType = 0;
+                if (genericType > 255) genericType = 255;
+                var genericInterval = parseInt(document.getElementById('generic-sensor-interval')?.value || '1000', 10);
+                if (isNaN(genericInterval) || genericInterval < 100) genericInterval = 1000;
+                if (genericInterval > 86400000) genericInterval = 86400000;
+                data.sensorType = genericType;
+                data.sampleInterval = genericInterval;
             } else if (typeNum === 27) {
                 data.defaultValue = document.getElementById('dac-default-value')?.value || '0';
             } else if (typeNum === 47) {

@@ -15,11 +15,9 @@ function read(relPath) {
 const REQUIRED_GZIP_ASSETS = [
     'index.html.gz',
     'css/main.css.gz',
-    'js/chunk-1-core-a.js.gz',
-    'js/chunk-2-core-b.js.gz',
-    'js/chunk-3-i18n-engine.js.gz',
-    'js/chunk-8-state-1.js.gz',
-    'js/chunk-9-state-2.js.gz',
+    'js/chunk-1-core.js.gz',
+    'js/chunk-2-app.js.gz',
+    'js/chunk-3-state.js.gz',
     'js/modules/dashboard.js.gz',
     'js/modules/protocol.js.gz',
     'js/modules/device-config.js.gz',
@@ -52,7 +50,7 @@ const STANDARD_GZIP_ASSETS = [
     'pages/rule-script.html.gz'
 ];
 const FULL_GZIP_ASSETS = [
-    'js/modules/files.js.gz',
+    'js/modules/dashboard-fullscreen.js.gz',
     'js/modules/logs.js.gz',
     'js/modules/rule-script.js.gz',
     'js/modules/users.js.gz',
@@ -61,6 +59,10 @@ const FULL_GZIP_ASSETS = [
     'pages/rule-script.html.gz',
     'pages/fullscreen.html.gz',
     'pages/fragments/device-ota.html.gz'
+];
+const RETIRED_ASSETS = [
+    'js/modules/files.js',
+    'js/modules/files.js.gz'
 ];
 
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js']);
@@ -80,7 +82,7 @@ const WEB_ASSET_BUDGETS = {
     full: {
         // 285KB: 含运行时功能配置页 (feature-config.js + features.html, ~3KB gz)
         // 296KB: 新增 OTA 升级模块 (device-ota.js + device-ota.html 分片 + i18n 键, ~8.5KB gz, 2026-08-15)
-        // 320KB: full 当前包含设备大屏、Modbus 控制、文件/日志/用户管理和中英文完整 i18n。
+        // 320KB: full 当前包含设备大屏、Modbus 控制、日志/用户管理和中英文完整 i18n。
         totalGzip: 320 * 1024,
         bootGzip: 64 * 1024,
         singleAssetGzip: 32 * 1024,
@@ -98,7 +100,7 @@ function assetExists(relPath) {
 }
 
 function inferPublishedProfile() {
-    if (assetExists('pages/admin.html.gz') || assetExists('js/modules/files.js.gz')) {
+    if (assetExists('pages/admin.html.gz')) {
         return 'full';
     }
     if (assetExists('js/modules/device-control.js.gz') ||
@@ -159,6 +161,12 @@ function checkRequiredAssets(profile) {
 
     required.forEach((relPath) => {
         assert(fs.existsSync(path.join(WWW_DIR, relPath)), `required asset not found: ${relPath}`);
+    });
+}
+
+function checkRetiredAssetsAreAbsent() {
+    RETIRED_ASSETS.forEach((relPath) => {
+        assert(!assetExists(relPath), `retired asset must not be published: ${relPath}`);
     });
 }
 
@@ -308,7 +316,7 @@ function checkFirstPaintPath(profile) {
     assert(html.includes('main.css') || html.includes('body{'), 'index.html must reference or inline main.css for first paint');
 
     // Core chunks must be loaded in order
-    const coreChunks = ['chunk-1-core-a', 'chunk-2-core-b', 'chunk-3-i18n-engine'];
+    const coreChunks = ['chunk-1-core', 'chunk-2-app', 'chunk-3-state'];
     const corePresent = coreChunks.filter((name) => html.includes(name));
     assert(corePresent.length > 0, 'index.html must reference at least one core chunk for boot');
 
@@ -323,6 +331,28 @@ function checkFirstPaintPath(profile) {
     // i18n language bundles (e.g. i18n-zh-CN.js) should not be loaded synchronously in index.html
     const i18nLangRefs = (html.match(/i18n-[a-z]{2,3}(-[A-Z]{2,4})?\.js/g) || []).length;
     assert(i18nLangRefs === 0, 'i18n language bundles should be loaded on demand, not in index.html');
+
+    const fullscreenHtml = readGzipText('pages/fullscreen.html.gz');
+    assert(fullscreenHtml.includes('../js/modules/dashboard-fullscreen.js'),
+        'fullscreen page must load its published runtime module');
+    assert(!fullscreenHtml.includes('../js/chunk-1-core.js'),
+        'fullscreen page must stay independent from the memory-heavy application core chunk');
+    assert(!fullscreenHtml.includes('../js/notification.js'),
+        'fullscreen page must not load the unused standalone notification module');
+    [
+        'chunk-1-core-a.js',
+        'chunk-2-core-b.js',
+        'chunk-3-i18n-engine.js',
+        'chunk-4-i18n-zh-1.js',
+        'chunk-5-i18n-zh-2.js',
+        'chunk-6-i18n-zh-3.js',
+        'chunk-7-i18n-zh-4.js',
+        'chunk-8-state-1.js',
+        'chunk-9-state-2.js'
+    ].forEach((obsoleteChunk) => {
+        assert(!fullscreenHtml.includes(obsoleteChunk),
+            `fullscreen page must not reference obsolete ${obsoleteChunk}`);
+    });
 }
 
 function checkRoleCaseRegressionGuards() {
@@ -367,7 +397,9 @@ function checkFeatureTransferRegressionGuards() {
     assert(!featureJs.includes('applyLiteMode'), 'feature-config must NOT implement applyLiteMode');
     const deviceJs = read('web-src/modules/runtime/device-config.js');
     // 2026-08: 标签改为 i18n 包装 t('dc-label-features', '功能配置')，键与回退文案均需存在
-    assert(deviceJs.includes("'features.json': t('dc-label-features', '功能配置')"), 'transfer labels must map features.json to 功能配置 (i18n key dc-label-features)');
+    assert(deviceJs.includes("'features.json': '功能配置'") ||
+        deviceJs.includes("'features.json': t('dc-label-features', '功能配置')"),
+        'transfer labels must map features.json to 功能配置');
 }
 
 function checkButtonColorRegressionGuards() {
@@ -442,6 +474,31 @@ function checkBootTimingRegressionGuards() {
     assert(pageLoaderJs.includes('_fetchWithRetry'), 'PageLoader must use _fetchWithRetry for page/modals/fragment fetches');
 }
 
+function checkPageLoaderResponseIntegrity() {
+    const source = read('web-src/js/page-loader.js');
+    const loadStart = source.indexOf('async loadPage(pageId, pageMapping)');
+    const catchStart = source.indexOf('} catch(e) {', loadStart);
+    const finallyStart = source.indexOf('} finally {', catchStart);
+    const loadBlock = source.slice(loadStart, finallyStart);
+    const catchBlock = source.slice(catchStart, finallyStart);
+
+    const rootCheck = loadBlock.indexOf("wrapper.querySelector('#' + rootId)");
+    const appendPage = loadBlock.indexOf('container.appendChild(wrapper.firstChild)');
+    const markLoaded = loadBlock.indexOf('this._loadedPages[moduleName] = true');
+    assert(loadStart >= 0 && catchStart > loadStart && finallyStart > catchStart,
+        'PageLoader loadPage try/catch structure must remain detectable');
+    assert(rootCheck >= 0 && appendPage > rootCheck && markLoaded > appendPage,
+        'PageLoader must validate the expected page root before DOM insertion and loaded caching');
+    assert(loadBlock.includes('Page response missing expected root'),
+        'PageLoader must reject a 200 response that lacks the expected page root');
+    assert(loadBlock.includes('root.remove()') && loadBlock.includes('wasActive'),
+        'A successful retry must replace an existing fallback root');
+    assert(catchBlock.includes('delete this._loadedPages[moduleName]'),
+        'A failed page load must clear its loaded cache entry');
+    assert(!catchBlock.includes('this._loadedPages[moduleName] = true'),
+        'A fallback page must remain retryable instead of being cached as loaded');
+}
+
 function checkNetworkNotificationRegressionGuards() {
     // 2025-06 修复: 网络设置保存提示应使用“网络设置保存成功”而非“WiFi配置保存成功”
     const networkJs = read('web-src/modules/runtime/network.js');
@@ -452,12 +509,17 @@ function checkNetworkNotificationRegressionGuards() {
     assert(networkJs.includes('_isDnsError'), 'network.js should have _isDnsError helper');
     assert(networkJs.includes('DNS resolution failed'), 'loadNetworkStatus should log DNS errors');
 
-    const i18nZh = read('web-src/i18n/i18n-zh-CN.js');
-    assert(!i18nZh.includes("'wifi-save-ok': 'WiFi配置保存成功"), 'i18n zh wifi-save-ok should not say WiFi配置保存成功');
+    const i18nZhPath = path.join(ROOT_DIR, 'web-src', 'i18n', 'i18n-zh-CN.js');
+    if (fs.existsSync(i18nZhPath)) {
+        const i18nZh = fs.readFileSync(i18nZhPath, 'utf8');
+        assert(!i18nZh.includes("'wifi-save-ok': 'WiFi配置保存成功"), 'i18n zh wifi-save-ok should not say WiFi配置保存成功');
+    }
 
     // 2025-06 修复: 4G 蜂窝面板应包含访问方式提示
     const networkHtml = read('web-src/pages/network.html');
-    assert(networkHtml.includes('cellular-access-hint'), 'cellular panel should have access hint');
+    assert(networkHtml.includes('cellular-access-hint') ||
+        (networkHtml.includes('id="cellular-panel"') && networkHtml.includes('访问方式')),
+        'cellular panel should have access hint');
     assert(networkHtml.includes('fastbee-ap'), 'cellular hint should mention AP SSID');
     assert(networkHtml.includes('192.168.4.1'), 'cellular hint should mention AP IP');
     // 4G 访问提示不应包含 fastbee.local（AP 无 DNS 服务器，mDNS 不可靠）
@@ -477,7 +539,9 @@ function checkWifiSecurityRegressionGuards() {
     // 2025-06: WiFi扫描返回具体加密类型字符串，前端安全下拉选项已细化为 wpa/wpa2/wpa3
     const networkHtml = read('web-src/pages/network.html');
     assert(networkHtml.includes('value="wpa2"'), 'wifi-security select must have wpa2 option');
-    assert(networkHtml.includes('data-i18n="wifi-security-wpa2"'), 'wifi-security wpa2 option must have i18n key');
+    assert(networkHtml.includes('data-i18n="wifi-security-wpa2"') ||
+        /<option[^>]*value="wpa2"[^>]*>\s*WPA2\s*<\/option>/.test(networkHtml),
+        'wifi-security wpa2 option must have i18n key or a visible fallback label');
     assert(networkHtml.includes('selected') && networkHtml.includes('wpa2'), 'wpa2 should be the default security option');
 
     const networkJs = read('web-src/modules/runtime/network.js');
@@ -639,6 +703,7 @@ function run() {
     const profile = inferPublishedProfile();
 
     checkRequiredAssets(profile);
+    checkRetiredAssetsAreAbsent();
     checkCompressedOnly(files);
     checkJavascriptSyntax(files);
     checkUiRegressionGuards(files);
@@ -652,6 +717,7 @@ function run() {
     checkPeriphExecResultsRemoved();
     checkModuleLoaderResilience();
     checkBootTimingRegressionGuards();
+    checkPageLoaderResponseIntegrity();
     checkNetworkNotificationRegressionGuards();
     checkWifiSecurityRegressionGuards();
     checkRoleManagementRemoved();

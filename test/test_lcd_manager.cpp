@@ -23,6 +23,8 @@
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 
+using namespace FastBeeTest;
+
 void test_lcd_manager_group();
 
 // 辅助：读取项目源文件（用于源码级回归守卫）
@@ -823,7 +825,7 @@ static void test_source_route_handler_parses_contrast_on_add_and_update() {
 // ============================================================
 
 static void test_config_oled_params_complete_and_supported() {
-    std::string content = readLcdSrcFile("data/config/peripherals.json");
+    std::string content = readLcdSrcFile("test/fixtures/factory-config/peripherals.json");
     if (content.empty()) {
         TEST_IGNORE_MESSAGE("peripherals.json not readable, skipping config check");
         return;
@@ -867,7 +869,7 @@ static void test_config_oled_params_complete_and_supported() {
 }
 
 static void test_config_no_temp_diagnostic_rules_left() {
-    std::string content = readLcdSrcFile("data/config/periph_exec.json");
+    std::string content = readLcdSrcFile("test/fixtures/factory-config/periph_exec.json");
     if (content.empty()) {
         TEST_IGNORE_MESSAGE("periph_exec.json not readable, skipping config check");
         return;

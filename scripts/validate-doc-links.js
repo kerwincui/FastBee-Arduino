@@ -17,11 +17,11 @@ const LEGACY_ENV_NAMES = [
 ];
 const LEGACY_ENV_COMMAND_PATTERNS = [
     { regex: /(^|[\s"`'])-Env\s+esp32(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32; use esp32-F4R0' },
-    { regex: /(^|[\s"`'])-Env\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32s3; use esp32s3-F8R4' },
+    { regex: /(^|[\s"`'])-Env\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32s3; use esp32s3-F8R8' },
     { regex: /(^|[\s"`'])-Env\s+esp32c3(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32c3; use esp32c3-F4R0' },
     { regex: /(^|[\s"`'])-Env\s+esp32c6(?!-)(?=$|[\s"`'])/g, message: 'legacy deploy environment -Env esp32c6; use esp32c6-F4R0' },
     { regex: /\bpio\s+run\s+-e\s+esp32(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32; use esp32-F4R0' },
-    { regex: /\bpio\s+run\s+-e\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32s3; use esp32s3-F8R4' },
+    { regex: /\bpio\s+run\s+-e\s+esp32s3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32s3; use esp32s3-F8R8' },
     { regex: /\bpio\s+run\s+-e\s+esp32c3(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32c3; use esp32c3-F4R0' },
     { regex: /\bpio\s+run\s+-e\s+esp32c6(?!-)(?=$|[\s"`'])/g, message: 'legacy PlatformIO environment esp32c6; use esp32c6-F4R0' }
 ];
@@ -73,6 +73,7 @@ function isExternalOrVirtual(target) {
         lower.startsWith('tel:') ||
         lower.startsWith('data:') ||
         lower.startsWith('javascript:') ||
+        lower.startsWith('memory://') ||
         lower.startsWith('#') ||
         lower.startsWith('/api/') ||
         lower.startsWith('{{') ||
@@ -80,6 +81,10 @@ function isExternalOrVirtual(target) {
 }
 
 function normalizeLocalTarget(target) {
+    // Documentation often uses file: URIs so links remain usable when
+    // rendered by an IDE. Resolve them relative to the repository root.
+    if (target.toLowerCase().startsWith('file://')) target = target.slice(7);
+    else if (target.toLowerCase().startsWith('file:')) target = target.slice(5);
     const hashIndex = target.indexOf('#');
     const queryIndex = target.indexOf('?');
     let end = target.length;
@@ -104,8 +109,8 @@ function checkTarget(sourceFile, text, index, target, issues) {
     if (!localTarget) return;
     if (path.isAbsolute(localTarget)) return;
 
-    const resolved = path.resolve(path.dirname(sourceFile), localTarget);
-    if (fs.existsSync(resolved)) return;
+    const resolved = path.resolve(parsed.toLowerCase().startsWith('file:') ? ROOT_DIR : path.dirname(sourceFile), localTarget);
+    if (fs.existsSync(resolved) || fs.existsSync(path.resolve(ROOT_DIR, localTarget))) return;
 
     issues.push(`${rel(sourceFile)}:${lineNumberAt(text, index)}: missing local link '${parsed}'`);
 }

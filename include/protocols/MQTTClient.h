@@ -154,6 +154,16 @@ public:
     bool getIsConnected() const { return isConnected; }
     bool isStopped() const { return stopped; }  // 是否被显式停止
     int  getLastErrorCode() const { return lastErrorCode; }
+    // 最近一次 MQTTS 失败是否由 TLS 内存准入/分配失败引起。
+    // 供状态 API 区分网络超时与内存保护，不分配额外缓冲。
+    bool isLastMqttsTlsMemoryFailure() const { return _lastMqttsTlsMemoryFailure; }
+    // Runtime marker written by HealthMonitor when CRITICAL memory pressure
+    // disables MQTT.  It is included in asynchronous SSE status events.
+    bool isDisabledByMemory() const { return _disabledByMemory; }
+    void setDisabledByMemory(bool disabled) { _disabledByMemory = disabled; }
+    // Temporary memory-pressure stop, distinct from an explicit user stop.
+    bool isStoppedByMemory() const { return _stoppedByMemory; }
+    void setStoppedByMemory(bool stopped) { _stoppedByMemory = stopped; }
     uint32_t getReconnectCount() const { return reconnectCount; }
     unsigned long getLastConnectedTime() const { return lastConnectedTime; }
     bool isTlsTransportAllocated() const { return _wifiClientSecure != nullptr; }
@@ -237,6 +247,8 @@ private:
     unsigned long _low8SinceMs = 0;
     unsigned long _lastWifiRescueMs = 0;
     bool _lastMqttsTlsMemoryFailure = false;
+    bool _disabledByMemory = false;
+    bool _stoppedByMemory = false;
     bool _mqttsMemoryBackoffActive = false;
     static void reconnectTaskEntry(void* param);
     bool ensureReconnectTask();  // 按需创建重连任务（连接时任务已删除，断开时重新创建）

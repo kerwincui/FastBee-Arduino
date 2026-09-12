@@ -19,6 +19,8 @@
 #include <Arduino.h>
 #include "mocks/MockPeripheral.h"
 
+using namespace FastBeeTest;
+
 void test_rule_script_group();
 
 // ========== 模拟 RuleScript 结构（镜像自 RuleScript.h 核心字段） ==========
@@ -314,7 +316,7 @@ static void test_report_transform() {
     TestRuleScript rule;
     rule.id = "tx_001";
     rule.enabled = true;
-    rule.protocolType = 1;  // HTTP
+    rule.protocolType = 1;  // Modbus RTU
     rule.reportTemplate = "REPORT:{{data}}";
     mgr.addRule(rule);
     

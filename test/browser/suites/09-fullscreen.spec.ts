@@ -21,12 +21,28 @@ test.describe('Suite-09: 设备大屏', () => {
   });
 
   test('SCR-003: 全屏页面独立访问', async ({ page, baseURL }) => {
+    const assetFailures: string[] = [];
+    page.on('response', response => {
+      const url = response.url();
+      if (url.includes('/js/') && response.status() >= 400) {
+        assetFailures.push(`${response.status()} ${url}`);
+      }
+    });
+    page.on('requestfailed', request => {
+      const url = request.url();
+      if (url.includes('/js/')) {
+        assetFailures.push(`request failed ${url}: ${request.failure()?.errorText || 'unknown error'}`);
+      }
+    });
     // 设备大屏有独立HTML页面
     await page.goto(`${baseURL}/pages/fullscreen.html`);
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
-    await page.waitForTimeout(3000);
     // 全屏页面应有自动刷新指示器
     await expect(page.locator('#auto-refresh-indicator')).toBeVisible({ timeout: 10_000 });
+    await expect.poll(async () => {
+      return (await page.locator('#monitor-uptime').textContent())?.trim() || '';
+    }, { timeout: 15_000, message: '大屏运行数据应完成首次刷新' }).not.toBe('--');
+    expect(assetFailures, `大屏脚本资源加载失败:\n${assetFailures.join('\n')}`).toEqual([]);
   });
   
   test('SCR-004: 全屏资源使用率显示', async ({ page, baseURL }) => {

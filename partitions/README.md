@@ -4,16 +4,17 @@
 
 ## 文件说明
 
-### fastbee.csv (4MB Flash)
-- **适用设备**: ESP32 标准版 (4MB Flash)
+### 4MB.csv (4MB Flash)
+- **适用设备**: ESP32 / ESP32-C3 / ESP32-C6 (4MB Flash)
 - **布局**:
   - NVS: 20KB (非易失性存储)
   - OTA Data: 8KB (OTA 状态)
-  - App0: 2.88MB (固件)
-  - LittleFS: 1MB (文件系统)
+  - App0: 3.1875MB (固件)
+  - LittleFS: 768KB (文件系统)
+  - OTA: 不可用（单应用分区，无 ota_1）
 
-### fastbee-8MB.csv (8MB Flash)
-- **适用设备**: ESP32-C6, ESP32-S3 (8MB Flash)
+### 8MB.csv (8MB Flash)
+- **适用设备**: ESP32 / ESP32-S3 (8MB Flash)
 - **布局**:
   - NVS: 20KB
   - OTA Data: 8KB
@@ -21,7 +22,7 @@
   - App1: 3.5MB (固件 - OTA 更新)
   - LittleFS: 960KB (文件系统)
 
-### fastbee-16MB.csv (16MB Flash)
+### 16MB.csv (16MB Flash)
 - **适用设备**: ESP32-S3 (16MB Flash + PSRAM)
 - **布局**:
   - NVS: 20KB
@@ -36,13 +37,13 @@
 
 ```ini
 # 4MB Flash
-board_build.partitions = partitions/fastbee.csv
+board_build.partitions = partitions/4MB.csv
 
 # 8MB Flash
-board_build.partitions = partitions/fastbee-8MB.csv
+board_build.partitions = partitions/8MB.csv
 
 # 16MB Flash
-board_build.partitions = partitions/fastbee-16MB.csv
+board_build.partitions = partitions/16MB.csv
 ```
 
 ## 分区表格式
@@ -52,8 +53,8 @@ ESP-IDF 分区表格式：
 # Name, Type, SubType, Offset, Size, Flags
 nvs, data, nvs, 0x9000, 0x5000
 otadata, data, ota, 0xe000, 0x2000
-app0, app, ota_0, 0x10000, 0x2F0000
-spiffs, data, spiffs, 0x300000, 0x100000
+app0, app, ota_0, 0x10000, 0x330000
+spiffs, data, spiffs, 0x340000, 0x0C0000
 ```
 
 ## 参考资料

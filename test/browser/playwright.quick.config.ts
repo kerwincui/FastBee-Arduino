@@ -12,15 +12,9 @@ import { defineConfig } from '@playwright/test';
  *   cd test/browser
  *   DEVICE_IP=192.168.5.116 npx playwright test -c playwright.quick.config.ts
  *
- * 对比全量配置:
- *   | 指标       | 全量 (273)  | 快速 (~62) |
- *   |------------|-------------|-----------|
- *   | 测试数量    | 273         | ~62       |
- *   | 预估时间    | 30-37min    | 8-12min   |
- *   | screenshot | only-on-fail| only-on-fail|
- *   | trace      | off         | off       |
- *   | retries    | 1           | 1         |
- *   | 测试间延迟  | 800ms       | 500ms     |
+ * 用例数量会随功能变化，不在源码中维护易过期的固定数字。运行下面的
+ * 命令可查看当前快速集，不会连接设备：
+ *   npx playwright test -c playwright.quick.config.ts --list
  */
 
 const deviceIp = process.env.DEVICE_IP || '192.168.1.1';

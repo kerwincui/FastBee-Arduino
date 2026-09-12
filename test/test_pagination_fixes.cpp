@@ -28,6 +28,8 @@
 #include <sstream>
 #include <string>
 
+using namespace FastBeeTest;
+
 void test_pagination_fixes_group();
 
 // 源码回归辅助：从项目根读取源码文件
@@ -841,8 +843,8 @@ void test_smoke_periph_exec_pagination() {
 // ==============================================================
 // Test: 单条查询路径 MutexGuard 超时源码回归
 // 回归：handleGetRules 的 ?id= 路径曾用默认 portMAX_DELAY 无限等待规则锁，
-// 规则执行长时间占锁时会永久阻塞 async_tcp 任务，冻结所有 HTTP 请求
-// （编辑页 AbortError 故障根因之一）
+// 规则执行长时间占锁时会永久阻塞 async_tcp 任务，冻结所有 HTTP 请求；
+// 后续修复又误在已持锁分支调用 getRuleSnapshot()，导致非递归 mutex 自锁。
 // ==============================================================
 
 void test_source_rule_by_id_mutex_timeout() {
@@ -873,6 +875,15 @@ void test_source_rule_by_id_mutex_timeout() {
         idBlock.find("Service busy (rules locked)") != std::string::npos,
         "Rule-by-id path must return 503 with retry hint when lock times out");
     TestLog::step("Lock timeout returns 503 with retry hint");
+
+    // The branch owns the lock already, so it must use the unlocked accessor.
+    TEST_ASSERT_TRUE_MESSAGE(
+        idBlock.find("mgr.getRule(ruleId)") != std::string::npos,
+        "Rule-by-id path must use getRule() while holding rules mutex");
+    TEST_ASSERT_TRUE_MESSAGE(
+        idBlock.find("mgr.getRuleSnapshot(ruleId") == std::string::npos,
+        "Rule-by-id path must not reacquire rules mutex via getRuleSnapshot()");
+    TestLog::step("Rule-by-id path avoids nested non-recursive mutex acquisition");
 
     // 全文件中 getRulesMutex 的所有 MutexGuard 使用都必须带显式超时参数
     size_t pos = 0;

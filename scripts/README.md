@@ -8,18 +8,40 @@
 
 | 脚本 | 用途 | 常用命令 |
 |------|------|----------|
-| `doctor.ps1` | 检查 PlatformIO、Node、Git、串口和 native 工具链，部署或测试前优先运行 | `powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6` |
-| `test-all.ps1` | 统一测试矩阵入口，串起静态检查、native 测试、全版本编译、产物构建、设备冒烟和稳定性测试 | `powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,build"` |
-| `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6` |
+| `doctor.ps1` | 检查 PlatformIO、Node、Git、串口和 native 工具链，部署或测试前优先运行 | `powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port <serial-port>` |
+| `npm test` | 日常主机回归入口；运行静态门禁、Node/Python 单元测试、配置/UI/内存契约，与 CI 使用同一套清单 | `npm test` |
+| `test-all.ps1` | 发布前统一入口；默认在主机回归后继续运行 native 测试和九个固件环境编译，真机测试必须显式提供 STA 地址 | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1` |
+| `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -Port <serial-port>` |
 | `build-all-artifacts.ps1` | 为所有版本生成发布固件包和 `manifest.json` | `powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput` |
-| `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-F16R8 -Port COM6` |
-| `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full` |
-| `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100` |
-| `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://192.168.4.1 --user admin --pass 123456 --allow-begin` |
+| `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env <env> -Port <serial-port>` |
+| `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -RequireNetworkConnected` |
+| `device-web-smoke.ps1` | 按间隔检查 16 个公开页面和 4 个关键脚本资源并输出 CSV，可选延迟门槛 | `powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-ip> -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000` |
+| `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -Rounds 100` |
+| `run-device-fleet-tests.ps1` | 对多台设备执行 STA/mDNS/API/资源汇总；支持 JSON 编队配置 | `powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false` |
+| `long-term-device-monitor.ps1` | 仓库实验室五台固定设备的串口、STA HTTP、重启和覆盖缺口长期监测；异常以非零退出码结束 | `powershell -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 -DurationHours 8 -IntervalSeconds 60` |
+| `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收 | 见下方 8 小时严格验收命令 |
+| `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://<device-sta-ip> --user admin --pass 123456 --allow-begin` |
 
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
 
+`device-fleet.example.json` 中的五组 IP 与串口是当前实验室示例，不是设备的固定分配。使用 `run-device-fleet-tests.ps1` 前先复制并替换为本地值；`long-term-device-monitor.ps1` 当前直接绑定该实验室测试台，不适合作为通用设备发现入口。
+
+### 8 小时严格验收
+
+每次使用新的输出目录；`--min-duration-hours 8` 会按每台设备首末样本的实际时间窗执行门禁，不能用较多但不足 8 小时的周期代替。命令完成后只有退出码为 0 且 `fleet-stability-verdict.json` 为 `PASS` 才算通过：
+
+```powershell
+$runDir = "artifacts/final-stability-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss")
+node test/browser/fleet-stability-monitor.mjs `
+  --interval 180 --max-cycles 161 --min-duration-hours 8 `
+  --report-every 8 --cycle-timeout 420 --output-dir $runDir
+```
+
+严格门禁要求五台设备全时段在线、浏览器每周期完整覆盖、登录和全部可见菜单成功，无重试、HTTP/控制台/页面错误、WebGuard 503 或异常重启；同时检查内部 DRAM、最大连续块、响应 p95 及其首尾趋势。该命令本身是验收方法，不代表设备已经通过真机测试。
+
 ## 测试矩阵
+
+日常代码修改先运行 `npm test`。准备合并或发布时运行 `test-all.ps1` 的默认矩阵；它会复用同一个 `npm test` 清单，再执行 native 与全部固件环境构建。`device-smoke`、`device-soak` 和浏览器真机检查不会使用默认设备地址，必须通过 `-BaseUrl http://<device-sta-ip>` 显式指定 STA 地址，并拒绝 `192.168.4.1`。
 
 `device-api-test-matrix.json` 是设备 API 冒烟和稳定性测试共用的检查清单。新增 API 或改变版本裁剪策略时，应同步维护这个文件。
 
@@ -30,8 +52,8 @@
 | `name` | 检查项名称，出现在测试报告中 |
 | `method` | HTTP 方法 |
 | `path` | API 路径 |
-| `profiles` | 适用环境：出厂一律使用 unified full profile(统一固件，无裁剪)；`lite/standard/full` 仅用于实验性自定义构建测试 |
-| `auth` | 是否需要登录后的 Bearer Token |
+| `profiles` | 检查适用的 API 矩阵；9 个正式发布环境使用 `unified`，旧 profile 值只保留给有针对性的兼容测试 |
+| `auth` | 是否需要登录态；设备默认使用 HttpOnly `sessionId` Cookie，同时兼容 `session` 和 Authorization Bearer |
 | `type` | 特殊检查类型：`multi-session`、`bearer-over-cookie`、`expect-unavailable`、`expect-error` |
 | `jsonBody` | POST/PUT 请求体 |
 | `allowedStatuses` | `expect-unavailable` 或 `expect-error` 允许的 HTTP 状态码 |
@@ -39,7 +61,7 @@
 当前矩阵覆盖三类检查：
 
 - **基础可用性**: 登录、系统健康、系统指标、设备配置、网络状态、MQTT 状态、协议配置、外设、外设执行、批量请求。
-- **运行时开关功能**: Modbus,RuleScript、用户权限等功能在功能配置页按需启用。
+- **运行时开关功能**: Modbus、RuleScript、用户权限等功能在功能配置页按需启用。
 - **API 行为一致性**: 功能未启用时接口返回 404/405/501，缺少必要参数时返回 400。
 
 ## 构建与发布
@@ -54,14 +76,16 @@
 
 | 脚本 | 说明 |
 |------|------|
-| `build-app-bundle.js`、`build-admin-bundle.js`、`build-web-assets.js`、`build-web-modules.js` | 从 `web-src` 构建 `data/www` 资源 |
-| `gzip-www.js` | 压缩 Web 静态资源并组装 LittleFS staging (Unified Architecture v2.0:单一完整固件和镜像) |
+| `build-app-bundle.js`、`build-admin-bundle.js`、`build-web-modules.js` | 从 `web-src` 生成 Web 模块；HTML/JS/CSS 源文件仍只在 `web-src` 维护 |
+| `build-web-assets.js` | 生成完整的 gzip-only `data/www` 发布资源，不组装或上传 LittleFS staging |
+| `gzip-www.js` | 压缩 Web 静态资源并组装 LittleFS staging；`data/www` 和 staging 中的 HTML/JS/CSS 仅保留 `.gz`，默认不访问设备，只有显式传入 `--upload --env=<环境>` 才烧录 |
 | `generate-sw-manifest.js` | 生成 Service Worker 资源清单 |
 | `minify-js.js` | 轻量 JS 压缩器 |
 | `validate-i18n.js` | 校验中英文 i18n 键完整性 |
-| `validate-config-defaults.js` | 校验默认外设模板、执行规则和版本裁剪后的引用安全性 |
+| `validate-config-defaults.js` | 校验默认外设模板、执行规则和环境编译裁剪后的引用安全性 |
 | `web-smoke-test.js` | 校验生成后的 Web 资源引用和启动资源 |
-| `web-profile.js` | Web profile 判定 (Unified Architecture v2.0:所有设备使用 full profile，不再区分版本) |
+| `test-gzip-www-contract.js` | 校验 `web-src` HTML 与发布 gzip 一一对应，并确保发布目录和 LittleFS staging 不含原始 HTML/JS/CSS |
+| `web-profile.js` | Web 资源构建固定使用 `full` 资产集；运行时可选菜单仍按功能的 `active` 状态显示 |
 | `web-asset-report.js` | 统一 Web 资源体积报告；`--source` 查看源文件体积，`--json` 输出 JSON |
 
 ## 维护诊断
@@ -79,8 +103,8 @@
 
 | 旧脚本 | 替代命令 |
 |------|----------|
-| `sniff_serial.py` | `python scripts\serial-diagnostics.py COM6 --duration 30` |
-| `reset_and_sniff.py`、`monitor_s3_reset.py` | `python scripts\serial-diagnostics.py COM6 --reset --chip esp32s3 --duration 45` |
+| `sniff_serial.py` | `python scripts\serial-diagnostics.py <serial-port> --duration 30` |
+| `reset_and_sniff.py`、`monitor_s3_reset.py` | `python scripts\serial-diagnostics.py <serial-port> --reset --chip esp32s3 --duration 45` |
 | `list_sizes.ps1`、`size_chunks_gz.js`、`size_each_minified.js` | `node scripts\web-asset-report.js` 或 `node scripts\web-asset-report.js --source` |
 
 `*.pyc` 属于 Python 运行时缓存，不应提交；如本地出现可直接删除。

@@ -46,16 +46,19 @@
         return '设备当前内存紧张，已暂时拒绝此操作' + retryText;
     }
 
-    function renderMemoryPressureNotice(level) {
+    function renderMemoryPressureNotice(level, degradedOverride) {
         if (typeof document === 'undefined') return;
         var normalized = normalizeGuardLevel(level);
         var rank = GUARD_LEVEL_RANK[normalized];
+        var degraded = degradedOverride === true;
         var notices = document.querySelectorAll('[data-memory-pressure-notice]');
         for (var i = 0; i < notices.length; i++) {
             var notice = notices[i];
-            var visible = rank >= GUARD_LEVEL_RANK.SEVERE;
+            var visible = degraded || rank >= GUARD_LEVEL_RANK.SEVERE;
             notice.textContent = visible
-                ? '设备处于内存保护状态（' + normalized + '），部分重型接口可能暂时返回 503，后台刷新已自动放缓。'
+                ? (rank >= GUARD_LEVEL_RANK.SEVERE
+                    ? '设备处于内存保护状态（' + normalized + '），部分重型接口可能暂时返回 503，后台刷新已自动放缓。'
+                    : '设备处于运行期内存降级状态（' + normalized + '），部分功能已暂时降载，后台刷新已放缓。')
                 : '';
             notice.classList.toggle('fb-hidden', !visible);
             notice.setAttribute('aria-hidden', visible ? 'false' : 'true');
@@ -70,11 +73,60 @@
         }).join('&');
     }
 
-    function fetchWithTimeout(url, options, timeoutMs) {
+    function fetchWithTimeout(url, options, timeoutMs, requestContext) {
+        options = options || {};
         const controller = new AbortController();
-        const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-        return fetch(url, Object.assign({ signal: controller.signal }, options))
-            .finally(function () { clearTimeout(timer); });
+        const externalSignal = options.signal;
+        var timedOut = false;
+        var externallyAborted = false;
+        const timer = setTimeout(function () {
+            timedOut = true;
+            controller.abort();
+        }, timeoutMs);
+
+        // The governor owns the timeout controller, while callers may provide a
+        // page-lifetime signal.  Keep the two causes separate so a timeout is
+        // not mistaken for a navigation cancellation by page modules.
+        var onExternalAbort = function () {
+            externallyAborted = true;
+            controller.abort();
+        };
+        if (externalSignal) {
+            if (externalSignal.aborted) onExternalAbort();
+            else if (typeof externalSignal.addEventListener === 'function') {
+                externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+            }
+        }
+
+        var fetchOptions = Object.assign({}, options, { signal: controller.signal });
+        return fetch(url, fetchOptions)
+            .catch(function (err) {
+                if (requestContext && requestContext.pageAborted) {
+                    var pageErr = new Error('Request cancelled by page navigation');
+                    pageErr.name = 'AbortError';
+                    pageErr._pageAborted = true;
+                    pageErr.cause = err;
+                    throw pageErr;
+                }
+                if (timedOut) {
+                    var timeoutErr = new Error('Request timed out after ' + timeoutMs + 'ms');
+                    timeoutErr.name = 'AbortError';
+                    timeoutErr._requestTimeout = true;
+                    timeoutErr.timeoutMs = timeoutMs;
+                    timeoutErr.cause = err;
+                    throw timeoutErr;
+                }
+                // An externally supplied signal that is not owned by a page is
+                // still a normal AbortError; preserve it for the caller.
+                if (externallyAborted) throw err;
+                throw err;
+            })
+            .finally(function () {
+                clearTimeout(timer);
+                if (externalSignal && typeof externalSignal.removeEventListener === 'function') {
+                    externalSignal.removeEventListener('abort', onExternalAbort);
+                }
+            });
     }
 
     function buildUrl(path, params) {
@@ -234,12 +286,24 @@
         return cloneProfile(Object.assign({}, profile || {}, overrideProfile || {}));
     }
 
+    // Browser authentication is carried by the same-origin HttpOnly session
+    // cookie.  A bearer value may still be supplied explicitly by an API
+    // caller, but a legacy localStorage token must never be injected here: the
+    // firmware gives Authorization precedence over Cookie, so a stale token
+    // would turn a valid session into a misleading 401.
+    function getExplicitBearerToken(headers) {
+        if (!headers) return '';
+        var authValue = headers.Authorization || headers.authorization || '';
+        if (typeof authValue !== 'string') return '';
+        var match = authValue.match(/^Bearer\s+(.+)$/i);
+        return match ? match[1].trim() : '';
+    }
+
     function request(method, path, options, timeoutMs) {
         options = options || {};
         var silent = !!options.silent;
-        const token = localStorage.getItem('auth_token');
         const headers = Object.assign({}, options.headers);
-        if (token) headers.Authorization = 'Bearer ' + token;
+        const token = getExplicitBearerToken(headers);
 
         const fetchOptions = {
             method: method,
@@ -253,7 +317,8 @@
         const url = buildUrl(path, options.params);
         const timeout = timeoutMs || DEFAULT_TIMEOUT;
 
-        return fetchWithTimeout(url, fetchOptions, timeout)
+        if (options.signal) fetchOptions.signal = options.signal;
+        return fetchWithTimeout(url, fetchOptions, timeout, options._requestContext)
             .then(function (response) {
                 return response.json().catch(function () { return {}; }).then(function (data) {
                     if (response.ok) return data;
@@ -372,10 +437,12 @@
         _pageGen: 0,
         _seq: 0,
         _cache: {},
+        _activeEntries: [],
         _batchQueue: [],
         _batchTimer: null,
         _pressureState: {
             level: 'NORMAL',
+            degraded: false,
             updatedAt: 0,
             recoveryUntil: 0,
             source: 'init'
@@ -562,7 +629,14 @@
 
         _execute: function (entry) {
             var self = this;
-            request(entry.method, entry.path, entry.options, entry.timeoutMs)
+            entry.abortController = typeof AbortController === 'function' ? new AbortController() : null;
+            entry.pageAborted = false;
+            this._activeEntries.push(entry);
+            var requestOptions = Object.assign({}, entry.options || {}, {
+                _requestContext: entry
+            });
+            if (entry.abortController) requestOptions.signal = entry.abortController.signal;
+            request(entry.method, entry.path, requestOptions, entry.timeoutMs)
                 .then(function (data) {
                     if (entry.pageGen < self._pageGen && !(entry.options && entry.options.staleOk === true)) {
                         var staleErr = new Error('Request result ignored after page navigation');
@@ -587,6 +661,9 @@
                     entry.reject(err);
                 })
                 .finally(function () {
+                    var activeIndex = self._activeEntries.indexOf(entry);
+                    if (activeIndex >= 0) self._activeEntries.splice(activeIndex, 1);
+                    entry.abortController = null;
                     self._inflight--;
                     self._inflightWeight = Math.max(0, self._inflightWeight - (entry.cost || 1));
                     if (entry.profile && entry.profile.tier === 'heavy') {
@@ -599,6 +676,7 @@
         _isCooldownError: function (err) {
             if (!err) return false;
             if (err.status === 503 || err.status === 429) return true;
+            if (err._requestTimeout) return true;
             if (err instanceof TypeError) return true;
             return false;
         },
@@ -611,7 +689,13 @@
 
         reportPressureState: function (runtimeData, source) {
             var memory = runtimeData && runtimeData.memory ? runtimeData.memory : {};
-            var level = normalizeGuardLevel(memory.guardLevel);
+            var degradation = runtimeData && runtimeData.memoryDegradation
+                ? runtimeData.memoryDegradation
+                : {};
+            var level = normalizeGuardLevel(memory.guardLevel || degradation.level);
+            var degraded = degradation.active === true
+                || memory.degraded === true
+                || (runtimeData && runtimeData.degraded === true);
             var now = Date.now();
             var recoveryMs = 0;
 
@@ -624,7 +708,8 @@
             this._pressureState.level = level;
             this._pressureState.updatedAt = now;
             this._pressureState.source = source || 'runtime';
-            renderMemoryPressureNotice(level);
+            this._pressureState.degraded = degraded;
+            renderMemoryPressureNotice(level, degraded);
 
             if (recoveryMs > 0) {
                 this._pressureState.recoveryUntil = now + recoveryMs;
@@ -682,6 +767,19 @@
 
         abortPageRequests: function () {
             this._pageGen++;
+            // Cancel requests that have already left the governor queue.  The
+            // generation check below still protects against a response racing
+            // with navigation, while aborting here releases the device socket
+            // and response buffers immediately.
+            for (var a = 0; a < this._activeEntries.length; a++) {
+                var active = this._activeEntries[a];
+                if (active.pageGen < this._pageGen &&
+                    !(active.options && active.options.staleOk === true)) {
+                    active.pageAborted = true;
+                    delete this._dedupMap[active.dedupKey];
+                    if (active.abortController) active.abortController.abort();
+                }
+            }
             for (var b = this._batchQueue.length - 1; b >= 0; b--) {
                 if (this._batchQueue[b].pageGen < this._pageGen) {
                     var expiredBatch = this._batchQueue.splice(b, 1)[0];
@@ -728,6 +826,7 @@
                 pageGeneration: this._pageGen,
                 pressure: {
                     level: normalizeGuardLevel(this._pressureState.level),
+                    degraded: this._pressureState.degraded === true,
                     activeRank: this._getActivePressureRank(),
                     updatedAt: this._pressureState.updatedAt || 0,
                     recoveryUntil: this._pressureState.recoveryUntil || 0,
@@ -1066,13 +1165,14 @@
         Governor.abortPageRequests();
     };
 
-    // 识别"页面导航中止"类错误（切换菜单时旧页面请求被主动取消，属预期行为）
-    // 各模块 catch 中应先判断此函数，命中则静默返回，避免误报 DNS/加载失败
+    // 识别"页面导航中止"类错误（切换菜单时旧页面请求被主动取消，属预期行为）。
+    // 不要把所有 AbortError 都归为导航取消：超时也由 AbortController 产生，
+    // 这类错误应保留给调用方显示/重试。
     window.isPageAbortError = function (err) {
         if (!err) return false;
         if (err._pageAborted) return true;
-        if (err.name === 'AbortError') return true;
-        if (err.message && /page navigation|aborted/i.test(err.message)) return true;
+        if (err._requestTimeout) return false;
+        if (err.message && /page navigation|result ignored after page navigation|batch request cancelled by page navigation/i.test(err.message)) return true;
         return false;
     };
 

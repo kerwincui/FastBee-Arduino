@@ -150,7 +150,7 @@
             var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:1,sensorLabel:'',unit:'',dataField:'',deviceIndex:0};
             if (isSensorRead && data.actionValue) { try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {} }
             // 根据传感器类别设置合理默认值（数字传感器不需要缩放系数）
-            var digitalSensors = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+            var digitalSensors = ['dht11','dht22','ds18b20','sht30','sht31','aht20','bh1750','bmp280','mpu6050'];
             var isDigitalSensor = digitalSensors.indexOf(String(sensorCfg.sensorCategory || '').toLowerCase()) >= 0;
             if (isDigitalSensor && (!data.actionValue || sensorCfg.scaleFactor === 0.00080586)) {
                 sensorCfg.scaleFactor = 1;
@@ -159,8 +159,9 @@
             if (!sensorCfg.dataField) {
                 var sensorCatLower = String(sensorCfg.sensorCategory || '').toLowerCase();
                 var fieldMap = {analog:'voltage',radar:'presence',dht11:'temperature',dht22:'temperature',
-                    ds18b20:'temperature',sht31:'temperature',aht20:'temperature',
-                    ultrasonic:'distance',current:'current',voltage:'voltage',ntc:'temperature',
+                    ds18b20:'temperature',sht30:'temperature',sht31:'temperature',aht20:'temperature',
+                    ultrasonic:'distance',current:'current',current_loop:'value','4-20ma':'value','4_20ma':'value',
+                    voltage:'voltage',ntc:'temperature',
                     bh1750:'lux',bmp280:'pressure',mpu6050:'accel_x',rf:'rssi',
                     digital:'state',pulse:'frequency'};
                 sensorCfg.dataField = fieldMap[sensorCatLower] || 'value';
@@ -183,14 +184,19 @@
             const sensorBaseKeys = {
                 periphId: 1, sensorCategory: 1, scaleFactor: 1, offset: 1, decimalPlaces: 1,
                 sensorLabel: 1, unit: 1, dataField: 1, deviceIndex: 1,
-                bCoefficient: 1, seriesResistor: 1, nominalResistance: 1
+                bCoefficient: 1, seriesResistor: 1, nominalResistance: 1,
+                shuntResistance: 1, inputGain: 1, inputOffset: 1,
+                loopMinMa: 1, loopMaxMa: 1, engineeringMin: 1,
+                engineeringMax: 1, sampleCount: 1, mapToEngineering: 1
             };
             var sensorExtra = {};
             Object.keys(sensorCfg).forEach(function(k) {
                 if (!sensorBaseKeys[k]) sensorExtra[k] = sensorCfg[k];
             });
             const sensorExtraJson = Object.keys(sensorExtra).length ? JSON.stringify(sensorExtra) : '';
-            const selCat = (v) => sensorCfg.sensorCategory === v ? 'selected' : '';
+            const selCat = (v) => String(sensorCfg.sensorCategory || '').toLowerCase() === String(v).toLowerCase() ? 'selected' : '';
+            var sensorCatLower = String(sensorCfg.sensorCategory || '').toLowerCase();
+            var isCurrentLoop = sensorCatLower === 'current_loop' || sensorCatLower === '4-20ma' || sensorCatLower === '4_20ma';
             const sensorFieldOptions = this._renderSensorDataFieldOptions(sensorCfg.sensorCategory, sensorCfg.dataField);
             div.innerHTML = '<span class="mqtt-topic-index">' + (index + 1) + '</span>' +
                 '<button type="button" class="mqtt-topic-delete">' + t('pef-delete', '删除') + '</button>' +
@@ -343,8 +349,10 @@
                     '<option value="radar" ' + selCat('radar') + '>' + t('pef-sensor-radar', '雷达存在检测') + '</option>' +
                     '<option value="rf" ' + selCat('rf') + '>' + t('pef-sensor-rf', '射频接收电平') + '</option>' +
                     '<option value="current" ' + selCat('current') + '>' + t('pef-sensor-current', '电流型传感器') + '</option>' +
+                    '<option value="current_loop" ' + selCat('current_loop') + '>' + t('pef-sensor-current-loop', '4-20mA 电流环') + '</option>' +
                     '<option value="voltage" ' + selCat('voltage') + '>' + t('pef-sensor-voltage', '电压型传感器') + '</option>' +
                     '<option value="ntc" ' + selCat('ntc') + '>' + t('pef-sensor-ntc', 'NTC 热敏电阻') + '</option>' +
+                    '<option value="sht30" ' + selCat('sht30') + '>' + t('pef-sensor-sht30', 'SHT30 温湿度') + '</option>' +
                     '<option value="SHT31" ' + selCat('SHT31') + '>' + t('pef-sensor-sht31', 'SHT31 温湿度') + '</option>' +
                     '<option value="AHT20" ' + selCat('AHT20') + '>' + t('pef-sensor-aht20', 'AHT20 温湿度') + '</option>' +
                     '<option value="BH1750" ' + selCat('BH1750') + '>' + t('pef-sensor-bh1750', 'BH1750 光照') + '</option>' +
@@ -363,6 +371,20 @@
                     '<div class="fb-form-group"><label>' + t('pef-sensor-ntc-nominal', '标称电阻(Ω)') + '</label>' +
                     '<input type="number" class="pe-sensor-ntc-nominal" step="any" value="' + (sensorCfg.nominalResistance || 10000) + '"></div>' +
                     '<small class="pe-help-text">' + t('pef-sensor-ntc-help', '电路: VCC→串联电阻→ADC引脚→NTC→GND。常用 10K/B3950') + '</small>' +
+                    '</div>' +
+                    '<div class="fb-form-group pe-sensor-current-loop-group pe-span-all' + this._hiddenClass(!isCurrentLoop) + '">' +
+                    '<div class="pe-sensor-calibration-grid">' +
+                    '<div class="fb-form-group"><label>分流电阻(Ω)</label><input type="number" class="pe-sensor-loop-shunt" min="0.1" step="any" value="' + (sensorCfg.shuntResistance !== undefined ? sensorCfg.shuntResistance : 165) + '"></div>' +
+                    '<div class="fb-form-group"><label>输入增益</label><input type="number" class="pe-sensor-loop-gain" min="0.001" step="any" value="' + (sensorCfg.inputGain !== undefined ? sensorCfg.inputGain : 1) + '"></div>' +
+                    '<div class="fb-form-group"><label>输入偏移(V)</label><input type="number" class="pe-sensor-loop-offset" step="any" value="' + (sensorCfg.inputOffset !== undefined ? sensorCfg.inputOffset : 0) + '"></div>' +
+                    '<div class="fb-form-group"><label>回路下限(mA)</label><input type="number" class="pe-sensor-loop-min" min="0" step="any" value="' + (sensorCfg.loopMinMa !== undefined ? sensorCfg.loopMinMa : 4) + '"></div>' +
+                    '<div class="fb-form-group"><label>回路上限(mA)</label><input type="number" class="pe-sensor-loop-max" min="0" step="any" value="' + (sensorCfg.loopMaxMa !== undefined ? sensorCfg.loopMaxMa : 20) + '"></div>' +
+                    '<div class="fb-form-group"><label>工程量下限</label><input type="number" class="pe-sensor-loop-eng-min" step="any" value="' + (sensorCfg.engineeringMin !== undefined ? sensorCfg.engineeringMin : 0) + '"></div>' +
+                    '<div class="fb-form-group"><label>工程量上限</label><input type="number" class="pe-sensor-loop-eng-max" step="any" value="' + (sensorCfg.engineeringMax !== undefined ? sensorCfg.engineeringMax : 100) + '"></div>' +
+                    '<div class="fb-form-group"><label>采样次数</label><input type="number" class="pe-sensor-loop-samples" min="1" max="32" value="' + (sensorCfg.sampleCount !== undefined ? sensorCfg.sampleCount : 8) + '"></div>' +
+                    '</div>' +
+                    '<label class="fb-checkbox fb-m-0"><input type="checkbox" class="pe-sensor-loop-map"' + (sensorCfg.mapToEngineering ? ' checked' : '') + '><span>映射到工程量范围</span></label>' +
+                    '<small class="pe-help-text">默认返回 mA；启用映射后按 4-20mA 线性换算到工程量。分流电阻和寄存器范围请按实际硬件校准。</small>' +
                     '</div>' +
                     '<div class="fb-form-group pe-sensor-calibration-group' + this._hiddenClass(isDigitalSensor) + '">' +
                     '<div class="fb-form-group"><label>' + '缩放系数' + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
@@ -1506,7 +1528,7 @@
                     var sOffset = parseFloat(item.querySelector('.pe-sensor-offset')?.value);
                     if (isNaN(sOffset)) sOffset = 0;
                     // 数字传感器无需缩放系数，强制重置避免隐藏字段残留值
-                    var _digSensors = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+                    var _digSensors = ['dht11','dht22','ds18b20','sht30','sht31','aht20','bh1750','bmp280','mpu6050'];
                     if (_digSensors.indexOf(String(sensorCat).toLowerCase()) >= 0) {
                         scaleFactor = 1;
                         sOffset = 0;
@@ -1524,8 +1546,18 @@
                         sensorLabel: sensorLabel,
                         unit: sUnit
                     };
+                    var normalizedSensorCat = String(sensorCat).toLowerCase();
+                    var defaultFieldMap = {
+                        analog: 'voltage', digital: 'value', pulse: 'value', radar: 'presence',
+                        dht11: 'temperature', dht22: 'temperature', ds18b20: 'temperature',
+                        sht30: 'temperature', sht31: 'temperature', aht20: 'temperature',
+                        ultrasonic: 'distance', current: 'current',
+                        current_loop: 'value', '4-20ma': 'value', '4_20ma': 'value',
+                        voltage: 'voltage', ntc: 'temperature', bh1750: 'illuminance',
+                        bmp280: 'pressure', mpu6050: 'accelX', rf: 'value'
+                    };
                     sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value ||
-                        (sensorCat === 'analog' ? 'voltage' : (sensorCat === 'radar' ? 'presence' : 'temperature'));
+                        (defaultFieldMap[normalizedSensorCat] || 'value');
                     if (sensorCat === 'ds18b20') {
                         sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
                     }
@@ -1537,6 +1569,23 @@
                         sensorData.bCoefficient = isNaN(ntcB) ? 3950 : ntcB;
                         sensorData.seriesResistor = isNaN(ntcSeries) ? 10000 : ntcSeries;
                         sensorData.nominalResistance = isNaN(ntcNominal) ? 10000 : ntcNominal;
+                    }
+                    if (normalizedSensorCat === 'current_loop' || normalizedSensorCat === '4-20ma' || normalizedSensorCat === '4_20ma') {
+                        var readLoopFloat = function(selector, fallback) {
+                            var value = parseFloat(item.querySelector(selector)?.value);
+                            return isNaN(value) ? fallback : value;
+                        };
+                        sensorData.shuntResistance = readLoopFloat('.pe-sensor-loop-shunt', 165);
+                        sensorData.inputGain = readLoopFloat('.pe-sensor-loop-gain', 1);
+                        sensorData.inputOffset = readLoopFloat('.pe-sensor-loop-offset', 0);
+                        sensorData.loopMinMa = readLoopFloat('.pe-sensor-loop-min', 4);
+                        sensorData.loopMaxMa = readLoopFloat('.pe-sensor-loop-max', 20);
+                        sensorData.engineeringMin = readLoopFloat('.pe-sensor-loop-eng-min', 0);
+                        sensorData.engineeringMax = readLoopFloat('.pe-sensor-loop-eng-max', 100);
+                        var loopSamples = parseInt(item.querySelector('.pe-sensor-loop-samples')?.value || '8', 10);
+                        if (isNaN(loopSamples)) loopSamples = 8;
+                        sensorData.sampleCount = Math.max(1, Math.min(32, loopSamples));
+                        sensorData.mapToEngineering = !!item.querySelector('.pe-sensor-loop-map')?.checked;
                     }
                     var extraJson = item.querySelector('.pe-sensor-extra-json')?.value?.trim() || '';
                     if (extraJson) {

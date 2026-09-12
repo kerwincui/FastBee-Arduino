@@ -10,7 +10,8 @@ async function openLogin(page: Page) {
       // resources drain. DOMContentLoaded lets the helper retry promptly.
       await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await page.waitForFunction(() => (window as any).__fastbeeBootReady === true, { timeout: 10_000 }).catch(() => {});
-      if (await page.locator('#login-page').isVisible({ timeout: 5_000 }).catch(() => false)) return;
+      await page.locator('#login-page').waitFor({ state: 'visible', timeout: 5_000 });
+      return;
     } catch (error) {
       lastError = error;
     }
@@ -254,8 +255,8 @@ test.describe('Suite-01: 登录与认证', () => {
     await page.waitForTimeout(2000);
     const loginVisible = await page.locator('#login-page').isVisible().catch(() => false);
     const appVisible = await page.locator('#app-container').isVisible().catch(() => false);
-    // 登录页可见 或 app不可见 或 页面仍在加载（嵌入式设备限制）
-    expect(loginVisible || !appVisible || true).toBeTruthy();
+    // 退出后必须回到登录页，或至少不能继续显示已认证应用。
+    expect(loginVisible || !appVisible).toBeTruthy();
   });
 
   test('AUTH-018: 修改密码完整流程', async ({ authPage }) => {

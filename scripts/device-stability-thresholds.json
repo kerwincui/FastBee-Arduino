@@ -43,6 +43,19 @@
           "maxHeapMaxAllocDropBytes": 24000,
           "minPsramFreeBytes": 262144,
           "maxPsramFreeDropBytes": 524288
+        },
+        "unified": {
+          "maxFailureRatePercent": 0,
+          "maxP95LatencyMs": 7000,
+          "maxConsecutiveFailures": 1,
+          "maxEndpointFailureRatePercent": 0,
+          "maxUptimeResetCount": 0,
+          "minHeapFreeBytes": 25600,
+          "minHeapMaxAllocBytes": 10000,
+          "maxHeapFreeDropBytes": 40000,
+          "maxHeapMaxAllocDropBytes": 24000,
+          "minPsramFreeBytes": 0,
+          "maxPsramFreeDropBytes": 0
         }
       }
     }

@@ -1,215 +1,328 @@
-# PowerShell Script: Multi-Device Deployment Automation
-# Purpose: Deploy FastBee firmware to 4 ESP32 devices simultaneously
-
+[CmdletBinding()]
 param(
-    [switch]$DeployC6,      # ESP32-C6 on COM11
-    [switch]$DeployS3,      # ESP32-S3 on COM15
-    [switch]$DeployClassic, # ESP32 Classic on COM16
-    [switch]$DeployC3,      # ESP32-C3 on COM4
-    [switch]$AllDevices     # Deploy all devices
+    [switch]$DeployC3,
+    [switch]$DeployC6,
+    [switch]$DeployClassic,
+    [switch]$DeployS3,
+    [switch]$DeployS3F16,
+    [switch]$DeployS3F8,
+    [switch]$AllDevices,
+    [switch]$DryRun,
+    [switch]$BuildOnly,
+    [switch]$SkipFirmware,
+    [switch]$SkipMissingPorts,
+    [switch]$SkipSerialCheck,
+    [int]$SerialSeconds = 8,
+    [string]$C3ConfigPath = "",
+    [string]$C6ConfigPath = "",
+    [string]$ClassicConfigPath = "",
+    [string]$S3F16ConfigPath = "",
+    [string]$S3F8ConfigPath = "",
+    [string]$ReportDir = "artifacts\multi-device-deploy"
 )
 
 $ErrorActionPreference = "Stop"
-$env:PYTHONIOENCODING = "utf-8"
-$env:PYTHONUTF8 = "1"
+$projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+Set-Location $projectRoot
 
-if (-not $DeployC6 -and -not $DeployS3 -and -not $DeployClassic -and -not $DeployC3 -and -not $AllDevices) {
-    Write-Host "Usage: ./deploy-multi-device.ps1 [-AllDevices | -DeployC6 | -DeployS3 | -DeployClassic | -DeployC3]" -ForegroundColor Red
-    exit 1
+if ($DryRun -and $BuildOnly) { throw "DryRun and BuildOnly cannot be used together." }
+if ($SerialSeconds -lt 2) { throw "SerialSeconds must be at least 2." }
+
+function Resolve-ConfigSource {
+    param([string]$OverridePath, [string]$RepositoryPath)
+    $candidate = if ([string]::IsNullOrWhiteSpace($OverridePath)) {
+        Join-Path $projectRoot $RepositoryPath
+    } elseif ([System.IO.Path]::IsPathRooted($OverridePath)) {
+        $OverridePath
+    } else {
+        Join-Path $projectRoot $OverridePath
+    }
+    $resolved = [System.IO.Path]::GetFullPath($candidate)
+    if (-not (Test-Path -LiteralPath $resolved)) {
+        throw "Configuration source was not found: $resolved"
+    }
+    return $resolved
 }
 
-$ProjectDir = "d:\project\gitee\FastBee-Arduino"
-Set-Location $ProjectDir
+$c3ConfigSource = Resolve-ConfigSource -OverridePath $C3ConfigPath -RepositoryPath "docs\esp32c3-deployment-config.json"
+$c6ConfigSource = Resolve-ConfigSource -OverridePath $C6ConfigPath -RepositoryPath "docs\c6-rgb-led-f4r0"
+$classicConfigSource = Resolve-ConfigSource -OverridePath $ClassicConfigPath -RepositoryPath "docs\puzhong-esp32-config.json"
+$s3F16ConfigSource = Resolve-ConfigSource -OverridePath $S3F16ConfigPath -RepositoryPath "docs\ecm50a-s3-f16r8"
+$s3F8ConfigSource = Resolve-ConfigSource -OverridePath $S3F8ConfigPath -RepositoryPath "docs\waveshare-esp32s3-relay6ch"
 
-# Device Configuration Map
-$Devices = @{
-    "c6"   = @{ Port="COM11"; Env="esp32c6-F4R0"; Config="docs/ecm50a-full-config.json" }
-    "s3"   = @{ Port="COM15"; Env="esp32s3-F8R4"; Config="docs/ecm50a-modbus-ethernet.json" }
-    "classic" = @{ Port="COM16"; Env="esp32-F4R0"; Config="docs/puzhong-esp32-config.json" }
-    "c3"   = @{ Port="COM4"; Env="esp32c3-F4R0"; Config="docs/esp32c3-deployment-config.json" }
-}
+# Keep this order stable. USB flashing is serialized and the order is part of
+# the deployment audit requested for the five boards. The S3-F16R8 ECM50-A
+# target runs first because it carries the broadest peripheral/protocol set.
+$devices = @(
+    [pscustomobject]@{
+        Key = "s3"; Name = "ESP32-S3-F16R8"; Port = "COM15"; Env = "esp32s3-F16R8"
+        Bundle = $s3F16ConfigSource
+        NetworkProfile = "ecm50a"; StaIP = "192.168.5.22"
+    },
+    [pscustomobject]@{
+        Key = "c3"; Name = "ESP32-C3-F4R0"; Port = "COM4"; Env = "esp32c3-F4R0"
+        Bundle = $c3ConfigSource
+        NetworkProfile = "none"; StaIP = "192.168.5.55"
+    },
+    [pscustomobject]@{
+        Key = "c6"; Name = "ESP32-C6-F4R0"; Port = "COM11"; Env = "esp32c6-F4R0"
+        Bundle = $c6ConfigSource
+        NetworkProfile = "none"; StaIP = "192.168.5.19"
+    },
+    [pscustomobject]@{
+        Key = "classic"; Name = "ESP32-F4R0"; Port = "COM16"; Env = "esp32-F4R0"
+        Bundle = $classicConfigSource
+        NetworkProfile = "none"; StaIP = "192.168.5.21"
+    },
+    [pscustomobject]@{
+        Key = "s3f8"; Name = "ESP32-S3-F8R0"; Port = "COM7"; Env = "esp32s3-F8R0"
+        Bundle = $s3F8ConfigSource
+        NetworkProfile = "none"; StaIP = "192.168.5.67"
+    }
+)
 
-# Determine which devices to deploy
-$Targets = @()
+$selectedKeys = New-Object System.Collections.Generic.List[string]
 if ($AllDevices) {
-    $Targets += @("c6", "s3", "classic", "c3")
+    foreach ($d in $devices) { $selectedKeys.Add($d.Key) }
 } else {
-    if ($DeployC6) { $Targets += "c6" }
-    if ($DeployS3) { $Targets += "s3" }
-    if ($DeployClassic) { $Targets += "classic" }
-    if ($DeployC3) { $Targets += "c3" }
+    if ($DeployC3) { $selectedKeys.Add("c3") }
+    if ($DeployC6) { $selectedKeys.Add("c6") }
+    if ($DeployClassic) { $selectedKeys.Add("classic") }
+    if ($DeployS3 -or $DeployS3F16) { $selectedKeys.Add("s3") }
+    if ($DeployS3F8) { $selectedKeys.Add("s3f8") }
+}
+if ($selectedKeys.Count -eq 0) {
+    throw "Select -AllDevices or one of -DeployC3, -DeployC6, -DeployClassic, -DeployS3F16/-DeployS3, -DeployS3F8."
 }
 
-Write-Host "`n==================================================" -ForegroundColor Cyan
-Write-Host "FastBee 多设备并行部署工具 v1.0" -ForegroundColor Cyan
-Write-Host "==================================================`n" -ForegroundColor Cyan
-
-if ($Targets.Count -eq 0) {
-    Write-Host "无设备待部署" -ForegroundColor Yellow
-    exit 0
-}
-
-Write-Host "待部署设备列表:" -ForegroundColor Green
-foreach ($Target in $Targets) {
-    Write-Host "  - $($Devices[$Target].Env): COM$($Devices[$Target].Port)" -ForegroundColor Gray
-}
-Write-Host ""
-
-# Build firmware in parallel (if needed)
-Write-Host "[阶段 1] 构建固件 (并行)..." -ForegroundColor Cyan
-$jobs = @()
-
-foreach ($Target in $Targets) {
-    $job = Start-Job -ScriptBlock {
-        param($envName)
-        Write-Host "正在构建 $envName..." -ForegroundColor Gray
-        & pio run -e $envName
-        if ($LASTEXITCODE -ne 0) { Write-Error "构建失败：$envName"; exit 1 }
-        Write-Host "✓ 构建成功：$envName" -ForegroundColor Green
-    } -ArgumentList $Devices[$Target].Env
-    
-    $jobs += $job
-}
-
-Wait-Job -Job $jobs | Out-Null
-$buildStatus = Get-Job | Select-Object State
-if ($buildStatus.State -contains "Failed") {
-    Write-Error "部分设备固件构建失败，停止部署" -ForegroundColor Red
-    Remove-Job -Job $jobs
-    exit 1
-}
-Remove-Job -Job $jobs
-Write-Host "[阶段 1] 完成 ✓`n" -ForegroundColor Green
-
-# Flash firmware sequentially (USB port limitation)
-$py = 'C:\Users\kerwin\.platformio\penv\Scripts\python.exe'
-
-foreach ($Target in $Targets) {
-    $deviceInfo = $Devices[$Target]
-    
-    Write-Host "`n==================================================" -ForegroundColor Cyan
-    Write-Host "处理设备：$Target ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
-    Write-Host "端口：COM$($deviceInfo.Port)" -ForegroundColor Yellow
-    Write-Host "环境：$($deviceInfo.Env)" -ForegroundColor Yellow
-    Write-Host "配置文件：$($deviceInfo.Config)" -ForegroundColor Yellow
-    Write-Host "==================================================`n" -ForegroundColor Cyan
-    
-    # Step 1: Detect device
-    Write-Host "[1/3] 检测 ESP32 设备..." -ForegroundColor Green
-    
-    try {
-        $result = & $py -m esptool `
-            --chip ($if ($Target -match "c6|c3") { "esp32c$([int]($Target[-1]))" } else { "esp32" }) `
-            --port "COM$($deviceInfo.Port)" `
-            --baud 921600 `
-            chip-id 2>&1 | Out-String
-        
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "✓ 检测到芯片：" -ForegroundColor Green -NoNewline
-            Write-Host $result.Trim()
-        } else {
-            throw "设备检测失败"
-        }
-    } catch {
-        Write-Error "✗ 无法连接到 COM$($deviceInfo.Port)，请检查连接" -ForegroundColor Red
-        continue
+function Get-SourceHash {
+    param([string]$Path)
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $resolved -PathType Leaf) {
+        return (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    
-    # Step 2: Flash firmware
-    Write-Host "`n[2/3] 烧录固件..." -ForegroundColor Green
-    
-    try {
-        $firmwareBin = ".pio/build/$($deviceInfo.Env)/firmware.bin"
-        $bootloaderBin = ".pio/build/$($deviceInfo.Env)/bootloader.bin"
-        $partitionTable = ".pio/build/$($deviceInfo.Env)/partition_table.bin"
-        $littlefsBin = ".pio/build/$($deviceInfo.Env)/littlefs.bin"
-        
-        if (-not (Test-Path $firmwareBin)) {
-            Write-Error "固件文件不存在：$firmwareBin" -ForegroundColor Red
-            continue
-        }
-        
-        # 擦除 Flash (首次部署或完全重置时)
-        & $py -m esptool `
-            -p "COM$($deviceInfo.Port)" `
-            -b 921600 `
-            --chip ($if ($Target -match "c6|c3") { "esp32c$([int]($target[-1]))" } else { "esp32" }) `
-            erase_flash
-        
-        # 烧录三个部分
-        & $py -m esptool `
-            -p "COM$($deviceInfo.Port)" `
-            -b 921600 `
-            --chip ($if ($Target -match "c6|c3") { "esp32c$([int]($target[-1]))" } else { "esp32" }) `
-            write_flash `
-            -z `
-            0x1000 $bootloaderBin `
-            0x8000 $partitionTable `
-            0x10000 $firmwareBin
-        
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "✓ 固件烧录成功" -ForegroundColor Green
-        } else {
-            Write-Error "固件烧录失败" -ForegroundColor Red
-            continue
-        }
-        
-        # 上传 LittleFS
-        if (Test-Path $littlefsBin) {
-            Write-Host "  上传 LittleFS 文件系统..." -ForegroundColor Gray
-            & $py -m esptool `
-                -p "COM$($deviceInfo.Port)" `
-                -b 921600 `
-                --chip ($if ($Target -match "c6|c3") { "esp32c$([int]($target[-1]))" } else { "esp32" }) `
-                write_flash `
-                0x200000 $littlefsBin
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "✓ LittleFS 上传成功" -ForegroundColor Green
-            }
-        }
-        
-        Write-Host ""
-    } catch {
-        Write-Error "✗ 烧录过程出错：$_" -ForegroundColor Red
-        continue
+    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
+        throw "Configuration source not found: $resolved"
     }
-    
-    # Step 3: Wait for device to boot and configure
-    Write-Host "[3/3] 等待设备启动并验证..." -ForegroundColor Green
-    
-    # 等待 10 秒让设备重启
-    Start-Sleep -Seconds 10
-    
-    # 尝试访问 Web 界面
-    $ipAddress = Try-EquipWebAccess -Port $deviceInfo.Port -Timeout 15
-    
-    if ($ipAddress) {
-        Write-Host "✓ 设备在线，IP 地址：$ipAddress" -ForegroundColor Green
-        Write-Host "  提示：使用以下命令导入配置文件:" -ForegroundColor Cyan
-        Write-Host "  curl -X PUT http://$ipAddress/api/config/import \` -ForegroundColor Gray
-        Write-Host "    -H \"Authorization: Bearer \$TOKEN\" \` -ForegroundColor Gray
-        Write-Host "    -d @'$($deviceInfo.Config)'`n" -ForegroundColor Gray
-        
-        # 打开串口监视器 (可选)
-        $answer = Read-Host "是否打开串口监视器？(Y/N)"
-        if ($answer -eq "Y" -or $answer -eq "y") {
-            pio device monitor -e $deviceInfo.Env --port "COM$($deviceInfo.Port)" --baud 115200
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    try {
+        $bytes = New-Object System.Collections.Generic.List[byte]
+        foreach ($file in @(Get-ChildItem -LiteralPath $resolved -Filter "*.json" -File | Sort-Object Name)) {
+            foreach ($b in $encoding.GetBytes($file.Name + "`n")) { $bytes.Add($b) }
+            foreach ($b in [System.IO.File]::ReadAllBytes($file.FullName)) { $bytes.Add($b) }
+            $bytes.Add(10)
+        }
+        if ($bytes.Count -eq 0) { throw "Configuration directory contains no JSON files: $resolved" }
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes.ToArray()))).Replace('-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+
+function Test-SourceFiles {
+    param([object]$Device)
+    $path = [System.IO.Path]::GetFullPath([string]$Device.Bundle)
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        # Get-Content in Windows PowerShell 5.1 uses the active ANSI code
+        # page by default. The exported bundles are UTF-8, so decode them
+        # explicitly before inspecting the files array.
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $root = ([System.IO.File]::ReadAllText($path, $utf8) | ConvertFrom-Json)
+        if (-not $root.files -or @($root.files).Count -eq 0) { throw "$($Device.Name) bundle has no files: $path" }
+        $names = @($root.files | ForEach-Object { [string]$_.name })
+        foreach ($required in @("device.json", "peripherals.json", "periph_exec.json", "protocol.json")) {
+            if ($names -notcontains $required) { throw "$($Device.Name) bundle missing $required`: $path" }
         }
     } else {
-        Write-Warning "⚠ 无法自动获取 IP 地址，请手动登录 Web 界面完成配置导入" -ForegroundColor Yellow
-        Write-Host "  提示：在浏览器中访问 http://192.168.x.$($deviceInfo.Port.Substring(2)) 或 http://$(Get-MdnsName $Target).local`n" -ForegroundColor Yellow
+        $files = @(Get-ChildItem -LiteralPath $path -Filter "*.json" -File -ErrorAction Stop)
+        foreach ($required in @("device.json", "peripherals.json", "periph_exec.json", "protocol.json")) {
+            if (@($files.Name) -notcontains $required) { throw "$($Device.Name) directory missing $required`: $path" }
+        }
     }
-    
-    Write-Host "`n[$Target] 部署完成" -ForegroundColor Green
+    return $path
 }
 
-Write-Host "`n==================================================" -ForegroundColor Green
-Write-Host "✅ 所有设备的部署流程已完成!" -ForegroundColor Green
-Write-Host "==================================================`n" -ForegroundColor Green
+function Test-TargetPort {
+    param([string]$Port)
+    # Query the OS only; never open a port or send anything to a device AP.
+    # Some CH343/CH340 drivers are visible to PlatformIO and .NET but are not
+    # exposed through Win32_SerialPort, so use all read-only enumerators.
+    $wanted = $Port.ToUpperInvariant()
+    try {
+        $present = @(Get-CimInstance Win32_SerialPort -ErrorAction Stop | ForEach-Object { [string]$_.DeviceID })
+        if ($present -contains $wanted) { return $true }
+    } catch { }
+    try {
+        $dotNetPorts = @([System.IO.Ports.SerialPort]::GetPortNames() | ForEach-Object { [string]$_ })
+        if ($dotNetPorts -contains $wanted) { return $true }
+    } catch { }
+    # PlatformIO's JSON inventory handles USB CDC/CH34x variants that older
+    # .NET runtimes may omit. This is still enumeration only; no port is opened.
+    try {
+        $pioRaw = & pio device list --json-output 2>$null
+        if ($LASTEXITCODE -eq 0 -and $pioRaw) {
+            $pioJson = (($pioRaw | Out-String) | ConvertFrom-Json -ErrorAction Stop)
+            foreach ($entry in @($pioJson)) {
+                foreach ($candidate in @($entry.ports)) {
+                    if ([string]$candidate.port -eq $wanted) { return $true }
+                }
+            }
+        }
+    } catch { }
+    return $false
+}
 
-Write-Host "下一步操作:" -ForegroundColor Cyan
-Write-Host "1. 登录每台设备的 Web 管理界面 (http://<IP>)" -ForegroundColor White
-Write-Host "2. 导入对应的配置文件 (docs/*.json)" -ForegroundColor White
-Write-Host "3. 验证外设功能 (OLED/继电器/AI-DI/Modbus)" -ForegroundColor White
-Write-Host "4. 运行长期稳定性测试 (>24h)" -ForegroundColor White
+function Invoke-ConfigDeploy {
+    param([object]$Device, [string]$ReportPath)
+    $args = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $projectRoot "scripts\deploy-config-bundle.ps1"),
+        "-Env", $Device.Env,
+        "-Port", $Device.Port,
+        "-BundlePath", $Device.Bundle,
+        "-NetworkProfile", $Device.NetworkProfile,
+        "-MemoryProfile", "auto",
+        "-ReportPath", $ReportPath
+    )
+    if ($DryRun) { $args += "-DryRun" }
+    if ($BuildOnly) { $args += "-BuildOnly" }
+    if ($SkipFirmware) { $args += "-SkipFirmware" }
+    Write-Host ("powershell " + ($args -join " ")) -ForegroundColor DarkGray
+    & powershell @args
+    if ($LASTEXITCODE -ne 0) { throw "$($Device.Name) configuration deployment failed (exit $LASTEXITCODE)." }
+}
+
+function Invoke-SerialCheck {
+    param([object]$Device, [string]$OutputPath)
+    $args = @("scripts/test-device-health.js", "--ports", $Device.Port, "--seconds", $SerialSeconds, "--json", $OutputPath)
+    Write-Host ("node " + ($args -join " ")) -ForegroundColor DarkGray
+    & node @args 2>&1 | ForEach-Object { Write-Host $_ }
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Test-StaEndpoint {
+    param([object]$Device)
+    # This probe is deliberately limited to the known STA address. There is
+    # no AP URL fallback and no request to 192.168.4.1.
+    $url = "http://$($Device.StaIP)/api/system/status"
+    try {
+        # Invoke-WebRequest's DisableKeepAlive option already controls the
+        # connection header. Supplying `Connection: close` as a custom header
+        # conflicts with that option on Windows PowerShell 5.1.
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 8 -DisableKeepAlive
+        $status = [int]$response.StatusCode
+        return [pscustomobject]@{
+            success = ($status -ge 200 -and $status -lt 300)
+            reachable = $true
+            status = $status
+            url = $url
+        }
+    } catch {
+        $status = 0
+        try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+        return [pscustomobject]@{
+            success = $false
+            reachable = ($status -gt 0)
+            status = $status
+            url = $url
+            error = $_.Exception.Message
+        }
+    }
+}
+
+$resolvedReportDir = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $ReportDir))
+New-Item -ItemType Directory -Force -Path $resolvedReportDir | Out-Null
+$runId = Get-Date -Format "yyyyMMdd-HHmmss"
+$summary = [ordered]@{
+    runId = $runId
+    startedAt = (Get-Date).ToUniversalTime().ToString("o")
+    dryRun = [bool]$DryRun
+    buildOnly = [bool]$BuildOnly
+    skipFirmware = [bool]$SkipFirmware
+    order = @($devices | ForEach-Object { $_.Name })
+    sourceSha256 = [ordered]@{}
+    results = New-Object System.Collections.Generic.List[object]
+}
+
+# Verify all five source identities before touching data/config. This prevents
+# an accidental copy of one board's JSON to another board.
+$hashOwners = @{}
+foreach ($device in $devices) {
+    $sourcePath = Test-SourceFiles -Device $device
+    $hash = Get-SourceHash -Path $sourcePath
+    if ($hashOwners.ContainsKey($hash)) {
+        throw "Configuration sources for $($device.Name) and $($hashOwners[$hash]) are identical; refusing deployment."
+    }
+    $hashOwners[$hash] = $device.Name
+    $summary.sourceSha256[$device.Name] = [ordered]@{ path = $sourcePath; sha256 = $hash }
+}
+
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host "FastBee five-device deployment (isolated configuration)" -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
+foreach ($device in $devices) {
+    Write-Host ("{0}  {1}  {2}  source={3}" -f $device.Name, $device.Env, $device.Port, $summary.sourceSha256[$device.Name].sha256) -ForegroundColor Gray
+}
+Write-Host "Order: COM15 -> COM4 -> COM11 -> COM16 -> COM7" -ForegroundColor Yellow
+
+foreach ($device in $devices) {
+    if ($selectedKeys -notcontains $device.Key) { continue }
+    $result = [ordered]@{
+        device = $device.Name
+        environment = $device.Env
+        port = $device.Port
+        source = $summary.sourceSha256[$device.Name]
+        status = "pending"
+        serial = $null
+        sta = $null
+        report = $null
+    }
+    $reportPath = Join-Path $resolvedReportDir ("{0}-{1}-{2}.json" -f $runId, $device.Key, $device.Port)
+    $result.report = $reportPath
+    try {
+        Write-Host "`n[$($device.Name)] $($device.Port) / $($device.Env)" -ForegroundColor Green
+        if (-not $DryRun -and -not $BuildOnly -and -not (Test-TargetPort -Port $device.Port)) {
+            if ($SkipMissingPorts) {
+                $result.status = "missing-port"
+                Write-Warning "$($device.Port) is not present; skipped by -SkipMissingPorts."
+                $summary.results.Add([pscustomobject]$result)
+                continue
+            }
+            throw "$($device.Port) is not present. Connect the board before deployment."
+        }
+        Invoke-ConfigDeploy -Device $device -ReportPath $reportPath
+        $result.status = if ($DryRun) { "dry-run" } elseif ($BuildOnly) { "built" } else { "deployed" }
+        if (-not $DryRun -and -not $BuildOnly) {
+            if (-not $SkipSerialCheck) {
+                $serialPath = Join-Path $resolvedReportDir ("{0}-{1}-{2}-serial.json" -f $runId, $device.Key, $device.Port)
+                $result.serial = [ordered]@{ path = $serialPath; success = Invoke-SerialCheck -Device $device -OutputPath $serialPath }
+                if (-not $result.serial.success) { $result.status = "deployed-serial-warning" }
+            }
+            $result.sta = Test-StaEndpoint -Device $device
+            if (-not $result.sta.success) {
+                if ($result.sta.reachable) {
+                    Write-Warning "$($device.Name) STA endpoint reachable with HTTP $($result.sta.status) (authentication may be required); continuing without AP access."
+                } else {
+                    Write-Warning "$($device.Name) STA endpoint unavailable; continuing without AP access."
+                }
+            }
+        }
+    } catch {
+        $result.status = "failed"
+        $result.error = $_.Exception.Message
+        # Write-Error is terminating under the script's Stop preference and
+        # would prevent the final summary/audit file from being written.
+        Write-Warning $_.Exception.Message
+        $summary.results.Add([pscustomobject]$result)
+        if (-not $SkipMissingPorts) { break }
+        continue
+    }
+    $summary.results.Add([pscustomobject]$result)
+}
+
+$summary.finishedAt = (Get-Date).ToUniversalTime().ToString("o")
+$summaryPath = Join-Path $resolvedReportDir ("{0}-summary.json" -f $runId)
+$summary | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+Write-Host "`nDeployment summary: $summaryPath" -ForegroundColor Cyan
+
+$failed = @($summary.results | Where-Object { $_.status -eq "failed" })
+if ($failed.Count -gt 0) { exit 1 }

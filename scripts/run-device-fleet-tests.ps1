@@ -17,6 +17,10 @@
     设备列表。每项为 hashtable：
       @{ Label="esp32"; IP="192.168.5.34"; Profile="unified"; Domain="fastbee.local"; Serial="COM16" }
 
+.PARAMETER DeviceConfig
+    JSON 编队配置文件路径。配置为对象数组，每项至少包含 label、ip、profile、domain、serial。
+    传入该参数后优先使用文件内容，适合 DHCP 地址变化或不同测试台。
+
 .PARAMETER Ssid
     期望连接的 WiFi SSID（STA 模式验证用）。
 
@@ -41,6 +45,8 @@
 param(
     [hashtable[]]$Devices = @(),
 
+    [string]$DeviceConfig = "",
+
     [string]$Ssid = "fastbee",
 
     [string]$Username = "admin",
@@ -58,14 +64,57 @@ $ErrorActionPreference = "Continue"
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
 
-# ─── 默认设备舰队（四台测试机） ───────────────────────
+# ─── 从 JSON 加载设备舰队（地址可随测试台变化） ─────────────
+
+if (-not [string]::IsNullOrWhiteSpace($DeviceConfig)) {
+    $configPath = $DeviceConfig
+    if (-not [System.IO.Path]::IsPathRooted($configPath)) {
+        $configPath = Join-Path $ProjectDir $configPath
+    }
+    $configPath = [System.IO.Path]::GetFullPath($configPath)
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "DeviceConfig not found: $configPath"
+    }
+
+    try {
+        $configText = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)
+        $configItems = @(ConvertFrom-Json -InputObject $configText -ErrorAction Stop)
+    } catch {
+        throw "Invalid DeviceConfig JSON ($configPath): $($_.Exception.Message)"
+    }
+    if ($configItems.Count -eq 0) {
+        throw "DeviceConfig must contain at least one device: $configPath"
+    }
+
+    $Devices = @()
+    $requiredFields = @("label", "ip", "profile", "domain", "serial")
+    foreach ($item in $configItems) {
+        if ($null -eq $item) { throw "DeviceConfig contains a null device entry: $configPath" }
+        $names = @($item.PSObject.Properties.Name | ForEach-Object { $_.ToLowerInvariant() })
+        foreach ($field in $requiredFields) {
+            if ($names -notcontains $field) {
+                throw "DeviceConfig entry is missing '$field': $configPath"
+            }
+        }
+        $Devices += @{
+            Label = [string]$item.label
+            IP = [string]$item.ip
+            Profile = [string]$item.profile
+            Domain = [string]$item.domain
+            Serial = [string]$item.serial
+        }
+    }
+}
+
+# ─── 默认设备舰队（五台测试机；建议生产测试总是传 -DeviceConfig） ─────
 
 if ($Devices.Count -eq 0) {
     $Devices = @(
-        @{ Label = "esp32-F4R0";    IP = "192.168.5.34"; Profile = "unified"; Domain = "fastbee.local";   Serial = "COM16" },
-        @{ Label = "esp32c3-F4R0";  IP = "192.168.5.66"; Profile = "unified"; Domain = "fastbee-2.local"; Serial = "COM4"  },
-        @{ Label = "esp32c6-F4R0";  IP = "192.168.5.31"; Profile = "unified"; Domain = "fastbee-3.local"; Serial = "COM11" },
-        @{ Label = "esp32s3-F8R0";  IP = "192.168.5.14"; Profile = "unified"; Domain = "fastbee-4.local"; Serial = "COM15" }
+        @{ Label = "esp32-F4R0";    IP = "192.168.5.21"; Profile = "unified"; Domain = ""; Serial = "COM16" },
+        @{ Label = "esp32c3-F4R0";  IP = "192.168.5.55"; Profile = "unified"; Domain = ""; Serial = "COM4"  },
+        @{ Label = "esp32c6-F4R0";  IP = "192.168.5.19"; Profile = "unified"; Domain = ""; Serial = "COM11" },
+        @{ Label = "esp32s3-F16R8"; IP = "192.168.5.22"; Profile = "unified"; Domain = ""; Serial = "COM15" },
+        @{ Label = "esp32s3-F8R0";  IP = "192.168.5.67"; Profile = "unified"; Domain = ""; Serial = "COM7"  }
     )
 }
 
@@ -86,20 +135,25 @@ Write-Host ""
 
 # ─── 工具函数 ─────────────────────────────────────────
 
-# 登录：设备端通过 Set-Cookie 下发名为 session 的 cookie，
-# 用 WebRequestSession 承载并在后续请求复用（旧版误读 body.sessionId 导致鉴权失败）。
+# 登录：设备端默认通过 Set-Cookie 下发 HttpOnly 的 sessionId Cookie，
+# Cookie 名称可配置且兼容 session；用 WebRequestSession 承载并在后续请求复用。
 function Invoke-FleetLogin {
     param([string]$BaseUrl)
-    try {
-        $sess = $null
-        $resp = Invoke-WebRequest -Uri "$BaseUrl/api/auth/login" -Method POST `
-            -Body "username=$Username&password=$Password" `
-            -ContentType "application/x-www-form-urlencoded" `
-            -SessionVariable sess -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
-        if ($resp.StatusCode -eq 200 -and $sess) {
-            return $sess
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+        try {
+            $sess = $null
+            $resp = Invoke-WebRequest -Uri "$BaseUrl/api/auth/login" -Method POST `
+                -Body "username=$Username&password=$Password" `
+                -ContentType "application/x-www-form-urlencoded" `
+                -SessionVariable sess -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
+            if ($resp.StatusCode -eq 200 -and $sess) {
+                return $sess
+            }
+        } catch { }
+        if ($attempt -lt 3) {
+            Start-Sleep -Seconds 2
         }
-    } catch { }
+    }
     return $null
 }
 
@@ -117,13 +171,32 @@ function Get-FleetSnapshot {
     param([string]$BaseUrl, $Session)
     $info = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/info"
     $status = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/status"
+    $metrics = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/metrics"
     $snap = @{ heapFree = $null; heapMaxAlloc = $null; uptime = $null; psramFree = $null }
-    if ($info -and $info.data -and $info.data.memory) {
-        $snap.heapFree = [int64]$info.data.memory.heapFree
-        $snap.heapMaxAlloc = [int64]$info.data.memory.heapMaxAlloc
-        if ($info.data.memory.psramFree) { $snap.psramFree = [int64]$info.data.memory.psramFree }
+    $metricsData = if ($metrics -and $metrics.data) { $metrics.data } else { $metrics }
+    if ($metricsData -and $metricsData.heap) {
+        if ($null -ne $metricsData.heap.dram_free) { $snap.heapFree = [int64]$metricsData.heap.dram_free }
+        elseif ($null -ne $metricsData.heap.free) { $snap.heapFree = [int64]$metricsData.heap.free }
+        if ($null -ne $metricsData.heap.dram_largest) { $snap.heapMaxAlloc = [int64]$metricsData.heap.dram_largest }
+        elseif ($null -ne $metricsData.heap.largest_block) { $snap.heapMaxAlloc = [int64]$metricsData.heap.largest_block }
+        if ($null -ne $metricsData.heap.psram_free) { $snap.psramFree = [int64]$metricsData.heap.psram_free }
+        if ($null -ne $metricsData.uptime) { $snap.uptime = [int64]$metricsData.uptime }
     }
-    if ($status -and $status.data -and $null -ne $status.data.uptime) {
+    if ($null -eq $snap.heapFree -and $status -and $status.data) {
+        if ($status.data.memory -and $null -ne $status.data.memory.dram8Free) {
+            $snap.heapFree = [int64]$status.data.memory.dram8Free
+        } elseif ($null -ne $status.data.freeHeap) {
+            $snap.heapFree = [int64]$status.data.freeHeap
+        }
+        if ($status.data.memory -and $null -ne $status.data.memory.dram8Largest) {
+            $snap.heapMaxAlloc = [int64]$status.data.memory.dram8Largest
+        }
+    }
+    if ($null -eq $snap.heapFree -and $info -and $info.data -and $info.data.device -and
+        $null -ne $info.data.device.freeHeap) {
+        $snap.heapFree = [int64]$info.data.device.freeHeap
+    }
+    if ($null -eq $snap.uptime -and $status -and $status.data -and $null -ne $status.data.uptime) {
         $snap.uptime = [int64]$status.data.uptime
     }
     return $snap
@@ -204,7 +277,7 @@ function Invoke-BrowserSmoke {
     }
     try {
         $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $btScript `
-            -DeviceIP $DeviceIP -Project smoke 2>&1
+            -DeviceIP $DeviceIP -Project smoke -Grep "@quick" 2>&1
         $exit = $LASTEXITCODE
         if ($exit -eq 0) {
             return @{ Ok = $true; Reason = "playwright smoke passed" }

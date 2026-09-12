@@ -1286,6 +1286,34 @@ void test_mr17_recovery_summary_before_reboot() {
     TestLog::testEnd(true);
 }
 
+/**
+ * @brief MR-18: Modbus 恢复先清除运行时禁用标志，再排队延迟重启
+ */
+void test_mr18_modbus_recovery_clears_runtime_gate_before_queue() {
+    TestLog::testStart("MR-18: Modbus recovery clears runtime gate before queue");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    const auto restorePos = content.find("void HealthMonitor::restoreMemoryRecovery()");
+    TEST_ASSERT_TRUE_MESSAGE(restorePos != std::string::npos,
+                             "restoreMemoryRecovery() must be defined");
+    const auto nextFunction = content.find("void HealthMonitor::", restorePos + 16);
+    const std::string restoreBlock = content.substr(
+        restorePos, nextFunction == std::string::npos ? std::string::npos : nextFunction - restorePos);
+    const auto clearPos = restoreBlock.find("clearRuntimeDisabled(\"modbus\")");
+    const auto queuePos = restoreBlock.find("restartModbusDeferred()");
+    TEST_ASSERT_TRUE_MESSAGE(clearPos != std::string::npos,
+                             "restore path must clear Modbus runtime-disabled state");
+    TEST_ASSERT_TRUE_MESSAGE(queuePos != std::string::npos,
+                             "restore path must queue deferred Modbus restart");
+    TEST_ASSERT_TRUE_MESSAGE(clearPos < queuePos,
+                             "Modbus runtime gate must be cleared before deferred restart is queued");
+    TEST_ASSERT_TRUE_MESSAGE(restoreBlock.find("_modbusRestorePendingForMemory = true") != std::string::npos,
+                             "restore path must retain pending state until handler confirmation");
+    TestLog::step("Modbus runtime gate is cleared before deferred restart and pending state is retained");
+    TestLog::testEnd(true);
+}
+
 // ========== P0/P1 改进验证测试 ==========
 
 /**
@@ -1436,6 +1464,68 @@ void test_perform_memory_recovery_uses_helper_function() {
     TestLog::testEnd(true);
 }
 
+/**
+ * @brief S3 Web 瞬时分配只延迟安全区 SEVERE，真实危险仍立即降级
+ */
+void test_s3_severe_entry_confirmation_contract() {
+    TestLog::testStart("S3 Memory Guard: Severe Entry Confirmation Contract");
+
+    const std::string header = readProjectFile("include/systems/HealthMonitor.h");
+    const std::string chipConfig = readProjectFile("include/core/ChipConfig.h");
+    const std::string source = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "HealthMonitor.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(chipConfig.empty(), "ChipConfig.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(source.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("S3_SEVERE_ENTRY_CONFIRM_SAMPLES = 2") != std::string::npos,
+        "S3 safe-zone SEVERE entry must require exactly two samples");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("_consecutiveSeverePressureSamples") != std::string::npos,
+        "S3 SEVERE entry must retain a consecutive-sample counter");
+    TEST_ASSERT_TRUE_MESSAGE(
+        chipConfig.find("#define CHIP_IS_ESP32S3      1") != std::string::npos &&
+        source.find("#if CHIP_IS_ESP32S3") != std::string::npos,
+        "S3 memory policy must use the centralized ChipConfig capability macro");
+
+    const auto blockStart = source.find("const bool confirmableS3SevereEntry");
+    const auto blockEnd = source.find("#else", blockStart);
+    TEST_ASSERT_TRUE_MESSAGE(blockStart != std::string::npos && blockEnd != std::string::npos,
+                             "S3 SEVERE confirmation block must exist");
+    const std::string block = source.substr(blockStart, blockEnd - blockStart);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("newLevel == MemoryGuardLevel::SEVERE") != std::string::npos &&
+        block.find("_lastComputedLevel < MemoryGuardLevel::SEVERE") != std::string::npos,
+        "confirmation must apply only when first entering SEVERE");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("freeHeap >= criticalThreshold") != std::string::npos &&
+        block.find("largestBlock >= guardSevereLargestThreshold") != std::string::npos,
+        "only non-critical pressure with a safe contiguous block may be delayed");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("_consecutiveSeverePressureSamples++") != std::string::npos &&
+        block.find("newLevel = _lastComputedLevel") != std::string::npos,
+        "the first safe-zone SEVERE sample must retain the prior level");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("< S3_SEVERE_ENTRY_CONFIRM_SAMPLES") != std::string::npos &&
+        block.find("_consecutiveSeverePressureSamples = 0") != std::string::npos,
+        "the second consecutive sample must commit and reset confirmation state");
+
+    // CRITICAL and a block below the SEVERE service floor both make the
+    // confirmation predicate false, so they continue through the normal
+    // immediate-upgrade path rather than being hidden by the Web-spike filter.
+    const auto hysteresisStart = source.find("if (newLevel > _lastComputedLevel)", blockEnd);
+    TEST_ASSERT_TRUE_MESSAGE(hysteresisStart != std::string::npos,
+                             "immediate upgrade path must remain after S3 confirmation");
+    const std::string immediatePath = source.substr(hysteresisStart, 300);
+    TEST_ASSERT_TRUE_MESSAGE(
+        immediatePath.find("_lastComputedLevel = newLevel") != std::string::npos,
+        "CRITICAL and dangerous-block upgrades must still commit immediately");
+
+    TestLog::step("one transient sample is ignored; two safe-zone samples commit; emergencies stay immediate");
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_health_monitor_group() {
@@ -1502,12 +1592,14 @@ void test_health_monitor_group() {
     RUN_TEST(test_mr15_emergency_dram_threshold);
     RUN_TEST(test_mr16_boot_loop_protection);
     RUN_TEST(test_mr17_recovery_summary_before_reboot);
+    RUN_TEST(test_mr18_modbus_recovery_clears_runtime_gate_before_queue);
 
     // P0/P1 改进验证测试
     RUN_TEST(test_frag_high_uses_dram_metrics);
     RUN_TEST(test_frag_high_dram_vs_total_difference);
     RUN_TEST(test_compact_memory_targeted_reclamation);
     RUN_TEST(test_perform_memory_recovery_uses_helper_function);
+    RUN_TEST(test_s3_severe_entry_confirmation_contract);
 
     TestLog::groupEnd();
 }

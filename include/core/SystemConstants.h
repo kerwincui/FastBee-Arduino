@@ -55,7 +55,7 @@ namespace Hardware {
 namespace NetConst {
     // WiFi配置
     constexpr const char* DEFAULT_AP_SSID = "fastbee-ap";
-    constexpr const char* DEFAULT_AP_PASSWORD = "fastbee123";
+    constexpr const char* DEFAULT_AP_PASSWORD = "admin123";
     constexpr uint8_t DEFAULT_AP_CHANNEL = 1;
     constexpr uint8_t DEFAULT_AP_MAX_CONNECTIONS = 4;
     constexpr bool DEFAULT_AP_HIDDEN = false;
@@ -78,8 +78,8 @@ namespace NetConst {
     // MQTT默认配置（FastBee 官方服务器）
     constexpr const char* DEFAULT_MQTT_SERVER   = "iot.fastbee.cn";
     constexpr uint16_t    DEFAULT_MQTT_PORT     = 1883;
-    constexpr const char* DEFAULT_MQTT_USER     = "15208747707";
-    constexpr const char* DEFAULT_MQTT_PASSWORD = "fastbee";
+    constexpr const char* DEFAULT_MQTT_USER     = "";
+    constexpr const char* DEFAULT_MQTT_PASSWORD = "";
     constexpr uint16_t FB_MQTT_KEEPALIVE = 60;       // 秒（避免与 PubSubClient::MQTT_KEEPALIVE 宏冲突）
     constexpr uint16_t FB_MQTT_SOCKET_TIMEOUT = 15;  // 秒
 

@@ -47,6 +47,16 @@ enum class ModbusDataSource {
     PeriphExecPoll   // PeriphExec轮询（仅MQTT上报，不分发到规则匹配）
 };
 
+#if FASTBEE_ENABLE_MODBUS
+// Modbus 配置可以只包含尚未接线、默认禁用的设备模板。该状态不是启动
+// 故障，调用方必须与解析、内存或 UART 初始化失败区分处理。
+enum class ModbusRestartResult : uint8_t {
+    Started,
+    IdleNoEnabledTargets,
+    Failed
+};
+#endif
+
 class ProtocolManager {
 public:
     ProtocolManager();
@@ -129,13 +139,22 @@ public:
      * @brief 重启Modbus（从protocol.json加载配置并初始化）
      * 注意：此方法栈开销大（~12KB），只能在 loopTask 中调用
      */
-    bool restartModbus();
+    ModbusRestartResult restartModbus();
 
     /**
      * @brief 延迟重启Modbus（设置标志，由 handle() 在 loopTask 中执行）
      * 用于 HTTP handler 中避免在 AsyncTCP 小栈任务中执行
      */
     bool restartModbusDeferred();
+
+    // 延迟重启是否仍在等待 loopTask 消费。用于内存恢复路径避免在
+    // handler 实际重建前重复排队或提前清除“Modbus 已停止”状态。
+    bool isModbusRestartPending() const { return modbusRestartPending; }
+
+    // 读取并清除最近一次实际重启结果。restartModbusDeferred() 只负责
+    // 排队，HealthMonitor 通过该一次性结果区分“模板全部禁用”的正常
+    // 空闲状态与需要退避重试的真实失败。
+    bool consumeModbusRestartResult(ModbusRestartResult& result);
 
     /**
      * @brief 停止Modbus
@@ -184,6 +203,8 @@ private:
     bool isInitialized;
 #if FASTBEE_ENABLE_MODBUS
     volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
+    volatile bool modbusRestartResultAvailable = false;
+    ModbusRestartResult modbusLastRestartResult = ModbusRestartResult::Failed;
 #endif
 #if FASTBEE_ENABLE_MQTT
     volatile bool mqttRestartPending = false;  // MQTT 热重建标志，由 handle() 在 loopTask 中消费

@@ -109,14 +109,28 @@ var PageLoader = {
             var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             var html = await resp.text();
             var container = document.getElementById('content-area');
-            if (container) {
-                var wrapper = document.createElement('div');
-                wrapper.innerHTML = html;
-                // 将所有子元素移入 content-area
-                while (wrapper.firstChild) {
-                    container.appendChild(wrapper.firstChild);
-                }
+            if (!container) throw new Error('Page container missing: #content-area');
+
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+            var rootId = moduleName + '-page';
+            var incomingRoot = wrapper.querySelector('#' + rootId);
+            if (!incomingRoot) {
+                throw new Error('Page response missing expected root: #' + rootId);
             }
+
+            // A previous failed attempt may have left an active fallback with
+            // the same ID. Remove it before inserting the verified response so
+            // deduplication cannot preserve the fallback and discard real UI.
+            var wasActive = false;
+            Array.prototype.slice.call(document.querySelectorAll('#' + rootId)).forEach(function(root) {
+                wasActive = wasActive || root.classList.contains('active');
+                root.remove();
+            });
+            while (wrapper.firstChild) {
+                container.appendChild(wrapper.firstChild);
+            }
+            if (wasActive) incomingRoot.classList.add('active');
             this._dedupePageRoot(moduleName);
             this._loadedPages[moduleName] = true;
             // 若当前语言非中文，翻译新加载的页面内容
@@ -132,8 +146,8 @@ var PageLoader = {
             // A no-PSRAM device may intentionally reject heavyweight page HTML
             // with 503. Keep navigation usable and explain the controlled
             // degradation instead of leaving a blank page root.
+            delete this._loadedPages[moduleName];
             this._renderUnavailablePage(moduleName, e);
-            this._loadedPages[moduleName] = true;
         } finally {
             delete this._loadingPages[moduleName];
         }

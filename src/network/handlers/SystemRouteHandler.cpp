@@ -23,6 +23,8 @@
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <memory>
+#include <ctype.h>
 
 // 文件系统统计缓存（60s TTL，避免反复 LittleFS 元数据扫描）
 static size_t s_cachedFsTotal = 0;
@@ -38,10 +40,7 @@ static void getCachedFsStats(size_t& total, size_t& used) {
     total = s_cachedFsTotal;
     used = s_cachedFsUsed;
 }
-#include <memory>
-#include <ctype.h>
 // #include "core/MemoryProfile.h"  // Not needed - MemoryProfile feature disabled
-#include "systems/ConfigStorage.h"
 
 namespace {
 // Keep inline imports small because form parsing already holds the body in RAM.
@@ -217,6 +216,7 @@ void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degrade
 
     JsonObject memory = data["memory"].to<JsonObject>();
     fillMemorySummary(memory);
+    HandlerUtils::addMemoryDegradationStatus(data);
 
     size_t fsTotal, fsUsed;
     getCachedFsStats(fsTotal, fsUsed);
@@ -993,16 +993,24 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->requireAuth(request)) return;
         LOGGER.info("Factory reset initiated by user");
 
-        // 写入默认配置内容的辅助 lambda
-        auto writeDefault = [](const char* path, const char* content) -> bool {
-            File f = LittleFS.open(path, FILE_WRITE);
-            if (!f) return false;
-            f.print(content);
-            f.close();
-            return true;
-        };
-
         int resetCount = 0;
+        int resetFailureCount = 0;
+        String failedFiles;
+        auto recordFailure = [&](const char* path) {
+            ++resetFailureCount;
+            if (!failedFiles.isEmpty()) failedFiles += ',';
+            failedFiles += path;
+            LOGGER.errorf("Factory reset: failed to reset %s", path);
+        };
+        ConfigStorage& configStorage = ConfigStorage::getInstance();
+        auto writeDefault = [&](const char* path, const char* content) -> bool {
+            if (configStorage.saveFactoryJSONConfig(path, content)) {
+                ++resetCount;
+                return true;
+            }
+            recordFailure(path);
+            return false;
+        };
 
         // ── 核心配置文件：写入默认 JSON ──────────────────────────────────────
         // device.json - 设备基本信息（清除个性化配置，保留合理默认值）
@@ -1012,7 +1020,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"enableNTP\":true,\"ntpServer1\":\"http://iot.fastbee.cn/prod-api/iot/tool/ntp\",\"ntpServer2\":\"cn.pool.ntp.org\","
             "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
             "\"developerModeEnabled\":true}";
-        if (writeDefault("/config/device.json", DEFAULT_DEVICE)) { resetCount++; }
+        writeDefault("/config/device.json", DEFAULT_DEVICE);
 
         // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
         static const char DEFAULT_NETWORK[] PROGMEM =
@@ -1029,7 +1037,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"conflictThreshold\":2,\"fallbackToDHCP\":true,"
             "\"ethernet\":{\"spiMosi\":11,\"spiMiso\":13,\"spiSck\":12,\"csPin\":47,\"rstPin\":48,\"intPin\":14},"
             "\"cellular\":{\"txPin\":39,\"rxPin\":40,\"pwrPin\":38,\"baudRate\":115200,\"apn\":\"CMNET\"}}";
-        if (writeDefault("/config/network.json", DEFAULT_NETWORK)) { resetCount++; }
+        writeDefault("/config/network.json", DEFAULT_NETWORK);
 
         // users.json - 恢复默认用户（仅 admin）
         static const char DEFAULT_USERS[] PROGMEM =
@@ -1040,7 +1048,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"description\":\"\"}],"
             "\"security\":{\"maxLoginAttempts\":5,\"loginLockoutTime\":300000,"
             "\"minPasswordLength\":6,\"requireStrongPasswords\":false}}";
-        if (writeDefault("/config/users.json", DEFAULT_USERS)) { resetCount++; }
+        writeDefault("/config/users.json", DEFAULT_USERS);
 
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
@@ -1072,15 +1080,23 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000,"
             "\"keepAlive\":60,\"maxRetry\":5,\"reconnectInterval\":10,\"mode\":\"client\","
             "\"heartbeatMsg\":\"\\\\n\",\"maxClients\":5,\"idleTimeout\":120,\"localPort\":8080}}";
-        if (writeDefault("/config/protocol.json", DEFAULT_PROTOCOL)) { resetCount++; }
+        writeDefault("/config/protocol.json", DEFAULT_PROTOCOL);
 
         // peripherals.json - 清空外设配置（用户按需添加）
         static const char DEFAULT_PERIPHERALS[] PROGMEM = "{\"peripherals\":[]}";
-        if (writeDefault("/config/peripherals.json", DEFAULT_PERIPHERALS)) { resetCount++; }
+        writeDefault("/config/peripherals.json", DEFAULT_PERIPHERALS);
 
         // periph_exec.json - 清空执行规则
         static const char DEFAULT_PERIPH_EXEC[] PROGMEM = "{\"rules\":[]}";
-        if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) { resetCount++; }
+        writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC);
+
+        // features.json - 恢复完整功能快照：Web 与 mDNS 默认启用，其余按需启用。
+        // 通过管理器生成，避免这里维护第二份容易漂移的功能注册表。
+        if (FastBee::RuntimeFeatureManager::instance().resetToDefaults()) {
+            resetCount++;
+        } else {
+            recordFailure("/config/features.json");
+        }
 
         // rule_scripts.json - 恢复默认规则脚本
         static const char DEFAULT_RULE_SCRIPTS[] PROGMEM =
@@ -1092,18 +1108,22 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"enabled\":false,\"triggerType\":0,\"protocolType\":0,\"sourceTopic\":\"\",\"targetTopic\":\"\","
             "\"scriptContent\":\"[{\\\"id\\\":\\\"temperature\\\",\\\"value\\\":\\\"${temperature}\\\",\\\"remark\\\":\\\"\\\"},{\\\"id\\\":\\\"humidity\\\",\\\"value\\\":\\\"${humidity}\\\",\\\"remark\\\":\\\"\\\"}]\"}"
             "]}";
-        if (writeDefault("/config/rule_scripts.json", DEFAULT_RULE_SCRIPTS)) { resetCount++; }
+        writeDefault("/config/rule_scripts.json", DEFAULT_RULE_SCRIPTS);
 
         // ── 运行时可选配置文件：直接删除（各模块已处理文件不存在的情况）────
         const char* optionalFiles[] = {
             "/config/auth.json", "/config/system.json",
             "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-            "/config/modbus.json", "/config/coap.json"
+            "/config/modbus.json", "/config/coap.json", "/config/mqtt-backup.json",
+            "/config/provision.json", "/config/ble_provision.json",
+            "/config/ir_keys.json", "/config/rf_keys.json"
         };
         for (const char* optFile : optionalFiles) {
-            if (LittleFS.exists(optFile)) {
-                LittleFS.remove(optFile);
-            }
+            if (!configStorage.deleteJSONConfigGenerations(optFile)) recordFailure(optFile);
+        }
+
+        if (!ctx->networkManager || !ctx->networkManager->clearPersistentFallback()) {
+            recordFailure("NVS:net_cfg");
         }
 
 #if FASTBEE_ENABLE_FILE_LOGGING || FASTBEE_ENABLE_LOG_VIEWER
@@ -1119,6 +1139,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 #endif
 
         LOGGER.infof("Factory reset: %d config files restored to defaults", resetCount);
+
+        if (resetFailureCount > 0) {
+            JsonDocument errorDoc;
+            errorDoc["success"] = false;
+            errorDoc["error"] = "Factory reset incomplete; retry before rebooting";
+            errorDoc["restoredFiles"] = resetCount;
+            errorDoc["failedCount"] = resetFailureCount;
+            errorDoc["failedFiles"] = failedFiles;
+            errorDoc["timestamp"] = millis();
+            String errorJson;
+            serializeJson(errorDoc, errorJson);
+            request->send(500, "application/json", errorJson);
+            return;
+        }
 
         JsonDocument doc;
         doc["success"] = true;
@@ -1345,6 +1379,9 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     doc["timestamp"] = millis();
     doc["freeHeap"]  = ESP.getFreeHeap();
     doc["uptime"]    = millis();
+    HandlerUtils::addMemoryDegradationStatus(doc);
+    doc["memory"]["dram8Free"] = FastBee::MemoryBudget::dram8Free();
+    doc["memory"]["dram8Largest"] = FastBee::MemoryBudget::dram8Largest();
 
     // 功能运行时状态：disabled=未编译或用户关闭 / no-memory=预算拒绝自动降级 / active=正常启用
     // 统一从 RuntimeFeatureManager 遍历全部已注册功能（2026-08 审计修复：覆盖 27/27 而非原 8/27）
@@ -1356,8 +1393,9 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
             const auto* meta = rfm.getFeatureAt(i);
             if (!meta) break;
             const char* state = !meta->compiled ? "disabled"
+                : (rfm.isRuntimeDisabled(meta->key) ? "no-memory"
                 : (budgetReg.isDenied(meta->key) ? "no-memory"
-                : (rfm.shouldEnable(meta->key) ? "active" : "disabled"));
+                : (rfm.shouldEnable(meta->key) ? "active" : "disabled")));
             features[meta->key] = state;
         }
     }
@@ -1593,6 +1631,7 @@ void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
         memory["guardLevel"] = HandlerUtils::memoryGuardLevelName(level);
         memory["critical"] = monitor->isMemoryCritical();
     }
+    HandlerUtils::addMemoryDegradationStatus(doc);
     ctx->sendSuccess(request, doc);
 }
 

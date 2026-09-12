@@ -8,7 +8,7 @@ foreach ($ip in $ips) {
     try {
         $html = curl.exe --noproxy "*" --max-time 3 http://$ip/ 2>$null
         if ($html -and $html.Length -gt 1000) {
-            Write-Host "$ip: Web available ($($html.Length) bytes)" -ForegroundColor Green
+            Write-Host "${ip}: Web available ($($html.Length) bytes)" -ForegroundColor Green
             $api = curl.exe --noproxy "*" --max-time 2 http://$ip/api/system/status 2>$null
             if ($api -and $api.Length -gt 500) {
                 Write-Host "  API OK: $($api.Length) bytes" -ForegroundColor Yellow
@@ -18,10 +18,10 @@ foreach ($ip in $ips) {
                 }
             }
         } else {
-            Write-Host "$ip: Not ready" -ForegroundColor Gray
+            Write-Host "${ip}: Not ready" -ForegroundColor Gray
         }
     } catch {
-        Write-Host "$ip: Error - $_" -ForegroundColor Red
+        Write-Host "${ip}: Error - $_" -ForegroundColor Red
     }
     Start-Sleep -Milliseconds 300
 }

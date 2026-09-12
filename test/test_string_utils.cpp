@@ -255,6 +255,35 @@ static void test_build_json_response() {
                              StringUtils::buildJsonResponse(200, "ok", "\"result\"").c_str());
 }
 
+// 固定长度的 Modbus 名称缓冲区不能在 UTF-8 码点中间截断。
+static void test_copy_utf8_complete_codepoints() {
+    const char source[] = "\xE4\xB8\xAD" "\xE6\x96\x87" "A"; // 中文A
+    char dst[6]; // payload 只有 5 字节，只能容纳第一个中文字符
+
+    size_t copied = StringUtils::copyUtf8(dst, sizeof(dst), source);
+
+    TEST_ASSERT_EQUAL(3, (int)copied);
+    TEST_ASSERT_EQUAL_STRING("\xE4\xB8\xAD", dst);
+}
+
+static void test_copy_utf8_ascii_and_empty_capacity() {
+    char dst[8];
+
+    TEST_ASSERT_EQUAL(5, (int)StringUtils::copyUtf8(dst, sizeof(dst), "hello"));
+    TEST_ASSERT_EQUAL_STRING("hello", dst);
+    TEST_ASSERT_EQUAL(0, (int)StringUtils::copyUtf8(dst, 1, "hello"));
+    TEST_ASSERT_EQUAL_STRING("", dst);
+    TEST_ASSERT_EQUAL(0, (int)StringUtils::copyUtf8(nullptr, 0, "hello"));
+}
+
+static void test_copy_utf8_skips_invalid_sequences() {
+    const char source[] = {static_cast<char>(0xE4), static_cast<char>(0xB8), 'A', '\0'};
+    char dst[8];
+
+    TEST_ASSERT_EQUAL(1, (int)StringUtils::copyUtf8(dst, sizeof(dst), source));
+    TEST_ASSERT_EQUAL_STRING("A", dst);
+}
+
 // ========== tryParseBoolLike ==========
 // 直接单元测试真实的 StringUtils::tryParseBoolLike（PeriphExecManager 现委托到此）。
 // 此前仅有 test_periph_exec.cpp 的 mock 镜像，且镜像不覆盖新增的小数点分支，
@@ -356,6 +385,9 @@ void test_string_utils_group() {
     RUN_TEST(test_compare_ignore_case);
     RUN_TEST(test_remove_whitespace);
     RUN_TEST(test_build_json_response);
+    RUN_TEST(test_copy_utf8_complete_codepoints);
+    RUN_TEST(test_copy_utf8_ascii_and_empty_capacity);
+    RUN_TEST(test_copy_utf8_skips_invalid_sequences);
     RUN_TEST(test_bool_like_truthy_words);
     RUN_TEST(test_bool_like_falsy_words);
     RUN_TEST(test_bool_like_signed_one);

@@ -16,7 +16,7 @@ test.describe('Suite-21: 资源加载失败重试', () => {
     let requestCount = 0;
 
     // 拦截 chunk-2 首次请求并中断（模拟弱网丢包），后续放行
-    await page.route('**/js/chunk-2-core-b.js*', async (route) => {
+    await page.route('**/js/chunk-2-app.js*', async (route) => {
       requestCount++;
       if (abortCount === 0) {
         abortCount++;

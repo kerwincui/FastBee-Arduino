@@ -55,6 +55,10 @@ struct MemoryBudget {
     static constexpr uint32_t PERIPH_EXEC_MIN_LARGEST = 4096U;
     // Modbus 轮询专用：DRAM 低于此值时跳过轮询
     static constexpr uint32_t MODBUS_POLL_MIN_DRAM = 12000U;
+    // Modbus 配置重建会解析 JSON 并创建 UART/轮询对象，使用独立的
+    // 最低准入线，避免在通用协议堆闸门早退时丢失延迟恢复请求。
+    static constexpr uint32_t MODBUS_RESTART_MIN_DRAM = 15000U;
+    static constexpr uint32_t MODBUS_RESTART_MIN_LARGEST = 4096U;
 
     // 运行期小分配预检（审计 P2-7）：BLINK/BREATHE ticker 分配前水位检查，
     // 低内存时跳过单次动作而非抛出型 new OOM → abort 整机重启
@@ -74,9 +78,16 @@ struct MemoryBudget {
     static constexpr uint32_t GUARD_WARN_DRAM_FREE = 30720U;
     static constexpr uint32_t GUARD_SEVERE_DRAM_FREE = 24576U;
     static constexpr uint32_t GUARD_CRITICAL_DRAM_FREE = 16384U;
-    static constexpr uint32_t GUARD_WARN_LARGEST_BLOCK = 16384U;
-    static constexpr uint32_t GUARD_SEVERE_LARGEST_BLOCK = 12288U;
-    static constexpr uint32_t GUARD_CRITICAL_LARGEST_BLOCK = 8192U;
+    // Runtime evidence across classic ESP32, C3, C6 and S3 shows a stable
+    // internal 8-bit largest block around 10KB while Web, Modbus and
+    // PeriphExec remain serviceable.  Their hard allocation floors are
+    // 2.9-4KB, so larger guard bands create false SEVERE transitions during
+    // a normal login and leave optional services suspended.  Keep an 8KB
+    // early warning, but reserve SEVERE/CRITICAL for blocks that are actually
+    // too small for those services.
+    static constexpr uint32_t GUARD_WARN_LARGEST_BLOCK = 8192U;
+    static constexpr uint32_t GUARD_SEVERE_LARGEST_BLOCK = 4096U;
+    static constexpr uint32_t GUARD_CRITICAL_LARGEST_BLOCK = 3072U;
 
     static constexpr uint8_t FRAG_WARN_PERCENT = 65U;
     static constexpr uint8_t FRAG_SEVERE_PERCENT = 80U;
@@ -231,11 +242,15 @@ struct MemoryBudget {
     // 提前背压（2026-08-19 classic ESP32 lite-soak 实测，缺陷 5.1 修复）：
     //   持续轮询下 free8 在约 5 分钟内从 ~30KB 缓降至 11~18KB，随后 lwIP
     //   饿死、HTTP 全挂 1~3 分钟（code=000，TCP 层失败，中间件无机会执行）。
-    //   16KB 触发阈值落在停摆区间之内，为时已晚。上调至 20KB/blk8 6KB，
+    //   16KB 触发阈值落在停摆区间之内，为时已晚。上调至 20KB/blk8 4KB，
     //   在缓降过程中提前 503 背压，阻止连接积压进入死区；代价是突发负载
     //   的瞬态凹陷（13~23KB）会有少量 503，属可控降级，优于整体停摆。
     static constexpr uint32_t WEB_GUARD_MIN_DRAM_FREE = 20480U;      // 20KB 触发阈值（free8 口径）
-    static constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_FREE = 24576U; // 20KB + 4KB 迟滞恢复阈值
+    // 经典 ESP32 的完整外设配置在无请求稳态通常只有约 21~23KB free8。
+    // 4KB 迟滞（24KB）会让护栏在设备已经稳定时永久保持 ACTIVE；保留
+    // 1KB 迟滞，仍可过滤瞬态回升，同时允许低内存设备自愈恢复 API。
+    static constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_FREE =
+        WEB_GUARD_MIN_DRAM_FREE + 1024U; // 20KB + 1KB 迟滞恢复阈值
     // 2026-08-24 .34 取证：重负载后 blk8 稳态碎在 ~5108B（free8 已恢复
     // 31KB），6144 触发阈值落在"陷阱带"内 → 护栏激活后永远达不到
     // 9216 恢复阈值，FORCE-RECOVER 后 5s 内又立即重新激活，ping-pong

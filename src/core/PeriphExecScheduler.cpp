@@ -641,7 +641,7 @@ void PeriphExecScheduler::checkButtonEvents() {
     for (auto it = _buttonStates.begin(); it != _buttonStates.end();) {
         PeripheralConfig snapshot;
         if (!pm.getPeripheralSnapshot(it->first, snapshot) || !snapshot.enabled ||
-            !supportsButtonEvent(snapshot.type)) {
+            !isGpioDigitalInputType(snapshot.type)) {
             it = _buttonStates.erase(it);
         } else {
             ++it;
@@ -649,126 +649,183 @@ void PeriphExecScheduler::checkButtonEvents() {
     }
 
     pm.forEachPeripheral([this, &pm, now](const PeripheralConfig& config) {
-        // 只处理支持按键事件的外设类型（上拉/下拉输入）
         if (!config.enabled) return;
-        if (!supportsButtonEvent(config.type)) return;
+        if (!isGpioDigitalInputType(config.type)) return;
 
-        const bool idleLevel = config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP;
+        const bool isButton = supportsButtonEvent(config.type);
 
-        // 获取或创建按键状态。极性改变时丢弃旧的点击/长按状态。
-        auto stateIt = _buttonStates.find(config.id);
-        if (stateIt == _buttonStates.end() || stateIt->second.idleLevel != idleLevel) {
-            ButtonRuntimeState state;
-            state.periphId = config.id;
-            state.idleLevel = idleLevel;
-            state.lastState = idleLevel;
-            state.currentState = idleLevel;
-            _buttonStates[config.id] = state;
+        uint8_t inputMode = config.params.gpio.inputMode;
+        if (inputMode == static_cast<uint8_t>(DigitalInputMode::AUTO)) {
+            inputMode = config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP
+                            ? static_cast<uint8_t>(DigitalInputMode::PULL_UP)
+                            : config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN
+                                ? static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)
+                                : static_cast<uint8_t>(DigitalInputMode::FLOATING);
         }
-
-        ButtonRuntimeState& btnState = _buttonStates[config.id];
+        bool idleLevel = inputMode == static_cast<uint8_t>(DigitalInputMode::PULL_UP);
+        if (config.params.gpio.invertLogic) idleLevel = !idleLevel;
+        const uint16_t debounceMs = effectiveDigitalInputDebounceMs(config.params.gpio.debounceMs);
 
         // 读取当前按键状态
         GPIOState gpioState = pm.readPin(config.id);
         if (gpioState == GPIOState::STATE_UNDEFINED) return;
 
         bool currentLevel = (gpioState == GPIOState::STATE_HIGH);
-        btnState.currentState = currentLevel;
+        // 获取或创建状态。普通 DI 首次采样只建立基线；按键以空闲电平
+        // 为基线，使上电时已按下仍能在稳定一个 debounce 窗口后产生 PRESS。
+        auto stateIt = _buttonStates.find(config.id);
+        if (stateIt == _buttonStates.end() ||
+            (isButton && stateIt->second.idleLevel != idleLevel)) {
+            ButtonRuntimeState state;
+            state.periphId = config.id;
+            state.idleLevel = idleLevel;
+            state.lastState = isButton ? idleLevel : currentLevel;
+            state.currentState = currentLevel;
+            state.lastChangeTime = now;
+            _buttonStates[config.id] = state;
+            return;
+        }
 
-        // 检测状态变化（消抖处理）
+        ButtonRuntimeState& btnState = stateIt->second;
+
+        // 标准稳定态去抖：电平每次抖动都重启候选计时，只有候选值持续
+        // debounceMs 后才提交，避免长时间静止后的首个毛刺被立即接受。
+        if (currentLevel != btnState.currentState) {
+            btnState.currentState = currentLevel;
+            btnState.lastChangeTime = now;
+            return;
+        }
+
         if (currentLevel != btnState.lastState) {
-            // 检查消抖时间
-            if (now - btnState.lastChangeTime >= _buttonConfig.debounceMs) {
-                btnState.lastState = currentLevel;
-                btnState.lastChangeTime = now;
+            if (now - btnState.lastChangeTime < debounceMs) return;
+            btnState.lastState = currentLevel;
 
-                if (currentLevel != btnState.idleLevel) {
-                    // 按键按下（上拉为低，下拉为高）
-                    btnState.pressStartTime = now;
-
-                    // 触发按键按下事件
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_PRESS);
-
-                    LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
-                } else {
-                    // 按键释放
-                    unsigned long pressDuration = now - btnState.pressStartTime;
-
-                    // 触发按键释放事件
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_RELEASE);
-
-                    // 判断是点击还是长按释放
-                    if (pressDuration < _buttonConfig.longPress2sMs) {
-                        // 短按释放，计入点击计数
-                        btnState.clickCount++;
-                        btnState.lastClickTime = now;
-
-                        LOGGER.debugf("[PeriphExec] Button CLICK (%d): %s, duration=%lums",
-                            btnState.clickCount, config.id.c_str(), pressDuration);
-
-                        // 优化：若未配置双击规则，单击即时触发（避免 300ms clickInterval 延迟）
-                        if (btnState.clickCount == 1 && _manager &&
-                            !_manager->hasButtonEventRule(config.id, "button_double_click")) {
-                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
-                            btnState.clickCount = 0;
-                            LOGGER.debugf("[PeriphExec] Button CLICK (immediate, no double-click rule): %s", config.id.c_str());
-                        }
-                    }
-
-                    // 重置长按触发标记
-                    btnState.longPress2sTriggered = false;
-                    btnState.longPress5sTriggered = false;
-                    btnState.longPress10sTriggered = false;
-                }
+            if (!isGpioInterruptInputType(config.type) ||
+                matchesDigitalInterruptEdge(config.type, currentLevel)) {
+                handleStableDigitalInputChange(config, currentLevel);
             }
-        } else {
-            // 状态未变化，检查长按和双击
+
+            if (!isButton) return;
+
             if (currentLevel != btnState.idleLevel) {
-                // 按键持续按下，检查长按
-                unsigned long pressDuration = now - btnState.pressStartTime;
-
-                // 长按2秒
-                if (!btnState.longPress2sTriggered && pressDuration >= _buttonConfig.longPress2sMs) {
-                    btnState.longPress2sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_2S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_2S: %s", config.id.c_str());
-                }
-
-                // 长按5秒
-                if (!btnState.longPress5sTriggered && pressDuration >= _buttonConfig.longPress5sMs) {
-                    btnState.longPress5sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_5S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_5S: %s", config.id.c_str());
-                }
-
-                // 长按10秒
-                if (!btnState.longPress10sTriggered && pressDuration >= _buttonConfig.longPress10sMs) {
-                    btnState.longPress10sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_10S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_10S: %s", config.id.c_str());
-                }
+                btnState.pressStartTime = now;
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_PRESS);
+                LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
             } else {
-                // 按键释放状态，检查双击
-                if (btnState.clickCount > 0) {
-                    // 检查双击超时
-                    if (now - btnState.lastClickTime >= _buttonConfig.clickIntervalMs) {
-                        // 双击超时，处理点击结果
-                        if (btnState.clickCount == 2) {
-                            // 双击
-                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_DOUBLE_CLICK);
-                            LOGGER.infof("[PeriphExec] Button DOUBLE_CLICK: %s", config.id.c_str());
-                        } else if (btnState.clickCount == 1) {
-                            // 单击
-                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
-                            LOGGER.infof("[PeriphExec] Button CLICK: %s", config.id.c_str());
-                        }
-                        // 重置点击计数
+                unsigned long pressDuration = now - btnState.pressStartTime;
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_RELEASE);
+
+                if (pressDuration < _buttonConfig.longPress2sMs) {
+                    btnState.clickCount++;
+                    btnState.lastClickTime = now;
+                    LOGGER.debugf("[PeriphExec] Button CLICK (%d): %s, duration=%lums",
+                                  btnState.clickCount, config.id.c_str(), pressDuration);
+
+                    if (btnState.clickCount == 1 && _manager &&
+                        !_manager->hasButtonEventRule(config.id, "button_double_click")) {
+                        triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
                         btnState.clickCount = 0;
+                        LOGGER.debugf("[PeriphExec] Button CLICK (immediate, no double-click rule): %s",
+                                      config.id.c_str());
                     }
                 }
+
+                btnState.longPress2sTriggered = false;
+                btnState.longPress5sTriggered = false;
+                btnState.longPress10sTriggered = false;
             }
+            return;
+        }
+
+        if (!isButton) return;
+
+        // 稳定状态未变化，继续处理长按和多击窗口。
+        if (currentLevel != btnState.idleLevel) {
+            unsigned long pressDuration = now - btnState.pressStartTime;
+            if (!btnState.longPress2sTriggered && pressDuration >= _buttonConfig.longPress2sMs) {
+                btnState.longPress2sTriggered = true;
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_2S);
+                LOGGER.infof("[PeriphExec] Button LONG_PRESS_2S: %s", config.id.c_str());
+            }
+            if (!btnState.longPress5sTriggered && pressDuration >= _buttonConfig.longPress5sMs) {
+                btnState.longPress5sTriggered = true;
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_5S);
+                LOGGER.infof("[PeriphExec] Button LONG_PRESS_5S: %s", config.id.c_str());
+            }
+            if (!btnState.longPress10sTriggered && pressDuration >= _buttonConfig.longPress10sMs) {
+                btnState.longPress10sTriggered = true;
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_10S);
+                LOGGER.infof("[PeriphExec] Button LONG_PRESS_10S: %s", config.id.c_str());
+            }
+        } else if (btnState.clickCount > 0 &&
+                   now - btnState.lastClickTime >= _buttonConfig.clickIntervalMs) {
+            if (btnState.clickCount == 2) {
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_DOUBLE_CLICK);
+                LOGGER.infof("[PeriphExec] Button DOUBLE_CLICK: %s", config.id.c_str());
+            } else if (btnState.clickCount == 1) {
+                triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
+                LOGGER.infof("[PeriphExec] Button CLICK: %s", config.id.c_str());
+            }
+            btnState.clickCount = 0;
         }
     });
+
+    // Interrupt types also have an edge-captured path. It runs after the
+    // stable-state scan so a short pulse is delivered immediately and the
+    // local polling baseline can be synchronized to avoid duplicate reports.
+    uint8_t interruptPin = 0;
+    GPIOState interruptState = GPIOState::STATE_UNDEFINED;
+    while (pm.popDigitalInputInterruptEvent(interruptPin, interruptState)) {
+        const String peripheralId = pm.getPinPeripheralId(interruptPin);
+        PeripheralConfig config;
+        if (peripheralId.isEmpty() ||
+            !pm.getPeripheralSnapshot(peripheralId, config) ||
+            !config.enabled || !isGpioInterruptInputType(config.type)) {
+            continue;
+        }
+
+        const bool logicalLevel = interruptState == GPIOState::STATE_HIGH;
+        if (!matchesDigitalInterruptEdge(config.type, logicalLevel)) continue;
+
+        ButtonRuntimeState& state = _buttonStates[config.id];
+        state.periphId = config.id;
+        state.lastState = logicalLevel;
+        state.currentState = logicalLevel;
+        state.lastChangeTime = now;
+        handleStableDigitalInputChange(config, logicalLevel);
+    }
+}
+
+void PeriphExecScheduler::handleStableDigitalInputChange(const PeripheralConfig& config, bool level) {
+    if (!_manager) return;
+
+    StaticJsonDocument<192> doc;
+    JsonArray arr = doc.to<JsonArray>();
+    JsonObject item = arr.add<JsonObject>();
+    item["id"] = config.id;
+    item["value"] = level ? "1" : "0";
+    item["remark"] = "change";
+
+    char payload[192];
+    const size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
+    if (payloadLen == 0 || payloadLen >= sizeof(payload)) return;
+
+    // 规则事件与云端上报解耦：EVENT_ONLY 仍可驱动 ds:/POLL 规则，
+    // 但不会产生自动 MQTT 上报。
+    if (_manager->hasDataSourceRule(config.id)) {
+        _manager->handlePollData("digital_input", String(payload));
+    }
+
+#if FASTBEE_ENABLE_MQTT
+    if (!shouldReportDigitalInputChange(config.params.gpio.reportMode)) return;
+    MQTTClient* mqtt = getMqttClient();
+    if (!mqtt) return;
+    if (mqtt->getIsConnected()) {
+        mqtt->queueReportData(payload, static_cast<uint16_t>(payloadLen));
+    } else {
+        _manager->queuePendingReport(String(payload));
+    }
+#endif
 }
 
 void PeriphExecScheduler::triggerButtonEvent(const String& periphId, EventType eventType) {
@@ -932,6 +989,12 @@ String PeriphExecScheduler::collectPeripheralData() {
         int typeVal = static_cast<int>(config.type);
         if (typeVal < 11 || typeVal > 26) return;  // 跳过非GPIO/ADC/DAC类型
 
+        if (isGpioDigitalInputType(config.type) &&
+            !shouldReportDigitalInputPeriodically(config.params.gpio.reportMode)) {
+            return;
+        }
+        if (config.type == PeripheralType::RADAR_SENSOR) return;
+
         JsonObject obj = arr.add<JsonObject>();
         obj["id"] = config.id;
         obj["name"] = config.name;
@@ -946,7 +1009,8 @@ String PeriphExecScheduler::collectPeripheralData() {
         }
 
         // 读取当前值
-        if (typeVal >= 11 && typeVal <= 14) {
+        if (isGpioDigitalInputType(config.type) ||
+            config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
             // 数字输入/输出类型
             GPIOState state = pm.readPin(config.id);
             if (state != GPIOState::STATE_UNDEFINED) {
@@ -954,8 +1018,18 @@ String PeriphExecScheduler::collectPeripheralData() {
             }
         } else if (typeVal == 15 || typeVal == 26) {
             // 模拟输入或 ADC
-            uint16_t analog = pm.readAnalog(config.id);
-            obj["value"] = String(analog);
+            if (config.params.adc.conversionEnabled &&
+                config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+                const float value = pm.readAnalogValue(config.id);
+                if (isnan(value) || isinf(value)) return;
+                uint8_t decimals = config.params.adc.decimalPlaces;
+                if (decimals > 6) decimals = 6;
+                char valueBuf[32];
+                snprintf(valueBuf, sizeof(valueBuf), "%.*f", decimals, value);
+                obj["value"] = valueBuf;
+            } else {
+                obj["value"] = String(pm.readAnalog(config.id));
+            }
         }
     });
 

@@ -28,6 +28,7 @@
         _peDynamicEventsFetchedAt: 0,
         _peDynamicEventsPromise: null,
         _periphExecRunPromptState: null,
+        _peEditLoadSeq: 0,
 
         _isPeriphExecEditorReady() {
             return typeof this._createPeriphExecTriggerElement === 'function' &&
@@ -190,6 +191,8 @@
         openPeriphExecModalStandalone() { this.openPeriphExecModal(); },
 
         closePeriphExecModal() {
+            // Invalidate any in-flight edit chain before removing its DOM.
+            this._peEditLoadSeq++;
             this.hideModal('periph-exec-modal');
             this._pePeripherals = [];
             this._peDataSources = [];
@@ -672,27 +675,80 @@
     // ============ CRUD operations and page loading ============
     Object.assign(AppState, {
 
+        _getPeriphExecPageGeneration() {
+            if (typeof window === 'undefined' || typeof window.apiGetGovernorState !== 'function') return null;
+            try {
+                var state = window.apiGetGovernorState();
+                return state && state.pageGeneration !== undefined ? state.pageGeneration : null;
+            } catch (_) {
+                return null;
+            }
+        },
+
+        _isPeriphExecEditLoadActive(seq, pageGeneration) {
+            if (this._peEditLoadSeq !== seq) return false;
+            if (this.currentPage && this.currentPage !== 'periph-exec') return false;
+            if (pageGeneration === null || typeof window === 'undefined' || typeof window.apiGetGovernorState !== 'function') return true;
+            var currentGeneration = this._getPeriphExecPageGeneration();
+            return currentGeneration === null || Number(currentGeneration) === Number(pageGeneration);
+        },
+
+        _isPeriphExecEditRetryable(err) {
+            if (!err || err._pageAborted) return false;
+            var status = Number(err.status);
+            if (isFinite(status) && status > 0) {
+                return [408, 425, 429, 500, 502, 503, 504].indexOf(status) >= 0;
+            }
+            // AbortController is also used by the browser when a page is
+            // navigated/unmounted.  Those native AbortErrors are terminal for
+            // this editor chain; retry only the timeout error explicitly
+            // annotated by request-governor, then handle network TypeErrors.
+            if (err._requestTimeout) return true;
+            if (err.name === 'AbortError') return false;
+            if (err instanceof TypeError) return true;
+            return !!(err.message && /fetch|network|timeout|reset|busy|unavailable/i.test(err.message));
+        },
+
         editPeriphExecRule(id) {
             if (!this.guardDeveloperModeAction()) return;
+            var loadSeq = ++this._peEditLoadSeq;
+            var pageGeneration = this._getPeriphExecPageGeneration();
             if (!this._isPeriphExecEditorReady()) {
                 var self = this;
                 return this._ensurePeriphExecEditor().then(function() {
+                    if (!self._isPeriphExecEditLoadActive(loadSeq, pageGeneration)) return;
                     return self.editPeriphExecRule(id);
                 });
             }
             this.openPeriphExecModal(id);
-            return this._loadPeriphExecEditData(id, 1);
+            return this._loadPeriphExecEditData(id, 1, loadSeq, pageGeneration);
         },
 
-        _loadPeriphExecEditData(id, retriesLeft) {
+        _loadPeriphExecEditData(id, retriesLeft, loadSeq, pageGeneration) {
+            var self = this;
+            loadSeq = loadSeq === undefined ? this._peEditLoadSeq : loadSeq;
+            pageGeneration = pageGeneration === undefined ? this._getPeriphExecPageGeneration() : pageGeneration;
+            var isActive = function() {
+                return self._isPeriphExecEditLoadActive(loadSeq, pageGeneration);
+            };
+            var pageAbortError = function() {
+                var err = new Error('Request cancelled by page navigation');
+                err._pageAborted = true;
+                return err;
+            };
+            var ensureActive = function() {
+                if (!isActive()) throw pageAbortError();
+            };
             // 串行请求：ESP32 heap 紧张时并发 4 个请求会 OOM，必须逐个等完
             const _editResults = {};
             const loadRule = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
-            return loadRule('/api/periph-exec', { id: id })
-                .then(execRes => { _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }); })
-                .then(periphRes => { _editResults.periphRes = periphRes; return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
-                .then(protoRes => { _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
+            return Promise.resolve()
+                .then(function() { ensureActive(); return loadRule('/api/periph-exec', { id: id }); })
+                .then(execRes => { ensureActive(); _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }); })
+                .then(periphRes => { ensureActive(); _editResults.periphRes = periphRes; return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
+                .then(protoRes => { ensureActive(); _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
                 .then(rulesRes => {
+                    ensureActive();
                     _editResults.rulesRes = rulesRes;
                     const { execRes, periphRes, protoRes } = _editResults;
                     if (periphRes && periphRes.success && periphRes.data) {
@@ -758,16 +814,29 @@
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
                 })
                 .catch(err => {
-                    // 设备瞬时拥塞（TIME_WAIT 占满 PCB / 看门狗回收）会导致单个请求链被 abort，
-                    // 延迟 1.5s 自动重试一次，避免用户手动刷新
-                    if (retriesLeft > 0 && !(err && err._pageAborted)) {
+                    // 页面切换/关闭编辑器后，旧请求及其重试都应静默结束。
+                    if (!isActive() || (err && err._pageAborted)) return;
+
+                    // 认证和参数错误不会因重试恢复；Governor 已负责显示相应提示。
+                    var status = Number(err && err.status);
+                    var nonRetryableHttp = [400, 401, 403, 404, 409, 422].indexOf(status) >= 0;
+                    if (retriesLeft > 0 && !nonRetryableHttp && self._isPeriphExecEditRetryable(err)) {
+                        // 设备瞬时拥塞（TIME_WAIT 占满 PCB / 看门狗回收）会导致单个请求链被 abort，
+                        // 延迟 1.5s 自动重试一次，避免用户手动刷新
                         console.warn('Periph exec edit data load failed, retrying:', err && err.message);
                         return new Promise(resolve => setTimeout(resolve, 1500))
-                            .then(() => this._loadPeriphExecEditData(id, retriesLeft - 1));
+                            .then(() => {
+                                if (!isActive()) return;
+                                return self._loadPeriphExecEditData(id, retriesLeft - 1, loadSeq, pageGeneration);
+                            });
                     }
-                    console.error('Failed to load periph exec edit data:', err);
-                    if (typeof window.apiNotifyError === 'function') {
-                        window.apiNotifyError(err, '规则数据加载失败，请稍后重试', '外设执行');
+                    // HTTP errors are already handled by request-governor; avoid
+                    // duplicating console/notification noise for 401 and peers.
+                    if (!(err && err._handled)) {
+                        console.error('Failed to load periph exec edit data:', err);
+                        if (typeof window.apiNotifyError === 'function') {
+                            window.apiNotifyError(err, '规则数据加载失败，请稍后重试', '外设执行');
+                        }
                     }
                 });
         },
@@ -909,6 +978,12 @@
                 .catch(function () { /* filter 失败静默，不阻塞主流程 */ })
                 .then(function () { return apiGet(apiUrl); })
                 .then(execRes => {
+                    // /api/periph-exec exposes the runtime degradation snapshot
+                    // in its chunked header. Keep the page-level warning and
+                    // request governor in sync with the device guard state.
+                    if (typeof apiReportRuntimePressure === 'function') {
+                        apiReportRuntimePressure(execRes, 'periph-exec');
+                    }
                     this._peTotalRules = execRes && execRes.total ? execRes.total : 0;
                     this._setPeriphExecCapacity(execRes && execRes.profile ? execRes.profile : null);
                     if (execRes && Array.isArray(execRes.sensorSources)) {
@@ -1054,6 +1129,14 @@
             });
         }
     });
+
+    // Invalidate editor chains even when a legacy caller changes pages without
+    // going through the request governor's generation counter.
+    if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('periph-exec-editor', function() {
+            this._peEditLoadSeq++;
+        });
+    }
 
     // ============ 合并模式：子模块代码已被构建脚本 prepend 到本文件之前 ============
     // 不再运行时动态加载，直接绑定事件（3 个 HTTP 请求 → 1 个）

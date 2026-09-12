@@ -7,10 +7,197 @@
 #include "core/ResourceProfile.h"
 #include <ArduinoJson.h>
 #include <algorithm>
+#include <math.h>
 #include <vector>
 #include "systems/LoggerSystem.h"
 
 namespace {
+constexpr uint32_t SENSOR_DEFAULT_SAMPLE_INTERVAL_MS = 1000;
+constexpr uint32_t SENSOR_MIN_SAMPLE_INTERVAL_MS = 100;
+constexpr uint32_t SENSOR_MAX_SAMPLE_INTERVAL_MS = 86400000UL;
+
+uint32_t normalizeSensorSampleInterval(int value) {
+    if (value <= 0) return SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+    if (static_cast<uint32_t>(value) < SENSOR_MIN_SAMPLE_INTERVAL_MS) return SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+    if (static_cast<uint32_t>(value) > SENSOR_MAX_SAMPLE_INTERVAL_MS) return SENSOR_MAX_SAMPLE_INTERVAL_MS;
+    return static_cast<uint32_t>(value);
+}
+
+bool isAnalogInputPeripheral(PeripheralType type) {
+    return type == PeripheralType::GPIO_ANALOG_INPUT || type == PeripheralType::ADC;
+}
+
+bool isDigitalInputPeripheral(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_INPUT ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
+           type == PeripheralType::GPIO_INTERRUPT_RISING ||
+           type == PeripheralType::GPIO_INTERRUPT_FALLING ||
+           type == PeripheralType::GPIO_INTERRUPT_CHANGE;
+}
+
+void addDigitalInputParams(JsonObject params, const PeripheralConfig& config) {
+    params["inputMode"] = config.params.gpio.inputMode;
+    params["invertLogic"] = config.params.gpio.invertLogic;
+    params["debounceMs"] = config.params.gpio.debounceMs ? config.params.gpio.debounceMs : 50;
+    params["reportMode"] = config.params.gpio.reportMode;
+}
+
+void addAnalogInputParams(JsonObject params, const PeripheralConfig& config, bool includeAdvanced = true) {
+    params["attenuation"] = config.params.adc.attenuation;
+    params["resolution"] = config.params.adc.resolution;
+    if (includeAdvanced) params["sampleRate"] = config.params.adc.sampleRate;
+    params["sampleCount"] = config.params.adc.sampleCount ? config.params.adc.sampleCount : 1;
+    params["filterMode"] = config.params.adc.filterMode;
+    if (includeAdvanced) {
+        params["signalMode"] = config.params.adc.signalMode;
+        params["conversionEnabled"] = config.params.adc.conversionEnabled;
+        params["clampEnabled"] = config.params.adc.clampEnabled;
+        params["decimalPlaces"] = config.params.adc.decimalPlaces;
+        params["inputMin"] = config.params.adc.inputMin;
+        params["inputMax"] = config.params.adc.inputMax;
+        params["engineeringMin"] = config.params.adc.engineeringMin;
+        params["engineeringMax"] = config.params.adc.engineeringMax;
+        params["engineeringOffset"] = config.params.adc.engineeringOffset;
+        params["vRef"] = config.params.adc.vRef;
+        params["voltageRatio"] = config.params.adc.voltageRatio;
+        params["shuntResistance"] = config.params.adc.shuntResistance;
+        params["inputGain"] = config.params.adc.inputGain;
+        params["inputOffset"] = config.params.adc.inputOffset;
+        params["rawMin"] = config.params.adc.rawMin;
+        params["rawMax"] = config.params.adc.rawMax;
+    }
+}
+
+void initializeAdcDefaults(PeripheralConfig& config) {
+    config.params.adc.attenuation = 3;
+    config.params.adc.resolution = 12;
+    config.params.adc.sampleRate = 0;
+    config.params.adc.sampleCount = 1;
+    config.params.adc.filterMode = 0;
+    config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
+    config.params.adc.conversionEnabled = false;
+    config.params.adc.clampEnabled = false;
+    config.params.adc.decimalPlaces = 2;
+    config.params.adc.inputMin = 0.0f;
+    config.params.adc.inputMax = 0.0f;
+    config.params.adc.engineeringMin = 0.0f;
+    config.params.adc.engineeringMax = 100.0f;
+    config.params.adc.engineeringOffset = 0.0f;
+    config.params.adc.vRef = 0.0f;
+    config.params.adc.voltageRatio = 0.0f;
+    config.params.adc.shuntResistance = 0.0f;
+    config.params.adc.inputGain = 0.0f;
+    config.params.adc.inputOffset = 0.0f;
+    config.params.adc.rawMin = 0;
+    config.params.adc.rawMax = 0;
+}
+
+float getRequestFloat(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                      const char* name, float fallback) {
+    String raw = ctx->getParamValue(request, name, "");
+    if (raw.isEmpty()) return fallback;
+    float value = raw.toFloat();
+    return (isnan(value) || isinf(value)) ? fallback : value;
+}
+
+uint8_t normalizeAdcSampleCount(int value, uint8_t fallback = 1);
+uint8_t normalizeAdcFilterMode(int value);
+
+int clampParamInt(int value, int minimum, int maximum) {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+}
+
+void applyDigitalInputParams(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                             PeripheralConfig& config) {
+    int inputMode = ctx->getParamInt(request, "inputMode", config.params.gpio.inputMode);
+    if (inputMode < static_cast<int>(DigitalInputMode::AUTO) ||
+        inputMode > static_cast<int>(DigitalInputMode::PULL_DOWN)) {
+        inputMode = static_cast<int>(DigitalInputMode::AUTO);
+    }
+    config.params.gpio.inputMode = static_cast<uint8_t>(inputMode);
+    config.params.gpio.invertLogic = ctx->getParamBool(request, "invertLogic",
+                                                        config.params.gpio.invertLogic);
+    int debounceMs = ctx->getParamInt(request, "debounceMs", config.params.gpio.debounceMs);
+    if (debounceMs < 0) debounceMs = 0;
+    if (debounceMs > 5000) debounceMs = 5000;
+    config.params.gpio.debounceMs = static_cast<uint16_t>(debounceMs);
+    int reportMode = ctx->getParamInt(request, "reportMode", config.params.gpio.reportMode);
+    if (reportMode < static_cast<int>(DigitalReportMode::ON_CHANGE) ||
+        reportMode > static_cast<int>(DigitalReportMode::EVENT_ONLY)) {
+        reportMode = static_cast<int>(DigitalReportMode::ON_CHANGE);
+    }
+    config.params.gpio.reportMode = static_cast<uint8_t>(reportMode);
+}
+
+void applyAnalogInputParams(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                            PeripheralConfig& config, bool resetDefaults = false) {
+    if (resetDefaults) initializeAdcDefaults(config);
+    auto& adc = config.params.adc;
+    const int attenuationDefault = resetDefaults ? 3 : adc.attenuation;
+    const int resolutionDefault = (resetDefaults || adc.resolution < 9 || adc.resolution > 12)
+        ? 12 : adc.resolution;
+    adc.attenuation = static_cast<uint8_t>(clampParamInt(
+        ctx->getParamInt(request, "attenuation", attenuationDefault), 0, 3));
+    adc.resolution = static_cast<uint8_t>(clampParamInt(
+        ctx->getParamInt(request, "resolution", resolutionDefault), 9, 12));
+    adc.sampleRate = static_cast<uint16_t>(clampParamInt(
+        ctx->getParamInt(request, "sampleRate", adc.sampleRate), 0, 65535));
+    adc.sampleCount = normalizeAdcSampleCount(
+        ctx->getParamInt(request, "sampleCount", adc.sampleCount ? adc.sampleCount : 1));
+    adc.filterMode = normalizeAdcFilterMode(
+        ctx->getParamInt(request, "filterMode", adc.filterMode));
+
+    int signalMode = clampParamInt(ctx->getParamInt(
+        request, "signalMode", adc.signalMode),
+        static_cast<int>(AnalogSignalMode::RAW),
+        static_cast<int>(AnalogSignalMode::CUSTOM_LINEAR));
+    adc.signalMode = static_cast<uint8_t>(signalMode);
+    adc.conversionEnabled = ctx->getParamBool(request, "conversionEnabled", adc.conversionEnabled);
+    adc.clampEnabled = ctx->getParamBool(request, "clampEnabled", adc.clampEnabled);
+
+    int decimalPlaces = ctx->getParamInt(request, "decimalPlaces", adc.decimalPlaces);
+    if (decimalPlaces < 0) decimalPlaces = 0;
+    if (decimalPlaces > 6) decimalPlaces = 6;
+    adc.decimalPlaces = static_cast<uint8_t>(decimalPlaces);
+
+    adc.inputMin = getRequestFloat(ctx, request, "inputMin", adc.inputMin);
+    adc.inputMax = getRequestFloat(ctx, request, "inputMax", adc.inputMax);
+    adc.engineeringMin = getRequestFloat(ctx, request, "engineeringMin", adc.engineeringMin);
+    adc.engineeringMax = getRequestFloat(ctx, request, "engineeringMax",
+                                         adc.engineeringMax == 0.0f ? 100.0f : adc.engineeringMax);
+    adc.engineeringOffset = getRequestFloat(ctx, request, "engineeringOffset", adc.engineeringOffset);
+    adc.vRef = getRequestFloat(ctx, request, "vRef", adc.vRef);
+    adc.voltageRatio = getRequestFloat(ctx, request, "voltageRatio", adc.voltageRatio);
+    adc.shuntResistance = getRequestFloat(ctx, request, "shuntResistance", adc.shuntResistance);
+    adc.inputGain = getRequestFloat(ctx, request, "inputGain", adc.inputGain);
+    adc.inputOffset = getRequestFloat(ctx, request, "inputOffset", adc.inputOffset);
+
+    adc.rawMin = static_cast<uint16_t>(clampParamInt(
+        ctx->getParamInt(request, "rawMin", adc.rawMin), 0, 65535));
+    adc.rawMax = static_cast<uint16_t>(clampParamInt(
+        ctx->getParamInt(request, "rawMax", adc.rawMax), 0, 65535));
+}
+
+// GPIO_ANALOG_INPUT is a legacy AI spelling, but it uses the same ADC
+// parameter union as the dedicated ADC type. Keep it out of the generic GPIO
+// branch so its resolution/filter settings survive API round trips.
+bool isAnalogInputConfigType(PeripheralType type) {
+    return type == PeripheralType::ADC || type == PeripheralType::GPIO_ANALOG_INPUT;
+}
+
+uint8_t normalizeAdcSampleCount(int value, uint8_t fallback) {
+    if (value <= 0) value = fallback > 0 ? fallback : 1;
+    if (value > 16) value = 16;
+    return static_cast<uint8_t>(value);
+}
+
+uint8_t normalizeAdcFilterMode(int value) {
+    return value == 1 ? 1 : 0;
+}
+
 bool isListMemoryCriticallyLow() {
     return FastBee::MemoryBudget::dramFree() < 4096 || FastBee::MemoryBudget::dramLargest() < 1536;
 }
@@ -118,6 +305,20 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         doc["implemented"] = isPeripheralTypeImplemented(config.type);
         addPassiveBuzzerFlag(doc, config);
 
+        if (isAnalogInputPeripheral(config.type)) {
+            JsonObject params = doc["params"].to<JsonObject>();
+            // 列表只带常用字段；详细接口再返回校准参数，控制响应体大小。
+            addAnalogInputParams(params, config, false);
+        } else if (isDigitalInputPeripheral(config.type)) {
+            JsonObject params = doc["params"].to<JsonObject>();
+            addDigitalInputParams(params, config);
+        } else if (config.type == PeripheralType::SENSOR_GENERIC) {
+            JsonObject params = doc["params"].to<JsonObject>();
+            params["sensorType"] = config.params.sensor.sensorType;
+            params["sampleInterval"] = normalizeSensorSampleInterval(
+                static_cast<int>(config.params.sensor.sampleInterval));
+        }
+
         JsonArray pins = doc["pins"].to<JsonArray>();
         for (int i = 0; i < config.pinCount && i < 8; i++) {
             if (config.pins[i] != 255) {
@@ -128,8 +329,10 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         PeripheralRuntimeState runtimeState;
         if (pm.getRuntimeStateSnapshot(periphId, runtimeState)) {
             doc["status"] = static_cast<int>(runtimeState.status);
+            doc["memorySuspended"] = runtimeState.memorySuspended;
         } else {
             doc["status"] = 0;
+            doc["memorySuspended"] = false;
         }
 
         String response;
@@ -253,11 +456,21 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
                 }
             }
 
+            if (isAnalogInputPeripheral(config.type)) {
+                JsonObject params = itemDoc["params"].to<JsonObject>();
+                addAnalogInputParams(params, config, false);
+            } else if (isDigitalInputPeripheral(config.type)) {
+                JsonObject params = itemDoc["params"].to<JsonObject>();
+                addDigitalInputParams(params, config);
+            }
+
             PeripheralRuntimeState runtimeState;
             if (pm.getRuntimeStateSnapshot(config.id, runtimeState)) {
                 itemDoc["status"] = static_cast<int>(runtimeState.status);
+                itemDoc["memorySuspended"] = runtimeState.memorySuspended;
             } else {
                 itemDoc["status"] = 0;
+                itemDoc["memorySuspended"] = false;
             }
         }
 
@@ -282,18 +495,20 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPHERALS);
     const int profileUsed = static_cast<int>(pm.getPeripheralCount());
     const int profileRemaining = std::max(0, profileMax - profileUsed);
+    const bool runtimeDegraded = HandlerUtils::memoryDegradationActive();
 
     String header;
-    header.reserve(180);
+    header.reserve(420);
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
     header += String(effectivePageSize);
-    if (degraded) {
+    if (degraded || runtimeDegraded) {
         header += F(",\"degraded\":true");
     }
+    HandlerUtils::appendMemoryDegradationStatus(header);
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
     header += F("\",\"max\":");
@@ -469,15 +684,17 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["frequency"] = config->params.spi.frequency;
         params["mode"] = config->params.spi.mode;
         params["msbFirst"] = config->params.spi.msbFirst;
-    } else if (config->isGPIOPeripheral()) {
+    } else if (config->isGPIOPeripheral() && !isAnalogInputConfigType(config->type)) {
         params["initialState"] = static_cast<int>(config->params.gpio.initialState);
         params["pwmChannel"] = config->params.gpio.pwmChannel;
         params["pwmFrequency"] = config->params.gpio.pwmFrequency;
         params["pwmResolution"] = config->params.gpio.pwmResolution;
         params["defaultDuty"] = config->params.gpio.defaultDuty;
-    } else if (config->type == PeripheralType::ADC) {
-        params["attenuation"] = config->params.adc.attenuation;
-        params["resolution"] = config->params.adc.resolution;
+        if (isDigitalInputPeripheral(config->type)) {
+            addDigitalInputParams(params, *config);
+        }
+    } else if (isAnalogInputConfigType(config->type)) {
+        addAnalogInputParams(params, *config);
     } else if (config->type == PeripheralType::DAC) {
         params["channel"] = config->params.dac.channel;
         params["defaultValue"] = config->params.dac.defaultValue;
@@ -504,6 +721,10 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["holdMs"] = config->params.radar.holdMs;
     } else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         params["brightness"] = config->params.segment.brightness;
+    } else if (config->type == PeripheralType::SENSOR_GENERIC) {
+        params["sensorType"] = config->params.sensor.sensorType;
+        params["sampleInterval"] = normalizeSensorSampleInterval(
+            static_cast<int>(config->params.sensor.sampleInterval));
     }
 
     PeripheralRuntimeState runtimeSnapshot;
@@ -515,6 +736,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         status["initTime"] = runtimeState->initTime;
         status["lastActivity"] = runtimeState->lastActivity;
         status["errorCount"] = runtimeState->errorCount;
+        status["memorySuspended"] = runtimeState->memorySuspended;
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -558,16 +780,19 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.spi.frequency = ctx->getParamInt(request, "frequency", 1000000);
         config.params.spi.mode = ctx->getParamInt(request, "mode", 0);
         config.params.spi.msbFirst = ctx->getParamBool(request, "msbFirst", true);
-    } else if (config.isGPIOPeripheral()) {
+    } else if (config.isGPIOPeripheral() && !isAnalogInputConfigType(config.type)) {
         config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", 0));
         config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", 0);
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", 1000);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", 8);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", 0);
         config.params.gpio.passive = ctx->getParamBool(request, "passive", false);
-    } else if (config.type == PeripheralType::ADC) {
-        config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", 0);
-        config.params.adc.resolution = ctx->getParamInt(request, "resolution", 12);
+        if (isDigitalInputPeripheral(config.type)) {
+            applyDigitalInputParams(ctx, request, config);
+        }
+    } else if (isAnalogInputConfigType(config.type)) {
+        initializeAdcDefaults(config);
+        applyAnalogInputParams(ctx, request, config);
     } else if (config.type == PeripheralType::DAC) {
         config.params.dac.channel = ctx->getParamInt(request, "channel", 1);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", 0);
@@ -620,6 +845,13 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.radar.activeHigh = ctx->getParamBool(request, "activeHigh", true);
         config.params.radar.debounceMs = (uint16_t)debounceMs;
         config.params.radar.holdMs = (uint16_t)holdMs;
+    } else if (config.type == PeripheralType::SENSOR_GENERIC) {
+        int sensorType = ctx->getParamInt(request, "sensorType", 0);
+        if (sensorType < 0) sensorType = 0;
+        if (sensorType > 255) sensorType = 255;
+        config.params.sensor.sensorType = (uint8_t)sensorType;
+        config.params.sensor.sampleInterval = normalizeSensorSampleInterval(
+            ctx->getParamInt(request, "sampleInterval", SENSOR_DEFAULT_SAMPLE_INTERVAL_MS));
     }
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         int b = ctx->getParamInt(request, "brightness", 2);
@@ -673,6 +905,9 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         if (newType != config.type) {
             config.type = newType;
             memset(&config.params, 0, sizeof(config.params));
+            if (isAnalogInputConfigType(config.type)) {
+                initializeAdcDefaults(config);
+            }
         }
     }
 
@@ -706,16 +941,23 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.spi.frequency = ctx->getParamInt(request, "frequency", config.params.spi.frequency);
         config.params.spi.mode = ctx->getParamInt(request, "mode", config.params.spi.mode);
         config.params.spi.msbFirst = ctx->getParamBool(request, "msbFirst", config.params.spi.msbFirst);
-    } else if (config.isGPIOPeripheral()) {
+    } else if (config.isGPIOPeripheral() && !isAnalogInputConfigType(config.type)) {
         config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", static_cast<int>(config.params.gpio.initialState)));
         config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", config.params.gpio.pwmChannel);
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", config.params.gpio.pwmResolution);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", config.params.gpio.defaultDuty);
         config.params.gpio.passive = ctx->getParamBool(request, "passive", config.params.gpio.passive);
-    } else if (config.type == PeripheralType::ADC) {
-        config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", config.params.adc.attenuation);
-        config.params.adc.resolution = ctx->getParamInt(request, "resolution", config.params.adc.resolution);
+        if (isDigitalInputPeripheral(config.type)) {
+            applyDigitalInputParams(ctx, request, config);
+        }
+    } else if (isAnalogInputConfigType(config.type)) {
+        if (config.params.adc.resolution < 9 || config.params.adc.resolution > 12) {
+            initializeAdcDefaults(config);
+        } else if (config.params.adc.engineeringMax == 0.0f) {
+            config.params.adc.engineeringMax = 100.0f;
+        }
+        applyAnalogInputParams(ctx, request, config);
     } else if (config.type == PeripheralType::DAC) {
         config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", config.params.dac.defaultValue);
@@ -768,6 +1010,16 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.radar.activeHigh = ctx->getParamBool(request, "activeHigh", config.params.radar.activeHigh);
         config.params.radar.debounceMs = (uint16_t)debounceMs;
         config.params.radar.holdMs = (uint16_t)holdMs;
+    } else if (config.type == PeripheralType::SENSOR_GENERIC) {
+        int sensorType = ctx->getParamInt(request, "sensorType", config.params.sensor.sensorType);
+        if (sensorType < 0) sensorType = 0;
+        if (sensorType > 255) sensorType = 255;
+        config.params.sensor.sensorType = (uint8_t)sensorType;
+        config.params.sensor.sampleInterval = normalizeSensorSampleInterval(
+            ctx->getParamInt(request, "sampleInterval",
+                             config.params.sensor.sampleInterval ?
+                                 static_cast<int>(config.params.sensor.sampleInterval) :
+                                 (int)SENSOR_DEFAULT_SAMPLE_INTERVAL_MS));
     }
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         int b = ctx->getParamInt(request, "brightness", config.params.segment.brightness);
@@ -883,6 +1135,7 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
     data["id"] = id;
     data["enabled"] = config.enabled;
     data["status"] = hasRuntimeState ? static_cast<int>(runtimeState.status) : 0;
+    data["memorySuspended"] = hasRuntimeState && runtimeState.memorySuspended;
 
     if (hasRuntimeState) {
         data["initTime"] = runtimeState.initTime;
@@ -920,14 +1173,31 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
     data["type"] = static_cast<int>(config.type);
     data["typeName"] = getPeripheralTypeName(config.type);
 
-    if (config.isGPIOPeripheral()) {
+    if (isAnalogInputConfigType(config.type)) {
+        // AI 读取同时返回原始 ADC 计数和工程量，便于调试接线/量程；
+        // conversionEnabled 关闭时 value 与 rawValue 保持一致，兼容旧客户端。
+        const uint16_t rawValue = pm.readAnalog(id);
+        data["rawValue"] = rawValue;
+        data["conversionEnabled"] = config.params.adc.conversionEnabled;
+        data["signalMode"] = config.params.adc.signalMode;
+        // Reuse the same ADC sample for rawValue and engineering conversion;
+        // taking a second sample can make the two values disagree and doubles
+        // the cost of filtered reads (up to 16 analogRead calls).
+        AnalogInputQuality quality = AnalogInputQuality::INVALID_CONFIG;
+        const float converted = pm.convertAnalogRawValue(id, rawValue, &quality);
+        data["quality"] = analogInputQualityName(quality);
+        data["qualityCode"] = static_cast<uint8_t>(quality);
+        if (isnan(converted) || isinf(converted)) {
+            data["value"] = nullptr;
+            data["valueValid"] = false;
+        } else {
+            data["value"] = converted;
+            data["valueValid"] = true;
+        }
+    } else if (config.isGPIOPeripheral()) {
         GPIOState state = pm.readPin(id);
         data["state"] = static_cast<int>(state);
         data["stateName"] = (state == GPIOState::STATE_HIGH) ? "HIGH" : (state == GPIOState::STATE_LOW) ? "LOW" : "UNDEFINED";
-
-        if (config.type == PeripheralType::GPIO_ANALOG_INPUT || config.type == PeripheralType::ADC) {
-            data["value"] = pm.readAnalog(id);
-        }
     } else if (config.isCommunicationPeripheral()) {
         uint8_t buffer[128];
         size_t len = sizeof(buffer);

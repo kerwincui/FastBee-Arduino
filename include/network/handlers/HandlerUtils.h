@@ -83,6 +83,112 @@ inline const char* memoryGuardLevelName(MemoryGuardLevel level) {
     }
 }
 
+// 将运行期内存降级动作以稳定的小对象暴露给 Web/API。该对象只包含
+// 固定字段和少量静态字符串，不会修改用户配置，也不会触发额外服务初始化。
+inline void addMemoryDegradationStatus(JsonObject parent) {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (!monitor) return;
+    JsonObject status = parent["memoryDegradation"].to<JsonObject>();
+    monitor->fillDegradationJson(status);
+
+    // Keep the compact fields available to callers that only inspect the
+    // normal memory object (for example the request governor).  The detailed
+    // memoryDegradation object remains the canonical diagnostic payload.
+    JsonObject memory = parent["memory"].to<JsonObject>();
+    memory["guardLevel"] = memoryGuardLevelName(monitor->getMemoryGuardLevel());
+    memory["degraded"] = monitor->isMemoryDegraded();
+    memory["periphExecPaused"] = monitor->isPeriphExecPausedForMemory();
+    memory["periphExecWorkerSuspended"] =
+        monitor->arePeriphExecWorkersSuspendedForMemory();
+    memory["periphExecWorkerSuspensionPending"] =
+        monitor->isPeriphExecWorkerSuspensionPending();
+    memory["modbusStopped"] = monitor->isModbusStoppedForMemory();
+    memory["mqttRestorePending"] = monitor->isMqttRestorePendingForMemory();
+    memory["optionalPeripheralsSuspended"] =
+        monitor->areOptionalPeripheralsSuspendedForMemory();
+    memory["optionalPeripheralCount"] = monitor->getMemorySuspendedPeripheralCount();
+    parent["degraded"] = monitor->isMemoryDegraded();
+}
+
+// ArduinoJson does not implicitly convert a root JsonDocument to JsonObject;
+// keep the document call sites allocation-neutral while sharing the same
+// payload implementation above.
+inline void addMemoryDegradationStatus(JsonDocument& parent) {
+    addMemoryDegradationStatus(parent.as<JsonObject>());
+}
+
+inline bool memoryDegradationActive() {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    return monitor && monitor->isMemoryDegraded();
+}
+
+inline const char* currentMemoryGuardLevelName() {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    return monitor ? memoryGuardLevelName(monitor->getMemoryGuardLevel()) : "NORMAL";
+}
+
+// Chunked list handlers build their response header without a JsonDocument.
+// Append the small, stable degradation payload directly so low-memory paths
+// expose the same state without allocating a second document.
+inline void appendMemoryDegradationStatus(String& out) {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (!monitor) return;
+
+    const bool active = monitor->isMemoryDegraded();
+    const bool modbusStopped = monitor->isModbusStoppedForMemory();
+    const bool mqttRestorePending = monitor->isMqttRestorePendingForMemory();
+    const bool periphExecPaused = monitor->isPeriphExecPausedForMemory();
+    const bool periphExecWorkerSuspended =
+        monitor->arePeriphExecWorkersSuspendedForMemory();
+    const bool periphExecWorkerSuspensionPending =
+        monitor->isPeriphExecWorkerSuspensionPending();
+    const bool optionalSuspended = monitor->areOptionalPeripheralsSuspendedForMemory();
+    const uint16_t optionalCount = monitor->getMemorySuspendedPeripheralCount();
+    const char* level = memoryGuardLevelName(monitor->getMemoryGuardLevel());
+
+    out += F(",\"memory\":{\"guardLevel\":\"");
+    out += level;
+    out += F("\",\"degraded\":");
+    out += active ? F("true") : F("false");
+    out += F(",\"modbusStopped\":");
+    out += modbusStopped ? F("true") : F("false");
+    out += F(",\"mqttRestorePending\":");
+    out += mqttRestorePending ? F("true") : F("false");
+    out += F(",\"periphExecPaused\":");
+    out += periphExecPaused ? F("true") : F("false");
+    out += F(",\"periphExecWorkerSuspended\":");
+    out += periphExecWorkerSuspended ? F("true") : F("false");
+    out += F(",\"periphExecWorkerSuspensionPending\":");
+    out += periphExecWorkerSuspensionPending ? F("true") : F("false");
+    out += F(",\"optionalPeripheralsSuspended\":");
+    out += optionalSuspended ? F("true") : F("false");
+    out += F(",\"optionalPeripheralCount\":");
+    out += String(optionalCount);
+    out += F("},\"memoryDegradation\":{\"active\":");
+    out += active ? F("true") : F("false");
+    out += F(",\"runtimeOnly\":true,\"level\":\"");
+    out += level;
+    out += F("\",\"modbusStopped\":");
+    out += modbusStopped ? F("true") : F("false");
+    out += F(",\"mqttRestorePending\":");
+    out += mqttRestorePending ? F("true") : F("false");
+    out += F(",\"periphExecPaused\":");
+    out += periphExecPaused ? F("true") : F("false");
+    out += F(",\"periphExecWorkerSuspended\":");
+    out += periphExecWorkerSuspended ? F("true") : F("false");
+    out += F(",\"periphExecWorkerSuspensionPending\":");
+    out += periphExecWorkerSuspensionPending ? F("true") : F("false");
+    out += F(",\"optionalPeripheralsSuspended\":");
+    out += optionalSuspended ? F("true") : F("false");
+    out += F(",\"optionalPeripheralCount\":");
+    out += String(optionalCount);
+    out += F("}");
+}
+
 inline bool internalHeapCriticallyLow(uint32_t freeHeap = ESP.getFreeHeap(),
                                       uint32_t maxAlloc = ESP.getMaxAllocHeap()) {
     return freeHeap < 2048 || maxAlloc < 1024;

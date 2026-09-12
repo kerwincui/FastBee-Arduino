@@ -42,6 +42,13 @@ interface FeatureStatus {
   };
 }
 
+const OPTIONAL_FEATURE_MENUS: Record<string, string> = {
+  ruleScript: 'rule-script',
+  deviceControl: 'device-control',
+  logViewer: 'logs',
+  userAdmin: 'users',
+};
+
 /** 通过 API 获取功能状态（带 session cookie，行为断言的数据基准） */
 async function fetchFeatureStatus(page: Page): Promise<FeatureStatus> {
   return page.evaluate(async () => {
@@ -107,7 +114,8 @@ test.describe('Suite-22: 功能配置页', () => {
     test.skip(!(await hasMenuPage(authPage, 'features')), '设备不支持功能配置页面');
     await navigateTo('features');
     // 强制重新拉取最新状态，避免上一个测试的本地未保存修改残留
-    await authPage.waitForSelector('#features-refresh-btn', { state: 'attached', timeout: 15_000 });
+    await authPage.waitForSelector('#features-page', { state: 'visible', timeout: 15_000 });
+    await authPage.waitForSelector('#features-refresh-btn', { state: 'visible', timeout: 15_000 });
     await authPage.click('#features-refresh-btn');
     await authPage.waitForSelector('#features-list [data-feature-key]', { state: 'attached', timeout: 15_000 });
   });
@@ -274,9 +282,35 @@ test.describe('Suite-22: 功能配置页', () => {
     }
   });
 
+  test('FCFG-012: 可选菜单可见性与 active 状态一致 @quick', async ({ authPage }) => {
+    const status = await fetchFeatureStatus(authPage);
+    const byKey = new Map(status.features.map(feature => [feature.key, feature]));
+    const expected = Object.fromEntries(Object.entries(OPTIONAL_FEATURE_MENUS).map(([key, page]) => {
+      const feature = byKey.get(key);
+      return [page, feature?.compiled !== false && feature?.active === true];
+    }));
+
+    await expect.poll(async () => authPage.evaluate((pages) => {
+      return Object.fromEntries(pages.map((pageName) => {
+        const item = document.querySelector(`.menu-item[data-page="${pageName}"]`) as HTMLElement | null;
+        return [pageName, Boolean(item)
+          && getComputedStyle(item).display !== 'none'
+          && item.getAttribute('aria-hidden') !== 'true'];
+      }));
+    }, Object.values(OPTIONAL_FEATURE_MENUS)), {
+      message: '侧边栏可选菜单必须仅在对应功能 compiled 且 active 时显示',
+      timeout: 15_000,
+    }).toEqual(expected);
+
+    const deviceMenu = authPage.locator('.menu-item[data-page="device"]');
+    await expect(deviceMenu).toHaveAttribute('aria-hidden', 'false');
+    await expect(deviceMenu).not.toHaveCSS('display', 'none');
+  });
+
   // ========== 端到端：保存并重启往返 ==========
 
-  test('FCFG-011: 保存并重启生效 — mdns 开关往返', async ({ authPage }) => {
+  test('FCFG-011: 保存并重启生效 — mdns 开关往返', async ({ authPage }, testInfo) => {
+    test.skip(testInfo.project.name === 'smoke', 'smoke 项目不修改设备配置或触发重启');
     test.setTimeout(300_000); // 两次重启周期
     const baseURL = `http://${env.deviceIp}`;
 

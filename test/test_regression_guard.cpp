@@ -1913,12 +1913,13 @@ static void test_regression_mqtt_disabled_shows_offline() {
     TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
         "_updateMqttStatusUI not found");
 
-    std::string updateBlock = mqtt.substr(updatePos, 8000);
+    // Locate the concrete status branch instead of using a fixed byte window;
+    // the auto-reconnect diagnostics above it may legitimately grow over time.
     // !d.enabled 分支必须在 d.connected badge 条件之前，确保禁用时不显示“已连接”
     // 注意：使用 "else if (d.connected)" 而非 "d.connected"，避免匹配自动重连逻辑中的 "!d.connected"
-    size_t disabledPos = updateBlock.find("!d.enabled");
-    size_t connectedPos = updateBlock.find("else if (d.connected)");
-    size_t initPos = updateBlock.find("!d.initialized");
+    size_t disabledPos = mqtt.find("else if (!d.enabled)", updatePos);
+    size_t connectedPos = mqtt.find("else if (d.connected)", updatePos);
+    size_t initPos = mqtt.find("else if (!d.initialized)", updatePos);
     TEST_ASSERT_TRUE_MESSAGE(disabledPos != std::string::npos,
         "!d.enabled check must exist in _updateMqttStatusUI");
     TEST_ASSERT_TRUE_MESSAGE(connectedPos != std::string::npos,
@@ -1929,27 +1930,55 @@ static void test_regression_mqtt_disabled_shows_offline() {
         "!d.initialized check must exist");
     TestLog::step("mqtt-config.js: !d.enabled before d.connected in condition chain");
 
-    // 3. refreshMqttStatus 必须在 MQTT 禁用时跳过 API 调用
+    // 3. MQTT 禁用时停止轮询，但仍查询一次后端状态以展示内存降级原因
     size_t refreshPos = mqtt.find("refreshMqttStatus()");
     TEST_ASSERT_TRUE_MESSAGE(refreshPos != std::string::npos,
         "refreshMqttStatus not found");
-    std::string refreshBlock = mqtt.substr(refreshPos, 2000);
+    size_t refreshEnd = mqtt.find("mqttNtpSync()", refreshPos);
+    TEST_ASSERT_TRUE_MESSAGE(refreshEnd != std::string::npos,
+        "refreshMqttStatus end marker not found");
+    std::string refreshBlock = mqtt.substr(refreshPos, refreshEnd - refreshPos);
     TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("mqtt-enabled") != std::string::npos,
         "refreshMqttStatus must check mqtt-enabled checkbox before API call");
     TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_stopMqttStatusPolling") != std::string::npos,
         "refreshMqttStatus must stop polling when MQTT is disabled");
     TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("mqtt-status-offline") != std::string::npos,
         "refreshMqttStatus must set badge to offline when disabled");
-    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_loadMqttStatus") == std::string::npos ||
-        refreshBlock.find("return") < refreshBlock.find("_loadMqttStatus"),
-        "refreshMqttStatus must return early (before _loadMqttStatus) when disabled");
-    TestLog::step("mqtt-config.js: refreshMqttStatus skips API call + sets offline badge when disabled");
+    size_t disabledRefreshPos = refreshBlock.find("if (enabledCheckbox && !enabledCheckbox.checked)");
+    TEST_ASSERT_TRUE_MESSAGE(disabledRefreshPos != std::string::npos,
+        "refreshMqttStatus disabled branch not found");
+    size_t disabledOpen = refreshBlock.find('{', disabledRefreshPos);
+    size_t disabledClose = std::string::npos;
+    int braceDepth = 0;
+    for (size_t i = disabledOpen; disabledOpen != std::string::npos && i < refreshBlock.size(); ++i) {
+        if (refreshBlock[i] == '{') {
+            ++braceDepth;
+        } else if (refreshBlock[i] == '}' && --braceDepth == 0) {
+            disabledClose = i;
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(disabledOpen != std::string::npos &&
+                             disabledClose != std::string::npos,
+        "refreshMqttStatus disabled branch must have a balanced body");
+    std::string disabledRefreshBlock = refreshBlock.substr(
+        disabledOpen, disabledClose - disabledOpen + 1);
+    TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("_loadMqttStatus") != std::string::npos,
+        "Disabled refresh must query backend status once to expose memory-protection diagnostics");
+    TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("_startMqttStatusPolling") == std::string::npos,
+        "Disabled refresh must not start periodic MQTT status polling");
+    TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("return;") != std::string::npos,
+        "Disabled refresh must return before entering the enabled polling path");
+    TestLog::step("mqtt-config.js: disabled refresh performs one status query without polling");
 
     // 4. saveProtocolConfig 保存后必须根据 enabled 状态决定是否轮询
-    size_t savePos = config.find("saveProtocolConfig");
+    size_t savePos = config.find("saveProtocolConfig(formId)");
     TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
         "saveProtocolConfig not found");
-    std::string saveBlock = config.substr(savePos, 8000);
+    size_t saveEnd = config.find("_getMasterRiskMeta(", savePos);
+    TEST_ASSERT_TRUE_MESSAGE(saveEnd != std::string::npos,
+        "saveProtocolConfig end marker not found");
+    std::string saveBlock = config.substr(savePos, saveEnd - savePos);
     TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqtt-enabled") != std::string::npos,
         "saveProtocolConfig must check mqtt-enabled before starting polling");
     // 禁用分支必须调用 _stopMqttStatusPolling 并设置 badge
@@ -1979,7 +2008,10 @@ static void test_regression_mqtt_disabled_stops_backend_client() {
         "handleGetMqttStatus function definition not found");
 
     // 在 handleGetMqttStatus 函数体内查找关键逻辑
-    std::string statusBlock = handler.substr(statusPos, 4000);
+    size_t statusEnd = handler.find("\nvoid MqttRouteHandler::", statusPos + 10);
+    std::string statusBlock = handler.substr(
+        statusPos,
+        statusEnd == std::string::npos ? std::string::npos : statusEnd - statusPos);
     TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("stopMQTT") != std::string::npos,
         "handleGetMqttStatus must call stopMQTT when config says disabled");
     TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("!mqttConfigEnabled") != std::string::npos,
@@ -2015,12 +2047,15 @@ static void test_regression_mqtt_disabled_stops_backend_client() {
     std::string proto = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
     TEST_ASSERT_FALSE_MESSAGE(proto.empty(), "Cannot read ProtocolRouteHandler.cpp");
 
-    // 查找函数定义（不是 lambda 调用）
-    size_t saveMqttPos = proto.find("ProtocolRouteHandler::handleSaveProtocolConfig");
+    // 精确查找函数定义，避免命中 setupRoutes 中的成员函数引用。
+    size_t saveMqttPos = proto.find("void ProtocolRouteHandler::handleSaveProtocolConfig");
     TEST_ASSERT_TRUE_MESSAGE(saveMqttPos != std::string::npos,
         "handleSaveProtocolConfig function definition not found");
 
-    std::string saveBlock = proto.substr(saveMqttPos, 20000);
+    size_t saveMqttEnd = proto.find("\nvoid ProtocolRouteHandler::", saveMqttPos + 10);
+    std::string saveBlock = proto.substr(
+        saveMqttPos,
+        saveMqttEnd == std::string::npos ? std::string::npos : saveMqttEnd - saveMqttPos);
     // 必须在 mqttWillReboot 前检查 mqttEnabledNow 并调用 stopMQTT
     TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqttEnabledNow") != std::string::npos,
         "handleSaveProtocolConfig must read mqtt enabled state after save");
@@ -2149,6 +2184,148 @@ static void test_regression_mqtt_disabled_rejects_reconnect() {
 }
 
 /**
+ * @brief Modbus 延迟恢复不得被通用重型协议堆闸门永久跳过
+ */
+static void test_regression_modbus_deferred_restart_before_heap_guard() {
+    TestLog::testStart("Regression: Modbus Deferred Restart Before Heap Guard");
+    std::string pm = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(pm.empty(), "Cannot read ProtocolManager.cpp");
+
+    const auto handlePos = pm.find("void ProtocolManager::handle()");
+    TEST_ASSERT_TRUE_MESSAGE(handlePos != std::string::npos,
+                             "ProtocolManager::handle() not found");
+    const auto handleEnd = pm.find("void ProtocolManager::handleMessage", handlePos);
+    const std::string handleBlock = pm.substr(
+        handlePos, handleEnd == std::string::npos ? std::string::npos : handleEnd - handlePos);
+    const auto pendingPos = handleBlock.find("if (modbusRestartPending)");
+    const auto heapGuardPos = handleBlock.find("if (!heapSufficient)");
+    TEST_ASSERT_TRUE_MESSAGE(pendingPos != std::string::npos,
+                             "handle() must consume Modbus deferred restart");
+    TEST_ASSERT_TRUE_MESSAGE(heapGuardPos != std::string::npos,
+                             "handle() must retain the general heap guard");
+    TEST_ASSERT_TRUE_MESSAGE(pendingPos < heapGuardPos,
+                             "Modbus deferred restart must be considered before general heap early return");
+    TEST_ASSERT_TRUE_MESSAGE(handleBlock.find("MODBUS_RESTART_MIN_DRAM") != std::string::npos,
+                             "Modbus deferred restart must use a dedicated DRAM admission gate");
+    TEST_ASSERT_TRUE_MESSAGE(handleBlock.find("MODBUS_RESTART_MIN_LARGEST") != std::string::npos,
+                             "Modbus deferred restart must check largest contiguous block");
+    TestLog::step("Deferred Modbus restart is consumed before the heavy-protocol early return with DRAM gates");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief Modbus 默认禁用模板是显式空闲状态，不得作为启动失败循环告警
+ */
+static void test_regression_modbus_restart_distinguishes_intentional_idle() {
+    TestLog::testStart("Regression: Modbus Restart Distinguishes Intentional Idle");
+
+    const std::string header = readRegressionSrcFile("include/protocols/ProtocolManager.h");
+    const std::string manager = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    const std::string framework = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    const std::string health = readRegressionSrcFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "Cannot read ProtocolManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "Cannot read ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(framework.empty(), "Cannot read FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(health.empty(), "Cannot read HealthMonitor.cpp");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("enum class ModbusRestartResult") != std::string::npos &&
+        header.find("Started") != std::string::npos &&
+        header.find("IdleNoEnabledTargets") != std::string::npos &&
+        header.find("Failed") != std::string::npos,
+        "Modbus restart must expose started, intentional-idle, and failed outcomes");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("ModbusRestartResult restartModbus()") != std::string::npos &&
+        manager.find("ModbusRestartResult ProtocolManager::restartModbus()") != std::string::npos,
+        "restartModbus must return the explicit result type end-to-end");
+
+    const auto restartPos = manager.find("ModbusRestartResult ProtocolManager::restartModbus()");
+    const auto restartEnd = manager.find("void ProtocolManager::stopModbus()", restartPos);
+    TEST_ASSERT_TRUE_MESSAGE(restartPos != std::string::npos && restartEnd != std::string::npos,
+                             "restartModbus implementation block must be discoverable");
+    const std::string restartBlock = manager.substr(restartPos, restartEnd - restartPos);
+    const auto noTargetsPos = restartBlock.find("!hasEnabledPollTask && !hasEnabledSubDevice");
+    const auto idleReturnPos = restartBlock.find("ModbusRestartResult::IdleNoEnabledTargets");
+    TEST_ASSERT_TRUE_MESSAGE(noTargetsPos != std::string::npos && idleReturnPos != std::string::npos,
+                             "all-disabled master templates must return intentional idle");
+    TEST_ASSERT_TRUE_MESSAGE(noTargetsPos < idleReturnPos,
+                             "intentional idle must be returned from the no-enabled-target branch");
+
+    const auto bootPos = framework.find("[STEP11.2] Starting Modbus handler");
+    const auto bootEnd = framework.find("#endif", bootPos);
+    TEST_ASSERT_TRUE_MESSAGE(bootPos != std::string::npos && bootEnd != std::string::npos,
+                             "boot Modbus restart block must be discoverable");
+    const std::string bootBlock = framework.substr(bootPos, bootEnd - bootPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        bootBlock.find("ModbusRestartResult::IdleNoEnabledTargets") != std::string::npos &&
+        bootBlock.find("transport remains idle") != std::string::npos,
+        "boot must report intentional idle as information rather than failure");
+
+    const auto autoStartPos = framework.find("[Modbus] Modbus enabled, auto-starting");
+    TEST_ASSERT_TRUE_MESSAGE(autoStartPos != std::string::npos,
+                             "network-stable Modbus auto-start block must exist");
+    const std::string autoStartBlock = framework.substr(autoStartPos, 800);
+    TEST_ASSERT_TRUE_MESSAGE(
+        autoStartBlock.find("result == ModbusRestartResult::Failed") != std::string::npos &&
+        autoStartBlock.find("modbusAutoStarted = false") != std::string::npos,
+        "only a real restart failure may schedule network auto-start retry");
+    TEST_ASSERT_TRUE_MESSAGE(
+        autoStartBlock.find("result == ModbusRestartResult::IdleNoEnabledTargets") != std::string::npos,
+        "intentional idle must complete network auto-start without a retry loop");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("consumeModbusRestartResult") != std::string::npos &&
+        manager.find("ProtocolManager::consumeModbusRestartResult") != std::string::npos,
+        "deferred restart result must be observable exactly once by recovery logic");
+    const auto reconcilePos = health.find("void HealthMonitor::reconcilePendingMemoryRecovery()");
+    const auto reconcileEnd = health.find("void HealthMonitor::restoreMemoryRecovery()", reconcilePos);
+    TEST_ASSERT_TRUE_MESSAGE(reconcilePos != std::string::npos && reconcileEnd != std::string::npos,
+                             "memory recovery reconciliation block must be discoverable");
+    const std::string reconcileBlock = health.substr(reconcilePos, reconcileEnd - reconcilePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        reconcileBlock.find("consumeModbusRestartResult") != std::string::npos &&
+        reconcileBlock.find("restartResult == ModbusRestartResult::IdleNoEnabledTargets") != std::string::npos &&
+        reconcileBlock.find("_modbusRestorePendingForMemory = false") != std::string::npos,
+        "intentional idle must close memory-recovery state instead of being requeued forever");
+
+    TestLog::step("disabled templates remain idle while parse/memory/UART failures retain failure semantics");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief F16R8 示例中的未接线 Modbus 模板必须保持默认禁用
+ */
+static void test_regression_s3_f16r8_modbus_templates_remain_disabled() {
+    TestLog::testStart("Regression: S3 F16R8 Modbus Templates Remain Disabled");
+
+    const std::string configText =
+        readRegressionSrcFile("docs/ecm50a-s3-f16r8/protocol.json");
+    TEST_ASSERT_FALSE_MESSAGE(configText.empty(), "Cannot read F16R8 protocol template");
+
+    JsonDocument doc;
+    const DeserializationError err = deserializeJson(doc, configText);
+    TEST_ASSERT_FALSE_MESSAGE(err, "F16R8 protocol template must be valid JSON");
+    TEST_ASSERT_TRUE_MESSAGE(doc["modbusRtu"]["enabled"].as<bool>(),
+                             "F16R8 must expose the configured Modbus feature");
+
+    const JsonArrayConst tasks = doc["modbusRtu"]["master"]["tasks"].as<JsonArrayConst>();
+    const JsonArrayConst devices = doc["modbusRtu"]["master"]["devices"].as<JsonArrayConst>();
+    TEST_ASSERT_GREATER_THAN_MESSAGE(0, tasks.size(), "F16R8 must ship sensor polling templates");
+    TEST_ASSERT_GREATER_THAN_MESSAGE(0, devices.size(), "F16R8 must ship sub-device templates");
+    for (JsonObjectConst task : tasks) {
+        TEST_ASSERT_FALSE_MESSAGE(task["enabled"] | true,
+                                  "unverified polling templates must remain disabled");
+    }
+    for (JsonObjectConst device : devices) {
+        TEST_ASSERT_FALSE_MESSAGE(device["enabled"] | true,
+                                  "unverified sub-device templates must remain disabled");
+    }
+
+    TestLog::step("all F16R8 sensor and relay templates remain opt-in until physical wiring is verified");
+    TestLog::testEnd(true);
+}
+
+/**
  * @brief MQTT 摘要字段默认值必须为 JSON 格式
  * 回归：旧代码 mqtt.summary 默认为空字符串，应为有效 JSON 示例
  */
@@ -2238,7 +2415,10 @@ static void test_regression_mdns_async_restart() {
     size_t updatePos = cpp.find("bool FBNetworkManager::updateConfig");
     TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
         "updateConfig not found");
-    std::string updateBlock = cpp.substr(updatePos, 4000);
+    size_t updateEnd = cpp.find("bool FBNetworkManager::updateConfigFromJSON", updatePos);
+    TEST_ASSERT_TRUE_MESSAGE(updateEnd != std::string::npos,
+        "updateConfigFromJSON boundary not found");
+    std::string updateBlock = cpp.substr(updatePos, updateEnd - updatePos);
 
     TEST_ASSERT_TRUE_MESSAGE(updateBlock.find("pendingMDNSRestart = true") != std::string::npos,
         "updateConfig must set pendingMDNSRestart flag for async restart");
@@ -2325,65 +2505,57 @@ void test_regression_src_filter_excludes_unused_adapters() {
 }
 
 /**
- * @brief 非 Cellular 环境（esp32-F4R0 / esp32s3-F8R0）的 lib_deps 不应包含 TinyGSM/SSLClient
+ * @brief 网络适配器的编译宏、源过滤和依赖必须保持同一矩阵。
  *
- * 标准版环境 FASTBEE_ENABLE_CELLULAR=0，不需要 4G 模块和软件 TLS 库，
- * 移除这些依赖可避免 LDF 扫描浪费时间并减少编译依赖。
- * ESP32 标准版 MQTTS 使用内置 WiFiClientSecure（NetworkClientSecure），不依赖 SSLClient。
+ * C3/C6 和经典 4MB ESP32 不编译 4G/以太网，避免 TinyGSM/SSLClient 及
+ * 适配器对象进入低内存镜像；有足够 Flash/PSRAM 的 8MB/16MB 环境保留。
  */
 void test_regression_non_cellular_envs_no_tinygsm_sslclient() {
-    TestLog::testStart("Regression: unified envs share cellular dependencies");
+    TestLog::testStart("Regression: adapter compile matrix matches dependencies");
 
     std::string pio = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
 
-    // Unified firmware compiles the cellular adapter once and gates it at
-    // runtime, so every firmware environment keeps the shared dependencies.
-    auto flagsPos = pio.find("[unified_flags]");
-    TEST_ASSERT_TRUE_MESSAGE(flagsPos != std::string::npos, "unified_flags section must exist");
-    auto flagsEnd = pio.find("\n[", flagsPos + 1);
-    std::string unified = pio.substr(flagsPos, flagsEnd - flagsPos);
-    TEST_ASSERT_TRUE_MESSAGE(unified.find("-DFASTBEE_ENABLE_CELLULAR=1") != std::string::npos,
-        "unified firmware must compile cellular adapter for runtime feature gating");
+    struct AdapterProfile { const char* env; bool enabled; };
+    const AdapterProfile profiles[] = {
+        { "[env:esp32-F4R0]", false },
+        { "[env:esp32-F8R0]", true },
+        { "[env:esp32-F8R8]", true },
+        { "[env:esp32c3-F4R0]", false },
+        { "[env:esp32c6-F4R0]", false },
+        { "[env:esp32c6-F8R0]", false },
+        { "[env:esp32s3-F8R0]", true },
+        { "[env:esp32s3-F8R8]", true },
+        { "[env:esp32s3-F16R8]", true }
+    };
 
-    // esp32-F4R0 retains the shared TinyGSM/SSLClient declarations.
-    auto f4r0Pos = pio.find("[env:esp32-F4R0]");
-    TEST_ASSERT_TRUE_MESSAGE(f4r0Pos != std::string::npos,
-        "platformio.ini must have [env:esp32-F4R0]");
-    auto f4r0End = pio.find("[env:", f4r0Pos + 1);
-    std::string f4r0Section = pio.substr(f4r0Pos, f4r0End - f4r0Pos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        f4r0Section.find("TinyGSM") != std::string::npos,
-        "esp32-F4R0 must retain TinyGSM in unified lib_deps");
-    TEST_ASSERT_TRUE_MESSAGE(
-        f4r0Section.find("SSLClient") != std::string::npos,
-        "esp32-F4R0 must retain SSLClient in unified lib_deps");
-    TestLog::step("esp32-F4R0 retains shared cellular dependencies");
+    for (const AdapterProfile& profile : profiles) {
+        const size_t start = pio.find(profile.env);
+        TEST_ASSERT_TRUE_MESSAGE(start != std::string::npos,
+            (std::string("missing ") + profile.env).c_str());
+        const size_t end = pio.find("[env:", start + 1);
+        const std::string section = pio.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        const std::string expected = profile.enabled ? "=1" : "=0";
+        TEST_ASSERT_TRUE_MESSAGE(
+            section.find("-DFASTBEE_ENABLE_ETHERNET" + expected) != std::string::npos &&
+            section.find("-DFASTBEE_ENABLE_CELLULAR" + expected) != std::string::npos,
+            (std::string(profile.env) + " has incorrect adapter macro values").c_str());
 
-    // esp32s3-F8R0 (standard+OTA, CELLULAR=0) 不应有 TinyGSM
-    auto s3f8r0Pos = pio.find("[env:esp32s3-F8R0]");
-    TEST_ASSERT_TRUE_MESSAGE(s3f8r0Pos != std::string::npos,
-        "platformio.ini must have [env:esp32s3-F8R0]");
-    auto s3f8r0End = pio.find("[env:", s3f8r0Pos + 1);
-    std::string s3f8r0Section = pio.substr(s3f8r0Pos, s3f8r0End - s3f8r0Pos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        s3f8r0Section.find("TinyGSM") != std::string::npos,
-        "esp32s3-F8R0 must retain TinyGSM in unified lib_deps");
-    TestLog::step("esp32s3-F8R0 retains shared cellular dependency");
-
-    // full 环境应保留 TinyGSM + SSLClient (CELLULAR=1)
-    auto f8r8Pos = pio.find("[env:esp32-F8R8]");
-    TEST_ASSERT_TRUE_MESSAGE(f8r8Pos != std::string::npos,
-        "platformio.ini must have [env:esp32-F8R8]");
-    auto f8r8End = pio.find("[env:", f8r8Pos + 1);
-    std::string f8r8Section = pio.substr(f8r8Pos, f8r8End - f8r8Pos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        f8r8Section.find("TinyGSM") != std::string::npos,
-        "esp32-F8R8 (full) must keep TinyGSM in lib_deps");
-    TEST_ASSERT_TRUE_MESSAGE(
-        f8r8Section.find("SSLClient") != std::string::npos,
-        "esp32-F8R8 (full) must keep SSLClient in lib_deps");
-    TestLog::step("esp32-F8R8 (full) retains TinyGSM + SSLClient");
+        if (profile.enabled) {
+            TEST_ASSERT_TRUE_MESSAGE(section.find("TinyGSM") != std::string::npos &&
+                section.find("SSLClient") != std::string::npos,
+                (std::string(profile.env) + " is missing cellular dependencies").c_str());
+            TEST_ASSERT_TRUE_MESSAGE(section.find("-<network/CellularAdapter.cpp>") == std::string::npos &&
+                section.find("-<network/EthernetAdapter.cpp>") == std::string::npos,
+                (std::string(profile.env) + " excludes an enabled adapter source").c_str());
+        } else {
+            TEST_ASSERT_TRUE_MESSAGE(section.find("TinyGSM") == std::string::npos &&
+                section.find("SSLClient") == std::string::npos,
+                (std::string(profile.env) + " must omit cellular dependencies").c_str());
+            TEST_ASSERT_TRUE_MESSAGE(section.find("${lite_src_filter.build_src_filter}") != std::string::npos,
+                (std::string(profile.env) + " must use lite source filter").c_str());
+        }
+    }
 
     TestLog::testEnd(true);
 }
@@ -2847,6 +3019,59 @@ void test_regression_worker_stack_clamp_in_source() {
         src.find("WORKER_STACK = SIMPLE_TASK_STACK;") == std::string::npos,
         "WORKER_STACK must not be directly assigned SIMPLE_TASK_STACK");
     TestLog::step("no direct SIMPLE_TASK_STACK assignment");
+
+    TestLog::testEnd(true);
+}
+
+// C3 无 PSRAM，两个 6144B 常驻 worker 会挤占登录和 Web 静态资源所需的
+// 连续 DRAM；经典 ESP32 已使用单 worker，C6/S3 保留双 worker 并发能力。
+void test_regression_worker_count_matches_chip_memory_profile() {
+    TestLog::testStart("Regression: WorkerPool count follows chip memory profile");
+
+    std::string src = readRegressionSrcFile("include/core/PeriphExecWorkerPool.h");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read PeriphExecWorkerPool.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("(CHIP_IS_CLASSIC_ESP32 || CHIP_IS_ESP32C3) ? 1 : 2") != std::string::npos,
+        "C3/classic must use one worker while C6/S3 retain two workers");
+
+    TestLog::testEnd(true);
+}
+
+// 登录校验会访问 Flash/NVS，因此任务栈必须留在内部 DRAM；门槛需要同时
+// 保护连续栈分配和 Web/lwIP 的总 DRAM 余量。
+void test_regression_login_admission_separates_block_and_total_dram() {
+    TestLog::testStart("Regression: Login admission separates block and total DRAM");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/AuthRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "cannot read AuthRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("LOGIN_TASK_STACK_ALLOCATOR_OVERHEAD_BYTES = 256U") != std::string::npos &&
+        src.find("LOGIN_TASK_MIN_REMAINING_DRAM_BYTES = 12288U") != std::string::npos,
+        "login must define independent allocator and remaining-DRAM reserves");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("largestBlock < requiredBlock || freeDram < requiredFree") != std::string::npos,
+        "login must gate both internal contiguous stack and total free DRAM");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("xTaskCreatePinnedToCoreWithCaps") == std::string::npos &&
+        src.find("vTaskDeleteWithCaps(nullptr)") == std::string::npos,
+        "flash-accessing login task must not use a PSRAM stack");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("LOGIN_TASK_STACK_HEADROOM_BYTES") == std::string::npos,
+        "login must not require general response headroom in the stack block");
+
+    const uint32_t stackBytes = 8192U;
+    const uint32_t requiredBlock = stackBytes + 256U;
+    const uint32_t requiredFree = requiredBlock + 12288U;
+    const auto admitted = [requiredBlock, requiredFree](uint32_t freeDram,
+                                                        uint32_t largestBlock) {
+        return largestBlock >= requiredBlock && freeDram >= requiredFree;
+    };
+    TEST_ASSERT_FALSE_MESSAGE(admitted(24224U, 7668U),
+                              "fragmented internal DRAM must reject login safely");
+    TEST_ASSERT_FALSE_MESSAGE(admitted(requiredFree, requiredBlock - 1U),
+                              "fragmented DRAM must still reject login");
+    TEST_ASSERT_FALSE_MESSAGE(admitted(requiredFree - 1U, requiredBlock),
+                              "low total DRAM must still reject login");
 
     TestLog::testEnd(true);
 }
@@ -3625,19 +3850,24 @@ void test_regression_unified_web_bundles_rule_script() {
  */
 void test_regression_factory_features_are_memory_safe() {
     TestLog::testStart("Source: factory features keep no-PSRAM runtime light");
-    std::string cfg = readRegressionSrcFile("data/config/features.json");
-    TEST_ASSERT_FALSE_MESSAGE(cfg.empty(), "cannot read data/config/features.json");
+    std::string cfg = readRegressionSrcFile("test/fixtures/factory-config/features.json");
+    TEST_ASSERT_FALSE_MESSAGE(cfg.empty(), "cannot read factory features fixture");
+
+    JsonDocument factoryConfig;
+    DeserializationError configError = deserializeJson(factoryConfig, cfg);
+    TEST_ASSERT_TRUE_MESSAGE(!configError, "factory features fixture must be valid JSON");
+    JsonObject features = factoryConfig["features"].as<JsonObject>();
     TEST_ASSERT_TRUE_MESSAGE(
-        cfg.find("\"webServer\": { \"enabled\": true }") != std::string::npos &&
-        cfg.find("\"mdns\": { \"enabled\": true }") != std::string::npos,
+        (features["webServer"]["enabled"] | false) &&
+        (features["mdns"]["enabled"] | false),
         "factory features must keep webServer and mdns enabled");
-    TEST_ASSERT_TRUE_MESSAGE(
-        cfg.find("\"fileLogging\": { \"enabled\": false }") != std::string::npos,
+    TEST_ASSERT_FALSE_MESSAGE(
+        features["fileLogging"]["enabled"] | true,
         "factory features must disable fileLogging by default");
-    const char* heavyKeys[] = {"ruleScript", "ota", "logViewer", "fileManager", "userAdmin"};
+    const char* heavyKeys[] = {"ruleScript", "ota", "logViewer", "userAdmin"};
     for (const char* key : heavyKeys) {
-        TEST_ASSERT_TRUE_MESSAGE(
-            cfg.find(std::string("\"") + key + "\": { \"enabled\": true }") == std::string::npos,
+        TEST_ASSERT_FALSE_MESSAGE(
+            features[key]["enabled"] | true,
             (std::string("factory features must not force-enable ") + key).c_str());
     }
 
@@ -3648,6 +3878,16 @@ void test_regression_factory_features_are_memory_safe() {
     TEST_ASSERT_TRUE_MESSAGE(featureLoad != std::string::npos && loggerSync != std::string::npos &&
                              loggerSync > featureLoad,
         "file logging must be synchronized after runtime feature config is loaded");
+
+    std::string logger = readRegressionSrcFile("src/systems/LoggerSystem.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(logger.empty(), "cannot read LoggerSystem.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("LOGGER_STARTUP_FILE_LOGGING") != std::string::npos &&
+        logger.find("#if FASTBEE_USE_PSRAM") != std::string::npos &&
+        logger.find("LOGGER_STARTUP_FILE_LOGGING = (FASTBEE_ENABLE_FILE_LOGGING != 0)") != std::string::npos &&
+        logger.find("LOGGER_STARTUP_FILE_LOGGING = false") != std::string::npos &&
+        logger.find("fileLoggingEnabled(LOGGER_STARTUP_FILE_LOGGING)") != std::string::npos,
+        "no-PSRAM logger must defer file logging until runtime features are loaded");
 
     std::string status = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
     TEST_ASSERT_FALSE_MESSAGE(status.empty(), "cannot read SystemRouteHandler.cpp");
@@ -3757,6 +3997,9 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_mqtt_disabled_shows_offline);
     RUN_TEST(test_regression_mqtt_disabled_stops_backend_client);
     RUN_TEST(test_regression_mqtt_disabled_rejects_reconnect);
+    RUN_TEST(test_regression_modbus_deferred_restart_before_heap_guard);
+    RUN_TEST(test_regression_modbus_restart_distinguishes_intentional_idle);
+    RUN_TEST(test_regression_s3_f16r8_modbus_templates_remain_disabled);
     RUN_TEST(test_regression_mqtt_summary_default_json);
     RUN_TEST(test_regression_device_layout_security_factory_at_bottom);
     RUN_TEST(test_regression_mdns_async_restart);
@@ -3783,8 +4026,10 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_web_soft_restart_async_state_machine);
     RUN_TEST(test_regression_4g_ethernet_mqtt_reconnect_notification);
 
-    // Bug Fix 回归：Worker 栈 clamp（C3/C6 栈溢出重启）+ 未匹配项回显抑制（假数据污染）
+    // Bug Fix 回归：Worker 内存策略 + 未匹配项回显抑制（假数据污染）
     RUN_TEST(test_regression_worker_stack_clamp_in_source);
+    RUN_TEST(test_regression_worker_count_matches_chip_memory_profile);
+    RUN_TEST(test_regression_login_admission_separates_block_and_total_dram);
     RUN_TEST(test_regression_data_cmd_unmatched_skip_echo_in_source);
 
     // 启动后一次性物模型状态上报：只读采集 + 门控与节流

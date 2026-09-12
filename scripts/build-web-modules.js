@@ -51,6 +51,7 @@ const DIRECT_RUNTIME_MODULES = [
     'ir-remote.js',
     'rf-remote.js',
     'dashboard.js',
+    'dashboard-fullscreen.js',
     'device-config.js',
     'device-ota.js',
     'network.js',
@@ -69,13 +70,11 @@ const LITE_STATIC_SKIP = new Set([
     'pages/rule-script.html'
 ]);
 const PROD_IGNORED_ORPHAN_MODULES = new Set([
-    'files.js',
     'i18n-en.js',
     'i18n-engine.js',
     'i18n-zh-CN.js',
     'logs.js',
     'users.js',
-    'dashboard-fullscreen.js'
 ]);
 const STANDALONE_ROOT_JS = [{ file: 'notification.js', minify: true }];
 const STANDALONE_ROOT_JS_SET = new Set(STANDALONE_ROOT_JS.map((item) => item.file));
@@ -146,21 +145,17 @@ function stripDivByClass(content, className) {
 
 function stripProdOnlyCssRules(content) {
     const dropSelectors = [
-        /^\.fs-/,
         /^\.logs-/,
         /^\.log-content/,
         /^\.log-/,
-        /^\.file-tree-/,
         /^\.ota-/,
         /^\.ota-inline-/,
         /^body\.fullscreen-page/,
         /^\.fullscreen-container/,
         /^\.fullscreen-toolbar/,
         /^@keyframes\s+fs-/,
-        /^\[data-theme="dark"\]\s+\.fs-/,
         /^\[data-theme="dark"\]\s+\.logs-/,
         /^\[data-theme="dark"\]\s+\.log-/,
-        /^\[data-theme="dark"\]\s+\.file-tree-/,
         /^\[data-theme="dark"\]\s+\.ota-/
     ];
 

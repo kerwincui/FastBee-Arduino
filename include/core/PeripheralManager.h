@@ -108,6 +108,12 @@ public:
     // 初始化所有启用的外设
     bool initAllEnabledPeripherals();
 
+    // 内存保护：仅在运行时挂起高占用的可选外设。配置文件中的 enabled
+    // 值不会被写回；恢复到 NORMAL 后会重新初始化这些外设。
+    size_t suspendOptionalForMemory();
+    size_t restoreOptionalAfterMemory();
+    size_t getMemorySuspendedCount() const { return _memorySuspendedCount; }
+
     // 延迟初始化重试：网络就绪后，重新初始化因 requiresNetwork 功能门控
     // 而在启动早期被跳过（标记为 PERIPHERAL_ERROR）的外设。仅针对类型映射到
     // 网络依赖功能的外设，避免误重试真实硬件故障。返回成功重试的数量。
@@ -144,6 +150,13 @@ public:
     GPIOState readPinByCStr(const char* peripheralId);
     bool writePinByCStr(const char* peripheralId, GPIOState state);
     uint16_t readAnalogByCStr(const char* peripheralId);
+    // AI 工程量读取：未启用转换时返回与 readAnalog 相同的原始计数。
+    // 返回 NAN 表示配置非法或输入超出未钳位范围；调用方可据此跳过上报。
+    float readAnalogValue(const String& peripheralId);
+    float readAnalogValueByCStr(const char* peripheralId);
+    // 使用调用方已经取得的同一份 ADC 原始值执行工程量转换，避免重复采样。
+    float convertAnalogRawValue(const String& peripheralId, uint16_t rawValue,
+                                AnalogInputQuality* quality = nullptr);
 
     // 切换GPIO状态
     bool togglePin(uint8_t pin);
@@ -162,6 +175,9 @@ public:
     bool attachInterrupt(const String& peripheralId, GPIOInterruptCallback callback);
     bool detachInterrupt(uint8_t pin);
     bool detachInterrupt(const String& peripheralId);
+    // Consume captured logical GPIO interrupt events. Events are copied from
+    // the ISR into fixed-capacity buffers and therefore do not allocate heap.
+    bool popDigitalInputInterruptEvent(uint8_t& pin, GPIOState& state);
 
     // GPIO查询
     bool isPinConfigured(uint8_t pin) const;
@@ -284,6 +300,7 @@ private:
     // 外设存储（T1：使用静态池 allocator，节点不再碎片化系统堆）
     PeripheralMap   peripherals;
     RuntimeStateMap runtimeStates;
+    size_t _memorySuspendedCount = 0;
     // 引脚到外设ID的映射（T2：高频重建，走 SmallNodePool）
     std::map<uint8_t, String, std::less<uint8_t>,
              FastBee::SmallNodeAllocator<std::pair<const uint8_t, String>>> pinToPeripheral;
@@ -351,6 +368,10 @@ private:
 
     // 中断事件队列
     static constexpr uint8_t ISR_QUEUE_SIZE = 16;
+    struct GpioIsrEvent {
+        uint8_t pin;
+        uint8_t rawLevel;
+    };
     static QueueHandle_t _isrQueue;
     // 队列溢出计数（静态：isrHandler 为静态 ISR 上下文，不能依赖实例指针）
     static volatile uint32_t _isrQueueOverruns;
@@ -359,10 +380,20 @@ private:
     static constexpr uint16_t ISR_DEBOUNCE_MS = 5;
     static constexpr uint8_t ISR_TRACKED_PIN_COUNT = 64;
     unsigned long _lastIsrDispatch[ISR_TRACKED_PIN_COUNT] = {0};
+    bool _hasIsrDispatch[ISR_TRACKED_PIN_COUNT] = {false};
+
+    struct DigitalInputInterruptEvent {
+        uint8_t pin;
+        GPIOState state;
+    };
+    DigitalInputInterruptEvent _digitalInterruptEvents[ISR_QUEUE_SIZE];
+    uint8_t _digitalInterruptHead = 0;
+    uint8_t _digitalInterruptTail = 0;
+    uint8_t _digitalInterruptCount = 0;
 
     // 中断处理
     static void IRAM_ATTR isrHandler(void* arg);
-    void handleInterrupt(uint8_t pin);
+    void handleInterrupt(uint8_t pin, bool rawLevel);
     void processInterruptQueue();
 
     // 检查引脚有效性
@@ -375,6 +406,7 @@ private:
     // ADC 多采样滤波读取（工业噪声抑制）
     // samples: 采样次数 1-16；filterMode: 0=均值, 1=中值
     uint16_t adcFilterRead(uint8_t pin, uint8_t samples, uint8_t filterMode);
+    float convertAnalogRawLocked(const PeripheralConfig& config, uint16_t raw) const;
 
     // C 字符串零分配查找（调用方须已持有 _mutex）：
     // 外设数量小（<32），线性扫描 strcmp 开销远低于 String 构造的堆分配

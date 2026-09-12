@@ -1,4 +1,4 @@
-﻿import { test, expect, env, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
+import { test, expect, env, waitForDevice, hasMenuPage } from '../fixtures/base.fixture';
 
 test.describe('Suite-14: 跨页面集成测试', () => {
 
@@ -169,7 +169,7 @@ test.describe('Suite-14: 跨页面集成测试', () => {
   test('INT-011: 全页面导航不报错', async ({ authPage, navigateTo }) => {
     const allPages = [
       'dashboard', 'device', 'network', 'peripheral', 'periph-exec',
-      'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'
+      'protocol', 'device-control', 'rule-script', 'logs', 'users'
     ];
     // 仅测试设备支持的页面
     const menuPages: string[] = [];
@@ -247,23 +247,23 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     console.log(`状态API: chip=${status.hasChip}, heap=${status.hasHeap}, flash=${status.hasFlash}`);
   });
 
-  test('INT-016: Flash使用率跨页一致', async ({ authPage, navigateTo }) => {
-    // 1. 仪表盘获取 Flash
+  test('INT-016: LittleFS使用率与仪表盘一致', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     await authPage.waitForLoadState('domcontentloaded');
-    const flashDash = await authPage.evaluate(async () => {
-      try {
-                const r = await fetch('/api/system/info');
-        const data = await r.json();
-        return data?.data?.filesystem?.used ?? -1;
-      } catch { return -1; }
-    });
+    await authPage.locator('#monitor-refresh-btn').click();
 
-    // 2. 文件管理页
-    await navigateTo('data');
-    await authPage.waitForLoadState('domcontentloaded');
-    await expect(authPage.locator('#data-page')).toBeVisible();
-    console.log(`Dashboard Flash used: ${flashDash}`);
+    const filesystem = await authPage.evaluate(async () => {
+      try {
+        const r = await fetch('/api/system/info');
+        const data = await r.json();
+        return data?.data?.filesystem ?? null;
+      } catch { return null; }
+    });
+    expect(filesystem).toBeTruthy();
+    await expect(authPage.locator('#monitor-fs-percent')).toHaveText(
+      `${Number(filesystem?.usagePercent) || 0}%`,
+      { timeout: 10_000 },
+    );
   });
 
   // ========== 端到端冒烟测试 ==========
@@ -333,15 +333,17 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     await page.click('#login-button');
     await page.waitForSelector('#app-container', { state: 'visible', timeout: 15_000 });
 
-    // 2. 遍历所有菜单
-    const menuPages = [
-      'dashboard', 'device', 'network', 'peripheral', 'periph-exec',
-      'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'
-    ];
+    // 2. 遍历当前固件实际显示的菜单。可选页面由功能状态动态门控。
+    const menuPages = await page.locator('.menu-item[data-page]:visible').evaluateAll(items =>
+      items.map(item => item.getAttribute('data-page')).filter((name): name is string => !!name)
+    );
+    expect(menuPages).toContain('dashboard');
+    expect(menuPages).toContain('device');
+    expect(menuPages).not.toContain('data');
     for (const menuPage of menuPages) {
       await page.click(`.menu-item[data-page="${menuPage}"]`);
       await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
-      await expect(page.locator('#app-container')).toBeVisible();
+      await expect(page.locator(`#${menuPage}-page`)).toBeVisible();
     }
 
     // 3. API 健康检查

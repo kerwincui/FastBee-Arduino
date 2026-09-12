@@ -19,6 +19,8 @@
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 
+using namespace FastBeeTest;
+
 void test_periph_config_group();
 
 // ========== sanitize 常量（镜像自 PeriphExecManager.cpp） ==========

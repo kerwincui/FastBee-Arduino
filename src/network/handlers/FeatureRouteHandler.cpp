@@ -12,8 +12,10 @@
 
 #include <ArduinoJson.h>
 #include <memory>
+#include <vector>
 
 #include "core/RuntimeFeatureManager.h"
+#include "network/NetworkManager.h"
 #include "network/WebHandlerContext.h"
 #include "network/handlers/HandlerUtils.h"
 #include "systems/LoggerSystem.h"
@@ -97,13 +99,114 @@ bool FeatureRouteHandler::parseBody(AsyncWebServerRequest* request, JsonDocument
     return true;
 }
 
+FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
+    const JsonDocument& doc) {
+    auto& mgr = FastBee::RuntimeFeatureManager::instance();
+    const bool previousMDNS = mgr.isUserEnabled("mdns");
+    FastBee::RuntimeFeatureManager::UserConfigSnapshot previousState;
+    const auto updateResult = mgr.updateAndSave(doc, &previousState);
+    if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::NO_VALID_ENTRIES) {
+        return PersistResult::NO_VALID_ENTRIES;
+    }
+    if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::SAVE_FAILED) {
+        return PersistResult::FEATURE_SAVE_FAILED;
+    }
+
+    const bool configuredMDNS = mgr.isUserEnabled("mdns");
+    if (ctx && ctx->networkManager) {
+        if (ctx->networkManager->getConfig().enableMDNS == configuredMDNS) {
+            return PersistResult::SAVED;
+        }
+        WiFiConfig networkConfig = ctx->networkManager->getConfig();
+        networkConfig.enableMDNS = configuredMDNS;
+        if (ctx->networkManager->updateConfig(networkConfig, true)) {
+            return PersistResult::SAVED;
+        }
+    } else if (configuredMDNS == previousMDNS) {
+        // Non-mDNS feature updates do not require the compatibility mirror.
+        return PersistResult::SAVED;
+    }
+
+    // The feature file was already committed.  Restore it when the network
+    // compatibility mirror cannot be committed, then re-read disk if even the
+    // rollback write fails so live state always reflects the surviving file.
+    if (!mgr.restoreUserConfig(previousState) || !mgr.saveCurrentConfig()) {
+        LOGGER.error("[FeatureCfg] Failed to roll back after mDNS mirror save failure");
+        mgr.loadConfig();
+    }
+    return PersistResult::MDNS_MIRROR_FAILED;
+}
+
 void FeatureRouteHandler::handleStatus(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
-    auto doc = FastBee::makeJsonDocument(4096);
-    doc["success"] = true;
-    FastBee::RuntimeFeatureManager::instance().getStatusJson(doc["data"].to<JsonObject>());
-    HandlerUtils::sendJsonStream(request, doc);
+    auto& mgr = FastBee::RuntimeFeatureManager::instance();
+    std::vector<String> items;
+    items.reserve(mgr.featureCount());
+
+    // Build one small feature object at a time. The old path retained the
+    // complete ArduinoJson tree, a ~5.6 KB serialized String and the
+    // AsyncBasicResponse copy concurrently, which exhausts fragmented DRAM on
+    // no-PSRAM C3 targets and can yield a truncated HTTP 200 response.
+    for (size_t i = 0; i < mgr.featureCount(); ++i) {
+        auto itemDoc = FastBee::makeJsonDocument(1024);
+        if (!mgr.getFeatureStatusJson(i, itemDoc.to<JsonObject>()) || itemDoc.overflowed()) {
+            HandlerUtils::sendJsonError(request, 503,
+                                        "Feature status temporarily unavailable (JSON allocation failed)", 5);
+            return;
+        }
+
+        const size_t expectedSize = measureJson(itemDoc);
+        String item;
+        if (!item.reserve(expectedSize + 1)) {
+            HandlerUtils::sendJsonError(request, 503,
+                                        "Feature status temporarily unavailable (response allocation failed)", 5);
+            return;
+        }
+        const size_t written = serializeJson(itemDoc, item);
+        if (written != expectedSize || item.length() != expectedSize) {
+            HandlerUtils::sendJsonError(request, 503,
+                                        "Feature status temporarily unavailable (response serialization failed)", 5);
+            return;
+        }
+        items.push_back(std::move(item));
+    }
+
+    auto summaryDoc = FastBee::makeJsonDocument(1024);
+    mgr.getStatusSummaryJson(summaryDoc.to<JsonObject>());
+    if (summaryDoc.overflowed()) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Feature status temporarily unavailable (summary allocation failed)", 5);
+        return;
+    }
+
+    const size_t summarySize = measureJson(summaryDoc);
+    String summary;
+    if (!summary.reserve(summarySize + 1) ||
+        serializeJson(summaryDoc, summary) != summarySize ||
+        summary.length() != summarySize) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Feature status temporarily unavailable (summary serialization failed)", 5);
+        return;
+    }
+
+    // JSON member order is not semantically significant. Putting the small
+    // summary in the header lets the shared list streamer keep a static footer.
+    String header;
+    const size_t headerSize = summary.length() + 64;
+    if (!header.reserve(headerSize)) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Feature status temporarily unavailable (header allocation failed)", 5);
+        return;
+    }
+    header = F("{\"success\":true,\"data\":{\"summary\":");
+    header += summary;
+    header += F(",\"features\":[");
+
+    if (!HandlerUtils::sendJsonListChunked(request, header, std::move(items), "]}}")) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Feature status temporarily unavailable (stream allocation failed)", 5);
+    }
 }
 
 void FeatureRouteHandler::handleConfig(AsyncWebServerRequest* request) {
@@ -112,13 +215,17 @@ void FeatureRouteHandler::handleConfig(AsyncWebServerRequest* request) {
     JsonDocument doc;
     if (!parseBody(request, doc)) return;
 
-    auto& mgr = FastBee::RuntimeFeatureManager::instance();
-    if (!mgr.updateFromJson(doc)) {
+    const PersistResult result = persistFeatureUpdate(doc);
+    if (result == PersistResult::NO_VALID_ENTRIES) {
         ctx->sendBadRequest(request, "No valid feature entries");
         return;
     }
-    if (!mgr.saveCurrentConfig()) {
+    if (result == PersistResult::FEATURE_SAVE_FAILED) {
         ctx->sendError(request, 500, "Failed to save feature config");
+        return;
+    }
+    if (result == PersistResult::MDNS_MIRROR_FAILED) {
+        ctx->sendError(request, 500, "Failed to synchronize mDNS compatibility config");
         return;
     }
     ctx->sendSuccess(request, "Feature config saved (reboot required to apply)");
@@ -130,13 +237,17 @@ void FeatureRouteHandler::handleApply(AsyncWebServerRequest* request) {
     JsonDocument doc;
     if (!parseBody(request, doc)) return;
 
-    auto& mgr = FastBee::RuntimeFeatureManager::instance();
-    if (!mgr.updateFromJson(doc)) {
+    const PersistResult result = persistFeatureUpdate(doc);
+    if (result == PersistResult::NO_VALID_ENTRIES) {
         ctx->sendBadRequest(request, "No valid feature entries");
         return;
     }
-    if (!mgr.saveCurrentConfig()) {
+    if (result == PersistResult::FEATURE_SAVE_FAILED) {
         ctx->sendError(request, 500, "Failed to save feature config");
+        return;
+    }
+    if (result == PersistResult::MDNS_MIRROR_FAILED) {
+        ctx->sendError(request, 500, "Failed to synchronize mDNS compatibility config");
         return;
     }
 

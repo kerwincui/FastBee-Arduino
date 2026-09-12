@@ -156,25 +156,32 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    // ============ 单条查询：用 getRule() 直接拿指针，零拷贝 ============
+    // ============ 单条查询：在单一锁持有期内复制规则 ============
     if (request->hasParam("id")) {
         String ruleId = request->getParam("id")->value();
-        // getRule() 内部不持锁，但返回指向 map 内的指针；这里短暂持锁，序列化后立即释放
+        // getRule() 要求调用方已持有 _rulesMutex；不要调用 getRuleSnapshot()
+        // here because it acquires the same non-recursive mutex again.
         // 超时 2000ms：规则执行长时间占锁时快速返回 503，避免永久阻塞 async_tcp 任务
         // （处理器运行在 async_tcp 任务上，无限等待会冻结所有 HTTP 请求）
-        MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(2000));
-        if (!lock.isLocked()) {
-            HandlerUtils::sendJsonError(request, 503, "Service busy (rules locked), retry in 2s", 2);
-            return;
-        }
         PeriphExecRule rule;
-        if (!mgr.getRuleSnapshot(ruleId, rule)) {
-            request->send(404, "application/json", "{\"success\":false,\"message\":\"Rule not found\"}");
-            return;
+        {
+            MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(2000));
+            if (!lock.isLocked()) {
+                HandlerUtils::sendJsonError(request, 503, "Service busy (rules locked), retry in 2s", 2);
+                return;
+            }
+
+            const PeriphExecRule* storedRule = mgr.getRule(ruleId);
+            if (!storedRule) {
+                request->send(404, "application/json", "{\"success\":false,\"message\":\"Rule not found\"}");
+                return;
+            }
+            // Copy while protected; serialization and response allocation happen
+            // after releasing the manager mutex so execution is not stalled.
+            rule = *storedRule;
         }
+
         String response = serializeRuleFull(rule);
-        // 锁在 RAII 释放后，再发送响应（响应可能涉及异步发送）
-        // 这里 lock 仍在作用域内，但 send 是同步入队，不阻塞太久
         HandlerUtils::sendJsonSuccess(request, response);
         return;
     }
@@ -236,8 +243,11 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
             // 内部通道字段与执行器缓存键同规则（显式 dataField 优先；多字段类别推断；
             // 单值传感器用外设配置 id），保证 sourceId=${periphId.field} 模板变量能命中传感器缓存
-            String dataField = PeriphExecExecutor::resolveChannelField(
-                sDoc["sensorCategory"] | "analog", periphId, sDoc["dataField"] | "");
+            String explicitChannelField = sDoc["channelField"] | "";
+            String dataField = explicitChannelField.isEmpty()
+                ? PeriphExecExecutor::resolveChannelField(
+                      sDoc["sensorCategory"] | "analog", periphId, sDoc["dataField"] | "")
+                : explicitChannelField;
             String sourceId = periphId + "_" + dataField;
             for (const auto& existingId : sensorSourceIds) {
                 if (existingId == sourceId) return;
@@ -412,8 +422,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES);
     // 执行规则是软限制（“推荐值，超限只警告”），remaining至少为1，不锁定新增按钮
     const int profileRemaining = std::max(1, profileMax - total);
+    const bool runtimeDegraded = HandlerUtils::memoryDegradationActive();
 
-    header.reserve(220 + sensorSources.length());
+    header.reserve(460 + sensorSources.length());
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
@@ -425,6 +436,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     if (compact) {
         header += F(",\"compact\":true");
     }
+    if (compact || runtimeDegraded) {
+        header += F(",\"degraded\":true");
+    }
+    HandlerUtils::appendMemoryDegradationStatus(header);
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
     header += F("\",\"max\":");
@@ -1008,11 +1023,19 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
                 JsonDocument sDoc;
                 DeserializationError sErr = deserializeJson(sDoc, action.actionValue);
                 if (sErr) continue;
-                const char* sPeriphId = sDoc["periphId"] | "";
-                const char* sDataField = sDoc["dataField"] | "temperature";
+                String sensorPeriphId = sDoc["periphId"] | "";
+                if (sensorPeriphId.isEmpty()) sensorPeriphId = action.targetPeriphId;
+                String explicitReportField = sDoc["dataField"] | "";
+                String explicitChannelField = sDoc["channelField"] | "";
+                String cacheField = explicitChannelField.isEmpty()
+                    ? PeriphExecExecutor::resolveChannelField(
+                          sDoc["sensorCategory"] | "analog",
+                          sensorPeriphId,
+                          explicitReportField)
+                    : explicitChannelField;
                 const char* sLabel = sDoc["sensorLabel"] | "";
                 const char* sUnit = sDoc["unit"] | "";
-                String cacheKey = String(sPeriphId) + "_" + String(sDataField);
+                String cacheKey = sensorPeriphId + "_" + cacheField;
                 if (!firstSensorItem) item += ",";
                 firstSensorItem = false;
                 item += "{\"key\":\"" + cacheKey + "\"";

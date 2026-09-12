@@ -12,6 +12,7 @@
 class PeriphExecManager;
 class PeriphExecExecutor;
 class MQTTClient;
+struct PeripheralConfig;
 
 // ========== 按键事件配置结构体 ==========
 struct ButtonEventConfig {
@@ -170,6 +171,9 @@ unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心�
 
     // 收集所有外设状态数据（JSON数组格式）
     String collectPeripheralData();
+
+    // 已去抖的 DI 状态变化：注入本地规则数据源，并按 reportMode 决定是否 MQTT 上报。
+    void handleStableDigitalInputChange(const PeripheralConfig& config, bool level);
 
     // 轻量串口接收检查（按需轮询，收到一行后注入数据源匹配）
     void checkSerialEvents();

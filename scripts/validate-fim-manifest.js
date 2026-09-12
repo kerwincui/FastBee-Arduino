@@ -9,8 +9,7 @@
  * 3. Manifest env set equals build-all-artifacts.ps1 env list
  * 4. No orphaned .bin files not referenced by manifest
  * 
- * Default reads from external docs repo (D:\project\gitlab\FastBee-doc\src\device\fim)
- * Path can be overridden via --fim-dir argument.
+ * The docs path can be supplied through FASTBEE_FIM_DIR or --fim-dir.
  */
 
 const fs = require('fs');
@@ -18,13 +17,19 @@ const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
-// Default to external docs repo; use --fim-dir arg to override for testing
-const FIM_DEFAULT_DIR = 'D:\\project\\gitlab\\FastBee-doc\\src\\device\\fim';
+const FIM_DEFAULT_DIR = process.env.FASTBEE_FIM_DIR ||
+    path.resolve(ROOT_DIR, '..', 'FastBee-doc', 'src', 'device', 'fim');
 let FIM_DIR = process.argv.find(arg => arg.startsWith('--fim-dir='))?.split('=')[1] || FIM_DEFAULT_DIR;
+const REQUIRE_INPUT = process.argv.includes('--require');
 
 if (!fs.existsSync(FIM_DIR)) {
-    console.log(`⚠ FIM directory not found at ${FIM_DIR}. Skipping validation.`);
-    console.log('Note: This is expected if the docs repo is not available.');
+    const message = `FIM directory not found at ${FIM_DIR}`;
+    if (REQUIRE_INPUT) {
+        console.error(`✗ ${message}`);
+        process.exit(1);
+    }
+    console.log(`⚠ ${message}. Skipping validation.`);
+    console.log('Note: pass --require when a missing input must fail validation.');
     process.exit(0);
 }
 
@@ -32,7 +37,11 @@ const MANIFEST_PATH = path.join(FIM_DIR, 'manifest.json');
 const BUILD_ALL_SCRIPT = path.join(ROOT_DIR, 'scripts', 'build-all-artifacts.ps1');
 
 const ISSUES = [];
-const VALID_ENVS = ['esp32-F4R0', 'esp32c3-F4R0', 'esp32c6-F4R0', 'esp32s3-F8R4', 'esp32s3-F16R8'];
+const VALID_ENVS = [
+    'esp32-F4R0', 'esp32-F8R0', 'esp32-F8R8',
+    'esp32c3-F4R0', 'esp32c6-F4R0', 'esp32c6-F8R0',
+    'esp32s3-F8R0', 'esp32s3-F8R8', 'esp32s3-F16R8'
+];
 
 const FLASH_CAPABILITIES = {
     '4': 4194304,
@@ -44,9 +53,58 @@ function readText(filePath) {
     return fs.readFileSync(filePath, 'utf8');
 }
 
+function normalizeManifestPath(manifestPath) {
+    // The docs repository historically stores paths as ./fim/<file>, while
+    // FIM_DIR already points at that fim directory.
+    return manifestPath
+        .replace(/^[.][\\/]/, '')
+        .replace(/^fim[\\/]/i, '')
+        .replace(/^[\\/]+/, '');
+}
+
+function inferEnvironment(entry) {
+    const source = [
+        entry.environment,
+        entry.env,
+        entry.name,
+        entry.path,
+        entry.releaseFile,
+        entry.files && entry.files['factory-with-fs.bin']
+    ].filter(Boolean).join(' ');
+    const match = source.match(/(esp32(?:c3|c6|s3)?-F(?:4|8|16)R(?:0|4|8))/i);
+    return match ? match[1] : '';
+}
+
+function normalizeManifestEntry(entry) {
+    const environment = entry.environment || entry.env || inferEnvironment(entry);
+    const filePath = entry.path || entry.releaseFile ||
+        (entry.files && entry.files['factory-with-fs.bin']) || '';
+    return {
+        ...entry,
+        env: environment,
+        name: entry.name || environment,
+        path: normalizeManifestPath(filePath),
+        flashMb: entry.flashMb ?? entry.flashMB
+    };
+}
+
+function getManifestEntries(manifestJson) {
+    if (Array.isArray(manifestJson.environments)) {
+        return manifestJson.environments.map(normalizeManifestEntry);
+    }
+    if (Array.isArray(manifestJson.files)) {
+        return manifestJson.files
+            .filter(entry => !entry.role || entry.role === 'merged')
+            .map(normalizeManifestEntry);
+    }
+    return [];
+}
+
 function extractBuildEnvs(psScriptText) {
     // Extract Environments array from build-all-artifacts.ps1
-    const match = psScriptText.match(/Environments\s*=\s*\@\s*\[\s*([^]]+)\]/s);
+    // PowerShell accepts both @(...) and @[...]-style generated fixtures;
+    // the repository script uses the normal @(...), so support both forms.
+    const match = psScriptText.match(/Environments\s*=\s*\@\s*[\(\[]\s*([\s\S]*?)\s*[\)\]]/);
     if (!match) return [];
     
     const envs = [];
@@ -65,22 +123,35 @@ function validateManifest() {
         
         console.log('\n[1] Parsing manifest.json...\n');
         
-        if (!manifestJson.environments) {
-            ISSUES.push('manifest.json: missing "environments" array');
+        const manifestEntries = getManifestEntries(manifestJson);
+        if (manifestEntries.length === 0) {
+            ISSUES.push('manifest.json: missing non-empty "environments" or "files" array');
             return;
         }
         
         const manifestEnvs = new Set();
         const declaredFiles = new Map();
         
-        manifestJson.environments.forEach(env => {
+        manifestEntries.forEach(env => {
             if (!env.path) {
                 ISSUES.push(`Environment ${env.name}: missing "path" field`);
                 return;
             }
             
-            const fullPath = path.join(FIM_DIR, env.path);
-            manifestEnvs.add(env.env || env.name);
+            const normalizedPath = normalizeManifestPath(env.path);
+            const fimRoot = path.resolve(FIM_DIR);
+            const fullPath = path.resolve(fimRoot, normalizedPath);
+            const fimPrefix = fimRoot.endsWith(path.sep) ? fimRoot : `${fimRoot}${path.sep}`;
+            if (fullPath !== fimRoot && !fullPath.startsWith(fimPrefix)) {
+                ISSUES.push(`Unsafe manifest path outside FIM directory: ${env.path}`);
+                return;
+            }
+
+            const environment = env.env || inferEnvironment(env) || env.name;
+            manifestEnvs.add(environment);
+            if (!VALID_ENVS.includes(environment)) {
+                ISSUES.push(`Unknown manifest environment: ${environment}`);
+            }
             
             if (!fs.existsSync(fullPath)) {
                 ISSUES.push(`File not found: ${fullPath}`);
@@ -88,7 +159,7 @@ function validateManifest() {
             }
             
             const fileSize = fs.statSync(fullPath).size;
-            declaredFiles.set(env.path, { size: fileSize, env: env.env || env.name });
+            declaredFiles.set(normalizedPath, { size: fileSize, env: environment });
             
             // Verify Flash capacity
             const flashMb = env.flashMb;
@@ -105,8 +176,7 @@ function validateManifest() {
         // Check for orphaned files
         console.log('[2] Checking for orphaned .bin files...\n');
         const allBinFiles = fs.readdirSync(FIM_DIR)
-            .filter(f => f.endsWith('.bin'))
-            .map(f => `/${f}`);
+            .filter(f => f.endsWith('.bin'));
         
         const referencedPaths = Array.from(declaredFiles.keys());
         const orphaned = allBinFiles.filter(f => !referencedPaths.includes(f));
@@ -127,7 +197,7 @@ function validateManifest() {
             ISSUES.push(`Environments in build-all-artifacts but missing in manifest: ${missingInManifest.join(', ')}`);
         }
         
-        if (missingInManifest.length > 0) {
+        if (missingInBuild.length > 0) {
             ISSUES.push(`Environments in manifest but not in build-all-artifacts: ${missingInBuild.join(', ')}`);
         }
         
@@ -144,8 +214,13 @@ function main() {
     console.log(`FIM Directory: ${FIM_DIR}\n`);
     
     if (!fs.existsSync(MANIFEST_PATH)) {
-        console.log(`⚠ manifest.json not found at ${MANIFEST_PATH}`);
-        console.log('Skipping WP-95 validation.\n');
+        const message = `manifest.json not found at ${MANIFEST_PATH}`;
+        if (REQUIRE_INPUT) {
+            console.error(`✗ ${message}`);
+            process.exit(1);
+        }
+        console.log(`⚠ ${message}`);
+        console.log('Skipping WP-95 validation. Pass --require to make this fatal.\n');
         process.exit(0);
     }
     

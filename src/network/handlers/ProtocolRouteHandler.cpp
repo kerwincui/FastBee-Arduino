@@ -8,9 +8,11 @@
 #endif
 #if FASTBEE_ENABLE_MQTT
 #include "./network/handlers/MqttRouteHandler.h"
+#include "./protocols/MQTTClient.h"
 #endif
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
+#include "./network/ProtocolSecret.h"
 #include "./protocols/ProtocolManager.h"
 #include "systems/SystemRebooter.h"
 #include "utils/PsramJsonDocument.h"
@@ -70,6 +72,20 @@ bool loadProtocolConfigDocument(JsonDocument& doc) {
     return !err;
 }
 
+bool loadMqttConfigDocument(JsonDocument& doc) {
+    if (!LittleFS.exists(PROTOCOL_CONFIG_PATH)) return false;
+
+    File file = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+    if (!file) return false;
+
+    JsonDocument filter;
+    filter["mqtt"] = true;
+    DeserializationError error = deserializeJson(
+        doc, file, DeserializationOption::Filter(filter));
+    file.close();
+    return !error;
+}
+
 void copyJsonMember(JsonObject dst, JsonObject src, const char* key) {
     if (!src[key].isNull()) {
         dst[key].set(src[key]);
@@ -91,10 +107,12 @@ void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
 }
 
 void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
-    auto source = FastBee::makeJsonDocument(32768);
-    loadProtocolConfigDocument(source);
+    // Store only the MQTT section. On constrained targets this avoids parsing
+    // large Modbus task/device arrays into DRAM just to render the MQTT tab.
+    auto source = FastBee::makeJsonDocument();
+    loadMqttConfigDocument(source);
 
-    auto doc = FastBee::makeJsonDocument(16384);
+    auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
     JsonObject mqttOut = data["mqtt"].to<JsonObject>();
@@ -115,6 +133,7 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     mqttOut["authType"] = mqttIn["authType"] | 0;
     mqttOut["mqttSecret"] = mqttIn["mqttSecret"] | "";
     mqttOut["authCode"] = mqttIn["authCode"] | "";
+    FastBee::ProtocolSecret::redactMqttConfig(mqttOut);
     mqttOut["willTopic"] = mqttIn["willTopic"] | "";
     mqttOut["willPayload"] = mqttIn["willPayload"] | "";
     mqttOut["willQos"] = mqttIn["willQos"] | 0;
@@ -132,6 +151,31 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
         mqttOut["subscribeTopics"].to<JsonArray>(),
         mqttIn["subscribeTopics"].as<JsonArray>(),
         false);
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+void sendRedactedProtocolConfigFromFile(AsyncWebServerRequest* request) {
+    // JsonDocument grows to the actual minified input size. Parsing directly
+    // into data avoids both a fixed 32 KB reserve and a second full document.
+    auto doc = FastBee::makeJsonDocument();
+    doc["success"] = true;
+    doc["data"].to<JsonObject>();
+
+    if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
+        File file = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+        if (file) {
+            DeserializationError error = deserializeJson(doc["data"], file);
+            file.close();
+            if (error) {
+                LOG_ERRORF("Protocol config response redaction failed: %s", error.c_str());
+                doc["data"].clear();
+                doc["data"].to<JsonObject>();
+            }
+        }
+    }
+
+    JsonObject config = doc["data"].as<JsonObject>();
+    FastBee::ProtocolSecret::redactMqttConfig(config["mqtt"].as<JsonObject>());
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -464,59 +508,10 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
     }
     if (HandlerUtils::checkLowMemory(request, 12288)) return;
 
-    if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
-        // 使用 chunked response 避免一次性分配大缓冲区
-        // 响应格式: {"success":true,"data":<文件内容>}
-        struct ChunkState {
-            File file;
-            uint8_t phase;  // 0=prefix, 1=file, 2=suffix, 3=done
-        };
-        auto state = std::make_shared<ChunkState>();
-        state->file = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
-        if (!state->file) {
-            JsonDocument doc;
-            doc["success"] = true;
-            doc["data"].to<JsonObject>();
-            HandlerUtils::sendJsonStream(request, doc);
-            return;
-        }
-        state->phase = 0;
-
-        request->sendChunked("application/json",
-            [state](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
-                if (state->phase == 0) {
-                    // 发送 prefix
-                    static const char prefix[] = "{\"success\":true,\"data\":";
-                    size_t pLen = sizeof(prefix) - 1;
-                    if (maxLen < pLen) return RESPONSE_TRY_AGAIN;
-                    memcpy(buffer, prefix, pLen);
-                    state->phase = 1;
-                    return pLen;
-                }
-                if (state->phase == 1) {
-                    // 流式读文件
-                    if (!state->file.available()) {
-                        state->file.close();
-                        state->phase = 2;
-                        // 发送 suffix
-                        buffer[0] = '}';
-                        state->phase = 3;
-                        return 1;
-                    }
-                    size_t toRead = std::min(maxLen, (size_t)256);
-                    int n = state->file.read(buffer, toRead);
-                    return (n > 0) ? (size_t)n : 0;
-                }
-                // done
-                return 0;
-            });
-        return;
-    }
-
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"].to<JsonObject>();
-    HandlerUtils::sendJsonStream(request, doc);
+    // Never stream protocol.json verbatim: it contains MQTT credentials.
+    // Parse into the response's nested data object so secrets can be masked
+    // without holding a second full configuration document in memory.
+    sendRedactedProtocolConfigFromFile(request);
 }
 
 void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* request) {
@@ -558,6 +553,24 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
                       hasProtocolParam(request, "mqtt_scheme") ||
                       hasProtocolParam(request, "mqtt_server") ||
+                      hasProtocolParam(request, "mqtt_port") ||
+                      hasProtocolParam(request, "mqtt_clientId") ||
+                      hasProtocolParam(request, "mqtt_username") ||
+                      hasProtocolParam(request, "mqtt_password") ||
+                      hasProtocolParam(request, "mqtt_keepAlive") ||
+                      hasProtocolParam(request, "mqtt_autoReconnect") ||
+                      hasProtocolParam(request, "mqtt_authType") ||
+                      hasProtocolParam(request, "mqtt_mqttSecret") ||
+                      hasProtocolParam(request, "mqtt_authCode") ||
+                      hasProtocolParam(request, "mqtt_willTopic") ||
+                      hasProtocolParam(request, "mqtt_willPayload") ||
+                      hasProtocolParam(request, "mqtt_willQos") ||
+                      hasProtocolParam(request, "mqtt_willRetain") ||
+                      hasProtocolParam(request, "mqtt_longitude") ||
+                      hasProtocolParam(request, "mqtt_latitude") ||
+                      hasProtocolParam(request, "mqtt_iccid") ||
+                      hasProtocolParam(request, "mqtt_cardPlatformId") ||
+                      hasProtocolParam(request, "mqtt_summary") ||
                       hasProtocolParam(request, "mqtt_publishTopics") ||
                       hasProtocolParam(request, "mqtt_subscribeTopics");
     bool clientIdGenerated = false;
@@ -688,6 +701,16 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 
+    // Any successful Web save is an explicit user decision.  Do not leave
+    // memory-recovery markers behind, otherwise a later reboot could restore
+    // an old MQTTS scheme or report MQTT as memory-disabled after the user has
+    // re-enabled/edited the protocol.
+    doc["mqtt"].remove("disabled_by_memory");
+    doc["mqtt"].remove("disable_mqtt_by_memory");
+    doc["mqtt"].remove("downgraded_by_memory");
+    doc["mqtt"].remove("downgraded_original_scheme");
+    doc["mqtt"].remove("downgraded_original_port");
+
     // 读取 clientId 和 authType，如果 clientId 为空则自动生成
     clientId = GP("mqtt_clientId", "");
     clientId.trim();
@@ -732,13 +755,25 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     doc["mqtt"]["clientId"] = clientId;
     doc["mqtt"]["username"] = GP("mqtt_username", "");
-    doc["mqtt"]["password"] = GP("mqtt_password", "");
+    String submittedPassword = GP("mqtt_password", "");
+    if (FastBee::ProtocolSecret::shouldPersist(
+            submittedPassword, hasProtocolParam(request, "mqtt_password"))) {
+        doc["mqtt"]["password"] = submittedPassword;
+    }
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     // MQTT 认证配置
     doc["mqtt"]["authType"] = authType;
-    doc["mqtt"]["mqttSecret"] = GP("mqtt_mqttSecret", "");
-    doc["mqtt"]["authCode"] = GP("mqtt_authCode", "");
+    String submittedMqttSecret = GP("mqtt_mqttSecret", "");
+    if (FastBee::ProtocolSecret::shouldPersist(
+            submittedMqttSecret, hasProtocolParam(request, "mqtt_mqttSecret"))) {
+        doc["mqtt"]["mqttSecret"] = submittedMqttSecret;
+    }
+    String submittedAuthCode = GP("mqtt_authCode", "");
+    if (FastBee::ProtocolSecret::shouldPersist(
+            submittedAuthCode, hasProtocolParam(request, "mqtt_authCode"))) {
+        doc["mqtt"]["authCode"] = submittedAuthCode;
+    }
     // MQTT 遗嘱消息
     doc["mqtt"]["willTopic"] = GP("mqtt_willTopic", "");
     doc["mqtt"]["willPayload"] = GP("mqtt_willPayload", "");
@@ -833,6 +868,10 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 #if FASTBEE_ENABLE_MQTT
     if (updateMqtt) {
         bool mqttEnabledNow = doc["mqtt"]["enabled"].as<bool>();
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        if (fw && fw->getHealthMonitor()) {
+            fw->getHealthMonitor()->clearMqttMemoryOverrideState();
+        }
         ProtocolManager* pm = ctx->protocolManager;
         if (!mqttEnabledNow) {
             // MQTT 已禁用：立即停止客户端即可，无需重启也无需重建
@@ -875,6 +914,27 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // MQTT 热重建/断开状态：前端依赖这些字段显示正确的通知
     if (mqttHotRestart) {
         resp["data"]["mqttHotRestart"] = true;
+        // requestMqttRestartAsync() only queues work for loopTask.  Return a
+        // stable pending/reason envelope so the UI can distinguish an
+        // accepted asynchronous restart from an immediate connection failure.
+        resp["data"]["mqttStatusPending"] = true;
+        resp["data"]["mqttStatusReason"] = "MQTT 配置已应用，正在后台连接";
+#if FASTBEE_ENABLE_MQTT
+        if (ctx->protocolManager) {
+            MQTTClient* mqtt = ctx->protocolManager->getMQTTClient();
+            if (mqtt && mqtt->getLastErrorCode() != 0) {
+                String mqttErrorMessage;
+                resp["data"]["mqttLastErrorCode"] = mqtt->getLastErrorCode();
+                mqttErrorMessage = mqtt->getLastErrorCode() == -4
+                    ? "连接 MQTT Broker 超时，请检查地址和端口"
+                    : (mqtt->getLastErrorCode() == -2
+                        ? "无法连接 MQTT Broker，请检查 DNS、网络和端口"
+                        : "MQTT 连接失败，请查看状态详情");
+                resp["data"]["mqttLastErrorMessage"] = mqttErrorMessage;
+                resp["data"]["mqttStatusReason"] = mqttErrorMessage;
+            }
+        }
+#endif
     }
     if (mqttStoppedNow) {
         resp["data"]["mqttDisconnected"] = true;

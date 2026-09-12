@@ -53,6 +53,12 @@ public:
     bool saveJSONConfig(const String& filename, const JsonDocument& config);
     bool loadJSONConfig(const String& filename, JsonDocument& config);
 
+    // 恢复出厂专用：立即写入并验证 JSON，成功后丢弃旧主文件备份和缓存。
+    // 普通配置保存仍使用 saveJSONConfig() 保留上一代回滚能力。
+    bool saveFactoryJSONConfig(const String& filename, const char* jsonContent);
+    // 删除主文件及所有自动恢复代际，防止恢复出厂后从 .bak 回生旧配置。
+    bool deleteJSONConfigGenerations(const String& filename);
+
     // 特定配置类型快捷接口
     bool saveNetworkConfig  (const JsonDocument& config);
     bool loadNetworkConfig  (JsonDocument& config);

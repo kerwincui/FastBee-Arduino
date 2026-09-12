@@ -13,7 +13,9 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "helpers/TestLogger.h"
+#include "core/PeripheralConfig.h"
 #include "utils/StaticPoolAllocator.h"
 
 #include <map>
@@ -313,6 +315,166 @@ static void test_debounce_storm_coalescing() {
         }
     }
     TEST_ASSERT_EQUAL(21, dispatched);
+}
+
+static void test_analog_quality_classification() {
+    const uint8_t current4To20 = static_cast<uint8_t>(AnalogSignalMode::CURRENT_4_20MA);
+    const uint8_t voltage0To10 = static_cast<uint8_t>(AnalogSignalMode::VOLTAGE_0_10V);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::VALID),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 4.0f, 4.0f, 20.0f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::BELOW_RANGE),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 3.5f, 4.0f, 20.0f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::DISCONNECTED),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 2.9f, 4.0f, 20.0f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::ABOVE_RANGE),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 20.5f, 4.0f, 20.0f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::SHORT_CIRCUIT),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 21.1f, 4.0f, 20.0f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::BELOW_RANGE),
+        static_cast<uint8_t>(classifyAnalogInputQuality(voltage0To10, -0.1f, 0.0f, 10.0f)));
+
+    // A tolerance applies to both configured range endpoints and the 4-20mA
+    // 3mA/21mA fault thresholds, but must not hide a distinct out-of-band code.
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::BELOW_RANGE),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 2.995f, 4.0f, 20.0f, 0.01f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::DISCONNECTED),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 2.98f, 4.0f, 20.0f, 0.01f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::ABOVE_RANGE),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 21.005f, 4.0f, 20.0f, 0.01f)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::SHORT_CIRCUIT),
+        static_cast<uint8_t>(classifyAnalogInputQuality(current4To20, 21.02f, 4.0f, 20.0f, 0.01f)));
+}
+
+static void test_peripheral_config_destructor_smoke() {
+    PeripheralConfig config;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(PeripheralType::UNCONFIGURED),
+                            static_cast<uint8_t>(config.type));
+}
+
+static void initializeAnalogConversionConfig(PeripheralConfig& config, AnalogSignalMode mode) {
+    config.type = PeripheralType::GPIO_ANALOG_INPUT;
+    config.params.adc.resolution = 12;
+    config.params.adc.signalMode = static_cast<uint8_t>(mode);
+    config.params.adc.conversionEnabled = true;
+    config.params.adc.clampEnabled = false;
+    config.params.adc.engineeringMin = 0.0f;
+    config.params.adc.engineeringMax = 100.0f;
+    config.params.adc.engineeringOffset = 0.0f;
+    config.params.adc.vRef = 3.3f;
+    config.params.adc.inputMin = 0.0f;
+    config.params.adc.inputMax = 0.0f;
+    config.params.adc.voltageRatio = 0.0f;
+    config.params.adc.shuntResistance = 0.0f;
+    config.params.adc.inputGain = 1.0f;
+    config.params.adc.inputOffset = 0.0f;
+}
+
+static void test_analog_raw_conversion_boundaries() {
+    // Use the production helper directly so header-only conversion changes are
+    // exercised by the native binary rather than duplicated test arithmetic.
+    AnalogInputQuality quality = AnalogInputQuality::INVALID_CONFIG;
+
+    {
+        PeripheralConfig linear;
+        initializeAnalogConversionConfig(linear, AnalogSignalMode::CUSTOM_LINEAR);
+        linear.params.adc.inputMin = 1000.0f;
+        linear.params.adc.inputMax = 3000.0f;
+        linear.params.adc.engineeringMin = -50.0f;
+        linear.params.adc.engineeringMax = 150.0f;
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, -50.0f,
+            convertAnalogInputRaw(linear, 1000, &quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 50.0f,
+            convertAnalogInputRaw(linear, 2000, &quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 150.0f,
+            convertAnalogInputRaw(linear, 3000, &quality));
+    }
+    {
+        PeripheralConfig voltage;
+        initializeAnalogConversionConfig(voltage, AnalogSignalMode::VOLTAGE_0_10V);
+        voltage.params.adc.voltageRatio = 10.0f / 3.3f;
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f,
+            convertAnalogInputRaw(voltage, 0, &quality));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::VALID),
+                                static_cast<uint8_t>(quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.05f, 50.0f,
+            convertAnalogInputRaw(voltage, 2048, &quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 100.0f,
+            convertAnalogInputRaw(voltage, 4095, &quality));
+    }
+    {
+        PeripheralConfig current;
+        initializeAnalogConversionConfig(current, AnalogSignalMode::CURRENT_4_20MA);
+        current.params.adc.shuntResistance = 165.0f;
+        current.params.adc.engineeringMin = -40.0f;
+        current.params.adc.engineeringMax = 80.0f;
+        current.params.adc.engineeringOffset = 2.0f;
+        const uint16_t raw4mA = static_cast<uint16_t>((0.004f * 165.0f / 3.3f) * 4095.0f + 0.5f);
+        const uint16_t raw12mA = static_cast<uint16_t>((0.012f * 165.0f / 3.3f) * 4095.0f + 0.5f);
+        const uint16_t raw20mA = static_cast<uint16_t>((0.020f * 165.0f / 3.3f) * 4095.0f + 0.5f);
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, -38.0f,
+            convertAnalogInputRaw(current, raw4mA, &quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.1f, 22.0f,
+            convertAnalogInputRaw(current, raw12mA, &quality));
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 82.0f,
+            convertAnalogInputRaw(current, raw20mA, &quality));
+
+        TEST_ASSERT_TRUE(isnan(convertAnalogInputRaw(current, 0, &quality)));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::DISCONNECTED),
+                                static_cast<uint8_t>(quality));
+        current.params.adc.clampEnabled = true;
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, -38.0f,
+            convertAnalogInputRaw(current, 0, &quality));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::DISCONNECTED),
+                                static_cast<uint8_t>(quality));
+
+        current.params.adc.clampEnabled = false;
+        current.params.adc.shuntResistance = 150.0f;
+        TEST_ASSERT_TRUE(isnan(convertAnalogInputRaw(current, 4095, &quality)));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::SHORT_CIRCUIT),
+                                static_cast<uint8_t>(quality));
+
+        current.params.adc.shuntResistance = 165.0f;
+        current.params.adc.inputMin = 20.0f;
+        current.params.adc.inputMax = 4.0f;
+        TEST_ASSERT_TRUE(isnan(convertAnalogInputRaw(current, raw12mA, &quality)));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AnalogInputQuality::INVALID_CONFIG),
+                                static_cast<uint8_t>(quality));
+    }
+}
+
+static void test_inverted_interrupt_edges_use_logical_level() {
+    TEST_ASSERT_TRUE(digitalInputLogicalLevel(false, true));
+    TEST_ASSERT_FALSE(digitalInputLogicalLevel(true, true));
+    TEST_ASSERT_TRUE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_RISING, true));
+    TEST_ASSERT_FALSE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_RISING, false));
+    TEST_ASSERT_TRUE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_FALLING, false));
+    TEST_ASSERT_FALSE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_FALLING, true));
+    TEST_ASSERT_TRUE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_CHANGE, true));
+    TEST_ASSERT_TRUE(matchesDigitalInterruptEdge(PeripheralType::GPIO_INTERRUPT_CHANGE, false));
+}
+
+static void test_digital_input_defaults_and_report_modes_use_production_helpers() {
+    TEST_ASSERT_EQUAL_UINT16(DIGITAL_INPUT_DEFAULT_DEBOUNCE_MS,
+                             effectiveDigitalInputDebounceMs(0));
+    TEST_ASSERT_EQUAL_UINT16(125, effectiveDigitalInputDebounceMs(125));
+    TEST_ASSERT_TRUE(shouldReportDigitalInputChange(
+        static_cast<uint8_t>(DigitalReportMode::ON_CHANGE)));
+    TEST_ASSERT_FALSE(shouldReportDigitalInputChange(
+        static_cast<uint8_t>(DigitalReportMode::EVENT_ONLY)));
+    TEST_ASSERT_TRUE(shouldReportDigitalInputPeriodically(
+        static_cast<uint8_t>(DigitalReportMode::PERIODIC)));
+    TEST_ASSERT_FALSE(shouldReportDigitalInputPeriodically(
+        static_cast<uint8_t>(DigitalReportMode::ON_CHANGE)));
+}
+
+static void test_analog_output_percent_mapping_uses_production_helper() {
+    TEST_ASSERT_EQUAL_UINT32(51, mapAnalogOutputPercent(0, 20, 80, 8));
+    TEST_ASSERT_EQUAL_UINT32(127, mapAnalogOutputPercent(50, 20, 80, 8));
+    TEST_ASSERT_EQUAL_UINT32(204, mapAnalogOutputPercent(100, 20, 80, 8));
+    TEST_ASSERT_EQUAL_UINT32(204, mapAnalogOutputPercent(150, 20, 80, 8));
+    TEST_ASSERT_EQUAL_UINT32(127, mapAnalogOutputPercent(50, 80, 20, 8));
+    TEST_ASSERT_EQUAL_UINT32(65535, mapAnalogOutputPercent(100, 0, 120, 16));
+    TEST_ASSERT_EQUAL_UINT32(1, mapAnalogOutputPercent(100, 0, 100, 0));
 }
 
 // ============================================================
@@ -651,7 +813,9 @@ static void test_srclk_periphmanager_isr_hardening() {
     // handleInterrupt 必须持锁查找 + 快照回调后锁外执行
     size_t hiPos = src.find("void PeripheralManager::handleInterrupt");
     TEST_ASSERT_TRUE_MESSAGE(hiPos != std::string::npos, "handleInterrupt must exist");
-    std::string hiBody = src.substr(hiPos, 1200);
+    size_t hiEnd = src.find("\nbool PeripheralManager::", hiPos);
+    std::string hiBody = src.substr(
+        hiPos, hiEnd == std::string::npos ? std::string::npos : hiEnd - hiPos);
     TEST_ASSERT_TRUE_MESSAGE(
         hiBody.find("RecursiveMutexGuard lock(_mutex)") != std::string::npos,
         "handleInterrupt must hold recursive mutex during lookup/debounce");
@@ -661,7 +825,7 @@ static void test_srclk_periphmanager_isr_hardening() {
     // attach/detach 线程安全：不得再使用锁外裸指针模式
     size_t attachPos = src.find("bool PeripheralManager::attachInterrupt(const String&");
     TEST_ASSERT_TRUE_MESSAGE(attachPos != std::string::npos, "attachInterrupt(String) must exist");
-    std::string attachBody = src.substr(attachPos, 900);
+    std::string attachBody = src.substr(attachPos, 1400);
     TEST_ASSERT_TRUE_MESSAGE(
         attachBody.find("RecursiveMutexGuard lock(_mutex)") != std::string::npos,
         "attachInterrupt must hold the recursive mutex for the whole operation");
@@ -671,6 +835,18 @@ static void test_srclk_periphmanager_isr_hardening() {
     TEST_ASSERT_TRUE_MESSAGE(
         attachBody.find("isValidPin(pin)") != std::string::npos,
         "attachInterrupt must validate pin before registering the ISR");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("gpio_get_level") != std::string::npos &&
+        src.find("sizeof(GpioIsrEvent)") != std::string::npos,
+        "GPIO ISR queue must capture the edge level, not only the pin");
+    TEST_ASSERT_TRUE_MESSAGE(
+        src.find("popDigitalInputInterruptEvent") != std::string::npos &&
+        src.find("digitalInputLogicalLevel") != std::string::npos,
+        "captured GPIO interrupt events must be consumable in logical polarity");
+    TEST_ASSERT_TRUE_MESSAGE(
+        attachBody.find("invertLogic ? FALLING : RISING") != std::string::npos &&
+        attachBody.find("invertLogic ? RISING : FALLING") != std::string::npos,
+        "hardware edge selection must follow the configured logical polarity");
 }
 
 static void test_gpio_string_and_cstr_paths_share_core() {
@@ -763,6 +939,12 @@ void test_peripheral_manager_opt_group() {
     RUN_TEST(test_debounce_millis_wraparound);
     RUN_TEST(test_debounce_zero_window_always_dispatches);
     RUN_TEST(test_debounce_storm_coalescing);
+    RUN_TEST(test_analog_quality_classification);
+    RUN_TEST(test_peripheral_config_destructor_smoke);
+    RUN_TEST(test_analog_raw_conversion_boundaries);
+    RUN_TEST(test_inverted_interrupt_edges_use_logical_level);
+    RUN_TEST(test_digital_input_defaults_and_report_modes_use_production_helpers);
+    RUN_TEST(test_analog_output_percent_mapping_uses_production_helper);
 
     // ISR 队列溢出
     RUN_TEST(test_isrqueue_no_loss_under_capacity);

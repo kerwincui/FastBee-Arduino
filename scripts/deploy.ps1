@@ -1,9 +1,11 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("esp32-F4R0", "esp32c3-F4R0", "esp32c6-F4R0", "esp32s3-F8R4", "esp32s3-F16R8")]
+    [ValidateSet("esp32-F4R0", "esp32-F8R0", "esp32-F8R8", "esp32c3-F4R0", "esp32c6-F4R0", "esp32c6-F8R0", "esp32s3-F8R0", "esp32s3-F8R8", "esp32s3-F16R8")]
     [string]$Env = "esp32-F4R0",
 
     [string]$Port = "",
+
+    [string]$DeviceIP = "",
 
     [switch]$BuildOnly,
     [switch]$SkipFs,
@@ -11,6 +13,7 @@ param(
     [switch]$Monitor,
     [switch]$SkipDoctor,
     [switch]$SkipWeb,
+    [switch]$VerifyWeb,
     [switch]$FullOutput,
 
     [string]$DataDir = "",
@@ -25,6 +28,76 @@ $IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
+
+$script:PioLogRunId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss-fff"), $PID
+$script:PioLogSequence = 0
+$script:PioLogDirectory = Join-Path (Join-Path (Join-Path $ProjectDir "artifacts") "pio-logs") $script:PioLogRunId
+
+function New-PioLogPath {
+    param([string[]]$Arguments)
+
+    $script:PioLogSequence++
+    $labelParts = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($Arguments[$i] -eq '-e' -and ($i + 1) -lt $Arguments.Count) {
+            $labelParts.Add($Arguments[$i + 1]) | Out-Null
+        }
+        if (($Arguments[$i] -eq '--target' -or $Arguments[$i] -eq '-t') -and ($i + 1) -lt $Arguments.Count) {
+            $labelParts.Add($Arguments[$i + 1]) | Out-Null
+        }
+    }
+    if ($labelParts.Count -eq 0) {
+        foreach ($arg in $Arguments) {
+            if (-not [string]::IsNullOrWhiteSpace($arg) -and $arg -notmatch '^-') {
+                $labelParts.Add($arg) | Out-Null
+            }
+        }
+    }
+
+    $label = if ($labelParts.Count -gt 0) { $labelParts -join '-' } else { 'command' }
+    $safeLabel = ($label -replace '[^A-Za-z0-9._-]', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($safeLabel)) { $safeLabel = 'command' }
+
+    New-Item -ItemType Directory -Path $script:PioLogDirectory -Force | Out-Null
+    $fileName = "{0:D3}-{1}.log" -f $script:PioLogSequence, $safeLabel
+    return Join-Path $script:PioLogDirectory $fileName
+}
+
+function Convert-PioOutputRecord {
+    param([object]$Record)
+
+    $isErrorRecord = $Record -is [System.Management.Automation.ErrorRecord]
+    $text = if ($isErrorRecord) { $Record.Exception.Message } else { $Record.ToString() }
+    if ([string]::IsNullOrEmpty($text)) { $text = $Record.ToString() }
+    return [pscustomobject]@{
+        Text = $text
+        Stream = if ($isErrorRecord) { 'stderr' } else { 'stdout' }
+        IsError = $isErrorRecord
+    }
+}
+
+function Write-PioConsoleRecord {
+    param(
+        [psobject]$Record,
+        [switch]$ShowAll
+    )
+
+    # Native stderr is represented as ErrorRecord by Windows PowerShell. Always
+    # surface it, even in concise mode, so compiler/esptool failures remain visible.
+    if ($FullOutput -or $ShowAll -or $Record.IsError) {
+        $color = if ($Record.IsError) { 'Red' } else { 'Gray' }
+        Write-Host $Record.Text -ForegroundColor $color
+        return
+    }
+
+    $line = $Record.Text
+    if ($line -match '^(Processing|Verbose|\[FastBee\]|========|\[SUCCESS\]|\[FAILED\]|ERROR|WARNING)' -or
+        $line -match '(Compiling|Linking|Building|Writing|Hard resetting)' -or
+        $line -match '(Success|Failed|Error)' -or
+        $line -match '\d+\.\d+%') {
+        Write-Host $line
+    }
+}
 
 # ─── 清理残留进程（避免"另一个程序正在使用此文件"错误）───────────────
 function Kill-StaleProcesses {
@@ -96,13 +169,15 @@ function Initialize-PlatformIoDataDir {
 }
 
 function Invoke-FastBeePio {
-    param([string[]]$Arguments)
+    param(
+        [string[]]$Arguments,
+        [switch]$ShowAllConsole
+    )
 
     Write-Host ""
-    Write-Host "pio $($Arguments -join ' ')" -ForegroundColor Cyan
-    & pio @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "PlatformIO command failed: pio $($Arguments -join ' ')"
+    $result = Invoke-PioCmd -PioArgs $Arguments -ShowAllConsole:$ShowAllConsole
+    if ($result.ExitCode -ne 0) {
+        throw "PlatformIO command failed: pio $($Arguments -join ' ')`n  PIO log: $($result.LogPath)"
     }
 }
 
@@ -138,7 +213,10 @@ function Test-BuildCacheIntegrity {
     if ($hasObjects -and -not $hasArchive) {
         Write-Host "[Integrity] Build cache corrupted for $BuildEnv (archive missing, objects present)." -ForegroundColor Yellow
         Write-Host "[Integrity] Running clean build to recover..." -ForegroundColor Yellow
-        & pio run -e $BuildEnv -t clean 2>$null | Out-Null
+        $cleanResult = Invoke-PioCmd -PioArgs @("run", "-e", $BuildEnv, "-t", "clean")
+        if ($cleanResult.ExitCode -ne 0) {
+            throw "PlatformIO cache clean failed for $BuildEnv.`n  PIO log: $($cleanResult.LogPath)"
+        }
         return
     }
 
@@ -151,7 +229,10 @@ function Test-BuildCacheIntegrity {
         }
         catch {
             Write-Host "[Integrity] bootloader.bin is locked by another process, cleaning build dir..." -ForegroundColor Yellow
-            & pio run -e $BuildEnv -t clean 2>$null | Out-Null
+            $cleanResult = Invoke-PioCmd -PioArgs @("run", "-e", $BuildEnv, "-t", "clean")
+            if ($cleanResult.ExitCode -ne 0) {
+                throw "PlatformIO cache clean failed for $BuildEnv.`n  PIO log: $($cleanResult.LogPath)"
+            }
         }
     }
 }
@@ -167,11 +248,23 @@ function Test-SconsignIntact {
 }
 
 # ─── 带自动重试的 PlatformIO 构建/上传 ──────────────────────────────────
-# Windows 上使用 cmd /c 调用 pio 以绕过 PowerShell $ErrorActionPreference="Stop" 对
-# 原生命令 stderr 的拦截（PowerShell 会将 stderr 包装为终止性错误）。
-# Linux/macOS 直接调用 pio。
+# PowerShell wraps native stderr as ErrorRecord on Windows. Keep the console
+# concise, but persist both streams and always surface stderr on failures.
 function Invoke-PioCmd {
-    param([string[]]$PioArgs)
+    param(
+        [string[]]$PioArgs,
+        [switch]$ShowAllConsole
+    )
+
+    $logPath = New-PioLogPath -Arguments $PioArgs
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $writer = New-Object System.IO.StreamWriter($logPath, $false, $utf8NoBom)
+    $writer.AutoFlush = $true
+    $writer.WriteLine("FastBee PlatformIO trace")
+    $writer.WriteLine("Started: {0}" -f (Get-Date).ToString("o"))
+    $writer.WriteLine("Working directory: {0}" -f $ProjectDir)
+    $writer.WriteLine("Command: pio {0}" -f ($PioArgs -join ' '))
+    $writer.WriteLine("")
 
     # 强制 PlatformIO (Python) 使用 UTF-8 编码
     $prevEnc = $env:PYTHONIOENCODING
@@ -218,43 +311,50 @@ function Invoke-PioCmd {
             }
         }
 
-        # 使用临时 ErrorActionPreference 防止 pio stderr 输出(进度条等)
-        # 在 $ErrorActionPreference=Stop 下被误判为终止错误
+        # Keep native stderr from becoming a terminating PowerShell error. Each
+        # record is still written to the trace and surfaced in concise mode.
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        $exitCode = 1
         try {
-            & pio @PioArgs 2>&1 | ForEach-Object {
-                if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                    # FullOutput 模式下显示错误详情
-                    if ($FullOutput) {
-                        Write-Host $_.Exception.Message -ForegroundColor DarkGray
+            try {
+                & pio @PioArgs 2>&1 | ForEach-Object {
+                    $record = Convert-PioOutputRecord -Record $_
+                    foreach ($outputLine in @($record.Text -split '\r?\n')) {
+                        $writer.WriteLine(("[{0}] {1}" -f $record.Stream, $outputLine))
                     }
-                } else {
-                    # FullOutput 模式下显示所有输出
-                    if ($FullOutput) {
-                        Write-Host $_
-                    } else {
-                        # 非 FullOutput 模式:过滤编译进度行,只显示关键信息
-                        $line = $_.ToString()
-                        # 显示: 开始/结束标记、错误、警告、SUCCESS/FAILED
-                        if ($line -match '^(Processing|Verbose|\[FastBee\]|========|\[SUCCESS\]|\[FAILED\]|ERROR|WARNING)' -or
-                            $line -match '(Compiling|Linking|Building|Writing|Hard resetting)' -or
-                            $line -match '(Success|Failed|Error)') {
-                            Write-Host $_
-                        }
-                        # 显示上传进度(包含百分比)
-                        elseif ($line -match '\d+\.\d+%') {
-                            Write-Host $_
-                        }
-                    }
+                    Write-PioConsoleRecord -Record $record -ShowAll:$ShowAllConsole
                 }
+                $exitCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
+            }
+            catch {
+                $record = Convert-PioOutputRecord -Record $_
+                foreach ($outputLine in @($record.Text -split '\r?\n')) {
+                    $writer.WriteLine(("[stderr] {0}" -f $outputLine))
+                }
+                Write-PioConsoleRecord -Record $record -ShowAll:$ShowAllConsole
+                $exitCode = 1
             }
         } finally {
             $ErrorActionPreference = $prevEAP
         }
-        return $LASTEXITCODE
+
+        $writer.WriteLine("")
+        $writer.WriteLine("Finished: {0}" -f (Get-Date).ToString("o"))
+        $writer.WriteLine("Exit code: {0}" -f $exitCode)
+        if ($exitCode -eq 0) {
+            Write-Host "[PIO] Full log: $logPath" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "[PIO] Failed with exit code $exitCode. Full log: $logPath" -ForegroundColor Red
+        }
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            LogPath = $logPath
+        }
     }
     finally {
+        if ($writer) { $writer.Dispose() }
         if ($IsWin -and $prevChcp) { try { chcp $prevChcp | Out-Null } catch {} }
         if ($prevConsoleEnc) { try { [Console]::OutputEncoding = $prevConsoleEnc } catch {} }
         if ($prevOutputEnc) { try { $OutputEncoding = $prevOutputEnc } catch {} }
@@ -283,8 +383,8 @@ function Invoke-FastBeePioBuild {
     $startTime = Get-Date
 
     Write-Host ""
-    $exitCode = Invoke-PioCmd -PioArgs $Arguments
-    if ($exitCode -eq 0) {
+    $firstResult = Invoke-PioCmd -PioArgs $Arguments
+    if ($firstResult.ExitCode -eq 0) {
         $elapsed = (Get-Date) - $startTime
         Write-Host "[Time] Operation completed in $($elapsed.TotalSeconds.ToString('0.0'))s" -ForegroundColor Green
         return
@@ -307,9 +407,9 @@ function Invoke-FastBeePioBuild {
             Kill-StaleProcesses
             Write-Host ""
             $retryStart = Get-Date
-            $exitCode = Invoke-PioCmd -PioArgs $Arguments
-            if ($exitCode -ne 0) {
-                throw "Upload failed after clean rebuild: pio $($Arguments -join ' ')"
+            $retryResult = Invoke-PioCmd -PioArgs $Arguments
+            if ($retryResult.ExitCode -ne 0) {
+                throw "Upload failed after clean rebuild: pio $($Arguments -join ' ')`n  Initial PIO log: $($firstResult.LogPath)`n  Retry PIO log: $($retryResult.LogPath)"
             }
             $retryElapsed = (Get-Date) - $retryStart
             Write-Host "[Retry] Upload succeeded after clean rebuild ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
@@ -324,9 +424,9 @@ function Invoke-FastBeePioBuild {
         Start-Sleep -Seconds 5
         Write-Host ""
         $retryStart = Get-Date
-        $exitCode = Invoke-PioCmd -PioArgs $Arguments
-        if ($exitCode -ne 0) {
-            throw "Upload failed after retry: pio $($Arguments -join ' ')"
+        $retryResult = Invoke-PioCmd -PioArgs $Arguments
+        if ($retryResult.ExitCode -ne 0) {
+            throw "Upload failed after retry: pio $($Arguments -join ' ')`n  Initial PIO log: $($firstResult.LogPath)`n  Retry PIO log: $($retryResult.LogPath)"
         }
         $retryElapsed = (Get-Date) - $retryStart
         Write-Host "[Retry] Upload succeeded on second attempt ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
@@ -346,9 +446,9 @@ function Invoke-FastBeePioBuild {
 
     Write-Host ""
     $retryStart = Get-Date
-    $exitCode = Invoke-PioCmd -PioArgs $Arguments
-    if ($exitCode -ne 0) {
-        throw "Build failed after retry: pio $($Arguments -join ' ')"
+    $retryResult = Invoke-PioCmd -PioArgs $Arguments
+    if ($retryResult.ExitCode -ne 0) {
+        throw "Build failed after retry: pio $($Arguments -join ' ')`n  Initial PIO log: $($firstResult.LogPath)`n  Retry PIO log: $($retryResult.LogPath)"
     }
     $retryElapsed = (Get-Date) - $retryStart
     Write-Host "[Retry] Build succeeded after clean rebuild ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
@@ -363,8 +463,77 @@ function Add-UploadPort {
     return $Arguments + @("--upload-port", $Port)
 }
 
+function Test-DeviceWebAssets {
+    param([string]$Address)
+
+    if ([string]::IsNullOrWhiteSpace($Address)) {
+        throw "-VerifyWeb requires -DeviceIP (for example: -DeviceIP 192.168.5.12)."
+    }
+
+    $baseUri = if ($Address -match '^https?://') { $Address.TrimEnd('/') } else { "http://$Address" }
+    $healthUri = "$baseUri/api/health"
+    $healthReady = $false
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            $healthResponse = Invoke-WebRequest -Uri $healthUri -UseBasicParsing -TimeoutSec 5
+            if ($healthResponse.StatusCode -eq 200) {
+                Write-Host "  [OK] /api/health -> $($healthResponse.StatusCode) (attempt $attempt)" -ForegroundColor Green
+                $healthReady = $true
+                break
+            }
+        }
+        catch {
+            if ($attempt -lt 8) {
+                Write-Host "  [WAIT] /api/health unavailable (attempt $attempt/8), retrying..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds 3
+            }
+        }
+    }
+    if (-not $healthReady) {
+        throw "Deployed Web health check failed after 8 attempts: $healthUri"
+    }
+
+    $paths = @(
+        '/',
+        '/pages/fragments/device-ota.html',
+        '/css/main.css',
+        '/js/modules/device-ota.js.gz'
+    )
+
+    Write-Host "[VerifyWeb] Checking deployed Web resources at $baseUri" -ForegroundColor Cyan
+    foreach ($path in $paths) {
+        $uri = "$baseUri$path"
+        $resourceReady = $false
+        $lastResourceError = 'no successful HTTP 200 response'
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            try {
+                $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
+                if ($response.StatusCode -eq 200) {
+                    Write-Host "  [OK] $path -> $($response.StatusCode)" -ForegroundColor Green
+                    $resourceReady = $true
+                    break
+                }
+                $lastResourceError = "HTTP $($response.StatusCode)"
+            }
+            catch {
+                $lastResourceError = $_.Exception.Message
+                if ($attempt -lt 4) {
+                    Write-Host "  [WAIT] $path unavailable (attempt $attempt/4), retrying..." -ForegroundColor DarkGray
+                    Start-Sleep -Seconds 2
+                }
+            }
+        }
+        if (-not $resourceReady) {
+            throw "Deployed Web resource check failed: $uri ($lastResourceError)"
+        }
+    }
+}
+
 if ($SkipFs -and $SkipFirmware) {
     throw "Nothing to do: remove -SkipFs or -SkipFirmware."
+}
+if ($VerifyWeb -and $BuildOnly) {
+    throw "-VerifyWeb requires an uploaded device; remove -BuildOnly."
 }
 
 Initialize-PlatformIoDataDir
@@ -403,9 +572,9 @@ if (-not $SkipFs -and -not $SkipWeb) {
     $swGz = Join-Path (Join-Path (Join-Path $ProjectDir "data") "www") "sw.js.gz"
     if (-not (Test-Path -LiteralPath $swGz -PathType Leaf)) {
         Write-Host "[Web] data/www/*.gz not found, generating web assets..." -ForegroundColor Yellow
-        & node scripts/gzip-www.js
+        & node scripts/gzip-www.js --no-upload --no-monitor
         if ($LASTEXITCODE -ne 0) {
-            throw "Web asset generation failed. Run 'node scripts/gzip-www.js' manually and retry."
+            throw "Web asset generation failed. Run 'node scripts/gzip-www.js --no-upload --no-monitor' manually and retry."
         }
         Write-Host "[Web] Web assets generated successfully." -ForegroundColor Green
     }
@@ -435,10 +604,14 @@ if (-not $SkipFirmware) {
 Write-Host ""
 Write-Host "Deploy step completed." -ForegroundColor Green
 
+if ($VerifyWeb -and -not $BuildOnly) {
+    Test-DeviceWebAssets -Address $DeviceIP
+}
+
 if ($Monitor -and -not $BuildOnly) {
     $monitorArgs = @("device", "monitor", "-e", $Env, "-b", [string]$Baud)
     if ($Port) {
         $monitorArgs += @("-p", $Port)
     }
-    Invoke-FastBeePio -Arguments $monitorArgs
+    Invoke-FastBeePio -Arguments $monitorArgs -ShowAllConsole
 }

@@ -181,6 +181,10 @@ public:
      * @return 重置是否成功
      */
     bool resetToDefaults();
+
+    // 恢复出厂流程使用：清除 network.json 失效时可能回退读取的 NVS 副本。
+    // 不改变当前连接，也不触发网络重启。
+    bool clearPersistentFallback();
     
     /**
      * @brief 获取网络统计信息
@@ -349,6 +353,7 @@ private:
     bool initializeFileSystem();
     bool loadNetworkConfig();
     bool saveNetworkConfig();
+    bool shouldRunMDNS() const;
     void syncIPManagerConfig();
     void attemptReconnect();
     void triggerEvent(NetworkStatus status, const String& message);

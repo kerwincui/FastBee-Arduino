@@ -21,6 +21,44 @@
 
 const http = require('http');
 
+function normalizeMac(value) {
+  return String(value || '').trim().replace(/-/g, ':').toUpperCase();
+}
+
+function parseDeviceStatus(ip, body) {
+  try {
+    const payload = typeof body === 'string' ? JSON.parse(body) : body;
+    if (!payload || payload.success !== true || !payload.data) return null;
+    const mac = normalizeMac(payload.data.macAddress);
+    if (!mac) return null;
+    return {
+      ip,
+      mac,
+      ssid: String(payload.data.ssid || ''),
+      rssi: typeof payload.data.rssi === 'number' ? payload.data.rssi : null,
+      uptimeMs: Number.isFinite(Number(payload.data.uptime)) ? Number(payload.data.uptime) : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function mergeDiscoveredDevice(byMac, device) {
+  if (!device || !device.mac) return;
+  byMac.set(normalizeMac(device.mac), { ...device, mac: normalizeMac(device.mac) });
+}
+
+function filterAndSortDevices(devices, targetMac) {
+  const filter = normalizeMac(targetMac);
+  const ipNumber = value => String(value).split('.').reduce((total, octet) => {
+    const part = Number.parseInt(octet, 10);
+    return (total * 256) + (Number.isFinite(part) ? part : 0);
+  }, 0);
+  return devices
+    .filter(device => !filter || normalizeMac(device.mac).startsWith(filter))
+    .sort((a, b) => ipNumber(a.ip) - ipNumber(b.ip));
+}
+
 /**
  * 探测单个 IP 的 /api/system/status，返回解析后的设备信息或 null。
  */
@@ -32,22 +70,7 @@ function probeDevice(ip, timeoutMs) {
         let data = '';
         res.on('data', c => (data += c));
         res.on('end', () => {
-          try {
-            const j = JSON.parse(data);
-            if (j && j.success && j.data && j.data.macAddress) {
-              resolve({
-                ip,
-                mac: j.data.macAddress,
-                ssid: j.data.ssid || '',
-                rssi: typeof j.data.rssi === 'number' ? j.data.rssi : null,
-                uptimeMs: j.data.uptime || 0,
-              });
-            } else {
-              resolve(null);
-            }
-          } catch {
-            resolve(null);
-          }
+          resolve(parseDeviceStatus(ip, data));
         });
       }
     );
@@ -81,7 +104,7 @@ async function discoverSubnet(options = {}) {
       while (idx < ips.length) {
         const ip = ips[idx++];
         const d = await probeDevice(ip, timeoutMs);
-        if (d) byMac.set(d.mac, d);
+        mergeDiscoveredDevice(byMac, d);
       }
     }
     await Promise.all(
@@ -93,17 +116,7 @@ async function discoverSubnet(options = {}) {
     await scanOnce();
   }
 
-  const found = [...byMac.values()];
-  found.sort((a, b) => {
-    const n = s => parseInt(s.split('.').pop(), 10);
-    return n(a.ip) - n(b.ip);
-  });
-
-  if (targetMac) {
-    const t = targetMac.toUpperCase();
-    return found.filter(d => d.mac.toUpperCase().startsWith(t));
-  }
-  return found;
+  return filterAndSortDevices([...byMac.values()], targetMac);
 }
 
 if (require.main === module) {
@@ -131,4 +144,11 @@ if (require.main === module) {
     });
 }
 
-module.exports = { discoverSubnet, probeDevice };
+module.exports = {
+  discoverSubnet,
+  filterAndSortDevices,
+  mergeDiscoveredDevice,
+  normalizeMac,
+  parseDeviceStatus,
+  probeDevice,
+};

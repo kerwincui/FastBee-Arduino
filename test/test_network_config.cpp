@@ -23,7 +23,7 @@
  */
 struct TestAPConfig {
     String apSSID = "";
-    String apPassword = "";
+    String apPassword = "admin123";
     String apIP = "192.168.4.1";
     uint8_t apChannel = 1;
     bool apHidden = false;
@@ -105,8 +105,8 @@ void test_ap_config_struct_defaults() {
     TEST_ASSERT_EQUAL_STRING("", cfg.apSSID.c_str());
     TestLog::step("Default apSSID is empty (auto-generate unique SSID with chipID)");
 
-    TEST_ASSERT_EQUAL_STRING("", cfg.apPassword.c_str());
-    TestLog::step("Default apPassword is empty (open AP for provisioning)");
+    TEST_ASSERT_EQUAL_STRING("admin123", cfg.apPassword.c_str());
+    TestLog::step("Default apPassword matches the protected factory AP");
 
     TEST_ASSERT_EQUAL_STRING("192.168.4.1", cfg.apIP.c_str());
     TestLog::step("Default apIP = 192.168.4.1");
@@ -435,7 +435,7 @@ void test_littlefs_overwrites_network_json() {
 
     // 模拟 LittleFS 中存在最新的 network.json
     const char* expectedStaSSID = "fastbee";
-    const char* expectedStaPassword = "15208747707";
+    const char* expectedStaPassword = "test-wifi-password";
     int32_t expectedMode = 1; // STA mode
 
     // 模拟文件系统读取行为
@@ -448,13 +448,13 @@ void test_littlefs_overwrites_network_json() {
     TestLog::step("staSSID from LittleFS = 'fastbee'");
 
     TEST_ASSERT_EQUAL_STRING(expectedStaPassword, readStaPassword.c_str());
-    TestLog::step("staPassword from LittleFS = '15208747707'");
+    TestLog::step("staPassword from LittleFS uses a synthetic fixture value");
 
     TEST_ASSERT_EQUAL(expectedMode, readMode);
     TestLog::step("mode from LittleFS = 1 (STA)");
 
-    // 模拟 NVS 中有旧配置（如之前的 kerwin）
-    const char* nvsStaSSID = "kerwin"; // 旧的 SSID
+    // 模拟 NVS 中有旧配置
+    const char* nvsStaSSID = "legacy-network";
 
     // KEY VERIFICATION：系统应从 LittleFS 加载而非 NVS
     TEST_ASSERT_NOT_EQUAL(0, strcmp(nvsStaSSID, readStaSSID.c_str()));
@@ -527,8 +527,8 @@ void test_sta_ssid_various_values() {
     };
 
     TestCase testCases[] = {
-        {"fastbee", "15208747707", true},
-        {"kerwin", "15208747707", true},
+        {"test-primary", "test-wifi-password", true},
+        {"test-backup", "test-wifi-password", true},
         {"MyHomeWiFi", "mypassword123", true},
         {"WiFi_With_Underscores", "password", true},
         {"WiFi With Spaces", "password", true},
@@ -721,11 +721,11 @@ void test_ap_to_sta_mode_transition_integration() {
 
     // 阶段 3：切换到 STA 模式并连接网络
     wifi.mode(WIFI_STA);
-    wifi.begin("fastbee", "15208747707");
+    wifi.begin("test-primary", "test-wifi-password");
     TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
     TEST_ASSERT_EQUAL(WL_CONNECTED, wifi.status());
-    TEST_ASSERT_EQUAL_STRING("fastbee", wifi.SSID().c_str());
-    TestLog::step("Transitioned to STA, connected to 'fastbee'");
+    TEST_ASSERT_EQUAL_STRING("test-primary", wifi.SSID().c_str());
+    TestLog::step("Transitioned to STA, connected to synthetic fixture network");
 
     // 阶段 4：验证网络连接
     IPAddress ip = wifi.localIP();
@@ -799,10 +799,10 @@ void test_sta_to_ap_sta_hybrid_integration() {
 
     // 阶段 1：首先建立 STA 连接
     wifi.mode(WIFI_STA);
-    wifi.begin("fastbee", "15208747707");
+    wifi.begin("test-primary", "test-wifi-password");
     TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
     TEST_ASSERT_EQUAL(WL_CONNECTED, wifi.status());
-    TestLog::step("Connected to 'fastbee' in STA mode");
+    TestLog::step("Connected to synthetic fixture network in STA mode");
 
     // 阶段 2：添加 AP 热点功能
     wifi.mode(WIFI_AP_STA);
@@ -811,9 +811,9 @@ void test_sta_to_ap_sta_hybrid_integration() {
     TestLog::step("Switched to AP+STA hybrid mode");
 
     // 阶段 3：验证两者同时运行
-    TEST_ASSERT_EQUAL_STRING("fastbee", wifi.SSID().c_str());
+    TEST_ASSERT_EQUAL_STRING("test-primary", wifi.SSID().c_str());
     TEST_ASSERT_EQUAL_STRING("fastbee-ap", wifi.softAPSSID().c_str());
-    TestLog::step("Both STA ('fastbee') and AP ('fastbee-ap') active");
+    TestLog::step("Both synthetic STA fixture and AP ('fastbee-ap') active");
 
     // 阶段 4：验证 AP 客户端计数
     wifi.setAPClients(2);
@@ -841,7 +841,7 @@ void test_power_loss_recovery_network_config() {
 
     // 阶段 1：断电前配置
     const char* preLossStaSSID = "fastbee";
-    const char* preLossStaPassword = "15208747707";
+    const char* preLossStaPassword = "test-wifi-password";
     int32_t preLossMode = 1;
 
     TestLog::step(String("Pre-loss config: staSSID='" + String(preLossStaSSID) + "'").c_str());
@@ -2195,7 +2195,7 @@ void test_last_resort_ap_permanent_wifi_failure() {
 struct MockWiFiManagerDriver {
     // 模拟 WiFiManager 的独立 wifiConfig 副本
     String apSSID = "";
-    String apPassword = "";   // 默认空字符串，与 WiFiManager.h 一致
+    String apPassword = "admin123";   // 安全兜底值，与 WiFiManager.h 一致
     String apIP = "192.168.4.1";
     uint8_t apChannel = 1;
     bool apHidden = false;
@@ -2219,15 +2219,15 @@ struct MockWiFiManagerDriver {
 };
 
 /**
- * @brief 无同步时 AP 密码为空（开放热点）—— 复现 bug
+ * @brief 无同步时仍使用兜底密码，而不是已加载的用户配置
  */
-void test_ap_password_without_sync_open_hotspot() {
-    TestLog::testStart("AP Password: Without Sync = Open Hotspot (Bug)");
+void test_ap_password_without_sync_uses_fallback() {
+    TestLog::testStart("AP Password: Without Sync Uses Fallback");
 
     // 模拟 FBNetworkManager 从 network.json 加载的配置
     TestAPConfig loadedConfig;
     loadedConfig.apSSID = "FastBee-Device";
-    loadedConfig.apPassword = "admin123";  // network.json 中的默认值
+    loadedConfig.apPassword = "configured123";
 
     // 模拟 WiFiManager 的独立配置（未同步）
     MockWiFiManagerDriver driver;
@@ -2238,9 +2238,10 @@ void test_ap_password_without_sync_open_hotspot() {
     wifi.mode(WIFI_AP);
     driver.startAP(wifi);
 
-    // BUG: WiFiManager 的 apPassword 仍为空，AP 是开放热点
-    TEST_ASSERT_EQUAL_STRING("", wifi.softAPPassword().c_str());
-    TestLog::step("Without sync: AP password is empty (open hotspot)");
+    // 未同步时不会泄露为开放热点，但用户配置也尚未生效。
+    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_NOT_EQUAL(0, strcmp("configured123", wifi.softAPPassword().c_str()));
+    TestLog::step("Without sync: protected fallback remains active");
 
     TestLog::testEnd(true);
 }
@@ -2254,7 +2255,7 @@ void test_ap_password_with_sync_correct() {
     // 模拟 FBNetworkManager 从 network.json 加载的配置
     TestAPConfig loadedConfig;
     loadedConfig.apSSID = "FastBee-Device";
-    loadedConfig.apPassword = "admin123";
+    loadedConfig.apPassword = "configured123";
 
     // 模拟 WiFiManager 的独立配置
     MockWiFiManagerDriver driver;
@@ -2267,9 +2268,9 @@ void test_ap_password_with_sync_correct() {
     driver.startAP(wifi);
 
     // FIX: 密码已同步，AP 是 WPA2 加密热点
-    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("configured123", wifi.softAPPassword().c_str());
     TEST_ASSERT_EQUAL_STRING("FastBee-Device", wifi.softAPSSID().c_str());
-    TestLog::step("With sync: AP password = 'admin123' (WPA2 protected)");
+    TestLog::step("With sync: configured AP password is active");
 
     TestLog::testEnd(true);
 }
@@ -2285,22 +2286,22 @@ void test_ap_password_full_initialize_flow() {
     // Step 1: 模拟从 network.json 加载配置（FBNetworkManager::loadNetworkConfig）
     TestAPConfig fbConfig;  // FBNetworkManager 的配置
     fbConfig.apSSID = "";   // 空时自动生成
-    fbConfig.apPassword = "admin123";  // network.json 默认值
+    fbConfig.apPassword = "configured123";
     fbConfig.apIP = "192.168.4.1";
     fbConfig.apChannel = 1;
     fbConfig.apHidden = false;
     fbConfig.apMaxConnections = 4;
-    TestLog::step("Step 1: Loaded config from network.json, apPassword='admin123'");
+    TestLog::step("Step 1: Loaded a custom AP password from network.json");
 
     // Step 2: WiFiManager 的独立配置（默认值）
     MockWiFiManagerDriver driver;
-    TEST_ASSERT_EQUAL_STRING("", driver.apPassword.c_str());
-    TestLog::step("Step 2: WiFiManager default apPassword='' (empty)");
+    TEST_ASSERT_EQUAL_STRING("admin123", driver.apPassword.c_str());
+    TestLog::step("Step 2: WiFiManager starts with the protected fallback");
 
     // Step 3: 同步配置（修复后的 initialize() 中添加的调用）
     driver.setNetworkConfig(fbConfig);
-    TEST_ASSERT_EQUAL_STRING("admin123", driver.apPassword.c_str());
-    TestLog::step("Step 3: setNetworkConfig() synced apPassword='admin123'");
+    TEST_ASSERT_EQUAL_STRING("configured123", driver.apPassword.c_str());
+    TestLog::step("Step 3: setNetworkConfig() synced the custom password");
 
     // Step 4: 启动 AP
     MockWiFiClass wifi;
@@ -2309,7 +2310,7 @@ void test_ap_password_full_initialize_flow() {
     TEST_ASSERT_TRUE(apResult);
 
     // 验证：AP 使用正确的密码
-    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("configured123", wifi.softAPPassword().c_str());
     TEST_ASSERT_EQUAL_STRING("192.168.4.1", wifi.softAPIP().toString().c_str());
     TestLog::step("Step 4: AP started with correct password and IP");
 
@@ -2426,7 +2427,7 @@ void test_network_config_group() {
     RUN_TEST(test_ap_to_sta_mode_transition);
 
     // AP 密码配置同步回归测试
-    RUN_TEST(test_ap_password_without_sync_open_hotspot);
+    RUN_TEST(test_ap_password_without_sync_uses_fallback);
     RUN_TEST(test_ap_password_with_sync_correct);
     RUN_TEST(test_ap_password_full_initialize_flow);
     RUN_TEST(test_ap_password_wpa2_minimum_length);
@@ -2912,7 +2913,7 @@ void test_multi_network_mode_group() {
  *
  * 回归测试覆盖：
  * - LittleFS 烧录后 network.json 覆盖验证（F4R0 flash 损坏案例）
- * - staSSID 配置值验证（fastbee/kerwin 等）
+ * - staSSID 配置值验证（synthetic fixture values）
  * - AP→STA 模式转换流程
  * - STA→AP 回退流程
  * - 断电重启配置恢复
@@ -2923,7 +2924,7 @@ void test_network_config_additional_group() {
     // LittleFS 文件系统配置测试
     RUN_TEST(test_littlefs_overwrites_network_json);  // KEY TEST: F4R0 flash damage regression
     RUN_TEST(test_network_json_required_fields);
-    RUN_TEST(test_sta_ssid_various_values);  // fastbee/kerwin/wildcard values
+    RUN_TEST(test_sta_ssid_various_values);  // synthetic and wildcard values
 
     // WiFi 模式转换集成测试
     RUN_TEST(test_ap_to_sta_mode_transition_integration);  // AP config → STA connect

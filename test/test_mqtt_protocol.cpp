@@ -9,6 +9,7 @@
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 #include "helpers/TestLogger.h"
+#include "network/ProtocolSecret.h"
 
 void test_mqtt_protocol_group();
 
@@ -1099,7 +1100,13 @@ void test_mqtt_deferred_restart_keeps_mqtts_client_in_marginal_dram() {
         "restartMQTTDeferred must check DRAM and largest block");
 
     size_t marginalPos = pm.find("DRAM marginal for MQTTS deferred restart", lowMemPos);
-    size_t createPos = pm.find("mqttClient = std::unique_ptr<MQTTClient>", lowMemPos);
+    // The implementation deliberately uses a non-throwing raw allocation and
+    // then transfers ownership into the unique_ptr. Keep the contract focused
+    // on the ordering (marginal path -> client creation), not that spelling.
+    size_t createPos = pm.find("new (std::nothrow) MQTTClient", lowMemPos);
+    if (createPos == std::string::npos) {
+        createPos = pm.find("std::unique_ptr<MQTTClient>", lowMemPos);
+    }
     TEST_ASSERT_TRUE_MESSAGE(marginalPos != std::string::npos && createPos != std::string::npos && marginalPos < createPos,
         "MQTTS marginal DRAM path must continue to create a client and let reconnect backoff/reclaim");
 
@@ -2902,11 +2909,15 @@ void test_mqtt_test_fast_path_no_false_positive() {
 
     // 快速路径返回后必须直接 return，不继续走 save+restart 流程
     auto acPos = content.find("alreadyConnected");
-    auto retPos = content.find("return;", acPos);
+    auto sendPos = content.find("HandlerUtils::sendJsonStream(request, doc)", acPos);
+    auto retPos = content.find("return;", sendPos);
+    auto savePos = content.find("saveMqttTestConfig", acPos);
     TEST_ASSERT_TRUE_MESSAGE(acPos != std::string::npos &&
+                             sendPos != std::string::npos &&
                              retPos != std::string::npos &&
-                             retPos - acPos < 900,
-        "Fast path must return immediately after sending alreadyConnected response");
+                             sendPos < retPos &&
+                             (savePos == std::string::npos || retPos < savePos),
+        "Fast path must send alreadyConnected response and return before save+restart");
     TestLog::step("Fast path returns immediately, no save+restart triggered");
 
     // 配置不匹配时走 save+restart 路径（不再创建独立 PubSubClient）
@@ -4425,8 +4436,12 @@ void test_mqtts_external_transport_skips_internal_tls() {
         doBlock.find("isMqtts &&") != std::string::npos &&
         doBlock.find("needsMqttsDramBudget") != std::string::npos,
         "MQTTS memory backoff must cover external software TLS without creating WiFi TLS");
+    // Keep the internal-TLS guard even when the condition is formatted across
+    // lines (the current implementation also covers the -4 timeout code).
+    const size_t tlsErrorGuard = content.find("if (isMqtts && !_externalClient &&");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("if (isMqtts && !_externalClient && lastErrorCode == -2)") != std::string::npos,
+        tlsErrorGuard != std::string::npos &&
+        content.find("lastErrorCode == -2", tlsErrorGuard) != std::string::npos,
         "External modem TLS connect failures must not be tagged as ESP32 internal TLS memory failures");
 
     TEST_ASSERT_TRUE_MESSAGE(
@@ -4762,14 +4777,14 @@ void test_topic_prefix_auto_off_no_prefix() {
 
 void test_topic_prefix_with_productId_and_deviceNum() {
     // autoPrefix=true，productId 和 deviceNum 都有，构建完整前缀
-    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
-    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+    String result = mockBuildFullTopic("/function/get", true, 1, "1001", "TESTDEVICE000001");
+    TEST_ASSERT_EQUAL_STRING("/1001/TESTDEVICE000001/function/get", result.c_str());
 }
 
 void test_topic_prefix_empty_productId_fallback_to_deviceNum() {
     // productId 为空时回退到 /{deviceNum} 前缀
-    String result = mockBuildFullTopic("/function/get", true, 1, "", "FBE9BFEFF16A398");
-    TEST_ASSERT_EQUAL_STRING("/FBE9BFEFF16A398/function/get", result.c_str());
+    String result = mockBuildFullTopic("/function/get", true, 1, "", "TESTDEVICE000001");
+    TEST_ASSERT_EQUAL_STRING("/TESTDEVICE000001/function/get", result.c_str());
 }
 
 void test_topic_prefix_empty_deviceNum_no_prefix() {
@@ -4842,34 +4857,34 @@ void test_topic_prefix_platform_publish_matches_device_subscribe() {
 
 void test_topic_prefix_default_productId_one() {
     // productId 默认为 "1" 时的主题前缀
-    String result = mockBuildFullTopic("/function/get", true, 1, "1", "FBE9BFEFF16A398");
-    TEST_ASSERT_EQUAL_STRING("/1/FBE9BFEFF16A398/function/get", result.c_str());
+    String result = mockBuildFullTopic("/function/get", true, 1, "1", "TESTDEVICE000001");
+    TEST_ASSERT_EQUAL_STRING("/1/TESTDEVICE000001/function/get", result.c_str());
 }
 
 void test_topic_prefix_no_curly_braces_in_output() {
     // 回归验证：输出绝不能包含 {} 字符（文档占位符 {productId} 等仅用于注释）
-    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
+    String result = mockBuildFullTopic("/function/get", true, 1, "1001", "TESTDEVICE000001");
     TEST_ASSERT_EQUAL(-1, result.indexOf('{'));
     TEST_ASSERT_EQUAL(-1, result.indexOf('}'));
-    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+    TEST_ASSERT_EQUAL_STRING("/1001/TESTDEVICE000001/function/get", result.c_str());
 }
 
 void test_topic_prefix_actual_device_values() {
     // 用实际设备值构建，确保与平台发布主题完全一致
-    // clientId = S&FBE9BFEFF16A398&1835&1，对应 productId=1835 deviceNum=FBE9BFEFF16A398
-    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
+    // Synthetic client identity maps to productId=1001 and deviceNum=TESTDEVICE000001.
+    String result = mockBuildFullTopic("/function/get", true, 1, "1001", "TESTDEVICE000001");
     // 必须是纯数值路径，不能含任何占位符
-    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+    TEST_ASSERT_EQUAL_STRING("/1001/TESTDEVICE000001/function/get", result.c_str());
     TEST_ASSERT_TRUE(result.indexOf("{productId}") < 0);
     TEST_ASSERT_TRUE(result.indexOf("{deviceNum}") < 0);
 }
 
 void test_topic_prefix_no_curly_braces_ota() {
     // OTA 类型同样不能含占位符
-    String result = mockBuildFullTopic("/upgrade/set", true, 5, "1835", "FBE9BFEFF16A398");
+    String result = mockBuildFullTopic("/upgrade/set", true, 5, "1001", "TESTDEVICE000001");
     TEST_ASSERT_EQUAL(-1, result.indexOf('{'));
     TEST_ASSERT_EQUAL(-1, result.indexOf('}'));
-    TEST_ASSERT_EQUAL_STRING("/FBE9BFEFF16A398/upgrade/set", result.c_str());
+    TEST_ASSERT_EQUAL_STRING("/TESTDEVICE000001/upgrade/set", result.c_str());
 }
 
 // ============================================================
@@ -5126,7 +5141,7 @@ void test_payload_data_report_format() {
     TEST_ASSERT_EQUAL(1, parsedArr.size());
     TEST_ASSERT_EQUAL_STRING("temperature", parsedArr[0]["id"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("25.5", parsedArr[0]["value"].as<const char*>());
-    TEST_ASSERT_TRUE(parsedArr[0].containsKey("remark"));
+    TEST_ASSERT_TRUE(parsedArr[0]["remark"].is<const char*>());
 }
 
 void test_payload_device_info_format() {
@@ -5147,8 +5162,8 @@ void test_payload_device_info_format() {
 
     JsonDocument parsed;
     TEST_ASSERT_FALSE(deserializeJson(parsed, payload));
-    TEST_ASSERT_TRUE(parsed.containsKey("rssi"));
-    TEST_ASSERT_TRUE(parsed.containsKey("firmwareVersion"));
+    TEST_ASSERT_TRUE(parsed["rssi"].is<int>());
+    TEST_ASSERT_TRUE(parsed["firmwareVersion"].is<const char*>());
     TEST_ASSERT_EQUAL(3, parsed["status"].as<int>());
     TEST_ASSERT_EQUAL(1, parsed["userId"].as<int>());
     TEST_ASSERT_TRUE(parsed["summary"].is<JsonObject>());
@@ -5179,9 +5194,9 @@ void test_payload_monitor_data_format() {
     TEST_ASSERT_EQUAL(2, parsedArr.size());
     // 验证每项都有 id/value/remark 三字段
     for (JsonVariant v : parsedArr) {
-        TEST_ASSERT_TRUE(v.containsKey("id"));
-        TEST_ASSERT_TRUE(v.containsKey("value"));
-        TEST_ASSERT_TRUE(v.containsKey("remark"));
+        TEST_ASSERT_TRUE(v["id"].is<const char*>());
+        TEST_ASSERT_TRUE(v["value"].is<const char*>());
+        TEST_ASSERT_TRUE(v["remark"].is<const char*>());
     }
 }
 
@@ -5529,12 +5544,20 @@ void test_mqtt_manual_reconnect_guards_before_scheme() {
         "autoReconnect guard must be checked before scheme branching");
     TestLog::step("autoReconnect guard precedes scheme check");
 
-    // 3. 已连接快速路径在最前面
+    // 3. 配置/内存保护必须先于已连接快速路径；否则旧客户端对象会
+    //    掩盖刚持久化的 disabled_by_memory 或 enabled=false 状态。
     size_t connectedCheck = fnBody.find("getIsConnected");
+    size_t disabledBranch = fnBody.find("if (!mqttEnabled)");
     TEST_ASSERT_TRUE_MESSAGE(
-        connectedCheck != std::string::npos && connectedCheck < disabledGuard,
-        "Connected fast path must be the first check");
-    TestLog::step("Connected fast path is first");
+        connectedCheck != std::string::npos &&
+        disabledBranch != std::string::npos &&
+        disabledBranch < connectedCheck,
+        "MQTT disabled guard must precede connected fast path");
+    TestLog::step("Configuration disabled guard precedes connected fast path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        connectedCheck != std::string::npos && connectedCheck < schemeCheck,
+        "Connected fast path must precede scheme branching");
+    TestLog::step("Connected fast path precedes scheme check");
 
     // 4. 禁用响应包含 mqttDisabled 字段
     TEST_ASSERT_TRUE_MESSAGE(
@@ -5658,7 +5681,12 @@ void test_mqtt_manual_reconnect_response_format() {
     // 场景 5：非 TLS → reconnecting=bool(结果), message=描述
     // 注意：注释中也包含 restartMQTTDeferred(true) 文本，需用 "pm->" 前缀定位到实际代码
     size_t nonTlsBlock = fnBody.find("pm->restartMQTTDeferred(true)");
-    std::string afterNonTls = fnBody.substr(nonTlsBlock, 300);
+    size_t nonTlsSend = nonTlsBlock == std::string::npos
+        ? std::string::npos
+        : fnBody.find("HandlerUtils::sendJsonStream(request, doc);", nonTlsBlock);
+    std::string afterNonTls = (nonTlsBlock == std::string::npos || nonTlsSend == std::string::npos)
+        ? std::string()
+        : fnBody.substr(nonTlsBlock, nonTlsSend - nonTlsBlock + 120);
     TEST_ASSERT_TRUE_MESSAGE(
         afterNonTls.find("reconnecting") != std::string::npos &&
         (afterNonTls.find("deferredOk") != std::string::npos ||
@@ -5667,8 +5695,16 @@ void test_mqtt_manual_reconnect_response_format() {
         "Non-TLS response: must include reconnecting field and descriptive message");
     TestLog::step("Non-TLS response: reconnecting + message");
 
-    // 所有分支都返回 success: true
-    // 计算 success 出现次数（至少 5 次：已连接/禁用/autoReconnect/MQTTS/非TLS）
+    // Guard/reboot branches acknowledge the request, while a rejected
+    // non-TLS rebuild must return success=false so generic API callers do not
+    // mistake an out-of-memory failure for an accepted reconnect.
+    TEST_ASSERT_TRUE_MESSAGE(
+        fnBody.find("doc[\"success\"] = deferredOk") != std::string::npos,
+        "Non-TLS reconnect must expose operation success in the response envelope");
+    TestLog::step("Non-TLS reconnect reports success=false when rebuild is rejected");
+
+    // Count the successful guard/reboot responses (connected/disabled/
+    // autoReconnect/MQTTS).  The non-TLS response is conditional on deferredOk.
     int successCount = 0;
     size_t pos = 0;
     while ((pos = fnBody.find("[\"success\"] = true", pos)) != std::string::npos) {
@@ -5682,9 +5718,9 @@ void test_mqtt_manual_reconnect_response_format() {
         pos++;
     }
     TEST_ASSERT_TRUE_MESSAGE(
-        successCount >= 4,
-        "All response branches must include success=true (found fewer than 4)");
-    TestLog::step("All branches return success=true");
+        successCount >= 3,
+        "Guard/reboot response branches must include success=true (found fewer than 3)");
+    TestLog::step("Guard/reboot branches return success=true; failed rebuild is explicit");
 
     TestLog::testEnd(true);
 }
@@ -6602,8 +6638,8 @@ void test_monitor_merge_datafield_as_id() {
     JsonArray arr = parsed.as<JsonArray>();
     TEST_ASSERT_EQUAL(2, arr.size());
     for (JsonVariant v : arr) {
-        TEST_ASSERT_TRUE(v.containsKey("id"));
-        TEST_ASSERT_TRUE(v.containsKey("value"));
+        TEST_ASSERT_TRUE(v["id"].is<const char*>());
+        TEST_ASSERT_TRUE(v["value"].is<const char*>());
         TEST_ASSERT_EQUAL_STRING("sensor", v["remark"].as<const char*>());
     }
     TestLog::step("payload format valid for /monitor/post");
@@ -6732,6 +6768,120 @@ void test_monitor_merge_appends_after_local_gpio() {
     TEST_ASSERT_EQUAL_STRING("local", arr[0]["remark"].as<const char*>());
     TEST_ASSERT_EQUAL_STRING("sensor", arr[1]["remark"].as<const char*>());
     TestLog::step("local + sensor entries merged into one valid array");
+
+    TestLog::testEnd(true);
+}
+
+void test_protocol_config_get_redacts_mqtt_secrets() {
+    TestLog::testStart("Protocol config GET redacts MQTT secrets");
+
+    JsonDocument protocol;
+    JsonObject mqtt = protocol["mqtt"].to<JsonObject>();
+    mqtt["username"] = "device-user";
+    mqtt["password"] = "stored-password";
+    mqtt["mqttSecret"] = "stored-mqtt-secret";
+    mqtt["authCode"] = "";
+
+    FastBee::ProtocolSecret::redactMqttConfig(mqtt);
+
+    TEST_ASSERT_EQUAL_STRING(FastBee::ProtocolSecret::MASK,
+                             mqtt["password"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(FastBee::ProtocolSecret::MASK,
+                             mqtt["mqttSecret"].as<const char*>());
+    TEST_ASSERT_TRUE_MESSAGE(mqtt["authCode"].isNull(),
+                              "Empty MQTT credentials should be omitted");
+    TEST_ASSERT_EQUAL_STRING("device-user", mqtt["username"].as<const char*>());
+
+    TestLog::testEnd(true);
+}
+
+void test_protocol_config_post_mask_preserves_mqtt_secrets() {
+    TestLog::testStart("Protocol config POST preserves masked MQTT secrets");
+
+    TEST_ASSERT_TRUE(FastBee::ProtocolSecret::isMask(String("********")));
+    TEST_ASSERT_TRUE(FastBee::ProtocolSecret::isMask(String("  ***  ")));
+    TEST_ASSERT_FALSE(FastBee::ProtocolSecret::isMask(String("**")));
+    TEST_ASSERT_FALSE(FastBee::ProtocolSecret::isMask(String("new-secret")));
+
+    TEST_ASSERT_FALSE_MESSAGE(
+        FastBee::ProtocolSecret::shouldPersist(String("********"), true),
+        "A returned mask must not overwrite the stored credential");
+    TEST_ASSERT_FALSE_MESSAGE(
+        FastBee::ProtocolSecret::shouldPersist(String("new-secret"), false),
+        "An omitted form field must preserve the stored credential");
+    TEST_ASSERT_TRUE_MESSAGE(
+        FastBee::ProtocolSecret::shouldPersist(String("new-secret"), true),
+        "A new explicit credential must replace the stored credential");
+    TEST_ASSERT_TRUE_MESSAGE(
+        FastBee::ProtocolSecret::shouldPersist(String(""), true),
+        "An explicit empty credential must still allow the user to clear it");
+
+    TestLog::testEnd(true);
+}
+
+void test_protocol_config_secret_route_contract() {
+    TestLog::testStart("Protocol config secret route contract");
+
+    const std::string route = readProjectFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(route.empty(), "ProtocolRouteHandler.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("redactMqttConfig(mqttOut)") != std::string::npos,
+        "Compact MQTT GET must redact its response object");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("sendRedactedProtocolConfigFromFile(request)") != std::string::npos,
+        "Full and compact-without-section GET must use the redacted file response");
+
+    struct SecretSaveContract {
+        const char* variable;
+        const char* param;
+        const char* field;
+    } contracts[] = {
+        {"submittedPassword", "mqtt_password", "password"},
+        {"submittedMqttSecret", "mqtt_mqttSecret", "mqttSecret"},
+        {"submittedAuthCode", "mqtt_authCode", "authCode"},
+    };
+    for (const SecretSaveContract& contract : contracts) {
+        const std::string assignment = std::string("String ") + contract.variable +
+            " = GP(\"" + contract.param + "\"";
+        const size_t assignmentPos = route.find(assignment);
+        TEST_ASSERT_TRUE_MESSAGE(assignmentPos != std::string::npos,
+                                 "MQTT secret save must read the submitted field separately");
+        const std::string block = assignmentPos == std::string::npos
+            ? std::string()
+            : route.substr(assignmentPos, 500);
+        TEST_ASSERT_TRUE_MESSAGE(
+            block.find("ProtocolSecret::shouldPersist") != std::string::npos &&
+            block.find(std::string("hasProtocolParam(request, \"") + contract.param + "\")") != std::string::npos &&
+            block.find(std::string("[\"") + contract.field + "\"] = " + contract.variable) != std::string::npos,
+            "Every MQTT credential write must preserve a returned mask");
+    }
+
+    TestLog::testEnd(true);
+}
+
+void test_protocol_config_secret_redaction_is_low_memory_bounded() {
+    TestLog::testStart("Protocol config secret redaction is low-memory bounded");
+
+    const std::string route = readProjectFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    const size_t compactStart = route.find("void sendCompactMqttConfigFromFile");
+    const size_t fullStart = route.find("void sendRedactedProtocolConfigFromFile");
+    const size_t nextAfterFull = route.find("\nvoid copyModbusTaskSummary", fullStart);
+    TEST_ASSERT_TRUE_MESSAGE(compactStart != std::string::npos && fullStart != std::string::npos,
+                             "Redacted protocol response helpers must exist");
+
+    const std::string compactBody = route.substr(compactStart, fullStart - compactStart);
+    const std::string fullBody = route.substr(fullStart, nextAfterFull - fullStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        compactBody.find("loadMqttConfigDocument(source)") != std::string::npos &&
+        compactBody.find("makeJsonDocument(32768)") == std::string::npos,
+        "Compact MQTT GET must filter to its section without a 32 KB document request");
+    TEST_ASSERT_TRUE_MESSAGE(
+        fullBody.find("deserializeJson(doc[\"data\"], file)") != std::string::npos &&
+        fullBody.find("makeJsonDocument(32768)") == std::string::npos,
+        "Full GET must parse directly into the response data object without a duplicate 32 KB document");
+    TEST_ASSERT_TRUE_MESSAGE(
+        route.find("request->sendChunked(\"application/json\"") == std::string::npos,
+        "Protocol GET must never stream protocol.json verbatim");
 
     TestLog::testEnd(true);
 }
@@ -6994,6 +7144,12 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_monitor_merge_periph_id_fallback_as_id);
     RUN_TEST(test_monitor_merge_stalled_rule_drops_cached_sensors);
     RUN_TEST(test_monitor_merge_appends_after_local_gpio);
+
+    // Protocol configuration credential disclosure/write-back regression tests
+    RUN_TEST(test_protocol_config_get_redacts_mqtt_secrets);
+    RUN_TEST(test_protocol_config_post_mask_preserves_mqtt_secrets);
+    RUN_TEST(test_protocol_config_secret_route_contract);
+    RUN_TEST(test_protocol_config_secret_redaction_is_low_memory_bounded);
 
     TestLog::groupEnd();
 }

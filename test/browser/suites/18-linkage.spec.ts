@@ -660,24 +660,12 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await expect(authPage.locator('#app-container')).toBeVisible();
   });
 
-  test('LNK-023: Flash使用率→文件管理一致性', async ({ authPage, navigateTo }) => {
-    test.skip(!(await hasMenuPage(authPage, 'data')), '设备不支持文件管理');
-    // 1. 仪表盘获取Flash使用率
-    await navigateTo('dashboard');
-    await authPage.waitForLoadState('networkidle');
-    const flashDashboard = await authPage.evaluate(async () => {
-      try {
-        const r = await fetch('/api/system/info');
-        const data = await r.json();
-        return data?.data?.filesystem?.used ?? -1;
-      } catch { return -1; }
-    });
-
-    // 2. 文件管理页
-    await navigateTo('data');
-    await authPage.waitForLoadState('networkidle');
-    await expect(authPage.locator('#app-container')).toBeVisible();
-    console.log(`Dashboard Flash used: ${flashDashboard}`);
+  test('LNK-023: 配置备份入口位于设备高级配置', async ({ authPage, navigateTo }) => {
+    await navigateTo('device');
+    await authPage.locator('[data-tab="dev-advanced"]').click();
+    await expect(authPage.locator('#dev-config-import-file')).toBeAttached();
+    await expect(authPage.locator('#dev-config-import-btn')).toBeVisible();
+    await expect(authPage.locator('#dev-config-export-btn')).toBeVisible();
   });
 
   // ========== 场景F：安全与异常场景联动 ==========
@@ -1176,7 +1164,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
 
     const adminAccessiblePages: string[] = [];
     const allPages = ['dashboard', 'device', 'network', 'peripheral', 'periph-exec',
-                      'protocol', 'device-control', 'rule-script', 'logs', 'data', 'users'];
+                      'protocol', 'device-control', 'rule-script', 'logs', 'users'];
     for (const pageName of allPages) {
       try {
         await navigateTo(pageName);

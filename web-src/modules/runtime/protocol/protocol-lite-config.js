@@ -96,6 +96,9 @@
                     return this._protocolLiteConfig;
                 })
                 .catch(err => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) {
+                        return null;
+                    }
                     console.error('load MQTT protocol config failed:', err);
                     throw err;
                 });
@@ -198,6 +201,18 @@
                 if (badge) {
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
                     badge.textContent = '未连接';
+                }
+                // The lite page can render before mqtt-config.js performs its
+                // first status poll. Keep the reason field consistent with
+                // the backend contract so an automatic memory disable is not
+                // mistaken for an ordinary user choice.
+                if (typeof this._setMqttStatusReason === 'function') {
+                    var disabledReason = mqtt.disabledByMemory === true ||
+                        mqtt.disable_mqtt_by_memory === true ||
+                        mqtt.disabled_by_memory === true
+                        ? '设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用'
+                        : (mqtt.statusReason || mqtt.lastErrorMessage || 'MQTT 已禁用');
+                    this._setMqttStatusReason(disabledReason);
                 }
             }
         },

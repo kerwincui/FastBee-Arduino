@@ -83,9 +83,10 @@ void RestartDiagnostics::collectCurrentState(PreRestartSnapshot& snap) {
     TaskHandle_t asyncTcp = xTaskGetHandle("async_tcp");
     TaskHandle_t mqttReconn = xTaskGetHandle("mqtt_reconn");
     
-    if (loopTask)   snap.loopTaskWatermark = uxTaskGetStackHighWaterMark(loopTask) * 4;
-    if (asyncTcp)   snap.asyncTcpWatermark = uxTaskGetStackHighWaterMark(asyncTcp) * 4;
-    if (mqttReconn) snap.mqttReconnWatermark = uxTaskGetStackHighWaterMark(mqttReconn) * 4;
+    // ESP-IDF's FreeRTOS port returns the minimum free stack in bytes.
+    if (loopTask)   snap.loopTaskWatermark = uxTaskGetStackHighWaterMark(loopTask);
+    if (asyncTcp)   snap.asyncTcpWatermark = uxTaskGetStackHighWaterMark(asyncTcp);
+    if (mqttReconn) snap.mqttReconnWatermark = uxTaskGetStackHighWaterMark(mqttReconn);
     
     // 网络状态
     snap.wifiConnected = (WiFi.status() == WL_CONNECTED) ? 1 : 0;

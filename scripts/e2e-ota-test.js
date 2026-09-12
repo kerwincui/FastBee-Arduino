@@ -35,7 +35,7 @@ const PASS = getArg('pass', '');
 const FIRMWARE = getArg('firmware', '');
 const ALLOW_BEGIN = args.includes('--allow-begin');
 
-let sessionId = '';
+let sessionCookie = '';
 let passed = 0;
 let failed = 0;
 
@@ -52,7 +52,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function request(method, apiPath, options) {
     options = options || {};
     const headers = Object.assign({}, options.headers || {});
-    if (sessionId) headers['Cookie'] = 'sessionId=' + sessionId;
+    if (sessionCookie) headers['Cookie'] = sessionCookie;
     const resp = await fetch(BASE + apiPath, {
         method: method,
         headers: headers,
@@ -79,21 +79,25 @@ async function login() {
     if (resp.status !== 200 || !resp.json) {
         throw new Error('登录失败: HTTP ' + resp.status + ' ' + resp.text.slice(0, 200));
     }
-    // 兼容 envelope：{success,data:{sessionId}} 或裸 {sessionId}
+    // Current firmware sets an HttpOnly session cookie; retain legacy sessionId
+    // parsing so the test remains useful with older images.
     const data = (resp.json.data) ? resp.json.data : resp.json;
-    sessionId = data.sessionId || '';
-    if (!sessionId) {
-        // 兜底：从 Set-Cookie 解析
-        const sc = resp.headers.get('set-cookie') || '';
-        const m = sc.match(/sessionId=([^;]+)/);
-        if (m) sessionId = m[1];
+    const setCookie = resp.headers.get('set-cookie') || '';
+    const sessionMatch = setCookie.match(/(?:^|[,; ]+)session=([^;, ]+)/i);
+    if (sessionMatch) {
+        sessionCookie = 'session=' + sessionMatch[1];
+    } else if (data.sessionId) {
+        sessionCookie = 'sessionId=' + data.sessionId;
+    } else {
+        const legacyMatch = setCookie.match(/(?:^|[,; ]+)sessionId=([^;, ]+)/i);
+        if (legacyMatch) sessionCookie = 'sessionId=' + legacyMatch[1];
     }
-    if (!sessionId) throw new Error('登录成功但未获得 sessionId');
+    if (!sessionCookie) throw new Error('登录成功但未获得 session cookie');
 }
 
 async function loginAndReport() {
     await login();
-    ok('登录认证', 'sessionId=' + sessionId.slice(0, 8) + '...');
+    ok('登录认证', 'cookie=' + sessionCookie.split('=')[0]);
 }
 
 // ---------- 非破坏性套件 ----------

@@ -334,7 +334,7 @@
                 fields = [
                     ['value', '接收电平']
                 ];
-            } else if (cat === 'dht11' || cat === 'dht22' || cat === 'sht31' || cat === 'aht20') {
+            } else if (cat === 'dht11' || cat === 'dht22' || cat === 'sht30' || cat === 'sht31' || cat === 'aht20') {
                 fields = [
                     ['temperature', '温度'],
                     ['humidity', '湿度']
@@ -346,6 +346,12 @@
             } else if (cat === 'current') {
                 fields = [
                     ['current', '电流']
+                ];
+            } else if (cat === 'current_loop' || cat === '4-20ma' || cat === '4_20ma') {
+                fields = [
+                    ['value', '回路值'],
+                    ['temperature', '温度'],
+                    ['humidity', '湿度']
                 ];
             } else if (cat === 'voltage') {
                 fields = [
@@ -409,7 +415,8 @@
             else if (cat === 'ds18b20') allowedTypes = ds18b20Types;
             else if (cat === 'ultrasonic') allowedTypes = ultrasonicTypes;
             else if (cat === 'current' || cat === 'voltage' || cat === 'ntc') allowedTypes = analogTypes.concat([38]);
-            else if (cat === 'sht31' || cat === 'aht20' || cat === 'bh1750' || cat === 'bmp280' || cat === 'mpu6050') allowedTypes = i2cSensorTypes;
+            else if (cat === 'sht30' || cat === 'sht31' || cat === 'aht20' || cat === 'bh1750' || cat === 'bmp280' || cat === 'mpu6050') allowedTypes = i2cSensorTypes;
+            else if (cat === 'current_loop' || cat === '4-20ma' || cat === '4_20ma') allowedTypes = analogTypes.concat([38]);
             else allowedTypes = analogTypes;
             var prev = selectedValue || sel.value;
             sel.innerHTML = '<option value="">--</option>';
@@ -448,6 +455,11 @@
                 if (unitEl) unitEl.value = 'A';
                 if (scaleEl) scaleEl.value = '1';
                 if (decEl) decEl.value = '3';
+            } else if (normCat === 'current_loop' || normCat === '4-20ma' || normCat === '4_20ma') {
+                if (labelEl) labelEl.value = '4-20mA';
+                if (unitEl) unitEl.value = 'mA';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '3';
             } else if (normCat === 'voltage') {
                 if (labelEl) labelEl.value = '电压';
                 if (unitEl) unitEl.value = 'V';
@@ -478,7 +490,7 @@
                 if (unitEl) unitEl.value = 'lx';
                 if (scaleEl) scaleEl.value = '1';
                 if (decEl) decEl.value = '0';
-            } else if (normCat === 'sht31' || normCat === 'aht20' || normCat === 'dht11' || normCat === 'dht22' || normCat === 'ds18b20') {
+            } else if (normCat === 'sht30' || normCat === 'sht31' || normCat === 'aht20' || normCat === 'dht11' || normCat === 'dht22' || normCat === 'ds18b20') {
                 if (labelEl) labelEl.value = '温度';
                 if (unitEl) unitEl.value = '℃';
                 if (scaleEl) scaleEl.value = '1';
@@ -500,8 +512,11 @@
             // 显示/隐藏 NTC 校准参数（B值/串联电阻/标称电阻）
             var ntcGroup = block.querySelector('.pe-sensor-ntc-group');
             if (ntcGroup) this._setSectionVisible(ntcGroup, normCat === 'ntc');
+            var loopGroup = block.querySelector('.pe-sensor-current-loop-group');
+            if (loopGroup) this._setSectionVisible(loopGroup,
+                normCat === 'current_loop' || normCat === '4-20ma' || normCat === '4_20ma');
             // 数字传感器隐藏缩放系数/偏移量和高级参数（它们直接输出物理值，不需要校准）
-            var digitalCats = ['dht11','dht22','ds18b20','sht31','aht20','bh1750','bmp280','mpu6050'];
+            var digitalCats = ['dht11','dht22','ds18b20','sht30','sht31','aht20','bh1750','bmp280','mpu6050'];
             var isDigital = digitalCats.indexOf(normCat) >= 0;
             var calGroup = block.querySelector('.pe-sensor-calibration-group');
             if (calGroup) this._setSectionVisible(calGroup, !isDigital);

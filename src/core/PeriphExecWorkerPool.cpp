@@ -4,7 +4,8 @@
 
 PeriphExecWorkerPool::PeriphExecWorkerPool()
     : _queue(nullptr), _started(false), _shuttingDown(false),
-      _exitSemaphore(nullptr), _workersCreated(0) {
+      _exitSemaphore(nullptr), _workersCreated(0), _workersExited(0),
+      _sentinelsSent(false) {
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
     }
@@ -32,6 +33,10 @@ bool PeriphExecWorkerPool::begin() {
         LOGGER.error("[WorkerPool] Failed to create exit semaphore");
         return false;
     }
+
+    _workersExited = 0;
+    _sentinelsSent = false;
+    _shuttingDown = false;
 
     // 创建 N 个常驻 worker 任务
     char taskName[16];
@@ -75,6 +80,8 @@ bool PeriphExecWorkerPool::begin() {
                 xSemaphoreTake(_exitSemaphore, pdMS_TO_TICKS(2000));
             }
             _workersCreated = 0;
+            _workersExited = 0;
+            _sentinelsSent = false;
             vQueueDelete(_queue);
             _queue = nullptr;
             vSemaphoreDelete(_exitSemaphore);
@@ -108,35 +115,87 @@ bool PeriphExecWorkerPool::enqueue(AsyncExecContext* ctx) {
     return true;
 }
 
-void PeriphExecWorkerPool::shutdown() {
+bool PeriphExecWorkerPool::shutdown(uint32_t timeoutMs) {
     if (!_started && !_queue && _workersCreated == 0) {
-        return;
+        return true;
     }
     _shuttingDown = true;
 
-    // 投递 N 个哨兵唤醒 worker 退出
-    if (_queue) {
-        AsyncExecContext* sentinel = nullptr;
-        for (size_t i = 0; i < WORKER_COUNT; ++i) {
-            xQueueSend(_queue, &sentinel, pdMS_TO_TICKS(100));
+    // 每个 worker 只需一个哨兵。重复调用 shutdown() 时不要无限追加
+    // 哨兵，否则第一次超时留下的 semaphore 计数会掩盖仍在运行的 worker。
+    if (_queue && !_sentinelsSent) {
+        // Jobs still waiting in the queue own a task slot and a context-pool
+        // entry. Cancel them before inserting sentinels; otherwise a memory
+        // pressure pause can permanently exhaust the async pool even though
+        // no worker will ever execute those jobs.
+        AsyncExecContext* pending = nullptr;
+        while (xQueueReceive(_queue, &pending, 0) == pdTRUE) {
+            if (pending) {
+                if (pending->manager) {
+                    pending->manager->cancelWorkerJob(pending);
+                } else if (pending->taskSlot) {
+                    xSemaphoreGive(pending->taskSlot);
+                }
+            }
+            pending = nullptr;
         }
+
+        AsyncExecContext* sentinel = nullptr;
+        bool allSentinelsQueued = true;
+        for (size_t i = 0; i < WORKER_COUNT; ++i) {
+            if (xQueueSend(_queue, &sentinel, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                LOGGER.errorf("[WorkerPool] Failed to queue shutdown sentinel #%u",
+                              (unsigned)i);
+                // Do not claim that all sentinels were queued. A later retry
+                // can finish the request after workers free queue capacity.
+                allSentinelsQueued = false;
+                break;
+            }
+        }
+        _sentinelsSent = allSentinelsQueued;
     }
 
     _started = false;
-    for (size_t i = 0; i < _workersCreated; ++i) {
-        if (_exitSemaphore && xSemaphoreTake(_exitSemaphore, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            LOGGER.errorf("[WorkerPool] Worker #%u did not exit before timeout", (unsigned)i);
+    const size_t target = _workersCreated;
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeoutTicks = pdMS_TO_TICKS(timeoutMs);
+    while (_workersExited < target) {
+        TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= timeoutTicks) break;
+        TickType_t remaining = timeoutTicks - elapsed;
+        // The semaphore is only a wake-up; _workersExited is the authoritative
+        // count, so stale notifications from an earlier retry cannot make us
+        // free the queue while a worker is still using it.
+        if (_exitSemaphore) {
+            xSemaphoreTake(_exitSemaphore, remaining > pdMS_TO_TICKS(100)
+                                          ? pdMS_TO_TICKS(100) : remaining);
+        } else {
+            vTaskDelay(remaining > pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : remaining);
         }
+    }
+    const bool allExited = (_workersExited >= target);
+    // Never delete a queue that a still-running worker may touch.  Keeping
+    // the objects alive is safer than turning a long-running rule into a
+    // use-after-free during memory recovery; the next health sample can retry.
+    if (!allExited) {
+        _started = false;
+        LOGGER.errorf("[WorkerPool] %u worker(s) did not exit before timeout; keeping pool alive",
+                      (unsigned)(target - _workersExited));
+        return false;
     }
     if (_queue) vQueueDelete(_queue);
     _queue = nullptr;
     if (_exitSemaphore) vSemaphoreDelete(_exitSemaphore);
     _exitSemaphore = nullptr;
     _workersCreated = 0;
+    _workersExited = 0;
+    _sentinelsSent = false;
+    _shuttingDown = false;
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
     }
     _queue = nullptr;
+    return true;
 }
 
 size_t PeriphExecWorkerPool::pendingCount() const {
@@ -150,6 +209,7 @@ void PeriphExecWorkerPool::workerLoopThunk(void* arg) {
     auto* self = static_cast<PeriphExecWorkerPool*>(arg);
     if (self) {
         self->workerLoop();
+        self->_workersExited++;
         if (self->_exitSemaphore) xSemaphoreGive(self->_exitSemaphore);
     }
     vTaskDelete(nullptr);

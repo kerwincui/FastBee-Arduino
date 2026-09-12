@@ -12,6 +12,7 @@
 #include "protocols/ModbusHandler.h"
 #include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
+#include "utils/StringUtils.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
@@ -355,8 +356,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                         mapping.scaleFactor = m["scaleFactor"] | 1.0f;
                         mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
                         const char* sid = m["sensorId"] | "";
-                        strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
-                        mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        StringUtils::copyUtf8(mapping.sensorId, sizeof(mapping.sensorId), sid);
                         const char* u = m["unit"] | "";
                         strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
                         mapping.unit[sizeof(mapping.unit) - 1] = '\0';
@@ -377,14 +377,11 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 JsonObject d = dv.as<JsonObject>();
                 ModbusSubDevice& dev = config.master.devices[config.master.deviceCount];
                 const char* dName = d["name"] | "Device";
-                strncpy(dev.name, dName, sizeof(dev.name) - 1);
-                dev.name[sizeof(dev.name) - 1] = '\0';
+                StringUtils::copyUtf8(dev.name, sizeof(dev.name), dName);
                 const char* sid = d["sensorId"] | "";
-                strncpy(dev.sensorId, sid, sizeof(dev.sensorId) - 1);
-                dev.sensorId[sizeof(dev.sensorId) - 1] = '\0';
+                StringUtils::copyUtf8(dev.sensorId, sizeof(dev.sensorId), sid);
                 const char* dType = d["deviceType"] | "relay";
-                strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
-                dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
+                StringUtils::copyUtf8(dev.deviceType, sizeof(dev.deviceType), dType);
                 dev.slaveAddress    = d["slaveAddress"] | (uint8_t)1;
                 dev.channelCount    = d["channelCount"] | (uint8_t)2;
                 dev.coilBase        = d["coilBase"] | (uint16_t)0;

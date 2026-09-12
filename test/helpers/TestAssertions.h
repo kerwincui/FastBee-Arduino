@@ -17,7 +17,7 @@
 
 // JSON字段存在断言
 #define TEST_ASSERT_JSON_HAS_FIELD(json, field) \
-    TEST_ASSERT_TRUE_MESSAGE(json.containsKey(field), \
+    TEST_ASSERT_FALSE_MESSAGE(json[field].isNull(), \
         (String("JSON missing field: ") + field).c_str())
 
 // JSON字段值断言

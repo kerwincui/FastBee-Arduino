@@ -5,17 +5,21 @@ param(
 
     [string[]]$Environments = @(
         "esp32-F4R0",
+        "esp32-F8R0",
+        "esp32-F8R8",
         "esp32c3-F4R0",
         "esp32c6-F4R0",
-        "esp32s3-F8R4",
+        "esp32c6-F8R0",
+        "esp32s3-F8R0",
+        "esp32s3-F8R8",
         "esp32s3-F16R8"
     ),
 
-    [string]$BaseUrl = "http://192.168.4.1",
+    [string]$BaseUrl = "",
     [string]$Port = "",
 
-    [ValidateSet("lite", "standard", "full")]
-    [string]$DeviceProfile = "full",
+    [ValidateSet("lite", "standard", "full", "unified")]
+    [string]$DeviceProfile = "unified",
 
     [string]$Username = "admin",
     [string]$Password = "admin123",
@@ -186,22 +190,24 @@ function Ensure-NativeToolchainPath {
 }
 
 function Invoke-StaticChecks {
-    $configDir = Join-Path "data" "config"
-    Invoke-External @("node", (Join-Path "scripts" "check-utf8-text.js"), "README.md", "README.en.md", "docs", "scripts", "test", "web-src", "include", "src", (Join-Path $configDir "peripherals.json"), (Join-Path $configDir "periph_exec.json"), (Join-Path $configDir "users.json"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-test-coverage.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-device-api-matrix.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-mqtt-ntp-lifecycle.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-build-matrix.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-doc-links.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-stability-thresholds.js"))
+    # Keep local and CI host regression coverage identical. package.json is the
+    # single registration point; validate-test-coverage.js guards that list.
+    Invoke-External @("npm", "test")
     $psArgs = @($psExe)
     if ($IsWin) { $psArgs += @("-ExecutionPolicy", "Bypass") }
     $psArgs += @("-File", (Join-Path "scripts" "validate-powershell-syntax.ps1"))
     Invoke-External $psArgs
-    Invoke-External @("node", (Join-Path "scripts" "validate-config-defaults.js"))
-    Invoke-External @("node", (Join-Path "scripts" "validate-i18n.js"))
-    Invoke-External @("node", (Join-Path "scripts" "web-smoke-test.js"))
-    Invoke-External @("git", "diff", "--check")
+}
+
+function Assert-DeviceTarget {
+    param([string]$CheckName)
+
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+        throw "$CheckName requires an explicit STA -BaseUrl (for example http://192.168.5.55)"
+    }
+    if ($BaseUrl -match '^https?://192\.168\.4\.1(?::\d+)?/?$') {
+        throw "$CheckName refuses the device AP address 192.168.4.1; use the device STA address"
+    }
 }
 
 function Invoke-Doctor {
@@ -224,16 +230,32 @@ function Invoke-NativeTests {
     if (-not (Test-Path $nativeBuildDir)) {
         New-Item -ItemType Directory -Force -Path $nativeBuildDir | Out-Null
     }
-    # pio test on Windows may exit with -1 even when all tests pass (known PlatformIO issue).
-    # PowerShell pipeline (2>&1, Tee-Object) may not reliably capture pio test output.
-    # Use Start-Process with file redirection for reliable capture.
+    # On Windows the pio.exe launcher can exit before its Python child finishes,
+    # leaving an incomplete log and a second build still running in the background.
+    # Invoke PlatformIO through its Python environment so WaitForExit owns the
+    # complete test process. File redirection also avoids PowerShell treating
+    # normal compiler stderr as a terminating error.
     Write-Host "pio test -e native" -ForegroundColor DarkCyan
     $stdoutFile = Join-Path (Join-Path $ProjectDir ".pio") "native-test-stdout.log"
     $stderrFile = Join-Path (Join-Path $ProjectDir ".pio") "native-test-stderr.log"
+    Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+
+    $nativeTestCommand = "pio"
+    $nativeTestArguments = @("test", "-e", "native")
+    if ($IsWin) {
+        $pioCommand = Get-Command "pio" -ErrorAction Stop
+        $pioPython = Join-Path (Split-Path -Parent $pioCommand.Source) "python.exe"
+        if (-not (Test-Path -LiteralPath $pioPython)) {
+            throw "PlatformIO Python runtime not found beside pio.exe: $pioPython"
+        }
+        $nativeTestCommand = $pioPython
+        $nativeTestArguments = @("-m", "platformio", "test", "-e", "native")
+    }
+
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
     try {
-        $proc = Start-Process -FilePath "pio" -ArgumentList "test","-e","native" `
+        $proc = Start-Process -FilePath $nativeTestCommand -ArgumentList $nativeTestArguments `
             -NoNewWindow -PassThru `
             -RedirectStandardOutput $stdoutFile `
             -RedirectStandardError $stderrFile
@@ -242,28 +264,42 @@ function Invoke-NativeTests {
         $ErrorActionPreference = $prevEAP
     }
 
-    # Stream stdout to console for visibility
+    # Stream both channels only after the complete process has exited.
     if (Test-Path $stdoutFile) { Get-Content $stdoutFile | Write-Host }
+    if ((Test-Path $stderrFile) -and (Get-Item $stderrFile).Length -gt 0) {
+        Get-Content $stderrFile | Write-Host
+    }
 
-    # Parse summary: "=== N test cases: N succeeded in X ==="
-    $logContent = Get-Content -Path $stdoutFile -ErrorAction SilentlyContinue
+    # Parse summary: "=== N test cases: N succeeded in X ===". PlatformIO can
+    # emit the final summary on either channel, so inspect both current logs.
+    $logContent = @()
+    $logContent += Get-Content -Path $stdoutFile -ErrorAction SilentlyContinue
+    $logContent += Get-Content -Path $stderrFile -ErrorAction SilentlyContinue
     if ($logContent) {
         $summaryLine = $logContent | Where-Object { [string]$_ -match '===+ \d+ test cases?:' } | Select-Object -Last 1
         if ($summaryLine) {
             $summaryLine = [string]$summaryLine
-            if ($summaryLine -match '(\d+) test cases?:\s+(\d+) succeeded') {
+            if ($summaryLine -match '(\d+) test cases?:.*?(\d+) succeeded') {
                 $total = [int]$Matches[1]
                 $passed = [int]$Matches[2]
-                if ($passed -eq $total -and $total -gt 0) {
+                # Windows may surface PlatformIO's successful 0xFFFFFFFF
+                # launcher status as either signed -1 or unsigned 4294967295.
+                # The parsed all-passed summary remains mandatory, so accepting
+                # both representations cannot hide a failed test run.
+                $nativeExitCode = [int64]$proc.ExitCode
+                $nativeExitAccepted = $nativeExitCode -eq 0 -or
+                                      $nativeExitCode -eq -1 -or
+                                      $nativeExitCode -eq 4294967295
+                if ($passed -eq $total -and $total -gt 0 -and $nativeExitAccepted) {
                     Write-Host "All $total tests passed" -ForegroundColor Green
                     return
                 }
                 $failed = $total - $passed
-                throw "Native tests failed: $failed/$total test case(s) did not pass"
+                throw "Native tests failed: $failed/$total test case(s) did not pass (exit code $nativeExitCode)"
             }
         }
     }
-    throw "Could not parse native test summary from output"
+    throw "Could not parse native test summary (PlatformIO exit code $($proc.ExitCode)); inspect $stdoutFile and $stderrFile"
 }
 
 function Invoke-BuildMatrix {
@@ -366,7 +402,7 @@ function Invoke-BrowserQuick {
         $env:TEST_DELAY_MS = "500"
         $env:FAST_MODE = "1"
         if ($DeviceSerial) { $env:DEVICE_SERIAL = $DeviceSerial }
-        Write-Host "运行快速浏览器测试（~62 个核心用例）..." -ForegroundColor Yellow
+        Write-Host "运行快速浏览器核心用例..." -ForegroundColor Yellow
         Invoke-External @("npx", "playwright", "test", "-c", "playwright.quick.config.ts")
     } finally {
         Pop-Location
@@ -380,11 +416,20 @@ function Invoke-BrowserFull {
         $env:DEVICE_IP = $BaseUrl -replace "^https?://", "" -replace ":\d+$", ""
         $env:DEVICE_PORT = if ($Port) { $Port } else { "80" }
         if ($DeviceSerial) { $env:DEVICE_SERIAL = $DeviceSerial }
-        Write-Host "运行完整浏览器测试（273 个用例）..." -ForegroundColor Yellow
+        Write-Host "运行完整浏览器测试（以 test/browser 当前用例集为准）..." -ForegroundColor Yellow
         Invoke-External @("npx", "playwright", "test")
     } finally {
         Pop-Location
     }
+}
+
+$requestedDeviceChecks = @(
+    $Checks | Where-Object {
+        $_ -in @("device-smoke", "device-soak", "browser-quick", "browser")
+    }
+)
+if ($requestedDeviceChecks.Count -gt 0) {
+    Assert-DeviceTarget -CheckName ($requestedDeviceChecks -join ",")
 }
 
 Write-Host "FastBee test matrix" -ForegroundColor Green
@@ -412,15 +457,19 @@ if ($Checks -contains "artifacts") {
     Invoke-TestStep -Name "artifacts" -Action { Invoke-ArtifactMatrix }
 }
 if ($Checks -contains "device-smoke") {
+    Assert-DeviceTarget -CheckName "device-smoke"
     Invoke-TestStep -Name "device-smoke" -Action { Invoke-DeviceSmoke }
 }
 if ($Checks -contains "device-soak") {
+    Assert-DeviceTarget -CheckName "device-soak"
     Invoke-TestStep -Name "device-soak" -Action { Invoke-DeviceSoak }
 }
 if ($Checks -contains "browser-quick") {
+    Assert-DeviceTarget -CheckName "browser-quick"
     Invoke-TestStep -Name "browser-quick" -Action { Invoke-BrowserQuick }
 }
 if ($Checks -contains "browser") {
+    Assert-DeviceTarget -CheckName "browser"
     Invoke-TestStep -Name "browser" -Action { Invoke-BrowserFull }
 }
 

@@ -11,6 +11,14 @@ import subprocess
 import sys
 import time
 
+# Windows consoles may default to GBK; serial boot logs can contain arbitrary
+# UTF-8/box-drawing bytes.  Keep diagnostics lossless and never abort capture
+# because the terminal cannot encode one character.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 try:
     import serial
     from serial.serialutil import SerialException
@@ -57,13 +65,20 @@ def open_serial(args, deadline):
     last_error = None
     while time.time() < deadline:
         try:
-            return serial.Serial(
-                args.port,
-                args.baud,
-                timeout=0.2,
-                dsrdtr=False,
-                rtscts=False,
-            )
+            # Configure modem-control lines before opening the handle. Creating
+            # Serial(port=...) opens immediately with pyserial's default
+            # DTR/RTS state, which can pulse EN/BOOT on ESP32 development
+            # boards and turn a read-only capture into an unintended reset.
+            stream = serial.Serial()
+            stream.port = args.port
+            stream.baudrate = args.baud
+            stream.timeout = 0.2
+            stream.dsrdtr = False
+            stream.rtscts = False
+            stream.dtr = False
+            stream.rts = False
+            stream.open()
+            return stream
         except (SerialException, OSError) as exc:
             last_error = exc
             time.sleep(0.3)

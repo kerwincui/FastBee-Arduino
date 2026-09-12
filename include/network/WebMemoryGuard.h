@@ -9,7 +9,7 @@
  * 护栏策略（作为 server 级 middleware 位于请求分发最前端，每请求一次
  * heap_caps_get_free_size(MALLOC_CAP_8BIT) 检查，开销可接受）：
  *   - 触发：free8 < WEB_GUARD_MIN_DRAM_FREE(20KB)，或最大可分配块
- *     blk8 < WEB_GUARD_MIN_DRAM_BLK8(6KB，碎片化维度：C3 实测 free8 尚余
+ *     blk8 < WEB_GUARD_MIN_DRAM_BLK8(4KB，碎片化维度：C3 实测 free8 尚余
  *     22KB 时 blk8 已碎至 9.7KB 导致响应挂起) 时激活。
  *     2026-08-19 lite-soak 实测持续轮询下 free8 缓降至 11~18KB 后 lwIP
  *     饿死整体停摆，旧 16KB 阈值落在停摆区内，故上调提前背压；
@@ -18,8 +18,8 @@
  *     释放 lwIP/TCP 缓冲，给系统恢复窗口；
  *   - 放行：静态文件/SPA 页面（Flash/LittleFS 直读流式服务，几乎不占
  *     DRAM）不受护栏影响，保证登录页等基础资源始终可访问；
- *   - 恢复：free8 回到 WEB_GUARD_RECOVERY_DRAM_FREE(20KB+4KB 迟滞)
- *     且 blk8 >= WEB_GUARD_RECOVERY_DRAM_BLK8(6KB+3KB 迟滞)
+ *   - 恢复：free8 回到 WEB_GUARD_RECOVERY_DRAM_FREE(20KB+1KB 迟滞)
+ *     且 blk8 >= WEB_GUARD_RECOVERY_DRAM_BLK8(4KB+5KB 迟滞)
  *     后自动解除，避免触发/恢复来回震荡。
  *
  * 编译开关 FASTBEE_WEB_MEM_GUARD：默认对无 PSRAM 的 classic ESP32 /

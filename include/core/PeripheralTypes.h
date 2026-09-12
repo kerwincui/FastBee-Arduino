@@ -313,12 +313,26 @@ inline PeripheralType peripheralTypeFromInt(int value) {
 
 // ========== 外设类型分类辅助方法 ==========
 
-// 检查是否为数字输入类型（包括带上拉/下拉）
-inline bool isDigitalInputType(PeripheralType type) {
+// 检查是否为可配置 GPIO 数字输入（普通/上下拉/边沿中断）。RADAR_SENSOR
+// 也属于数字输入，但使用独立参数结构，不能读取 params.gpio。
+inline bool isGpioDigitalInputType(PeripheralType type) {
     return type == PeripheralType::GPIO_DIGITAL_INPUT ||
            type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
            type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
-           type == PeripheralType::RADAR_SENSOR;
+           type == PeripheralType::GPIO_INTERRUPT_RISING ||
+           type == PeripheralType::GPIO_INTERRUPT_FALLING ||
+           type == PeripheralType::GPIO_INTERRUPT_CHANGE;
+}
+
+inline bool isGpioInterruptInputType(PeripheralType type) {
+    return type == PeripheralType::GPIO_INTERRUPT_RISING ||
+           type == PeripheralType::GPIO_INTERRUPT_FALLING ||
+           type == PeripheralType::GPIO_INTERRUPT_CHANGE;
+}
+
+// 检查是否为数字输入类型（包括带上拉/下拉、中断与雷达）
+inline bool isDigitalInputType(PeripheralType type) {
+    return isGpioDigitalInputType(type) || type == PeripheralType::RADAR_SENSOR;
 }
 
 // 检查是否为模拟输入类型

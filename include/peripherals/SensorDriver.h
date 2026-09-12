@@ -12,7 +12,7 @@
 // 容纳最大节点 _Rb_tree_node<pair<uint8_t, ADC/NTCSensorInstance>>(~88B)，
 // 5 个实例 map 共享同一池；池耗尽优雅回退 malloc，功能不降级。
 // 传感器实例增删仅发生在配置变更/首读，池化后运行期零 malloc 碎片贡献。
-static constexpr size_t SENSOR_NODE_BLOCK_SIZE  = 96;
+static constexpr size_t SENSOR_NODE_BLOCK_SIZE  = 160;
 static constexpr size_t SENSOR_NODE_BLOCK_COUNT = 24;
 
 template <typename T>
@@ -57,6 +57,30 @@ struct ADCSensorCalibration {
           ratio(1.0f), adcMax(4095) {}
 };
 
+// 4-20 mA current-loop calibration. The ADC is expected to measure the
+// voltage across an external shunt resistor (for example 165 ohm -> 0.66-3.3V).
+// When mapToEngineering is false, readCurrentLoop returns mA; otherwise it
+// linearly maps the validated loop range to engineeringMin..engineeringMax.
+struct CurrentLoopCalibration {
+    float shuntResistance; // shunt resistance in ohms
+    float inputGain;       // analogue front-end gain
+    float inputOffset;     // front-end offset in volts
+    float loopMinMa;       // normally 4 mA
+    float loopMaxMa;       // normally 20 mA
+    float engineeringMin;
+    float engineeringMax;
+    float vRef;
+    uint16_t adcMax;
+    uint8_t sampleCount;
+    bool mapToEngineering;
+
+    CurrentLoopCalibration()
+        : shuntResistance(165.0f), inputGain(1.0f), inputOffset(0.0f),
+          loopMinMa(4.0f), loopMaxMa(20.0f), engineeringMin(0.0f),
+          engineeringMax(100.0f), vRef(3.3f), adcMax(4095),
+          sampleCount(8), mapToEngineering(false) {}
+};
+
 // NTC 热敏电阻校准参数
 // 电路接法：VCC --[seriesResistor]-- ADC引脚 --[NTC]-- GND（NTC 接地端接法）
 struct NTCSensorCalibration {
@@ -80,7 +104,8 @@ enum class SensorDriverType : uint8_t {
     ULTRASONIC = 3,   // HC-SR04 超声波
     CURRENT = 4,      // 电流型 (ACS712 等)
     VOLTAGE = 5,      // 电压型 (分压器 ADC)
-    NTC = 6           // NTC 热敏电阻 (B 参数法测温)
+    NTC = 6,          // NTC 热敏电阻 (B 参数法测温)
+    CURRENT_LOOP = 7  // 4-20 mA current loop via shunt resistor
 };
 
 class SensorDriver {
@@ -121,6 +146,15 @@ public:
     float readCurrent(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration());
 
     /**
+     * @brief Read an industrial 4-20 mA current loop through an ADC shunt.
+     * @return mA by default, or engineering units when mapToEngineering is true;
+     *         NAN indicates invalid calibration, a disconnected loop, or an
+     *         out-of-range input.
+     */
+    float readCurrentLoop(uint8_t pin,
+                          const CurrentLoopCalibration& cal = CurrentLoopCalibration());
+
+    /**
      * @brief 读取电压传感器 (分压器 ADC)
      * @param pin ADC 引脚
      * @param cal 校准参数（分压比等）
@@ -147,7 +181,7 @@ public:
     void releaseAll();
 
 private:
-    SensorDriver() = default;
+    SensorDriver();
     ~SensorDriver();
     SensorDriver(const SensorDriver&) = delete;
     SensorDriver& operator=(const SensorDriver&) = delete;
@@ -157,6 +191,8 @@ private:
         void* dht;          // DHT* (避免头文件暴露)
         SensorDriverType type;
         SensorReadResult lastRead;
+        uint32_t nextRetryAt = 0;       // 失败退避截止时间 (millis)
+        uint8_t consecutiveFailures = 0;
     };
     std::map<uint8_t, DHTInstance, std::less<uint8_t>,
              SensorNodeAllocator<std::pair<const uint8_t, DHTInstance>>> _dhtInstances;
@@ -166,6 +202,8 @@ private:
         void* oneWire;      // OneWire*
         void* sensors;      // DallasTemperature*
         SensorReadResult lastRead;
+        uint32_t nextRetryAt = 0;       // 失败退避截止时间 (millis)
+        uint8_t consecutiveFailures = 0;
     };
     std::map<uint8_t, DS18B20Instance, std::less<uint8_t>,
              SensorNodeAllocator<std::pair<const uint8_t, DS18B20Instance>>> _ds18b20Instances;
@@ -185,6 +223,7 @@ private:
         bool initialized;
         SensorDriverType type;     // CURRENT 或 VOLTAGE
         ADCSensorCalibration cal;  // 校准参数
+        CurrentLoopCalibration loopCal;
         SensorValueResult lastRead;
     };
     std::map<uint8_t, ADCSensorInstance, std::less<uint8_t>,

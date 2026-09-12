@@ -4,8 +4,10 @@
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
 #include "core/ChipConfig.h"
+#include "core/MemoryBudget.h"
 #include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
+#include <new>
 
 // ============ 登录异步化 ============
 // PBKDF2 验证需秒级 CPU：若在 lwIP 线程同步执行，整个网络栈
@@ -17,10 +19,27 @@
 
 namespace {
 
+#if CHIP_DUAL_CORE
+static constexpr uint32_t LOGIN_TASK_STACK_BYTES = 8192U;
+#else
+// C3 field evidence: steady-state internal largest block is about 7.1KB, so
+// an 8KB transient stack can never be created even with 25KB total DRAM free.
+// Keep the worker transient to avoid permanently consuming 6KB on constrained
+// targets; the recorded high-water mark below must be checked after flashing.
+static constexpr uint32_t LOGIN_TASK_STACK_BYTES = 6144U;
+#endif
+// xTaskCreate allocates the stack as one block, but the TCB and Web/lwIP
+// working memory do not need to be contiguous with it. Keep only allocator
+// metadata/alignment overhead on the largest-block gate, and protect the rest
+// with an independent total internal-DRAM reserve.
+static constexpr uint32_t LOGIN_TASK_STACK_ALLOCATOR_OVERHEAD_BYTES = 256U;
+static constexpr uint32_t LOGIN_TASK_MIN_REMAINING_DRAM_BYTES = 12288U;
+static constexpr uint32_t LOGIN_TASK_RETRY_AFTER_SECONDS = 3U;
+
 // 并发登录任务槽：防止恶意并发登录请求堆叠多个 PBKDF2 计算
 SemaphoreHandle_t loginSlotMutex() {
     // PBKDF2 is CPU and stack heavy. On single-core C3/C6, two concurrent
-    // 8KB login tasks can starve lwIP and fragment the small internal DRAM
+    // Login tasks can starve lwIP and fragment the small internal DRAM
     // pool; serialize those requests while retaining two slots on dual-core
     // boards where the second core can keep the network responsive.
 #if CHIP_DUAL_CORE
@@ -34,6 +53,7 @@ SemaphoreHandle_t loginSlotMutex() {
 struct LoginJob {
     WebHandlerContext* ctx;
     AsyncWebServerRequestPtr held;  // 暂停请求的弱引用，客户端断连即失效
+    SemaphoreHandle_t slot;
     String username;
     String password;
     String ipAddress;
@@ -43,6 +63,12 @@ struct LoginJob {
 
 void loginTask(void* arg) {
     LoginJob* job = static_cast<LoginJob*>(arg);
+
+    // The task is created before the HTTP request is paused. Waiting for the
+    // handler's notification closes the failure window where xTaskCreate
+    // could fail after pause() and leave request ownership ambiguous.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
     AuthResult result = job->ctx->authManager->login(
         job->username, job->password, job->ipAddress, job->userAgent);
 
@@ -75,8 +101,20 @@ void loginTask(void* arg) {
         }
     }
 
-    xSemaphoreGive(loginSlotMutex());
+    xSemaphoreGive(job->slot);
     delete job;
+
+    // ESP-IDF reports the high-water mark in bytes (unlike vanilla FreeRTOS).
+    // Emit it before deleting this transient task so the 6KB single-core size
+    // can be validated on hardware without relying on a periodic sampler.
+    const UBaseType_t freeStackBytes = uxTaskGetStackHighWaterMark(nullptr);
+    const uint32_t usedStackBytes = freeStackBytes < LOGIN_TASK_STACK_BYTES
+        ? LOGIN_TASK_STACK_BYTES - static_cast<uint32_t>(freeStackBytes)
+        : 0U;
+    Serial.printf("[LOGIN_METRICS] stack=%lu free=%lu used=%lu bytes\n",
+                  (unsigned long)LOGIN_TASK_STACK_BYTES,
+                  (unsigned long)freeStackBytes,
+                  (unsigned long)usedStackBytes);
     vTaskDelete(nullptr);
 }
 
@@ -133,37 +171,89 @@ void AuthRouteHandler::handleLogin(AsyncWebServerRequest* request) {
         return;
     }
 
-    // 登录槽满（已有 2 个 PBKDF2 在算）：直接 503，避免任务堆叠
-    if (xSemaphoreTake(loginSlotMutex(), 0) != pdTRUE) {
-        ctx->sendError(request, 503, "Server busy, please retry");
+    SemaphoreHandle_t slot = loginSlotMutex();
+    if (!slot) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Authentication scheduler unavailable",
+                                    LOGIN_TASK_RETRY_AFTER_SECONDS);
         return;
     }
 
-    LoginJob* job = new LoginJob();
+    // 登录槽满：直接 503，避免 PBKDF2 工作任务堆叠。
+    if (xSemaphoreTake(slot, 0) != pdTRUE) {
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Login already in progress, please retry",
+                                    LOGIN_TASK_RETRY_AFTER_SECONDS);
+        return;
+    }
+
+    LoginJob* job = new (std::nothrow) LoginJob();
+    if (!job) {
+        xSemaphoreGive(slot);
+        HandlerUtils::sendJsonError(request, 503,
+                                    "Insufficient memory for login request",
+                                    LOGIN_TASK_RETRY_AFTER_SECONDS);
+        return;
+    }
     job->ctx = ctx;
-    job->held = request->pause();  // 请求延续：handler 返回后不触发 501 兜底
+    job->slot = slot;
     job->username = username;
     job->password = password;
     job->ipAddress = ipAddress;
     job->userAgent = userAgent;
     job->apiClient = request->hasHeader("X-FastBee-Api-Client");
 
-    // 双核芯片钉到 APP 核（核 1），把核 0 留给 WiFi/lwIP；
-    // 单核芯片（C3/C6）普通创建：PBKDF2 任务优先级低于 lwIP tcpip 任务，
-    // 网络栈仍可及时响应（此前同步执行时正是 lwIP 线程自身被占住）
-    BaseType_t ok;
-#if CHIP_DUAL_CORE
-    ok = xTaskCreatePinnedToCore(loginTask, "fb_login", 8192, job, 1, nullptr, 1);
-#else
-    ok = xTaskCreate(loginTask, "fb_login", 8192, job, 1, nullptr);
-#endif
-    if (ok != pdPASS) {
-        xSemaphoreGive(loginSlotMutex());
-        job->ctx->sendError(request, 503, "Login task create failed");
+    // xTaskCreate allocates the stack as one internal block. Check the same
+    // capability pool immediately before pausing the request so a fragmented
+    // target gets an actionable 503 instead of an abandoned paused request.
+    const uint32_t freeDram = FastBee::MemoryBudget::dram8Free();
+    const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
+    const uint32_t requiredBlock =
+        LOGIN_TASK_STACK_BYTES + LOGIN_TASK_STACK_ALLOCATOR_OVERHEAD_BYTES;
+    const uint32_t requiredFree =
+        LOGIN_TASK_MIN_REMAINING_DRAM_BYTES + requiredBlock;
+    if (largestBlock < requiredBlock || freeDram < requiredFree) {
+        char message[176];
+        snprintf(message, sizeof(message),
+                 "Login needs largest>=%lu and free>=%lu DRAM bytes; available largest=%lu free=%lu",
+                 (unsigned long)requiredBlock, (unsigned long)requiredFree,
+                 (unsigned long)largestBlock, (unsigned long)freeDram);
+        xSemaphoreGive(slot);
         delete job;
+        HandlerUtils::sendJsonError(request, 503, message,
+                                    LOGIN_TASK_RETRY_AFTER_SECONDS);
         return;
     }
-    // 回包由 loginTask 在验证完成后发出
+
+    // 双核芯片钉到 APP 核（核 1），把核 0 留给 WiFi/lwIP；
+    // 单核 C3/C6 普通创建：PBKDF2 任务优先级低于 lwIP tcpip 任务，
+    // 网络栈仍可及时响应（此前同步执行时正是 lwIP 线程自身被占住）
+    BaseType_t ok;
+    TaskHandle_t taskHandle = nullptr;
+#if CHIP_DUAL_CORE
+    ok = xTaskCreatePinnedToCore(loginTask, "fb_login", LOGIN_TASK_STACK_BYTES,
+                                 job, 1, &taskHandle, 1);
+#else
+    ok = xTaskCreate(loginTask, "fb_login", LOGIN_TASK_STACK_BYTES,
+                     job, 1, &taskHandle);
+#endif
+    if (ok != pdPASS) {
+        const uint32_t freeAfter = FastBee::MemoryBudget::dram8Free();
+        const uint32_t largestAfter = FastBee::MemoryBudget::dram8Largest();
+        char message[144];
+        snprintf(message, sizeof(message),
+                 "Login task allocation failed (free=%lu, largest=%lu); please retry",
+                 (unsigned long)freeAfter, (unsigned long)largestAfter);
+        xSemaphoreGive(slot);
+        delete job;
+        HandlerUtils::sendJsonError(request, 503, message,
+                                    LOGIN_TASK_RETRY_AFTER_SECONDS);
+        return;
+    }
+
+    job->held = request->pause();  // handler 返回后不触发 501 兜底
+    xTaskNotifyGive(taskHandle);
+    // 回包由 loginTask 在验证完成后发出。
 }
 
 void AuthRouteHandler::handleLogout(AsyncWebServerRequest* request) {
@@ -213,7 +303,14 @@ void AuthRouteHandler::handleVerifySession(AsyncWebServerRequest* request) {
 
         ctx->sendSuccess(request, responseDoc);
     } else {
-        ctx->sendUnauthorized(request);
+        // This endpoint is a browser bootstrap probe, not a protected
+        // resource. An absent/expired session is normal state and should not
+        // create a console-level 401 resource error. Protected APIs retain
+        // their normal unauthorized response semantics.
+        JsonDocument responseDoc;
+        responseDoc["sessionValid"] = false;
+        responseDoc["timestamp"] = millis();
+        ctx->sendSuccess(request, responseDoc);
     }
 }
 

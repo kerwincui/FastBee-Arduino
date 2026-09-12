@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "mode": 1,
   "networkType": 0,
   "apSSID": "",
@@ -7,8 +8,8 @@
   "apChannel": 1,
   "apHidden": false,
   "apMaxConnections": 4,
-  "staSSID": "fastbee",
-  "staPassword": "15208747707",
+  "staSSID": "",
+  "staPassword": "",
   "networks": [],
   "ipConfigType": 0,
   "staticIP": "",

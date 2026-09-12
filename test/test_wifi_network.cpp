@@ -1097,6 +1097,50 @@ void test_source_sta_only_policy_disables_ap_fallback() {
 }
 
 /**
+ * @brief Web/API 状态刷新不得用 WiFiManager 的传输层快照覆盖上层重连预算。
+ * FBNetworkManager 独占退避、重试上限和 AP 回落决策；否则每次状态查询都可能
+ * 把 reconnectAttempts 清零，使 maxReconnectAttempts 永远无法耗尽。
+ */
+void test_source_status_sync_preserves_network_manager_reconnect_count() {
+    TestLog::testStart("Source: status sync preserves FBNetworkManager reconnect ownership");
+
+    std::string content = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t fnStart = content.find("void FBNetworkManager::updateStatusInfo()");
+    size_t fnEnd = content.find("void FBNetworkManager::attemptReconnect()", fnStart);
+    TEST_ASSERT_TRUE_MESSAGE(fnStart != std::string::npos && fnEnd != std::string::npos,
+        "NetworkManager status synchronization block not found");
+    std::string fnBody = content.substr(fnStart, fnEnd - fnStart);
+
+    size_t snapshot = fnBody.find(
+        "const uint16_t ownedReconnectAttempts = statusInfo.reconnectAttempts;");
+    size_t transportSync = fnBody.find("statusInfo = wifiManager->getStatusInfo();");
+    size_t restore = fnBody.find(
+        "statusInfo.reconnectAttempts = ownedReconnectAttempts;");
+    TEST_ASSERT_TRUE_MESSAGE(
+        snapshot != std::string::npos &&
+        transportSync != std::string::npos &&
+        restore != std::string::npos,
+        "WiFi status sync must snapshot and restore the NetworkManager-owned reconnect count");
+    TEST_ASSERT_TRUE_MESSAGE(snapshot < transportSync && transportSync < restore,
+        "Reconnect count must be saved before and restored after the transport status copy");
+}
+
+/**
+ * @brief COM11 C6 临时测试配置保持 STA-only，避免弱网时切换到设备 AP。
+ */
+void test_c6_test_profile_disables_ap_fallback() {
+    TestLog::testStart("Config: C6 test profile disables AP fallback");
+
+    std::string config = readSrcFile("docs/c6-rgb-led-f4r0/network.json");
+    TEST_ASSERT_TRUE_MESSAGE(!config.empty(), "Failed to read C6 network.json");
+    TEST_ASSERT_TRUE_MESSAGE(
+        std::regex_search(config, std::regex("\\\"autoFailover\\\"\\s*:\\s*false")),
+        "C6 test profile must keep autoFailover=false during STA stability testing");
+}
+
+/**
  * @brief 源码回归：AP→STA 恢复必须在 WiFi 接口切换前停止 mDNS，
  *        切换完成后再启动，避免 mDNS 后台任务访问已销毁的 AP netif。
  */
@@ -1120,16 +1164,16 @@ void test_source_ap_recovery_restarts_mdns() {
     TEST_ASSERT_TRUE_MESSAGE(stopPos < modeResetPos,
         "mDNS must stop before WiFi.mode(WIFI_MODE_NULL)");
 
-    // 定位成功分支（WiFi 已恢复，切回 STA）中的 enableMDNS 处理块
+    // 定位成功分支（WiFi 已恢复，切回 STA）中的统一功能门控处理块
     size_t recoveredPos = content.find("WiFi recovered", fnPos);
     TEST_ASSERT_TRUE_MESSAGE(recoveredPos != std::string::npos,
         "AP->STA recovery success branch not found");
 
-    // 从 enableMDNS 判断句开始取小窗口（紧跟着的就是 mDNS 调用），
+    // 从 shouldRunMDNS 判断句开始取小窗口（紧跟着的就是 mDNS 调用），
     // 避开前面长度不定的中文注释，不受注释长度影响
-    size_t mdnsIfPos = content.find("if (wifiConfig.enableMDNS)", recoveredPos);
+    size_t mdnsIfPos = content.find("if (shouldRunMDNS()", recoveredPos);
     TEST_ASSERT_TRUE_MESSAGE(mdnsIfPos != std::string::npos,
-        "AP->STA recovery must guard mDNS restart with wifiConfig.enableMDNS");
+        "AP->STA recovery must guard mDNS restart with the runtime feature gate");
 
     std::string recoveryBlock = content.substr(mdnsIfPos, 120);
 
@@ -1229,9 +1273,9 @@ void test_source_interface_switch_restarts_mdns() {
         size_t mpos = content.find(marker);
         TEST_ASSERT_TRUE_MESSAGE(mpos != std::string::npos,
             (std::string("marker not found: ") + marker).c_str());
-        size_t mdnsIfPos = content.find("if (wifiConfig.enableMDNS)", mpos);
+        size_t mdnsIfPos = content.find("if (shouldRunMDNS()", mpos);
         TEST_ASSERT_TRUE_MESSAGE(mdnsIfPos != std::string::npos,
-            (std::string("enableMDNS guard not found after: ") + marker).c_str());
+            (std::string("runtime mDNS guard not found after: ") + marker).c_str());
         std::string block = content.substr(mdnsIfPos, 120);
         TEST_ASSERT_TRUE_MESSAGE(
             block.find("->restartMDNS") != std::string::npos,
@@ -1338,6 +1382,8 @@ void test_wifi_network_group() {
     RUN_TEST(test_source_gateway_ping_failure_is_advisory);
     RUN_TEST(test_source_sta_driver_restart_keeps_radio_started);
     RUN_TEST(test_source_sta_only_policy_disables_ap_fallback);
+    RUN_TEST(test_source_status_sync_preserves_network_manager_reconnect_count);
+    RUN_TEST(test_c6_test_profile_disables_ap_fallback);
 
     // AP→STA 恢复重新绑定 mDNS（fastbee.local 在 STA 下可解析）
     RUN_TEST(test_source_ap_recovery_restarts_mdns);

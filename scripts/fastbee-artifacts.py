@@ -201,6 +201,25 @@ def collect_flash_images(firmware_path, include_fs=False, out_dir=None):
     return sorted(deduped.items(), key=lambda item: item[0])
 
 
+def archive_flash_images(out_dir, images):
+    """Archive every merge input and return portable manifest entries."""
+    entries = []
+    used_names = set()
+    for offset, image_path in images:
+        base_name = os.path.basename(image_path)
+        dest_name = base_name
+        if dest_name in used_names:
+            stem, extension = os.path.splitext(base_name)
+            dest_name = "{}-{:x}{}".format(stem, offset, extension)
+        used_names.add(dest_name)
+
+        dest_path = os.path.join(out_dir, dest_name)
+        if os.path.normcase(os.path.abspath(image_path)) != os.path.normcase(os.path.abspath(dest_path)):
+            shutil.copy2(image_path, dest_path)
+        entries.append({"offset": hex(offset), "file": dest_name})
+    return entries
+
+
 def esptool_path():
     tool = env.subst("$OBJCOPY")
     if tool and os.path.exists(tool):
@@ -250,13 +269,19 @@ def merge_factory(output_path, firmware_path, include_fs=False):
     return True
 
 
-def write_manifest(out_dir):
+def write_manifest(out_dir, firmware_path, include_fs=False):
+    images = collect_flash_images(
+        firmware_path,
+        include_fs=include_fs,
+        out_dir=out_dir,
+    )
     manifest = {
         "environment": pio_env_name(),
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "partitionTable": project_relative_path(partition_table_path()),
         "appOffset": env.subst("$ESP32_APP_OFFSET"),
         "filesystemOffset": find_partition_offset("spiffs", "fat", "littlefs"),
+        "flashImages": archive_flash_images(out_dir, images),
     }
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as fp:
         json.dump(manifest, fp, indent=2)
@@ -275,7 +300,7 @@ def archive_firmware(target, source, env):
     out_dir = build_dist_dir()
     archive_common_outputs(out_dir)
     copy_if_exists(firmware_path, out_dir, "firmware.bin")
-    write_manifest(out_dir)
+    write_manifest(out_dir, firmware_path, include_fs=False)
 
     factory_path = os.path.join(out_dir, "factory.bin")
     try:
@@ -291,9 +316,8 @@ def archive_filesystem(target, source, env):
     archive_common_outputs(out_dir)
     copy_if_exists(fs_path, out_dir, "littlefs.bin")
     copy_if_exists(fs_path, out_dir, "factory-littlefs.bin")
-    write_manifest(out_dir)
-
     firmware_path = os.path.join(normalize_path(env.subst("$BUILD_DIR")), "{}.bin".format(env.subst("$PROGNAME")))
+    write_manifest(out_dir, firmware_path, include_fs=True)
     factory_fs_path = os.path.join(out_dir, "factory-with-fs.bin")
     try:
         if merge_factory(factory_fs_path, firmware_path, include_fs=True):
@@ -316,5 +340,9 @@ def install_archive_hooks():
     env.Replace(__FASTBEE_ARTIFACT_HOOKS_READY=True)
 
 
-prepare_filesystem_staging()
-install_archive_hooks()
+# PlatformIO injects ``env`` before evaluating extra_scripts. Keeping the
+# import-time work guarded also lets host-side unit tests load helper
+# functions without a live SCons environment.
+if "env" in globals():
+    prepare_filesystem_staging()
+    install_archive_hooks()

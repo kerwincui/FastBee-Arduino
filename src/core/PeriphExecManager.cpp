@@ -21,6 +21,7 @@
 #include "core/PeripheralManager.h"
 #include "utils/StringUtils.h"
 #include "utils/FileUtils.h"
+#include <new>
 
 namespace {
 constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC = 1;
@@ -39,6 +40,36 @@ constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
 constexpr size_t PERIPH_EXEC_CONFIG_MAX_BYTES = 96 * 1024;
 constexpr unsigned long SENSOR_CACHE_LOCK_WARN_INTERVAL_MS = 5000;
+
+static bool hasWorkerPoolMemoryHeadroom(bool logDeferred) {
+#if defined(ESP_PLATFORM)
+    const uint32_t workerReserve =
+        static_cast<uint32_t>(PeriphExecWorkerPool::WORKER_STACK *
+                              PeriphExecWorkerPool::WORKER_COUNT + 4096U);
+    const uint32_t webReserveAfterWorker =
+        (CHIP_IS_CLASSIC_ESP32 && FASTBEE_USE_PSRAM == 0)
+            ? FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE
+            : 0U;
+    const uint32_t requiredFree8 = workerReserve + webReserveAfterWorker;
+    const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
+    const uint32_t largest8 = FastBee::MemoryBudget::dram8Largest();
+    const bool admitted =
+        free8 >= requiredFree8 && largest8 >= PeriphExecWorkerPool::WORKER_STACK;
+
+    if (!admitted && logDeferred) {
+        LOGGER.warningf(
+            "[PeriphExec] Worker pool memory admission deferred: free8=%lu largest8=%lu needFree8=%lu needLargest=%lu",
+            (unsigned long)free8,
+            (unsigned long)largest8,
+            (unsigned long)requiredFree8,
+            (unsigned long)PeriphExecWorkerPool::WORKER_STACK);
+    }
+    return admitted;
+#else
+    (void)logDeferred;
+    return true;
+#endif
+}
 
 static bool validateRuleProfileLimits(const PeriphExecRule& rule, const char* operation, String* errorMsg = nullptr) {
     if (rule.id.length() > FastBee::ResourceProfile::MAX_RULE_ID_LEN) {
@@ -148,6 +179,83 @@ PeriphExecManager& PeriphExecManager::getInstance() {
     return instance;
 }
 
+bool PeriphExecManager::suspendWorkersForMemory() {
+    if (_workersSuspendedForMemory) return true;
+    // Gate new dispatches before asking workers to drain. A timed-out
+    // shutdown is only "pending"; the fully-suspended flag is set after every
+    // worker acknowledges exit so health reporting and retry logic remain
+    // truthful.
+    _workerSuspensionPending = true;
+    if (_workerPool) {
+        // Do not destroy the pool until every worker has acknowledged exit.
+        // A long-running rule may outlive the first wait window; retaining the
+        // object lets the next health sample retry safely.
+        if (!_workerPool->shutdown()) {
+            LOGGER.warning("[PeriphExec] Worker pool shutdown deferred; worker still running");
+            return false;
+        }
+        _workerPool.reset();
+    }
+    _workerSuspensionPending = false;
+    _workersSuspendedForMemory = true;
+    LOGGER.warning("[PeriphExec] Worker pool suspended for memory pressure");
+    return true;
+}
+
+bool PeriphExecManager::resumeWorkersAfterMemory() {
+    if (!_workersSuspendedForMemory && !_workerSuspensionPending) return true;
+
+    // A prior suspend can time out while a long-running rule is finishing.
+    // Do not allocate a replacement pool until the old workers are confirmed
+    // exited; shutdown() is idempotent and safely retries the wait.
+    if (_workerPool) {
+        if (!_workerPool->shutdown()) {
+            LOGGER.warning("[PeriphExec] Worker pool restore deferred (old worker still active)");
+            return false;
+        }
+        _workerPool.reset();
+    }
+
+    // A pool that finished its deferred shutdown is now fully suspended. Keep
+    // the state explicit before attempting allocation of the replacement.
+    _workersSuspendedForMemory = true;
+
+    // Recovery must preserve the same Web/WiFi reserve as startup.  The
+    // HealthMonitor's aggregate internal-heap level can be NORMAL while the
+    // allocatable 8-bit pool is still below the worker stack requirement on a
+    // classic no-PSRAM target.  Repeated xTaskCreate attempts in that state
+    // fragment the remaining heap and keep WebMemoryGuard active.
+    if (!hasWorkerPoolMemoryHeadroom(true)) {
+        return false;
+    }
+
+    std::unique_ptr<PeriphExecWorkerPool> candidate(new (std::nothrow) PeriphExecWorkerPool());
+    if (!candidate || !candidate->begin()) {
+        LOGGER.warning("[PeriphExec] Worker pool restore deferred (insufficient memory)");
+        return false;
+    }
+    _workerPool = std::move(candidate);
+    _workersSuspendedForMemory = false;
+    _workerSuspensionPending = false;
+    LOGGER.info("[PeriphExec] Worker pool restored after memory recovery");
+    return true;
+}
+
+void PeriphExecManager::cancelWorkerJob(AsyncExecContext* ctx) {
+    if (!ctx) return;
+
+    // The manager pointer is normally this object. If a malformed context was
+    // queued, still return its task slot instead of leaking an async permit.
+    PeriphExecManager* owner = ctx->manager ? ctx->manager : this;
+    if (owner->_runningRulesMutex) {
+        MutexGuard runLock(owner->_runningRulesMutex);
+        owner->_runningRuleIds.erase(ctx->ruleCopy.id);
+        owner->_runningStartTime.erase(ctx->ruleCopy.id);
+    }
+    if (ctx->taskSlot) xSemaphoreGive(ctx->taskSlot);
+    owner->_contextPool.release(ctx);
+}
+
 bool PeriphExecManager::initialize() {
     // 创建 FreeRTOS 同步原语
     _rulesMutex = xSemaphoreCreateMutex();
@@ -166,13 +274,21 @@ bool PeriphExecManager::initialize() {
 
     bool loaded = loadConfiguration();
 
-    // 启动常驻 Worker 任务池（D 方案）
-    // 在启动期一次性预分配 3 个 worker 栈（3×20KB=60KB），
-    // 之后运行期零碎片增长，按键/定时事件不再被 xTaskCreate 失败丢弃
-    _workerPool.reset(new PeriphExecWorkerPool());
-    if (!_workerPool->begin()) {
-        LOGGER.error("[PeriphExec] WorkerPool start failed, async dispatch will fall back to sync");
-        _workerPool.reset();  // 后续 dispatchAsync 检测 nullptr 走原同步降级路径
+    // 启动常驻 Worker 任务池（D 方案）。在内存已经紧张的设备上，
+    // 先保留 Web/WiFi 的连续 DRAM；轻量规则仍可同步执行，重规则会被
+    // dispatchAsync 的内存门控跳过，避免启动期一次性分配栈导致 OOM。
+    // On the no-PSRAM classic F4R0, a resident worker stack competes directly
+    // with AsyncTCP/Web/MQTT. Rules remain configured when admission is
+    // deferred; dispatchAsync uses its existing safe degradation path.
+    const bool workerAdmission = hasWorkerPoolMemoryHeadroom(true);
+    if (workerAdmission) {
+        _workerPool.reset(new (std::nothrow) PeriphExecWorkerPool());
+    }
+    if (!workerAdmission || !_workerPool || !_workerPool->begin()) {
+        LOGGER.warning("[PeriphExec] WorkerPool unavailable at startup; async dispatch will degrade safely");
+        _workerPool.reset();  // dispatchAsync will use sync/skip fallback
+        _workersSuspendedForMemory = true;
+        _workerSuspensionPending = false;
     }
 
     // 注册 AsyncExecContext 对象池到 HealthMonitor（碎片预防监控）
@@ -1475,6 +1591,10 @@ bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
 // ========== 异步调度 ==========
 
 bool PeriphExecManager::shouldRunAsync() const {
+    if (_workersSuspendedForMemory || _workerSuspensionPending ||
+        !_workerPool || !_workerPool->isStarted()) {
+        return false;
+    }
     // 检查可用堆内存
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < MIN_HEAP_FOR_ASYNC) {
@@ -1496,6 +1616,23 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
             a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE)) {
             LOGGER.infof("[PeriphExec] Sync execute (system action): '%s'", rule.name.c_str());
             executeAllActions(rule, receivedValue);
+            return;
+        }
+    }
+
+    // MemGuard SEVERE/CRITICAL pauses timer polling, but event sources (button,
+    // MQTT and platform commands) can still arrive.  Do not let a heavy rule
+    // fall back to synchronous execution during that window: script, sensor
+    // and Modbus paths can hold the Web/network task for seconds and create a
+    // second memory spike.  Lightweight GPIO/system actions remain available.
+    {
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor && monitor->isMemorySevere() && shouldAvoidSyncFallback(rule)) {
+            LOGGER.warningf("[PeriphExec] Skip heavy rule during memory pressure: '%s'",
+                            rule.name.c_str());
+            MutexGuard runLock(_runningRulesMutex);
+            _failureBackoff[rule.id] = millis() + 5000UL;
             return;
         }
     }
@@ -1719,9 +1856,9 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     xSemaphoreGive(ctx->taskSlot);
 
     // 栈高水位标记（worker 任务自身，跨多个 job 的历史最低可用栈）
-    UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+    UBaseType_t hwmBytes = uxTaskGetStackHighWaterMark(nullptr);
     LOGGER.infof("[PExec] Worker after '%s' stack HWM: %u bytes free",
-                 result.ruleName.c_str(), (unsigned int)(hwm * sizeof(StackType_t)));
+                 result.ruleName.c_str(), (unsigned int)hwmBytes);
 
     // 归还上下文到对象池
     ctx->manager->_contextPool.release(ctx);

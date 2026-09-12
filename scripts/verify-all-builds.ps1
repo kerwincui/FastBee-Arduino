@@ -3,26 +3,30 @@
 .SYNOPSIS
     FastBee-Arduino 全环境编译验证脚本
 .DESCRIPTION
-    对 platformio.ini 中所有 7 个嵌入式环境执行编译验证（不生成固件包），
+    对 platformio.ini 中所有 9 个嵌入式环境执行编译验证（不生成固件包），
     并运行 native 单元测试。适用于 CI/CD 流水线和开发者本地验证。
 .PARAMETER Environments
-    要验证的环境列表（默认全部 7 个）
+    要验证的环境列表（默认全部 9 个）
 .PARAMETER SkipNative
     跳过 native 单元测试
 .PARAMETER StopOnFailure
     任一环境编译失败后立即停止（默认继续验证所有环境）
 .EXAMPLE
     .\scripts\verify-all-builds.ps1
-    .\scripts\verify-all-builds.ps1 -Environments esp32-F4R0,esp32s3-F8R4
+    .\scripts\verify-all-builds.ps1 -Environments esp32-F4R0,esp32s3-F8R8
     .\scripts\verify-all-builds.ps1 -StopOnFailure
 #>
 [CmdletBinding()]
 param(
     [string[]]$Environments = @(
         "esp32-F4R0",
+        "esp32-F8R0",
+        "esp32-F8R8",
         "esp32c3-F4R0",
         "esp32c6-F4R0",
-        "esp32s3-F8R4",
+        "esp32c6-F8R0",
+        "esp32s3-F8R0",
+        "esp32s3-F8R8",
         "esp32s3-F16R8"
     ),
     [switch]$SkipNative,

@@ -5,8 +5,9 @@
  * 功能启用采用 编译时宏 + 运行时配置 双层控制：
  *   决策链: compiled(编译宏) AND userEnabled(features.json) AND budgetPassed(FeatureBudget)
  *
- * - 用户配置持久化于 LittleFS /config/features.json
+ * - 用户配置完整持久化于 LittleFS /config/features.json
  * - 文件不存在 -> generateDefaults() 生成默认配置并写入
+ * - 旧版稀疏配置 -> 保留已有值并补齐缺失项；缺少 mDNS 时等待网络兼容迁移后规范化
  * - JSON 损坏   -> 回退默认配置并记录警告
  * - 各驱动初始化入口通过 shouldEnable(key) 门控，未启用则跳过初始化（节省 RAM）
  */
@@ -24,6 +25,18 @@ class FeatureBudgetRegistry;  // recheck() 需同步 budgetPassed（见 FastBeeF
 
 class RuntimeFeatureManager {
 public:
+    enum class ConfigUpdateResult : uint8_t {
+        SAVED,
+        NO_VALID_ENTRIES,
+        SAVE_FAILED
+    };
+
+    struct UserConfigSnapshot {
+        uint32_t enabledMask = 0;
+        uint32_t explicitMask = 0;
+        uint8_t featureCount = 0;
+    };
+
     static RuntimeFeatureManager& instance() {
         static RuntimeFeatureManager mgr;
         return mgr;
@@ -39,6 +52,25 @@ public:
     // 附加: requiresNetwork 的功能在网络子系统就绪前一律返回 false（错峰启动）
     bool shouldEnable(const char* featureName) const;
 
+    // 查询/修改用户期望状态（不包含内存预算和运行期降级结果）。
+    // setUserEnabled 用于兼容入口同步到 features.json；changed 可选返回值
+    // 表示状态是否发生变化。
+    bool isUserEnabled(const char* featureName) const;
+    bool hasExplicitSetting(const char* featureName) const;
+    bool setUserEnabled(const char* featureName, bool enabled, bool* changed = nullptr);
+
+    // 恢复注册表默认状态并持久化完整配置，供恢复出厂设置使用。
+    bool resetToDefaults();
+
+    // Runtime-only safety override.  This never changes the user's
+    // features.json value; it records an automatic degradation decision so
+    // the Web UI can distinguish "user disabled" from "disabled for memory".
+    void setRuntimeDisabled(const char* featureName, const char* reason);
+    void clearRuntimeDisabled(const char* featureName);
+    bool isRuntimeDisabled(const char* featureName) const;
+    const char* runtimeDisableReason(const char* featureName) const;
+    bool hasRuntimeDegradation() const { return runtimeDegraded_; }
+
     // ── 延迟初始化（deferred init）支持 ──
     // 标记网络子系统已就绪（由 FastBeeFramework 在 network->initialize() 之后调用）。
     // requiresNetwork=true 的功能在此之前被 shouldEnable() 门控为 false，
@@ -51,9 +83,21 @@ public:
     //                 flashKB, ramB, hwDep, dependsOn }
     void getStatusJson(JsonVariant dst) const;
 
+    // 低内存 Web 响应按项序列化接口。字段与 getStatusJson() 完全一致，
+    // 避免无 PSRAM 设备为完整功能列表同时持有大 JsonDocument 和响应副本。
+    bool getFeatureStatusJson(size_t index, JsonObject dst) const;
+    void getStatusSummaryJson(JsonObject dst) const;
+
     // 用请求 JSON 中的 features 字段更新内存中的 userEnabled 状态
     // 请求格式: { "features": { "<key>": { "enabled": bool } } }
     bool updateFromJson(const JsonDocument& doc);
+
+    // 原子化内存语义：配置写盘失败时恢复调用前的用户状态。
+    // previousState 可用于调用方在后续兼容镜像保存失败时回滚已落盘配置。
+    ConfigUpdateResult updateAndSave(const JsonDocument& doc,
+                                     UserConfigSnapshot* previousState = nullptr);
+    UserConfigSnapshot captureUserConfig() const;
+    bool restoreUserConfig(const UserConfigSnapshot& snapshot);
 
     // 将指定文档写入 /config/features.json（写临时文件+验证+原子替换，见计划 12.4）
     bool saveConfig(const JsonDocument& doc);
@@ -76,7 +120,7 @@ public:
         uint16_t flashKB;          // 预估 Flash 占用
         uint32_t ramB;             // 预估 RAM 占用
         bool compiled;             // 编译时是否编入 (FASTBEE_ENABLE_xxx)
-        bool defaultEnabled;       // 默认启用状态 (出厂统一为 false，按需手动启用)
+        bool defaultEnabled;       // 默认启用状态（Web/mDNS 为 true，其余按需启用）
         const char* hwDep;         // 硬件依赖描述 (可 nullptr)
         const char* dependsOn;     // 依赖的其他功能 key (可 nullptr)
         uint16_t minDramKB;        // 最低 DRAM 要求 (KB, 0=无要求)
@@ -98,13 +142,17 @@ private:
     struct FeatureState {
         FeatureMeta meta;
         bool userEnabled;          // 用户配置 (features.json)
+        bool explicitlyConfigured; // 本次加载时文件/API 是否明确提供该键
         bool budgetPassed;         // FeatureBudget 校验结果
+        bool runtimeDisabled = false; // 自动降级，不写回用户配置
+        char runtimeReason[96] = {0};
     };
 
     FeatureState features_[kMaxFeatures];
     size_t count_ = 0;
     bool loaded_ = false;
     bool networkReady_ = false;    // 延迟初始化: 网络子系统就绪标志
+    bool runtimeDegraded_ = false;
 
     RuntimeFeatureManager() = default;
     void registerFeature(const FeatureMeta& meta);

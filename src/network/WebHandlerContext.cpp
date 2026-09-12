@@ -361,6 +361,33 @@ static void sendStaticBusyRetryPage(AsyncWebServerRequest* request) {
     request->send(response);
 }
 
+// 静态资源被内存/并发门控拒绝时保持原资源 MIME。浏览器对 script/style
+// 启用了严格 MIME 检查；给 .js/.css 返回 application/json 会在可重试的
+// 503 之外额外产生“拒绝执行”错误，且旧精确比较漏掉了 charset 后缀。
+static void sendStaticBusyResponse(AsyncWebServerRequest* request,
+                                   const String& contentType) {
+    if (!rejectPathSafe(request)) return;
+
+    const char* busyType = "application/json";
+    const char* busyBody =
+        "{\"success\":false,\"message\":\"Static file busy, retry soon\",\"code\":503,\"retryAfter\":1}";
+    if (contentType.startsWith("application/javascript")) {
+        busyType = "application/javascript; charset=utf-8";
+        busyBody = "// 503 busy - retry";
+    } else if (contentType.startsWith("text/css")) {
+        busyType = "text/css; charset=utf-8";
+        busyBody = "/* 503 busy - retry */";
+    } else if (contentType.startsWith("text/html")) {
+        busyType = "text/html; charset=utf-8";
+        busyBody = "<!-- 503 busy - retry -->";
+    }
+
+    AsyncWebServerResponse* busy = request->beginResponse(503, busyType, busyBody);
+    busy->addHeader("Retry-After", "1");
+    busy->addHeader("Connection", "close");
+    request->send(busy);
+}
+
 // ============ 响应辅助方法 ============
 
 void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int code,
@@ -512,26 +539,34 @@ void WebHandlerContext::sendBadRequest(AsyncWebServerRequest* request, const Str
 // ============ 内置页面 ============
 
 void WebHandlerContext::sendBuiltinSetupPage(AsyncWebServerRequest* request) {
+    // Reuse the normal static-file path so setup.html gets the same gzip
+    // selection, Content-Encoding, memory gate and transfer limiter as every
+    // other HTML entry point.  Passing setup.html.gz directly to the library
+    // omits Content-Encoding because it treats that path as the requested
+    // resource rather than as a compressed representation.
+    if (serveStaticFile(request, "/www/setup.html")) return;
+
     noteWebRequestActivity();
-    // 优先从 LittleFS 提供（节省 ~4KB 固件 Flash）
-    if (LittleFS.exists("/www/setup.html.gz")) {
-        request->send(LittleFS, "/www/setup.html.gz", "text/html");
-    } else if (LittleFS.exists("/www/setup.html")) {
-        request->send(LittleFS, "/www/setup.html", "text/html");
-    } else {
-        request->send(200, "text/html", "<html><body><h1>Setup page not found in filesystem</h1><p>Please upload LittleFS image first.</p></body></html>");
-    }
+    request->send(200, "text/html", "<html><body><h1>Setup page not found in filesystem</h1><p>Please upload LittleFS image first.</p></body></html>");
 }
 
 // ============ 文件服务方法 ============
 
 bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const String& path) {
-    String ext = path.substring(path.lastIndexOf('.'));
-    String contentType = getContentType(path);
+    // Routes normally pass the logical URL (for example /js/app.js), but the
+    // not-found handler can also receive an explicit .gz URL.  Always derive
+    // MIME/cache policy from the logical asset so a .js.gz response is still
+    // JavaScript and is advertised as gzip-compressed content.
+    const bool gzipPathRequested = path.endsWith(".gz");
+    const String logicalPath = gzipPathRequested
+        ? path.substring(0, path.length() - 3)
+        : path;
+    String ext = logicalPath.substring(logicalPath.lastIndexOf('.'));
+    String contentType = getContentType(logicalPath);
     bool isCompressible = (ext == ".html" || ext == ".js" || ext == ".css");
-    bool isCoreEntry = (path == "/www/index.html" || path == "/www/index.html.gz" ||
-                        path == "/www/setup.html" || path == "/www/setup.html.gz");
-    bool isServiceWorker = (path == "/www/sw.js" || path == "/sw.js");
+    bool isCoreEntry = (logicalPath == "/www/index.html" ||
+                        logicalPath == "/www/setup.html");
+    bool isServiceWorker = (logicalPath == "/www/sw.js" || logicalPath == "/sw.js");
     bool isCacheableStatic = !isCoreEntry && !isServiceWorker;
     unsigned long staticHoldMs = isCoreEntry ? 3000UL : (isCompressible ? 5000UL : 1500UL);
     noteWebRequestActivity(staticHoldMs);
@@ -559,7 +594,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
                 ets_printf("[MemGuard] Reject static: DRAM(8bit) free=%lu < 6KB\n",
                            (unsigned long)freeDram);
                 if (isCoreEntry) { sendStaticBusyRetryPage(request); }
-                else { sendServiceUnavailable(request); }
+                else { sendStaticBusyResponse(request, contentType); }
                 return true;
             }
             // largest gate 也用 8BIT 口径（INTERNAL largest 虚高，崩溃现场
@@ -570,7 +605,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
                            (unsigned long)largestBlock,
                            static_cast<unsigned>(minLargestBlock));
                 if (isCoreEntry) { sendStaticBusyRetryPage(request); }
-                else { sendServiceUnavailable(request); }
+                else { sendStaticBusyResponse(request, contentType); }
                 return true;
             }
         }
@@ -585,30 +620,26 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     // 31KB 抽到 3KB，90s 无恢复窗口触发 DRAM<8KB 看门狗重启。gz 正是
     // 最大的存储形态（单文件可达数十 KB），必须占槽。
     // Keep the simple compatibility predicate visible for source-level
-    // guards; gzip is then explicitly forced through the limiter because it
-    // is the largest storage representation, despite its .gz suffix.
+    // guards. Explicit .gz URLs are normalized above, so compressed text
+    // assets take the same limiter path as their logical URL.
     const bool bypassInFlightCap = !isCompressible;
-    const bool limitInFlight = !bypassInFlightCap || ext == ".gz";
+    const bool limitInFlight = !bypassInFlightCap;
 
-    // Open file: prefer uncompressed for JS/CSS (browser compatibility fix)
+    // Prefer the compressed representation for every text asset.  On the
+    // classic ESP32 this changes the largest page transfer from 71KB to 10KB
+    // and avoids keeping a long raw stream alive while DRAM is constrained.
+    // The release LittleFS package is gzip-only for text assets. Keep the raw
+    // lookup as an optional fallback for custom/development filesystems; an
+    // explicit .gz URL never falls back to different bytes.
     File openFile;
-    bool sentGzippedContent = false;  // 标记是否返回了 gzip 压缩的内容
-    if (isCompressible && ext != ".html") {
-        // For JS/CSS: try uncompressed first, fall back to gz
-        openFile = LittleFS.open(path, "r");
-        if (!openFile) {
-            openFile = LittleFS.open(path + ".gz", "r");
-            if (openFile) sentGzippedContent = true;
-        }
-    } else {
-        // For HTML: prefer gz version
-        if (isCompressible) {
-            openFile = LittleFS.open(path + ".gz", "r");
-            if (openFile) sentGzippedContent = true;
-        }
-        if (!openFile) {
-            openFile = LittleFS.open(path, "r");
-        }
+    bool sentGzippedContent = false;
+    if (isCompressible) {
+        const String gzipPath = gzipPathRequested ? path : logicalPath + ".gz";
+        openFile = LittleFS.open(gzipPath, "r");
+        sentGzippedContent = static_cast<bool>(openFile);
+    }
+    if (!openFile && !gzipPathRequested) {
+        openFile = LittleFS.open(logicalPath, "r");
     }
     if (!openFile) {
         return false;  // 404 fallback; no slot was taken
@@ -621,22 +652,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             sendStaticBusyRetryPage(request);
             return true;
         }
-        // busy 响应的 MIME 与资源类型匹配：JS 请求收到 application/json 会触发
-        // 浏览器严格 MIME 检查拒绝执行，产生 console 报错噪音；返回无害占位体
-        // 保持 503 状态码不变，前端加载器仍按非 200 重试，语义一致
-        const char* busyBody = "{\"success\":false,\"message\":\"Static file busy, retry soon\",\"code\":503,\"retryAfter\":1}";
-        String busyType = "application/json";
-        if (contentType == "application/javascript") {
-            busyType = "application/javascript";
-            busyBody = "// 503 busy - retry";
-        } else if (contentType == "text/css") {
-            busyType = "text/css";
-            busyBody = "/* 503 busy - retry */";
-        }
-        AsyncWebServerResponse* busy = request->beginResponse(503, busyType, busyBody);
-        busy->addHeader("Retry-After", "1");
-        busy->addHeader("Connection", "close");
-        request->send(busy);
+        sendStaticBusyResponse(request, contentType);
         return true;
     }
 

@@ -14,6 +14,8 @@
 #include <map>
 #include <functional>
 
+namespace FastBeeTest {
+
 // 外设类型枚举 — 与生产代码 PeripheralTypes.h 保持一致
 enum class PeripheralType {
     UNCONFIGURED = 0,
@@ -695,5 +697,7 @@ private:
 // 全局实例引用
 #define MockPeripheralMgr MockPeripheralManager::getInstance()
 #define MockPeriphExecMgr MockPeriphExecManager::getInstance()
+
+}  // namespace FastBeeTest
 
 #endif // MOCK_PERIPHERAL_H

@@ -60,7 +60,7 @@ export default defineConfig({
     // stability-all: 覆盖 P0-P4 所有测试套件
     {
       name: 'stability-all',
-      testMatch: /01-auth|02-dashboard|03-network|04-device|05-peripheral|06-periph-exec|07-mqtt|08-modbus|09-fullscreen|10-rule-script|11-logs|12-files|13-users|14-integration|15-ui-regression|16-net-mqtt-switch|17-perf|18-linkage/,
+      testMatch: /01-auth|02-dashboard|03-network|04-device|05-peripheral|06-periph-exec|07-mqtt|08-modbus|09-fullscreen|10-rule-script|11-logs|13-users|14-integration|15-ui-regression|16-net-mqtt-switch|17-perf|18-linkage/,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

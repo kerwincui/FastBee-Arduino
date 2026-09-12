@@ -66,6 +66,74 @@ constexpr uint8_t RF_MAX_BIT_LENGTH = 32;
 constexpr uint8_t RADAR_MODE_DIGITAL = 0;
 constexpr uint16_t RADAR_DEFAULT_DEBOUNCE_MS = 50;
 constexpr uint16_t RADAR_DEFAULT_HOLD_MS = 2000;
+constexpr uint32_t SENSOR_DEFAULT_SAMPLE_INTERVAL_MS = 1000;
+constexpr uint32_t SENSOR_MIN_SAMPLE_INTERVAL_MS = 100;
+constexpr uint32_t SENSOR_MAX_SAMPLE_INTERVAL_MS = 86400000UL;
+
+// Optional drivers are the first recovery targets because they may retain
+// display/RMT buffers or bus-driver state. GPIO, ADC and UART remain available
+// so the device can still be diagnosed and controlled while memory recovers.
+bool isMemoryOptionalPeripheralType(PeripheralType type) {
+    switch (type) {
+        case PeripheralType::LCD:
+        case PeripheralType::LCD1602:
+        case PeripheralType::NEO_PIXEL:
+        case PeripheralType::SEVEN_SEGMENT_TM1637:
+        case PeripheralType::IR_RECEIVER:
+        case PeripheralType::DS1302_RTC:
+        case PeripheralType::STEPPER_MOTOR:
+        case PeripheralType::CAMERA:
+        case PeripheralType::SDIO:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isAdcInputType(PeripheralType type) {
+    return type == PeripheralType::ADC || type == PeripheralType::GPIO_ANALOG_INPUT;
+}
+
+uint8_t normalizeAdcSampleCount(int value, uint8_t fallback = 1) {
+    if (value <= 0) value = fallback > 0 ? fallback : 1;
+    if (value > 16) value = 16;
+    return static_cast<uint8_t>(value);
+}
+
+uint8_t normalizeAdcFilterMode(int value) {
+    return value == 1 ? 1 : 0;
+}
+
+void initializeAdcDefaults(PeripheralConfig& config) {
+    config.params.adc.attenuation = 3;
+    config.params.adc.resolution = 12;
+    config.params.adc.sampleRate = 0;
+    config.params.adc.sampleCount = 1;
+    config.params.adc.filterMode = 0;
+    config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
+    config.params.adc.conversionEnabled = false;
+    config.params.adc.clampEnabled = false;
+    config.params.adc.decimalPlaces = 2;
+    config.params.adc.inputMin = 0.0f;
+    config.params.adc.inputMax = 0.0f;
+    config.params.adc.engineeringMin = 0.0f;
+    config.params.adc.engineeringMax = 100.0f;
+    config.params.adc.engineeringOffset = 0.0f;
+    config.params.adc.vRef = 0.0f;
+    config.params.adc.voltageRatio = 0.0f;
+    config.params.adc.shuntResistance = 0.0f;
+    config.params.adc.inputGain = 0.0f;
+    config.params.adc.inputOffset = 0.0f;
+    config.params.adc.rawMin = 0;
+    config.params.adc.rawMax = 0;
+}
+
+// 将 AI 原始计数转换为工程量。该函数只做算术，不分配堆内存，便于在
+// 外设执行轮询、协议上报和 Web 状态读取中复用。
+float convertAnalogRaw(const PeripheralConfig& config, uint16_t raw,
+                       AnalogInputQuality* quality = nullptr) {
+    return convertAnalogInputRaw(config, raw, quality);
+}
 
 struct NeoPixelRgb {
     uint8_t r;
@@ -499,11 +567,15 @@ bool PeripheralManager::initialize() {
     _mutex = xSemaphoreCreateRecursiveMutex();
 
     // 创建ISR中断事件队列（pin号从ISR传递到主循环处理）
-    _isrQueue = xQueueCreate(ISR_QUEUE_SIZE, sizeof(uint8_t));
+    _isrQueue = xQueueCreate(ISR_QUEUE_SIZE, sizeof(GpioIsrEvent));
 
     // 复位 ISR 诊断统计与去抖时间戳（initialize 可能被测试环境重复调用）
     _isrQueueOverruns = 0;
     memset(_lastIsrDispatch, 0, sizeof(_lastIsrDispatch));
+    memset(_hasIsrDispatch, 0, sizeof(_hasIsrDispatch));
+    _digitalInterruptHead = 0;
+    _digitalInterruptTail = 0;
+    _digitalInterruptCount = 0;
 
     // 加载配置
     if (loadConfiguration()) {
@@ -837,6 +909,7 @@ bool PeripheralManager::enablePeripheral(const String& id) {
 
     if (runtimeStates.find(id) != runtimeStates.end()) {
         runtimeStates[id].status = PeripheralStatus::PERIPHERAL_ENABLED;
+        runtimeStates[id].memorySuspended = false;
     }
 
     if (!initHardware(id)) {
@@ -854,6 +927,14 @@ bool PeripheralManager::disablePeripheral(const String& id) {
     if (!config) return false;
 
     config->enabled = false;
+
+    auto stateIt = runtimeStates.find(id);
+    if (stateIt != runtimeStates.end()) {
+        if (stateIt->second.memorySuspended && _memorySuspendedCount > 0) {
+            _memorySuspendedCount--;
+        }
+        stateIt->second.memorySuspended = false;
+    }
 
     return deinitHardware(id);
 }
@@ -969,6 +1050,86 @@ bool PeripheralManager::initAllEnabledPeripherals() {
     return failCount == 0;
 }
 
+size_t PeripheralManager::suspendOptionalForMemory() {
+    RecursiveMutexGuard lock(_mutex);
+    if (!_mutex) return 0;
+
+    size_t suspended = 0;
+    for (auto& pair : peripherals) {
+        PeripheralConfig& config = pair.second;
+        auto stateIt = runtimeStates.find(pair.first);
+        if (!config.enabled || !isMemoryOptionalPeripheralType(config.type) ||
+            stateIt == runtimeStates.end() || stateIt->second.memorySuspended) {
+            continue;
+        }
+
+        // Teardown is best-effort: the memory guard must still mark the
+        // peripheral unavailable even if a driver cannot release every buffer.
+        teardownHardware(config);
+        config.enabled = false;  // runtime-only; saveConfiguration is not called
+        stateIt->second.status = PeripheralStatus::PERIPHERAL_DISABLED;
+        stateIt->second.memorySuspended = true;
+        stateIt->second.lastError = "memory_pressure_suspended";
+        suspended++;
+    }
+
+    _memorySuspendedCount += suspended;
+    if (suspended > 0) {
+        LOG_WARNINGF("Peripheral Manager: suspended %u optional peripherals for memory pressure",
+                     (unsigned)suspended);
+    }
+    return suspended;
+}
+
+size_t PeripheralManager::restoreOptionalAfterMemory() {
+    RecursiveMutexGuard lock(_mutex);
+    if (!_mutex) return 0;
+
+    size_t restored = 0;
+    for (auto& pair : peripherals) {
+        PeripheralConfig& config = pair.second;
+        auto stateIt = runtimeStates.find(pair.first);
+        if (stateIt == runtimeStates.end() || !stateIt->second.memorySuspended) {
+            continue;
+        }
+
+#if defined(ESP_PLATFORM)
+        // Leave enough contiguous DRAM for Web/MQTT while restoring one
+        // optional driver at a time. A later health sample can retry.
+        if (FastBee::MemoryBudget::dram8Free() <
+                FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM + 4096U ||
+            FastBee::MemoryBudget::dram8Largest() <
+                FastBee::MemoryBudget::PERIPH_EXEC_MIN_LARGEST) {
+            break;
+        }
+#endif
+
+        config.enabled = true;
+        stateIt->second.status = PeripheralStatus::PERIPHERAL_ENABLED;
+        if (initHardware(pair.first)) {
+            stateIt->second.memorySuspended = false;
+            stateIt->second.lastError = "";
+            restored++;
+        } else {
+            // Keep the runtime suspension if the driver still cannot be
+            // initialized (for example a user-disabled compile-time feature).
+            config.enabled = false;
+            stateIt->second.status = PeripheralStatus::PERIPHERAL_DISABLED;
+            stateIt->second.lastError = "memory_pressure_restore_pending";
+        }
+    }
+
+    _memorySuspendedCount = 0;
+    for (const auto& pair : runtimeStates) {
+        if (pair.second.memorySuspended) _memorySuspendedCount++;
+    }
+    if (restored > 0) {
+        LOG_INFOF("Peripheral Manager: restored %u optional peripherals after memory recovery",
+                  (unsigned)restored);
+    }
+    return restored;
+}
+
 // 外设类型 → 网络依赖功能 key 映射（仅列出 setupHardware 中早期 eager 初始化、
 // 且被 requiresNetwork 门控的类型）。返回 nullptr 表示该类型不受网络延迟门控。
 // 说明：I2C 传感器(BMP280/MPU6050)与 RFID 为惰性初始化（轮询/使用时才 begin），
@@ -1022,6 +1183,8 @@ bool PeripheralManager::configurePin(uint8_t pin, PeripheralType type) {
         config.params.gpio.pwmChannel = pin % 16;  // 使用引脚号模16作为通道
         config.params.gpio.pwmFrequency = 1000;
         config.params.gpio.pwmResolution = 8;
+    } else if (isAdcInputType(type)) {
+        initializeAdcDefaults(config);
     }
 
     return addPeripheral(config);
@@ -1048,7 +1211,13 @@ GPIOState PeripheralManager::readGpioStateLocked(const PeripheralConfig& config,
         case PeripheralType::GPIO_DIGITAL_INPUT:
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
-            return digitalRead(pin) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+        case PeripheralType::GPIO_INTERRUPT_RISING:
+        case PeripheralType::GPIO_INTERRUPT_FALLING:
+        case PeripheralType::GPIO_INTERRUPT_CHANGE: {
+            bool high = digitalRead(pin) != 0;
+            if (config.params.gpio.invertLogic) high = !high;
+            return high ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+        }
 
         case PeripheralType::GPIO_ANALOG_INPUT:
             return analogRead(pin) > 2048 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
@@ -1277,19 +1446,19 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
         return false;
     }
 
-    uint32_t maxVal = (1U << config->params.gpio.pwmResolution) - 1;
+    uint8_t pwmResolution = config->params.gpio.pwmResolution;
+    if (pwmResolution < 1 || pwmResolution > 16) pwmResolution = 8;
+    uint32_t maxVal = (1UL << pwmResolution) - 1UL;
 
     // AO 模拟量输出模式：输入值视为 0-100% 百分比，线性映射到
     // [aoMinPct, aoMaxPct] 区间的占空比（无 DAC 芯片的工业 AO 方案）。
     // 边界钳位：超范围输入收敛到区间两端，避免执行器过冲。
     if (config->params.gpio.aoMode) {
-        uint32_t pct = dutyCycle > 100 ? 100 : dutyCycle;
-        uint8_t lo = config->params.gpio.aoMinPct;
-        uint8_t hi = config->params.gpio.aoMaxPct;
-        if (lo > hi) { uint8_t t = lo; lo = hi; hi = t; }
-        if (hi > 100) hi = 100;
-        uint32_t mappedPct = lo + (hi - lo) * pct / 100;
-        uint32_t duty = (uint32_t)((uint64_t)maxVal * mappedPct / 100);
+        uint32_t duty = mapAnalogOutputPercent(
+            dutyCycle,
+            config->params.gpio.aoMinPct,
+            config->params.gpio.aoMaxPct,
+            pwmResolution);
         return ledcWrite(config->getPrimaryPin(), duty);
     }
 
@@ -1320,8 +1489,8 @@ uint16_t PeripheralManager::readAnalog(const String& peripheralId) {
     // 保留引脚守卫（同 readPin）：避免周期采样触碰 PSRAM/Flash 总线引脚
     if (isReservedPin(pin)) return 0;
 
-    // ADC 类型外设支持多采样滤波（GPIO_ANALOG_INPUT 保持单次采样原行为）
-    if (config->type == PeripheralType::ADC) {
+    // ADC 与旧式 GPIO_ANALOG_INPUT 共用同一套滤波参数。
+    if (isAdcInputType(config->type)) {
         uint8_t samples = config->params.adc.sampleCount;
         if (samples < 1) samples = 1;
         if (samples > 16) samples = 16;
@@ -1347,7 +1516,7 @@ uint16_t PeripheralManager::readAnalogByCStr(const char* peripheralId) {
     if (pin == 255) return 0;
     if (isReservedPin(pin)) return 0;
 
-    if (config->type == PeripheralType::ADC) {
+    if (isAdcInputType(config->type)) {
         uint8_t samples = config->params.adc.sampleCount;
         if (samples < 1) samples = 1;
         if (samples > 16) samples = 16;
@@ -1356,6 +1525,46 @@ uint16_t PeripheralManager::readAnalogByCStr(const char* peripheralId) {
     }
 
     return (uint16_t)analogRead(pin);
+}
+
+float PeripheralManager::readAnalogValue(const String& peripheralId) {
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId.c_str());
+    if (!config || !isAdcInputType(config->type)) return NAN;
+
+    const uint8_t pin = config->getPrimaryPin();
+    if (pin == 255 || isReservedPin(pin)) return NAN;
+    uint8_t samples = config->params.adc.sampleCount;
+    if (samples < 1) samples = 1;
+    if (samples > 16) samples = 16;
+    uint8_t filterMode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+    return convertAnalogRaw(*config, adcFilterRead(pin, samples, filterMode));
+}
+
+float PeripheralManager::readAnalogValueByCStr(const char* peripheralId) {
+    if (!peripheralId || !*peripheralId) return NAN;
+    RecursiveMutexGuard lock(_mutex);
+    auto config = getPeripheralCStrLocked(peripheralId);
+    if (!config || !isAdcInputType(config->type)) return NAN;
+
+    const uint8_t pin = config->getPrimaryPin();
+    if (pin == 255 || isReservedPin(pin)) return NAN;
+    uint8_t samples = config->params.adc.sampleCount;
+    if (samples < 1) samples = 1;
+    if (samples > 16) samples = 16;
+    uint8_t filterMode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+    return convertAnalogRaw(*config, adcFilterRead(pin, samples, filterMode));
+}
+
+float PeripheralManager::convertAnalogRawValue(const String& peripheralId, uint16_t rawValue,
+                                               AnalogInputQuality* quality) {
+    RecursiveMutexGuard lock(_mutex);
+    const auto* config = getPeripheralCStrLocked(peripheralId.c_str());
+    if (!config || !isAdcInputType(config->type)) {
+        if (quality) *quality = AnalogInputQuality::INVALID_CONFIG;
+        return NAN;
+    }
+    return convertAnalogRaw(*config, rawValue, quality);
 }
 
 // ADC 多采样滤波：均值滤波平滑随机噪声，中值滤波抑制脉冲尖峰
@@ -1434,7 +1643,7 @@ bool PeripheralManager::saveConfiguration() {
             params["mode"] = config.params.spi.mode;
             params["msbFirst"] = config.params.spi.msbFirst;
         }
-        else if (config.isGPIOPeripheral()) {
+        else if (config.isGPIOPeripheral() && !isAdcInputType(config.type)) {
             params["initialState"] = static_cast<int>(config.params.gpio.initialState);
             params["pwmChannel"] = config.params.gpio.pwmChannel;
             params["pwmFrequency"] = config.params.gpio.pwmFrequency;
@@ -1447,14 +1656,59 @@ bool PeripheralManager::saveConfiguration() {
                 params["aoMinPct"] = config.params.gpio.aoMinPct;
                 params["aoMaxPct"] = config.params.gpio.aoMaxPct;
             }
+            // DI 参数只在非默认值时写入，保持旧配置文件紧凑。
+            if (config.type == PeripheralType::GPIO_DIGITAL_INPUT ||
+                config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+                config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
+                config.type == PeripheralType::GPIO_INTERRUPT_RISING ||
+                config.type == PeripheralType::GPIO_INTERRUPT_FALLING ||
+                config.type == PeripheralType::GPIO_INTERRUPT_CHANGE) {
+                if (config.params.gpio.inputMode != static_cast<uint8_t>(DigitalInputMode::AUTO)) {
+                    params["inputMode"] = config.params.gpio.inputMode;
+                }
+                if (config.params.gpio.invertLogic) params["invertLogic"] = true;
+                if (config.params.gpio.debounceMs > 0) params["debounceMs"] = config.params.gpio.debounceMs;
+                if (config.params.gpio.reportMode != static_cast<uint8_t>(DigitalReportMode::ON_CHANGE)) {
+                    params["reportMode"] = config.params.gpio.reportMode;
+                }
+            }
         }
-        else if (config.type == PeripheralType::ADC) {
+        else if (isAdcInputType(config.type)) {
             params["attenuation"] = config.params.adc.attenuation;
             params["resolution"] = config.params.adc.resolution;
             params["sampleRate"] = config.params.adc.sampleRate;
             // 多采样滤波（非默认值时才写入，向后兼容旧配置）
             if (config.params.adc.sampleCount > 1) params["sampleCount"] = config.params.adc.sampleCount;
             if (config.params.adc.filterMode > 0) params["filterMode"] = config.params.adc.filterMode;
+            const bool hasAnalogCalibration =
+                config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW) ||
+                config.params.adc.conversionEnabled ||
+                config.params.adc.clampEnabled ||
+                config.params.adc.inputMin != 0.0f || config.params.adc.inputMax != 0.0f ||
+                config.params.adc.engineeringMin != 0.0f || config.params.adc.engineeringMax != 100.0f ||
+                config.params.adc.engineeringOffset != 0.0f || config.params.adc.decimalPlaces != 2 ||
+                config.params.adc.vRef != 0.0f || config.params.adc.voltageRatio != 0.0f ||
+                config.params.adc.shuntResistance != 0.0f || config.params.adc.inputGain != 0.0f ||
+                config.params.adc.inputOffset != 0.0f || config.params.adc.rawMin != 0 ||
+                config.params.adc.rawMax != 0;
+            if (hasAnalogCalibration) {
+                params["signalMode"] = config.params.adc.signalMode;
+                params["conversionEnabled"] = config.params.adc.conversionEnabled;
+                params["clampEnabled"] = config.params.adc.clampEnabled;
+                params["decimalPlaces"] = config.params.adc.decimalPlaces;
+                params["inputMin"] = config.params.adc.inputMin;
+                params["inputMax"] = config.params.adc.inputMax;
+                params["engineeringMin"] = config.params.adc.engineeringMin;
+                params["engineeringMax"] = config.params.adc.engineeringMax;
+                params["engineeringOffset"] = config.params.adc.engineeringOffset;
+                params["vRef"] = config.params.adc.vRef;
+                params["voltageRatio"] = config.params.adc.voltageRatio;
+                params["shuntResistance"] = config.params.adc.shuntResistance;
+                params["inputGain"] = config.params.adc.inputGain;
+                params["inputOffset"] = config.params.adc.inputOffset;
+                params["rawMin"] = config.params.adc.rawMin;
+                params["rawMax"] = config.params.adc.rawMax;
+            }
         }
         else if (config.type == PeripheralType::DAC) {
             params["channel"] = config.params.dac.channel;
@@ -1488,6 +1742,13 @@ bool PeripheralManager::saveConfiguration() {
             params["activeHigh"] = config.params.radar.activeHigh;
             params["debounceMs"] = config.params.radar.debounceMs;
             params["holdMs"] = config.params.radar.holdMs;
+        }
+        else if (config.type == PeripheralType::SENSOR_GENERIC) {
+            params["sensorType"] = config.params.sensor.sensorType;
+            uint32_t interval = config.params.sensor.sampleInterval;
+            if (interval < SENSOR_MIN_SAMPLE_INTERVAL_MS) interval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+            if (interval > SENSOR_MAX_SAMPLE_INTERVAL_MS) interval = SENSOR_MAX_SAMPLE_INTERVAL_MS;
+            params["sampleInterval"] = interval;
         }
     }
 
@@ -1586,6 +1847,11 @@ bool PeripheralManager::loadConfiguration() {
             config.params.radar.activeHigh = true;
             config.params.radar.debounceMs = RADAR_DEFAULT_DEBOUNCE_MS;
             config.params.radar.holdMs = RADAR_DEFAULT_HOLD_MS;
+        } else if (config.type == PeripheralType::SENSOR_GENERIC) {
+            config.params.sensor.sensorType = 0;
+            config.params.sensor.sampleInterval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+        } else if (isAdcInputType(config.type)) {
+            initializeAdcDefaults(config);
         }
 
         // 引脚配置
@@ -1617,7 +1883,7 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.spi.mode = params["mode"] | 0;
                 config.params.spi.msbFirst = params["msbFirst"] | true;
             }
-            else if (config.isGPIOPeripheral()) {
+            else if (config.isGPIOPeripheral() && !isAdcInputType(config.type)) {
                 config.params.gpio.initialState = static_cast<GPIOState>(params["initialState"] | 0);
                 config.params.gpio.pwmChannel = params["pwmChannel"] | 0;
                 config.params.gpio.pwmFrequency = params["pwmFrequency"] | 1000;
@@ -1628,14 +1894,49 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.gpio.aoMode = params["aoMode"] | false;
                 config.params.gpio.aoMinPct = params["aoMinPct"] | 0;
                 config.params.gpio.aoMaxPct = params["aoMaxPct"] | 100;
+                config.params.gpio.inputMode = params["inputMode"] | static_cast<uint8_t>(DigitalInputMode::AUTO);
+                if (config.params.gpio.inputMode > static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)) {
+                    config.params.gpio.inputMode = static_cast<uint8_t>(DigitalInputMode::AUTO);
+                }
+                config.params.gpio.invertLogic = params["invertLogic"] | false;
+                int debounceMs = params["debounceMs"] | 0;
+                if (debounceMs < 0) debounceMs = 0;
+                if (debounceMs > 5000) debounceMs = 5000;
+                config.params.gpio.debounceMs = static_cast<uint16_t>(debounceMs);
+                config.params.gpio.reportMode = params["reportMode"] | static_cast<uint8_t>(DigitalReportMode::ON_CHANGE);
+                if (config.params.gpio.reportMode > static_cast<uint8_t>(DigitalReportMode::EVENT_ONLY)) {
+                    config.params.gpio.reportMode = static_cast<uint8_t>(DigitalReportMode::ON_CHANGE);
+                }
             }
-            else if (config.type == PeripheralType::ADC) {
-                config.params.adc.attenuation = params["attenuation"] | 0;
+            else if (isAdcInputType(config.type)) {
+                config.params.adc.attenuation = params["attenuation"] | 3;
                 config.params.adc.resolution = params["resolution"] | 12;
                 config.params.adc.sampleRate = params["sampleRate"] | 0;
                 // 多采样滤波（旧配置无此字段时默认单次采样，保持原行为）
-                config.params.adc.sampleCount = params["sampleCount"] | 1;
-                config.params.adc.filterMode = params["filterMode"] | 0;
+                config.params.adc.sampleCount = normalizeAdcSampleCount(params["sampleCount"] | 1);
+                config.params.adc.filterMode = normalizeAdcFilterMode(params["filterMode"] | 0);
+                config.params.adc.signalMode = params["signalMode"] | static_cast<uint8_t>(AnalogSignalMode::RAW);
+                if (config.params.adc.signalMode > static_cast<uint8_t>(AnalogSignalMode::CUSTOM_LINEAR)) {
+                    config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
+                }
+                config.params.adc.conversionEnabled = params["conversionEnabled"] | false;
+                config.params.adc.clampEnabled = params["clampEnabled"] | false;
+                int decimals = params["decimalPlaces"] | 2;
+                if (decimals < 0) decimals = 0;
+                if (decimals > 6) decimals = 6;
+                config.params.adc.decimalPlaces = static_cast<uint8_t>(decimals);
+                config.params.adc.inputMin = params["inputMin"] | 0.0f;
+                config.params.adc.inputMax = params["inputMax"] | 0.0f;
+                config.params.adc.engineeringMin = params["engineeringMin"] | 0.0f;
+                config.params.adc.engineeringMax = params["engineeringMax"] | 100.0f;
+                config.params.adc.engineeringOffset = params["engineeringOffset"] | 0.0f;
+                config.params.adc.vRef = params["vRef"] | 0.0f;
+                config.params.adc.voltageRatio = params["voltageRatio"] | 0.0f;
+                config.params.adc.shuntResistance = params["shuntResistance"] | 0.0f;
+                config.params.adc.inputGain = params["inputGain"] | 0.0f;
+                config.params.adc.inputOffset = params["inputOffset"] | 0.0f;
+                config.params.adc.rawMin = params["rawMin"] | 0;
+                config.params.adc.rawMax = params["rawMax"] | 0;
             }
             else if (config.type == PeripheralType::DAC) {
                 config.params.dac.channel = params["channel"] | 1;
@@ -1680,6 +1981,13 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.radar.activeHigh = params["activeHigh"] | true;
                 config.params.radar.debounceMs = params["debounceMs"] | RADAR_DEFAULT_DEBOUNCE_MS;
                 config.params.radar.holdMs = params["holdMs"] | RADAR_DEFAULT_HOLD_MS;
+            }
+            else if (config.type == PeripheralType::SENSOR_GENERIC) {
+                config.params.sensor.sensorType = params["sensorType"] | 0;
+                uint32_t interval = params["sampleInterval"] | SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+                if (interval < SENSOR_MIN_SAMPLE_INTERVAL_MS) interval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+                if (interval > SENSOR_MAX_SAMPLE_INTERVAL_MS) interval = SENSOR_MAX_SAMPLE_INTERVAL_MS;
+                config.params.sensor.sampleInterval = interval;
             }
         }
 
@@ -1770,6 +2078,19 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         return true;
     }
 
+    // Generic sensors may represent an external/logical data source and are
+    // therefore valid without a local GPIO. When a pin is supplied, still run
+    // the normal chip/reserved-pin checks below.
+    if (config.type == PeripheralType::SENSOR_GENERIC) {
+        const uint32_t interval = config.params.sensor.sampleInterval;
+        if (interval != 0 && (interval < SENSOR_MIN_SAMPLE_INTERVAL_MS ||
+                              interval > SENSOR_MAX_SAMPLE_INTERVAL_MS)) {
+            errorMsg = "通用传感器采样间隔必须在 100ms 到 24h 之间";
+            return false;
+        }
+        if (config.pinCount == 0) return true;
+    }
+
     if (config.pinCount == 0) {
         errorMsg = "至少需要配置一个引脚";
         return false;
@@ -1798,6 +2119,26 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
 
     // 类型特定参数验证
     switch (config.type) {
+        case PeripheralType::GPIO_DIGITAL_INPUT:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
+        case PeripheralType::GPIO_INTERRUPT_RISING:
+        case PeripheralType::GPIO_INTERRUPT_FALLING:
+        case PeripheralType::GPIO_INTERRUPT_CHANGE:
+            if (config.params.gpio.inputMode > static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)) {
+                errorMsg = "DI 输入模式无效 (有效值: 0=自动, 1=浮空, 2=上拉, 3=下拉)";
+                return false;
+            }
+            if (config.params.gpio.debounceMs > 5000) {
+                errorMsg = "DI 去抖时间无效 (有效范围: 0-5000ms)";
+                return false;
+            }
+            if (config.params.gpio.reportMode > static_cast<uint8_t>(DigitalReportMode::EVENT_ONLY)) {
+                errorMsg = "DI 上报模式无效 (有效值: 0-2)";
+                return false;
+            }
+            break;
+
         case PeripheralType::UART:
             // UART 波特率验证
             if (config.params.uart.baudRate == 0 || config.params.uart.baudRate > 5000000) {
@@ -1894,6 +2235,38 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
             if (config.params.adc.filterMode > 1) {
                 errorMsg = "ADC 滤波模式无效 (有效值: 0=均值, 1=中值)";
                 return false;
+            }
+            if (config.params.adc.signalMode > static_cast<uint8_t>(AnalogSignalMode::CUSTOM_LINEAR) ||
+                config.params.adc.decimalPlaces > 6) {
+                errorMsg = "AI 转换参数无效";
+                return false;
+            }
+            if (config.params.adc.conversionEnabled &&
+                config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+                const auto& a = config.params.adc;
+                if (isnan(a.engineeringMin) || isinf(a.engineeringMin) ||
+                    isnan(a.engineeringMax) || isinf(a.engineeringMax) ||
+                    a.engineeringMin == a.engineeringMax) {
+                    errorMsg = "AI 工程量上下限不能相同或为空";
+                    return false;
+                }
+                const bool hasExplicitInputRange =
+                    a.inputMin != 0.0f || a.inputMax != 0.0f;
+                if ((hasExplicitInputRange &&
+                     (isnan(a.inputMin) || isinf(a.inputMin) ||
+                      isnan(a.inputMax) || isinf(a.inputMax) ||
+                      a.inputMax <= a.inputMin)) ||
+                    (!isnan(a.voltageRatio) && !isinf(a.voltageRatio) && a.voltageRatio < 0.0f) ||
+                    (!isnan(a.shuntResistance) && !isinf(a.shuntResistance) && a.shuntResistance < 0.0f) ||
+                    (!isnan(a.inputGain) && !isinf(a.inputGain) && a.inputGain < 0.0f)) {
+                    errorMsg = "AI 输入量程或校准参数无效";
+                    return false;
+                }
+                if (a.signalMode == static_cast<uint8_t>(AnalogSignalMode::CUSTOM_LINEAR) &&
+                    a.rawMax > 0 && a.rawMax <= a.rawMin) {
+                    errorMsg = "AI 自定义原始量程无效";
+                    return false;
+                }
             }
             break;
 
@@ -2048,8 +2421,20 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         }
     }
 
-    if (config.isGPIOPeripheral()) {
-        return setupGPIOPin(config);
+    // Legacy GPIO_ANALOG_INPUT shares the ADC parameter layout and must reach
+    // the ADC initializer instead of the generic GPIO path.
+    if (config.isGPIOPeripheral() && !isAdcInputType(config.type)) {
+        if (!setupGPIOPin(config)) return false;
+        // JSON 中断类型 18/19/20 是可直接使用的外设类型：初始化时即注册
+        // 对应边沿。回调可为空，队列处理仍会更新运行时状态；规则/MQTT
+        // 上报由调度器统一做稳定态去抖，避免 ISR 中分配内存。
+        if (isGpioInterruptInputType(config.type) &&
+            !attachInterrupt(config.id, nullptr)) {
+            LOG_ERRORF("Peripheral Manager: Failed to attach configured interrupt '%s'",
+                       config.id.c_str());
+            return false;
+        }
+        return true;
     }
 
     if (config.type == PeripheralType::UART) {
@@ -2371,10 +2756,10 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     }
 
     // ========== ADC 模数转换初始化 ==========
-    if (config.type == PeripheralType::ADC) {
+    if (isAdcInputType(config.type)) {
         uint8_t pin = config.getPrimaryPin();
         if (pin == 255) {
-            LOG_WARNINGF("Peripheral Manager: ADC '%s' requires a valid analog pin", config.id.c_str());
+            LOG_WARNINGF("Peripheral Manager: analog input '%s' requires a valid analog pin", config.id.c_str());
             return false;
         }
         // 设置 ADC 分辨率（衰减在 PeriphExecExecutor 的传感器读取中按需配置）
@@ -2383,7 +2768,7 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
 #endif
         // 执行一次空读以稳定 ADC
         analogRead(pin);
-        LOG_INFOF("Peripheral Manager: ADC '%s' initialized pin=%d atten=%d res=%d",
+        LOG_INFOF("Peripheral Manager: analog input '%s' initialized pin=%d atten=%d res=%d",
                   config.id.c_str(), pin, config.params.adc.attenuation, config.params.adc.resolution);
         return true;
     }
@@ -2598,16 +2983,24 @@ bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
 
     switch (config.type) {
         case PeripheralType::GPIO_DIGITAL_INPUT:
-            pinMode(pin, INPUT);
-            break;
-
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
-            pinMode(pin, INPUT_PULLUP);
-            break;
-
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
-            pinMode(pin, INPUT_PULLDOWN);
+        case PeripheralType::GPIO_INTERRUPT_RISING:
+        case PeripheralType::GPIO_INTERRUPT_FALLING:
+        case PeripheralType::GPIO_INTERRUPT_CHANGE: {
+            uint8_t inputMode = config.params.gpio.inputMode;
+            if (inputMode == static_cast<uint8_t>(DigitalInputMode::AUTO)) {
+                inputMode = config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP
+                                ? static_cast<uint8_t>(DigitalInputMode::PULL_UP)
+                                : config.type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN
+                                    ? static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)
+                                    : static_cast<uint8_t>(DigitalInputMode::FLOATING);
+            }
+            if (inputMode == static_cast<uint8_t>(DigitalInputMode::PULL_UP)) pinMode(pin, INPUT_PULLUP);
+            else if (inputMode == static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)) pinMode(pin, INPUT_PULLDOWN);
+            else pinMode(pin, INPUT);
             break;
+        }
 
         case PeripheralType::GPIO_DIGITAL_OUTPUT:
             if (config.params.gpio.passive) {
@@ -2632,7 +3025,12 @@ bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
             break;
 
         case PeripheralType::GPIO_ANALOG_INPUT:
-            // ESP32模拟输入不需要特殊设置
+            // ESP32模拟输入不需要特殊设置，但仍应用统一 ADC 参数，避免
+            // GPIO_ANALOG_INPUT 与 ADC 两条配置路径行为不一致。
+#if defined(SOC_ADC_MAX_BITWIDTH) && SOC_ADC_MAX_BITWIDTH >= 9
+            analogReadResolution((config.params.adc.resolution >= 9 && config.params.adc.resolution <= 12)
+                                     ? config.params.adc.resolution : 12);
+#endif
             break;
 
         case PeripheralType::GPIO_PWM_OUTPUT:
@@ -3351,6 +3749,7 @@ bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, Str
                            type == PeripheralType::GPIO_INTERRUPT_CHANGE ||
                            type == PeripheralType::RADAR_SENSOR ||
                            type == PeripheralType::IR_RECEIVER ||
+                           type == PeripheralType::SENSOR_GENERIC ||
                            type == PeripheralType::RF_MODULE);
 
         if (!isInputType) {
@@ -3475,11 +3874,16 @@ void PeripheralManager::resetIsrQueueStats() {
 
 // 中断处理
 void IRAM_ATTR PeripheralManager::isrHandler(void* arg) {
-    // 中断上下文：仅记录触发的引脚号，通过队列传递到主循环
+    // Capture the level at the interrupt edge. Reading it later in loopTask
+    // loses pulses shorter than the maintenance interval.
     uint8_t pin = (uint8_t)(uintptr_t)arg;
+    GpioIsrEvent event = {
+        pin,
+        static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(pin)) != 0)
+    };
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (_isrQueue) {
-        if (xQueueSendFromISR(_isrQueue, &pin, &xHigherPriorityTaskWoken) != pdTRUE) {
+        if (xQueueSendFromISR(_isrQueue, &event, &xHigherPriorityTaskWoken) != pdTRUE) {
             // 队列满：计入溢出统计（旧实现静默丢事件，风暴场景无法诊断）
             _isrQueueOverruns++;
         }
@@ -3489,16 +3893,17 @@ void IRAM_ATTR PeripheralManager::isrHandler(void* arg) {
 
 void PeripheralManager::processInterruptQueue() {
     if (!_isrQueue) return;
-    uint8_t pin;
+    GpioIsrEvent event;
     // 一次性处理队列中所有待处理的中断事件
-    while (xQueueReceive(_isrQueue, &pin, 0) == pdTRUE) {
-        handleInterrupt(pin);
+    while (xQueueReceive(_isrQueue, &event, 0) == pdTRUE) {
+        handleInterrupt(event.pin, event.rawLevel != 0);
     }
 }
 
-void PeripheralManager::handleInterrupt(uint8_t pin) {
+void PeripheralManager::handleInterrupt(uint8_t pin, bool rawLevel) {
     GPIOInterruptCallback callback = nullptr;
     String id;
+    GPIOState state = GPIOState::STATE_UNDEFINED;
     {
         // 查找与去抖在锁内完成，防止并发 removePeripheral 导致迭代器/引用失效
         RecursiveMutexGuard lock(_mutex);
@@ -3511,21 +3916,48 @@ void PeripheralManager::handleInterrupt(uint8_t pin) {
 
         // 按类型差异化去抖：高速边沿外设（RF/IR）窗口为 0，逐边沿派发；
         // GPIO 中断类在窗口内合并，避免重复的状态读取与回调触发
-        uint16_t window = isrDebounceMsForType(config.type);
+        uint16_t window = isGpioInterruptInputType(config.type)
+                              ? effectiveDigitalInputDebounceMs(config.params.gpio.debounceMs)
+                              : isrDebounceMsForType(config.type);
         if (window > 0 && pin < ISR_TRACKED_PIN_COUNT) {
             unsigned long now = millis();
-            if (!shouldDispatchIsrEvent(now, _lastIsrDispatch[pin], window)) {
+            if (_hasIsrDispatch[pin] &&
+                !shouldDispatchIsrEvent(now, _lastIsrDispatch[pin], window)) {
                 return;
             }
             _lastIsrDispatch[pin] = now;
+            _hasIsrDispatch[pin] = true;
+        }
+
+        const bool logicalLevel = digitalInputLogicalLevel(
+            rawLevel, config.params.gpio.invertLogic);
+        state = logicalLevel ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+
+        auto rt = runtimeStates.find(id);
+        if (rt != runtimeStates.end()) {
+            rt->second.state.gpio.currentState = state;
+            rt->second.lastActivity = millis();
+        }
+
+        if (isGpioInterruptInputType(config.type) &&
+            matchesDigitalInterruptEdge(config.type, logicalLevel)) {
+            if (_digitalInterruptCount == ISR_QUEUE_SIZE) {
+                // Preserve the newest state if the consumer is temporarily
+                // delayed; count the dropped oldest event in ISR diagnostics.
+                _digitalInterruptHead = (_digitalInterruptHead + 1) % ISR_QUEUE_SIZE;
+                _digitalInterruptCount--;
+                _isrQueueOverruns++;
+            }
+            _digitalInterruptEvents[_digitalInterruptTail] = {pin, state};
+            _digitalInterruptTail = (_digitalInterruptTail + 1) % ISR_QUEUE_SIZE;
+            _digitalInterruptCount++;
         }
 
         // 快照回调后再释放锁：避免用户回调长时间持锁阻塞 Web/worker 任务
         callback = config.params.gpio.interruptCallback;
     }
 
-    if (callback) {
-        GPIOState state = readPin(id);
+    if (callback && state != GPIOState::STATE_UNDEFINED) {
         callback(pin, state);
     }
 }
@@ -3759,6 +4191,9 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
         case PeripheralType::GPIO_DIGITAL_INPUT:
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
         case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
+        case PeripheralType::GPIO_INTERRUPT_RISING:
+        case PeripheralType::GPIO_INTERRUPT_FALLING:
+        case PeripheralType::GPIO_INTERRUPT_CHANGE:
         case PeripheralType::GPIO_TOUCH:
             if (maxLen >= 1) {
                 GPIOState state = readPin(id);
@@ -3887,8 +4322,11 @@ bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterrup
     config.params.gpio.interruptCallback = callback;
 
     uint8_t mode = CHANGE;
-    if (config.type == PeripheralType::GPIO_INTERRUPT_RISING) mode = RISING;
-    else if (config.type == PeripheralType::GPIO_INTERRUPT_FALLING) mode = FALLING;
+    if (config.type == PeripheralType::GPIO_INTERRUPT_RISING) {
+        mode = config.params.gpio.invertLogic ? FALLING : RISING;
+    } else if (config.type == PeripheralType::GPIO_INTERRUPT_FALLING) {
+        mode = config.params.gpio.invertLogic ? RISING : FALLING;
+    }
 
     ::attachInterruptArg(digitalPinToInterrupt(pin), isrHandler, (void*)(uintptr_t)pin, mode);
 
@@ -3897,6 +4335,18 @@ bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterrup
         rs->second.state.gpio.interruptAttached = true;
     }
 
+    return true;
+}
+
+bool PeripheralManager::popDigitalInputInterruptEvent(uint8_t& pin, GPIOState& state) {
+    RecursiveMutexGuard lock(_mutex);
+    if (_digitalInterruptCount == 0) return false;
+
+    const DigitalInputInterruptEvent& event = _digitalInterruptEvents[_digitalInterruptHead];
+    pin = event.pin;
+    state = event.state;
+    _digitalInterruptHead = (_digitalInterruptHead + 1) % ISR_QUEUE_SIZE;
+    _digitalInterruptCount--;
     return true;
 }
 

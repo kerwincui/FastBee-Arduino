@@ -5,7 +5,7 @@
  * 2026-08 环境整合后不再有 lite/standard/full 预设，所有出厂环境引用
  * [unified_flags] 编译全部功能模块，由运行时 FeatureBudget 门控。
  * 本文件防止后续改动无意中破坏整合后的矩阵：
- * 1. unified_flags 完整性守卫（重型功能必须为 1，外部硬件依赖默认 0）
+ * 1. unified_flags 完整性守卫（重型功能必须为 1，外部网络适配器按环境选择）
  * 2. 已删除预设段守卫（lite/standard/full_flags 等不得复活）
  * 3. 统一 Web 镜像守卫（出厂一律 full 档，无 profile 区分）
  * 4. env lib_deps/lib_ignore 守卫（统一编译需要全部外设库；S3 排除红外库）
@@ -79,15 +79,16 @@ void test_unified_flags_complete_feature_set() {
             (std::string("[unified_flags] must set ") + flag).c_str());
     }
 
-    // 外部硬件适配器也编入统一固件，运行时由功能配置页门控；BLE 保持关闭
-    const char* enabled[] = {
+    // 外部网络适配器不属于共享基线，避免小内存芯片被意外链接；
+    // 具体环境在 test_network_adapter_compile_matrix() 中显式声明。
+    const char* omitted[] = {
         "-DFASTBEE_ENABLE_ETHERNET=1",
         "-DFASTBEE_ENABLE_CELLULAR=1",
     };
-    for (const char* flag : enabled) {
+    for (const char* flag : omitted) {
         TEST_ASSERT_TRUE_MESSAGE(
-            section.find(flag) != std::string::npos,
-            (std::string("[unified_flags] must set ") + flag + " (runtime-gated adapter)").c_str());
+            section.find(flag) == std::string::npos,
+            (std::string("[unified_flags] must not set ") + flag + " globally").c_str());
     }
     const char* disabled[] = {
         "-DFASTBEE_ENABLE_BLE=0",
@@ -225,6 +226,64 @@ void test_env_lib_deps_unified_build() {
     TestLog::testEnd(true);
 }
 
+// ========== 4b. 外部网络适配器编译矩阵守卫 ==========
+
+void test_network_adapter_compile_matrix() {
+    TestLog::testStart("Profile: Ethernet/cellular adapters follow hardware matrix");
+
+    std::string pio = readProjectFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "platformio.ini must be readable");
+
+    struct AdapterProfile {
+        const char* env;
+        bool enabled;
+    };
+    const AdapterProfile profiles[] = {
+        { "env:esp32-F4R0", false },
+        { "env:esp32-F8R0", true },
+        { "env:esp32-F8R8", true },
+        { "env:esp32c3-F4R0", false },
+        { "env:esp32c6-F4R0", false },
+        { "env:esp32c6-F8R0", false },
+        { "env:esp32s3-F8R0", true },
+        { "env:esp32s3-F8R8", true },
+        { "env:esp32s3-F16R8", true }
+    };
+
+    for (const AdapterProfile& profile : profiles) {
+        std::string section = extractIniSection(pio, profile.env);
+        TEST_ASSERT_FALSE_MESSAGE(section.empty(),
+            (std::string("[") + profile.env + "] section must exist").c_str());
+
+        const std::string expected = profile.enabled ? "=1" : "=0";
+        TEST_ASSERT_TRUE_MESSAGE(
+            section.find("-DFASTBEE_ENABLE_ETHERNET" + expected) != std::string::npos &&
+            section.find("-DFASTBEE_ENABLE_CELLULAR" + expected) != std::string::npos,
+            (std::string("[") + profile.env + "] must explicitly set adapter flags to " + expected).c_str());
+
+        if (profile.enabled) {
+            TEST_ASSERT_TRUE_MESSAGE(
+                section.find("TinyGSM") != std::string::npos &&
+                section.find("SSLClient") != std::string::npos,
+                (std::string("[") + profile.env + "] enabled adapter profile needs TinyGSM and SSLClient").c_str());
+            TEST_ASSERT_TRUE_MESSAGE(
+                section.find("-<network/CellularAdapter.cpp>") == std::string::npos &&
+                section.find("-<network/EthernetAdapter.cpp>") == std::string::npos,
+                (std::string("[") + profile.env + "] must compile adapter sources").c_str());
+        } else {
+            TEST_ASSERT_TRUE_MESSAGE(
+                section.find("TinyGSM") == std::string::npos &&
+                section.find("SSLClient") == std::string::npos,
+                (std::string("[") + profile.env + "] disabled adapter profile must omit cellular libraries").c_str());
+            TEST_ASSERT_TRUE_MESSAGE(
+                section.find("${lite_src_filter.build_src_filter}") != std::string::npos,
+                (std::string("[") + profile.env + "] must use lite adapter source filter").c_str());
+        }
+    }
+
+    TestLog::testEnd(true);
+}
+
 // ========== 5. OTA 策略守卫 ==========
 
 void test_ota_policy_follows_hardware() {
@@ -309,6 +368,7 @@ void test_profile_consistency_group() {
     RUN_TEST(test_legacy_profile_sections_removed);
     RUN_TEST(test_unified_web_image_full_profile);
     RUN_TEST(test_env_lib_deps_unified_build);
+    RUN_TEST(test_network_adapter_compile_matrix);
     RUN_TEST(test_ota_policy_follows_hardware);
     RUN_TEST(test_web_build_device_control_gate);
     TestLog::groupEnd();

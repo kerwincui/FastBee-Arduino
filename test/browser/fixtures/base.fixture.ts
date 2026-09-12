@@ -5,14 +5,14 @@ import { execSync } from 'child_process';
 export const env = {
   deviceIp: process.env.DEVICE_IP || '192.168.1.1',
   wifi: {
-    ssid: process.env.WIFI_SSID || 'fastbee',
-    password: process.env.WIFI_PASSWORD || '15208747707',
+    ssid: process.env.WIFI_SSID || '',
+    password: process.env.WIFI_PASSWORD || '',
   },
   mqtt: {
-    broker: process.env.MQTT_BROKER || 'd23de4e7b2.st1.iotda-device.cn-east-3.myhuaweicloud.com',
-    clientId: process.env.MQTT_CLIENT_ID || '6a03ed2d18855b39c518fbc7_xfxt_esp32_0_0_2026061809',
-    username: process.env.MQTT_USERNAME || '6a03ed2d18855b39c518fbc7_xfxt_esp32',
-    password: process.env.MQTT_PASSWORD || 'e027294c696eff9a35b9f950a1b6d2a2cf9832b74206afee7dfbb552d2e58bb3',
+    broker: process.env.MQTT_BROKER || '',
+    clientId: process.env.MQTT_CLIENT_ID || '',
+    username: process.env.MQTT_USERNAME || '',
+    password: process.env.MQTT_PASSWORD || '',
     portMqtt: 1883,
     portMqtts: 8883,
   },
@@ -150,7 +150,7 @@ export async function waitForDeviceReady(page: Page, maxMs = 5000): Promise<void
 }
 
 /**
- * 等待页面内容就绪：检测目标页面容器内是否有内容
+ * 等待页面内容就绪：检测目标页面容器可见且已有内容
  * 替代 navigateTo 中的固定 3000ms 等待
  */
 export async function waitForPageContent(page: Page, selector: string, maxMs?: number): Promise<boolean> {
@@ -158,9 +158,12 @@ export async function waitForPageContent(page: Page, selector: string, maxMs?: n
   try {
     await page.waitForFunction(
       (sel) => {
-        const el = document.querySelector(sel);
+        const el = document.querySelector(sel) as HTMLElement | null;
         if (!el) return false;
-        // 页面容器存在且有子元素（非空）
+        const style = window.getComputedStyle(el);
+        if (el.hidden || style.display === 'none' || style.visibility === 'hidden') return false;
+        if (el.getBoundingClientRect().width === 0 || el.getBoundingClientRect().height === 0) return false;
+        // 预加载片段可能已有 DOM；只有当前可见的目标页才算导航完成。
         return el.children.length > 0 || el.textContent!.trim().length > 0;
       },
       selector,
@@ -215,7 +218,6 @@ export interface DeviceFeatureFlags {
   logger: boolean;
   logViewer: boolean;
   fileLogging: boolean;
-  fileManager?: boolean;
   userAdmin?: boolean;
   taskManager: boolean;
   i18n: boolean;
@@ -328,6 +330,20 @@ let lastFullHealthCheck = 0;
 /** 健康检查节流间隔（毫秒） */
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
+class RetryableLoginError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(status: number, retryAfterHeader: string | undefined) {
+    const retryAfterSeconds = Number.parseFloat(retryAfterHeader || '');
+    const retryAfterMs = Number.isFinite(retryAfterSeconds)
+      ? Math.min(Math.max(retryAfterSeconds * 1000, 1000), 15_000)
+      : 3000;
+    super(`Login request failed with HTTP ${status}; retry after ${retryAfterMs}ms`);
+    this.name = 'RetryableLoginError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 /**
  * 执行完整登录流程（首次调用时）并缓存 storageState
  * 后续测试通过注入缓存状态跳过登录
@@ -365,7 +381,30 @@ async function performLoginAndCapture(page: Page): Promise<void> {
       }
     }
   }
-  await page.waitForSelector('#login-page', { state: 'visible', timeout: 30_000 });
+  await page.waitForFunction(
+    () => (window as unknown as { __fastbeeBootReady?: boolean }).__fastbeeBootReady === true,
+    { timeout: 30_000 }
+  );
+  // A valid cached cookie can complete auto-login between restoreAuthState's
+  // probe and this navigation. Ask the server for the authoritative session
+  // state before choosing between the application shell and login form.
+  const alreadyAuthenticated = await page.evaluate(async () => {
+    try {
+      const response = await fetch('/api/auth/session', { cache: 'no-store' });
+      if (!response.ok) return false;
+      const body = await response.json();
+      return body?.data?.sessionValid === true || body?.sessionValid === true;
+    } catch {
+      return false;
+    }
+  });
+  if (alreadyAuthenticated) {
+    await page.locator('#app-container').waitFor({ state: 'visible', timeout: 30_000 });
+    cachedAuthState = await page.context().storageState();
+    return;
+  }
+
+  await page.locator('#login-page').waitFor({ state: 'visible', timeout: 30_000 });
 
   // 填写登录表单
   await page.fill('#username', env.auth.username);
@@ -373,8 +412,21 @@ async function performLoginAndCapture(page: Page): Promise<void> {
   await page.fill('#password', env.auth.password);
   await page.waitForTimeout(300);
 
-  // 点击登录，等待应用容器出现
+  // 点击登录并确认服务端已处理请求，避免把尚未绑定事件的点击误判为
+  // 设备登录超时。响应正文可能包含诊断信息，但测试只暴露 HTTP 状态。
+  const loginResponsePromise = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/auth/login'
+      && response.request().method() === 'POST',
+    { timeout: 45_000 }
+  );
   await page.click('#login-button');
+  const loginResponse = await loginResponsePromise;
+  if (!loginResponse.ok()) {
+    throw new RetryableLoginError(
+      loginResponse.status(),
+      loginResponse.headers()['retry-after']
+    );
+  }
   await page.waitForSelector('#app-container', { state: 'visible', timeout: 40_000 });
   await expect(page.locator('#login-page')).toBeHidden();
 
@@ -432,10 +484,14 @@ async function restoreAuthState(page: Page): Promise<boolean> {
   try {
     await page.waitForFunction(
       () => {
-        const appVisible = document.querySelector('#app-container')?.getAttribute('style') !== 'display: none'
-          && !document.querySelector('#app-container')?.classList.contains('is-hidden');
-        const loginVisible = document.querySelector('#login-page')?.getAttribute('style') !== 'display: none'
-          && !document.querySelector('#login-page')?.classList.contains('is-hidden');
+        const visible = (selector: string) => {
+          const element = document.querySelector(selector);
+          if (!element) return false;
+          const style = window.getComputedStyle(element);
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const appVisible = visible('#app-container');
+        const loginVisible = visible('#login-page');
         return appVisible && !loginVisible;
       },
       { timeout: 8_000 }
@@ -480,12 +536,17 @@ export const test = base.extend<TestFixtures>({
 
     // 尝试通过缓存状态快速恢复
     if (cachedAuthState) {
-      // 健康检查节流：距上次完整检查不到 30s 则跳过
-      const now = Date.now();
-      if (now - lastFullHealthCheck > HEALTH_CHECK_INTERVAL_MS) {
-        authenticated = false; // 需要完整检查，不用快速恢复
-      } else {
-        authenticated = await restoreAuthState(page);
+      // 健康检查与认证状态恢复彼此独立。旧逻辑在 30 秒检查窗口到期时
+      // 跳过 cookie 注入，导致长套件周期性创建新的 PBKDF2 登录任务，
+      // 最终把设备内部 DRAM 最大连续块切碎。
+      authenticated = await restoreAuthState(page);
+      if (authenticated && Date.now() - lastFullHealthCheck > HEALTH_CHECK_INTERVAL_MS) {
+        const healthy = await waitForHealth(`http://${env.deviceIp}`, 10_000);
+        if (healthy) {
+          lastFullHealthCheck = Date.now();
+        } else {
+          authenticated = false;
+        }
       }
     }
 
@@ -504,7 +565,8 @@ export const test = base.extend<TestFixtures>({
           // 页面/上下文已关闭（fixture 超时被杀）无法重试，直接报错
           if (page.isClosed() || loginAttempt >= 1) break;
           console.log(`[AUTH RETRY] Login attempt ${loginAttempt + 1} failed, retrying: ${e}`);
-          await new Promise((r) => setTimeout(r, 3000));
+          const retryDelay = e instanceof RetryableLoginError ? e.retryAfterMs : 3000;
+          await new Promise((r) => setTimeout(r, retryDelay));
         }
       }
       if (loginError) {

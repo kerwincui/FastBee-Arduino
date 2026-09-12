@@ -7,9 +7,25 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const DATA_CONFIG_DIR = path.join(ROOT_DIR, 'data', 'config');
+const SYSTEM_CONSTANTS_FILE = path.join(ROOT_DIR, 'include', 'core', 'SystemConstants.h');
+const WIFI_MANAGER_HEADER = path.join(ROOT_DIR, 'include', 'network', 'WiFiManager.h');
+const SYSTEM_ROUTE_FILE = path.join(ROOT_DIR, 'src', 'network', 'handlers', 'SystemRouteHandler.cpp');
+const README_FILE = path.join(ROOT_DIR, 'README.md');
+const README_EN_FILE = path.join(ROOT_DIR, 'README.en.md');
+const PROFILES = ['lite', 'standard', 'full', 'unified'];
+const DISABLED_RULE_TEMPLATE_PREFIXES = [
+    'exec_stepper_',
+    'exec_adc_voltage_',
+    'exec_ws2812b_',
+    'exec_uart_debug_'
+];
+const NON_PERIPHERAL_TARGET_ACTIONS = new Set([
+    6, 7, 8, 9, 15, 18, 21, 22, 23
+]);
 const PROFILE_DEFAULT_BUDGETS = {
     maxPeripherals: 32,
     maxRules: 32,
@@ -20,6 +36,88 @@ const MAX_ACTIONS_PER_RULE = 4;
 
 function readJson(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function readText(filePath) {
+    return fs.readFileSync(filePath, 'utf8');
+}
+
+function validateDefaultApPassword(issues) {
+    const constantsText = readText(SYSTEM_CONSTANTS_FILE);
+    const constantMatch = constantsText.match(/DEFAULT_AP_PASSWORD\s*=\s*"([^"]+)"/);
+    if (!constantMatch) {
+        issues.push('SystemConstants.h: DEFAULT_AP_PASSWORD is missing');
+        return;
+    }
+
+    const password = constantMatch[1];
+    if (password.length < 8 || password.length > 63) {
+        issues.push('SystemConstants.h: DEFAULT_AP_PASSWORD must be a valid WPA2 password (8-63 characters)');
+    }
+
+    const networkDoc = readJson(path.join(DATA_CONFIG_DIR, 'network.json'));
+    if (networkDoc.apPassword !== password) {
+        issues.push('data/config/network.json: apPassword must match NetConst::DEFAULT_AP_PASSWORD');
+    }
+
+    const wifiHeader = readText(WIFI_MANAGER_HEADER);
+    if (!wifiHeader.includes('String apPassword = NetConst::DEFAULT_AP_PASSWORD')) {
+        issues.push('WiFiManager.h: missing-config fallback must use NetConst::DEFAULT_AP_PASSWORD');
+    }
+
+    const resetRoute = readText(SYSTEM_ROUTE_FILE);
+    if (!resetRoute.includes(`\\"apPassword\\":\\"${password}\\"`)) {
+        issues.push('SystemRouteHandler.cpp: factory-reset AP password must match NetConst::DEFAULT_AP_PASSWORD');
+    }
+
+    if (!readText(README_FILE).includes(`密码均为 \`${password}\``)) {
+        issues.push('README.md: documented AP password must match NetConst::DEFAULT_AP_PASSWORD');
+    }
+    if (!readText(README_EN_FILE).includes(`default AP password is \`${password}\``)) {
+        issues.push('README.en.md: documented AP password must match NetConst::DEFAULT_AP_PASSWORD');
+    }
+}
+
+function validateDefaultAdmin(issues) {
+    const constantsText = readText(SYSTEM_CONSTANTS_FILE);
+    const usernameMatch = constantsText.match(/DEFAULT_ADMIN_USERNAME\s*=\s*"([^"]+)"/);
+    const passwordMatch = constantsText.match(/DEFAULT_ADMIN_PASSWORD\s*=\s*"([^"]+)"/);
+    if (!usernameMatch || !passwordMatch) {
+        issues.push('SystemConstants.h: default administrator credentials are missing');
+        return;
+    }
+
+    const username = usernameMatch[1];
+    const password = passwordMatch[1];
+    const usersDoc = readJson(path.join(DATA_CONFIG_DIR, 'users.json'));
+    const users = Array.isArray(usersDoc.users) ? usersDoc.users : [];
+    if (users.length !== 1 || users[0].username !== username || users[0].enabled !== true) {
+        issues.push('data/config/users.json: factory image must contain only the enabled default administrator');
+        return;
+    }
+
+    const salt = String(users[0].salt || '');
+    const passwordHash = String(users[0].passwordHash || '');
+    const expectedHash = crypto.createHash('sha256')
+        .update(`${salt}${password}${salt}`, 'utf8')
+        .digest('base64');
+    if (!salt || passwordHash !== expectedHash) {
+        issues.push('data/config/users.json: default administrator hash does not match SystemConstants.h');
+    }
+
+    const resetRoute = readText(SYSTEM_ROUTE_FILE);
+    for (const [field, value] of [['username', username], ['passwordHash', passwordHash], ['salt', salt]]) {
+        if (!value || !resetRoute.includes(`\\"${field}\\":\\"${value}\\"`)) {
+            issues.push(`SystemRouteHandler.cpp: factory-reset ${field} must match data/config/users.json`);
+        }
+    }
+
+    if (!readText(README_FILE).includes(`\`${username} / ${password}\``)) {
+        issues.push('README.md: documented default login must match SystemConstants.h');
+    }
+    if (!readText(README_EN_FILE).includes(`\`${username} / ${password}\``)) {
+        issues.push('README.en.md: documented default login must match SystemConstants.h');
+    }
 }
 
 function readArgValue(prefix) {
@@ -47,6 +145,10 @@ function getRuleTriggers(rule) {
 }
 
 function getProfilePeripheralIds(peripheralsDoc) {
+    return new Set(getPeripherals(peripheralsDoc)
+        .map((item) => String(item && item.id || ''))
+        .filter(Boolean));
+}
 
 function isDisabledRuleTemplate(rule) {
     const id = String((rule && rule.id) || '');
@@ -200,26 +302,14 @@ function getStageDirs(stageRoot, latestOnly) {
     return Array.from(latestByTarget.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function validateProfileFootprint(peripheralIds, profileRules, scope, issues) {
-    // Placeholder for future validation logic
-}
-
 function main() {
     const peripheralsDoc = readJson(path.join(DATA_CONFIG_DIR, 'peripherals.json'));
     const execDoc = readJson(path.join(DATA_CONFIG_DIR, 'periph_exec.json'));
     const rules = getRules(execDoc);
 
-    // data/config 双重身份：出厂模板 vs 设备运行态备份（如 bak-s3 还原）。
-    // 存在已启用的外设/规则即为运行态备份，出厂默认断言不适用，
-    // 与 test/test_c3_config_adaptation.cpp 工厂守卫的 runtimeBackup 检测一致。
-    const hasEnabledPeripheral = (getPeripherals(peripheralsDoc) || []).some((p) => p && p.enabled === true);
-    const hasEnabledRule = rules.some((rule) => rule && rule.enabled === true);
-    if (hasEnabledPeripheral || hasEnabledRule) {
-        console.log('FastBee config defaults SKIPPED: data/config holds a runtime device backup; factory default checks not applicable');
-        process.exit(0);
-    }
-
     const issues = [];
+    validateDefaultApPassword(issues);
+    validateDefaultAdmin(issues);
     const stageRootArg = null; // staging validation disabled - only single version now
     const latestOnly = false;
 
