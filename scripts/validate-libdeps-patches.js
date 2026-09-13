@@ -47,6 +47,13 @@ function hasSendProgressContract(source) {
         !source.includes('_in_flight += payloadlen;\n    --_in_flight_credit');
 }
 
+function hasFinalBufferDrainContract(source) {
+    return source.includes('ERR_CONTENT_LENGTH_MISMATCH under memory pressure') &&
+        source.includes('if (_sendContentLength && _sentLength == _contentLength) {') &&
+        source.includes('Do not mark RESPONSE_END here. The final bytes are staged') &&
+        !source.includes('// it was last piece of content\n            _state = RESPONSE_END;');
+}
+
 function hasAsyncTcpAdmissionContract(header, source) {
     const increment = source.indexOf('__atomic_fetch_add(&AsyncClient::_fastbee_accepted_count');
     const eventAllocation = source.indexOf('lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ACCEPT, c}');
@@ -141,6 +148,11 @@ function checkPlatformioOverrides() {
         } else {
             console.log('  ✓ ESPAsyncWebServer legacy snapshot: send credits follow actual TCP progress');
         }
+        if (!hasFinalBufferDrainContract(responsesCpp)) {
+            ISSUES.push('ESPAsyncWebServer legacy snapshot: final staging buffer can be closed early');
+        } else {
+            console.log('  ✓ ESPAsyncWebServer legacy snapshot: final staging buffer drains before close');
+        }
         
         return true;
     } catch (err) {
@@ -171,6 +183,7 @@ function checkRuntimePatchHook() {
         'return RESPONSE_TRY_AGAIN;', 'MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT',
         'zero progress must not consume the finite send credit',
         'account bytes accepted by AsyncTCP before a partial',
+        'ERR_CONTENT_LENGTH_MISMATCH under memory pressure',
         'CONFIG_ASYNC_TCP_MAX_CONNECTIONS', 'delete c;']) {
         if (!hook.includes(marker)) {
             ISSUES.push(`apply-libdeps-patches.py: missing marker ${marker}`);
@@ -221,7 +234,8 @@ function checkRuntimePatchHook() {
                             !sourceText.includes('kFallbackSizes') ||
                             !sourceText.includes('chunkCap') ||
                             !hasFileRetryContract(sourceText) ||
-                            !hasSendProgressContract(sourceText)) {
+                            !hasSendProgressContract(sourceText) ||
+                            !hasFinalBufferDrainContract(sourceText)) {
                             ISSUES.push(`${envName}/ESPAsyncWebServer v${CURRENT_WEB_SERVER_VERSION}: runtime patch not applied`);
                         }
                     }

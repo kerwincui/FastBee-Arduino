@@ -10,6 +10,10 @@ var PageLoader = {
     // 避免响应截断（ERR_CONTENT_LENGTH_MISMATCH）与连接被断开
     _opChain: null,
     _enqueueOp(op) {
+        if (typeof window !== 'undefined' &&
+            typeof window.__fastbeeQueueStaticAsset === 'function') {
+            return window.__fastbeeQueueStaticAsset(op);
+        }
         var prev = this._opChain || Promise.resolve();
         var run = prev.catch(function () {}).then(op);
         this._opChain = run.catch(function () {});
@@ -105,7 +109,7 @@ var PageLoader = {
         }
         if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
 
-        this._loadingPages[moduleName] = this._enqueueOp((async () => {
+        this._loadingPages[moduleName] = this._enqueueOp(async () => {
             var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             var html = await resp.text();
             var container = document.getElementById('content-area');
@@ -137,7 +141,7 @@ var PageLoader = {
             if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
                 i18n.updatePageText(container);
             }
-        })());
+        });
 
         try {
             await this._loadingPages[moduleName];

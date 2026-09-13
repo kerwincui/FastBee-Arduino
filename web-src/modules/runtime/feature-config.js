@@ -69,6 +69,19 @@
             });
 
             var html = this.renderGroupTables(mainFeatures);
+            var zeroRamVisibleCount = zeroRamFeatures.filter(function(f) { return !!f.name; }).length;
+            if (zeroRamVisibleCount > 0) {
+                html += '<section style="margin-top:16px;border-top:1px solid var(--border);padding-top:8px;">'
+                    + '<button type="button" class="fb-btn fb-btn-secondary" data-zero-ram-toggle'
+                    + ' aria-controls="features-zero-ram-body" aria-expanded="false"'
+                    + ' style="width:100%;justify-content:space-between;">'
+                    + '<span>零 DRAM 功能 (' + zeroRamVisibleCount + ')</span>'
+                    + '<span id="features-zero-ram-body-icon" aria-hidden="true">&#9654;</span>'
+                    + '</button>'
+                    + '<div id="features-zero-ram-body" class="fb-hidden" style="margin-top:8px;">'
+                    + this.renderGroupTables(zeroRamFeatures)
+                    + '</div></section>';
+            }
             list.innerHTML = html;
 
             // 全功能统一固件（所有功能均已编入）时，Flash 占用已固定，
@@ -98,6 +111,9 @@
             if (collapseHeader && AppState.toggleSection) {
                 collapseHeader.addEventListener('click', function() {
                     AppState.toggleSection('features-zero-ram-body');
+                    var body = document.getElementById('features-zero-ram-body');
+                    collapseHeader.setAttribute('aria-expanded',
+                        body && !body.classList.contains('fb-hidden') ? 'true' : 'false');
                 });
             }
 

@@ -10,6 +10,7 @@
  * ⑤ 前端 loader：chunk 间隔 30ms、启动延迟 20ms、重试退避 300/1200/2700ms
  * ⑥ module-loader/main.js 退避提速（2026-08-10）：800ms 起步指数退避、
  *    main.js 首次失败 600ms 重试（配合服务端立即 503 把风暴消化在客户端）
+ * ⑦ boot/CSS/page/module/SW 共用静态资源队列，并留出 TCP 断开释放间隔
  *
  * 实现分两部分：
  * - 源码常量锁定（readProjectFile 读取 WebHandlerContext.cpp / index.html）
@@ -322,6 +323,37 @@ void test_frontend_module_loader_backoff_locked() {
 }
 
 /**
+ * @brief 锁定浏览器侧的统一静态资源队列，避免各自串行但彼此并发。
+ */
+void test_shared_static_asset_queue_locked() {
+    TestLog::testStart("Frontend: Shared Static Asset Queue Locked");
+
+    std::string html = readStaticConcurrencyFile("web-src/index.html");
+    std::string main = readStaticConcurrencyFile("web-src/js/main.js");
+    std::string pages = readStaticConcurrencyFile("web-src/js/page-loader.js");
+    std::string modules = readStaticConcurrencyFile("web-src/js/module-loader.js");
+    TEST_ASSERT_FALSE_MESSAGE(html.empty() || main.empty() || pages.empty() || modules.empty(),
+        "Static asset queue source files must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(html.find("window.__fastbeeStaticAssetChain = Promise.resolve()") != std::string::npos,
+        "index.html must define the shared static asset queue");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("setTimeout(resolve, 100)") != std::string::npos,
+        "Shared queue must preserve the 100ms TCP disconnect settle window");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("window.__fastbeeQueueStaticAsset(function()") != std::string::npos,
+        "Boot chunks must enter the shared queue");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("window.__fastbeeQueueStaticAsset(registerWorker)") != std::string::npos,
+        "Service worker must enter the shared queue");
+    TEST_ASSERT_TRUE_MESSAGE(main.find("window.__fastbeeQueueStaticAsset(loadStylesheet)") != std::string::npos,
+        "Main stylesheet must enter the shared queue");
+    TEST_ASSERT_TRUE_MESSAGE(pages.find("window.__fastbeeQueueStaticAsset(op)") != std::string::npos,
+        "Page fragments must enter the shared queue");
+    TEST_ASSERT_TRUE_MESSAGE(modules.find("window.__fastbeeQueueStaticAsset(startRequest)") != std::string::npos,
+        "Dynamic modules must enter the shared queue");
+
+    TestLog::testEnd(true);
+}
+
+/**
  * @brief A truncated/busy 200 response must not poison PageLoader's cache.
  */
 void test_page_loader_response_integrity_locked() {
@@ -596,6 +628,7 @@ void test_static_concurrency_group() {
     RUN_TEST(test_busy_retry_page_locked);
     RUN_TEST(test_frontend_loader_timings_locked);
     RUN_TEST(test_frontend_module_loader_backoff_locked);
+    RUN_TEST(test_shared_static_asset_queue_locked);
     RUN_TEST(test_page_loader_response_integrity_locked);
 
     // 限流器行为模拟

@@ -34,52 +34,62 @@ function _ensureMainStylesheet(onReady) {
     var resolveAssetUrl = (typeof window !== 'undefined' && typeof window.__fastbeeResolveAssetUrl === 'function')
         ? window.__fastbeeResolveAssetUrl
         : function(path) { return path; };
-    var done = false;
-    function finish() {
-        if (done) return;
-        done = true;
-        onReady();
+    function loadStylesheet() {
+        return new Promise(function(resolve) {
+            var done = false;
+            function finish() {
+                if (done) return;
+                done = true;
+                resolve();
+            }
+
+            var existing = document.getElementById('fb-main-stylesheet');
+            if (existing) {
+                if (existing.dataset.ready === '1' || existing.sheet) {
+                    finish();
+                    return;
+                }
+                existing.addEventListener('load', function markReady() {
+                    existing.dataset.ready = '1';
+                    finish();
+                }, { once: true });
+                existing.addEventListener('error', finish, { once: true });
+                setTimeout(finish, 10000);
+                return;
+            }
+
+            var link = document.createElement('link');
+            link.id = 'fb-main-stylesheet';
+            link.rel = 'stylesheet';
+            // 弱网/退化链路下 CSS 单次加载失败率高，失败后递增退避重试（最多 4 次）
+            var cssAttempts = 0;
+            var CSS_MAX_RETRY = 4;
+            function applyCssHref() {
+                link.href = resolveAssetUrl('./css/main.css') + (cssAttempts > 0 ? '&r=' + cssAttempts : '');
+            }
+            link.onload = function() {
+                link.dataset.ready = '1';
+                finish();
+            };
+            link.onerror = function() {
+                cssAttempts++;
+                if (cssAttempts < CSS_MAX_RETRY) {
+                    setTimeout(applyCssHref, 600 * cssAttempts);
+                } else {
+                    finish();
+                }
+            };
+            applyCssHref();
+            document.head.appendChild(link);
+            setTimeout(finish, 10000);
+        });
     }
 
-    var existing = document.getElementById('fb-main-stylesheet');
-    if (existing) {
-        if (existing.dataset.ready === '1' || existing.sheet) {
-            finish();
-            return;
-        }
-        existing.addEventListener('load', function markReady() {
-            existing.dataset.ready = '1';
-            finish();
-        }, { once: true });
-        existing.addEventListener('error', finish, { once: true });
-        setTimeout(finish, 10000);
-        return;
-    }
-
-    var link = document.createElement('link');
-    link.id = 'fb-main-stylesheet';
-    link.rel = 'stylesheet';
-    // 弱网/退化链路下 CSS 单次加载失败率高，失败后递增退避重试（最多 4 次）
-    var cssAttempts = 0;
-    var CSS_MAX_RETRY = 4;
-    function applyCssHref() {
-        link.href = resolveAssetUrl('./css/main.css') + (cssAttempts > 0 ? '&r=' + cssAttempts : '');
-    }
-    link.onload = function() {
-        link.dataset.ready = '1';
-        finish();
-    };
-    link.onerror = function() {
-        cssAttempts++;
-        if (cssAttempts < CSS_MAX_RETRY) {
-            setTimeout(applyCssHref, 600 * cssAttempts);
-        } else {
-            finish();
-        }
-    };
-    applyCssHref();
-    document.head.appendChild(link);
-    setTimeout(finish, 10000);
+    var queuedLoad = (typeof window !== 'undefined' &&
+        typeof window.__fastbeeQueueStaticAsset === 'function')
+        ? window.__fastbeeQueueStaticAsset(loadStylesheet)
+        : loadStylesheet();
+    queuedLoad.then(onReady, onReady);
 }
 
 function _bootApp() {

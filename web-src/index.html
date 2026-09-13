@@ -27,6 +27,19 @@
         var separator = path.indexOf('?') === -1 ? '?' : '&';
         return path + separator + 'v=' + window.__fastbeeAssetVersion;
     };
+    // One browser-wide queue keeps all text assets within the single-stream
+    // budget used by no-PSRAM targets.  The short settle window gives the
+    // device time to process TCP close/onDisconnect before the next request.
+    window.__fastbeeStaticAssetChain = Promise.resolve();
+    window.__fastbeeQueueStaticAsset = function(task) {
+        var previous = window.__fastbeeStaticAssetChain || Promise.resolve();
+        var run = previous.catch(function() {}).then(function() { return task(); });
+        function settle() {
+            return new Promise(function(resolve) { setTimeout(resolve, 100); });
+        }
+        window.__fastbeeStaticAssetChain = run.then(settle, settle);
+        return run;
+    };
     </script>
     <noscript>
         <link rel="stylesheet" href="./css/main.css">
@@ -197,14 +210,24 @@
                 var baseUrl = window.__fastbeeResolveAssetUrl(files[i]);
                 var attempt = 0;
                 function tryLoad() {
-                    var s = document.createElement('script');
-                    // 重试追加 &r=N 绕过浏览器对失败响应的缓存
-                    s.src = baseUrl + (attempt > 0 ? '&r=' + attempt : '');
-                    s.async = false;
-                    s.onload = function() { i++; setTimeout(loadNext, delayMs || 30); };
-                    s.onerror = function() {
+                    window.__fastbeeQueueStaticAsset(function() {
+                        return new Promise(function(resolve, reject) {
+                            var s = document.createElement('script');
+                            // 重试追加 &r=N 绕过浏览器对失败响应的缓存
+                            s.src = baseUrl + (attempt > 0 ? '&r=' + attempt : '');
+                            s.async = false;
+                            s.onload = resolve;
+                            s.onerror = function() {
+                                s.remove();
+                                reject(new Error('boot chunk load failed'));
+                            };
+                            document.head.appendChild(s);
+                        });
+                    }).then(function() {
+                        i++;
+                        setTimeout(loadNext, delayMs || 30);
+                    }, function() {
                         attempt++;
-                        console.error('[FastBee] chunk failed (attempt ' + attempt + '/' + CHUNK_MAX_RETRY + '):', files[i]);
                         if (attempt < CHUNK_MAX_RETRY) {
                             // 递增退避：300/1200/2700ms，更快恢复且不压床设备
                             setTimeout(tryLoad, 300 * attempt * attempt);
@@ -214,8 +237,7 @@
                             i++;
                             setTimeout(loadNext, 300);
                         }
-                    };
-                    document.head.appendChild(s);
+                    });
                 }
                 tryLoad();
             }
@@ -366,8 +388,15 @@
                     }).catch(function() {});
                 }
             } catch (_) {}
-            navigator.serviceWorker.register(window.__fastbeeResolveAssetUrl('/sw.js'))
-                .catch(function(err) { console.warn('[FastBee] service worker register failed:', err); });
+            var registerWorker = function() {
+                return navigator.serviceWorker.register(window.__fastbeeResolveAssetUrl('/sw.js'));
+            };
+            var registration = typeof window.__fastbeeQueueStaticAsset === 'function'
+                ? window.__fastbeeQueueStaticAsset(registerWorker)
+                : registerWorker();
+            registration.catch(function(err) {
+                console.warn('[FastBee] service worker register failed:', err);
+            });
         }, 5000);
     })();
     </script>

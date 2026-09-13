@@ -14,7 +14,7 @@
   - OTA: 不可用（单应用分区，无 ota_1）
 
 ### 8MB.csv (8MB Flash)
-- **适用设备**: ESP32 / ESP32-S3 (8MB Flash)
+- **适用设备**: ESP32 / ESP32-C6 / ESP32-S3 (8MB Flash)，包括 `esp32c6-F8R0`
 - **布局**:
   - NVS: 20KB
   - OTA Data: 8KB
@@ -25,11 +25,12 @@
 ### 16MB.csv (16MB Flash)
 - **适用设备**: ESP32-S3 (16MB Flash + PSRAM)
 - **布局**:
-  - NVS: 20KB
+  - NVS: 16KB
   - OTA Data: 8KB
-  - App0: 4MB (固件 - 活动)
-  - App1: 4MB (固件 - OTA 更新)
-  - LittleFS: 7.9MB (文件系统 - 日志/Web/配置)
+  - PHY Init: 4KB
+  - App0: 7MB (固件 - 活动)
+  - App1: 7MB (固件 - OTA 更新)
+  - LittleFS: 约 1.94MB (文件系统 - 日志/Web/配置)
 
 ## 在 platformio.ini 中使用
 

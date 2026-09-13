@@ -441,6 +441,16 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
         }
       }
 
+      // FastBee patch: _sentLength counts bytes read from the source, not
+      // bytes accepted by AsyncTCP.  Do not finish a known-length response
+      // until the final staging buffer has been accepted in full; otherwise
+      // the request closes with pending bytes and browsers report
+      // ERR_CONTENT_LENGTH_MISMATCH under memory pressure.
+      if (_sendContentLength && _sentLength == _contentLength) {
+        _state = RESPONSE_END;
+        break;
+      }
+
       auto tcp_win = request->client()->space();
       if (tcp_win == 0 || _state == RESPONSE_END) {
         break;  // no room left or no more data
@@ -516,10 +526,9 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
         } else if (readLen != RESPONSE_TRY_AGAIN) {
           _send_buffer_len += readLen;  // set buffers's size to match added data
           _sentLength += readLen;       // data is not sent yet, but we need it to understand that it would be last block
-          if (_sendContentLength && (_sentLength == _contentLength)) {
-            // it was last piece of content
-            _state = RESPONSE_END;
-          }
+          // Do not mark RESPONSE_END here. The final bytes are staged but may
+          // only be partially accepted by AsyncTCP; completion is checked at
+          // the top of the next loop after the pending buffer drains.
         }
       }
     } while (_send_buffer_len);  // go on till we have something in buffer pending to send

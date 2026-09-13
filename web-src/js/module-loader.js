@@ -91,27 +91,39 @@ var ModuleLoader = {
         var oldScript = document.querySelector('script[data-module="' + fileName + '"]');
         if (oldScript) oldScript.remove();
 
-        var script = document.createElement('script');
-        script.src = self._resolveAssetUrl('/js/modules/' + fileName + '.js');
-        script.dataset.module = fileName;
-        script.onload = function() {
+        function startRequest() {
+            return new Promise(function(resolve, reject) {
+                var script = document.createElement('script');
+                script.src = self._resolveAssetUrl('/js/modules/' + fileName + '.js');
+                script.dataset.module = fileName;
+                script.onload = resolve;
+                script.onerror = function() {
+                    script.remove();
+                    reject(new Error('module script load failed: ' + fileName));
+                };
+                document.head.appendChild(script);
+            });
+        }
+
+        var queuedLoad = (typeof window !== 'undefined' &&
+            typeof window.__fastbeeQueueStaticAsset === 'function')
+            ? window.__fastbeeQueueStaticAsset(startRequest)
+            : startRequest();
+
+        queuedLoad.then(function() {
             self._moduleLoadingCount--;
             if (typeof onSuccess === 'function') onSuccess();
             setTimeout(function() {
                 self._processQueue();
             }, 10);
-        };
-        script.onerror = function() {
-            script.remove();
+        }, function() {
             self._moduleLoadingCount--;
             delete self._loadedFiles[fileName];
             if (typeof onFailure === 'function') onFailure();
             setTimeout(function() {
                 self._processQueue();
             }, 60);
-        };
-
-        document.head.appendChild(script);
+        });
     },
 
     _startSequenceLoad(name) {

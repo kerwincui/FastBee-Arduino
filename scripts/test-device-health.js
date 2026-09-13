@@ -5,6 +5,7 @@
 
 const { execFile } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 const BOOT_FAILURE_PATTERNS = Object.freeze([
     /invalid header/i,
@@ -21,6 +22,12 @@ const BOOT_FAILURE_PATTERNS = Object.freeze([
 
 function findBootFailurePatterns(output) {
     return BOOT_FAILURE_PATTERNS.filter((pattern) => pattern.test(output));
+}
+
+function writeJsonReport(outputPath, result) {
+    const resolvedPath = path.resolve(outputPath);
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    fs.writeFileSync(resolvedPath, JSON.stringify(result, null, 2));
 }
 
 class DeviceHealthChecker {
@@ -392,7 +399,7 @@ if (require.main === module) {
                 ...result,
                 results: result.results.map(({ serialOutput, ...entry }) => entry)
             };
-            fs.writeFileSync(args[jsonArg + 1], JSON.stringify(serialSafeResult, null, 2));
+            writeJsonReport(args[jsonArg + 1], serialSafeResult);
         }
         if (!result.success) {
             console.log('\n❌ HEALTH CHECK FAILED - Some devices have issues!\n');
@@ -409,5 +416,6 @@ if (require.main === module) {
 
 module.exports = {
     DeviceHealthChecker,
-    findBootFailurePatterns
+    findBootFailurePatterns,
+    writeJsonReport
 };

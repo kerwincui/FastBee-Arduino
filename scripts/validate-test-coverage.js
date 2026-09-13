@@ -131,6 +131,23 @@ const CRITICAL_REGRESSION_CONTRACTS = [
         }
     },
     {
+        name: 'static resource transport integrity',
+        files: {
+            'test/unit/test_libdeps_patch_contract.py': [
+                'def test_zero_read_fix_installs_upgrades_and_is_idempotent',
+                'def test_send_progress_accounting_installs_and_is_idempotent',
+                'def test_installed_312_copies_are_patched_when_available'
+            ],
+            'test/test_static_concurrency.cpp': [
+                'void test_page_loader_response_integrity_locked()'
+            ],
+            'test/browser/suites/24-web-smooth-access.spec.ts': [
+                'WEB-001: 首页启动和关键静态资源完整加载 @quick',
+                'WEB-002: 连续刷新后页面仍可用 @quick'
+            ]
+        }
+    },
+    {
         name: 'authentication session reuse and safety',
         files: {
             'test/unit/test_auth_session_contract.py': [

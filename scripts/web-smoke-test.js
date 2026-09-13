@@ -383,6 +383,22 @@ function checkFeatureConfigJsonBodyGuard() {
     assert(!featureJs.includes("apiPost('/api/features/apply'"), 'features/apply must NOT use form-encoded apiPost');
 }
 
+function checkFeatureZeroRamRenderingGuard() {
+    const featureJs = read('web-src/modules/runtime/feature-config.js');
+    const featureSuite = read('test/browser/suites/22-feature-config.spec.ts');
+
+    assert(featureJs.includes('this.renderGroupTables(zeroRamFeatures)'),
+        'zero-DRAM features must be rendered through the shared group table renderer');
+    assert(featureJs.includes('data-zero-ram-toggle'),
+        'feature config must render the zero-DRAM collapse toggle');
+    assert(featureJs.includes('id="features-zero-ram-body" class="fb-hidden"'),
+        'zero-DRAM feature body must exist and start collapsed');
+    assert(featureJs.includes("AppState.toggleSection('features-zero-ram-body')"),
+        'zero-DRAM feature toggle must use the shared toggleSection helper');
+    assert(featureSuite.includes('status.features.filter(f => !!f.name)'),
+        'FCFG-003 must compare the DOM with named, displayable API features');
+}
+
 function checkFeatureTransferRegressionGuards() {
     // 2026-08-17: 功能配置页的导入/导出与一键精简已移除（与设备配置页配置转移冗余，
     // 且一键精简会误关 webServer/mdns 导致 Web 入口丢失）；
@@ -472,6 +488,28 @@ function checkBootTimingRegressionGuards() {
     // 页面片段加载必须带退避重试（设备繁忙/堆压力下偶发连接超时）
     const pageLoaderJs = read('web-src/js/page-loader.js');
     assert(pageLoaderJs.includes('_fetchWithRetry'), 'PageLoader must use _fetchWithRetry for page/modals/fragment fetches');
+}
+
+function checkSharedStaticAssetQueue() {
+    const indexHtml = read('web-src/index.html');
+    const mainJs = read('web-src/js/main.js');
+    const pageLoaderJs = read('web-src/js/page-loader.js');
+    const moduleLoaderJs = read('web-src/js/module-loader.js');
+
+    assert(indexHtml.includes('window.__fastbeeStaticAssetChain = Promise.resolve()'),
+        'index.html must define one browser-wide static asset queue');
+    assert(indexHtml.includes('setTimeout(resolve, 100)'),
+        'static asset queue must leave a short TCP disconnect settle window');
+    assert(indexHtml.includes('window.__fastbeeQueueStaticAsset(function()'),
+        'boot chunks must use the shared static asset queue');
+    assert(indexHtml.includes('window.__fastbeeQueueStaticAsset(registerWorker)'),
+        'service worker registration must use the shared static asset queue');
+    assert(mainJs.includes('window.__fastbeeQueueStaticAsset(loadStylesheet)'),
+        'main stylesheet must use the shared static asset queue');
+    assert(pageLoaderJs.includes('window.__fastbeeQueueStaticAsset(op)'),
+        'page fragments must use the shared static asset queue');
+    assert(moduleLoaderJs.includes('window.__fastbeeQueueStaticAsset(startRequest)'),
+        'dynamic modules must use the shared static asset queue');
 }
 
 function checkPageLoaderResponseIntegrity() {
@@ -712,11 +750,13 @@ function run() {
     checkMenuOrderRegressionGuards();
     checkButtonColorRegressionGuards();
     checkFeatureConfigJsonBodyGuard();
+    checkFeatureZeroRamRenderingGuard();
     checkFeatureTransferRegressionGuards();
     checkGovernorOverloadRegressionGuards();
     checkPeriphExecResultsRemoved();
     checkModuleLoaderResilience();
     checkBootTimingRegressionGuards();
+    checkSharedStaticAssetQueue();
     checkPageLoaderResponseIntegrity();
     checkNetworkNotificationRegressionGuards();
     checkWifiSecurityRegressionGuards();

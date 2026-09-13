@@ -138,14 +138,16 @@ test.describe('Suite-22: 功能配置页', () => {
 
   test('FCFG-003: 功能列表与 API 数据一致 @quick', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
-    expect(status.features.length).toBeGreaterThan(0);
-    // 每个注册功能（含未编译锁定的）都渲染为一行
+    const displayableFeatures = status.features.filter(f => !!f.name);
+    expect(displayableFeatures.length).toBeGreaterThan(0);
+    // API 中有显示名称的功能（含未编译锁定项）都渲染为一行；
+    // 无名称的附属能力不作为独立功能展示。
     const rowCount = await authPage.locator('#features-list [data-feature-key]').count();
-    expect(rowCount).toBe(status.features.length);
-    // 所有 API 键名都能在列表中找到
+    expect(rowCount).toBe(displayableFeatures.length);
+    // 所有可显示的 API 键名都能在列表中找到
     const domKeys = await authPage.locator('#features-list [data-feature-key]')
       .evaluateAll(els => els.map(el => el.getAttribute('data-feature-key')));
-    for (const f of status.features) {
+    for (const f of displayableFeatures) {
       expect(domKeys, `功能 ${f.key} 应渲染`).toContain(f.key);
     }
   });
@@ -154,7 +156,7 @@ test.describe('Suite-22: 功能配置页', () => {
 
   test('FCFG-004: RAM 占用显示格式分级', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
-    for (const f of status.features) {
+    for (const f of status.features.filter(feature => !!feature.name)) {
       const cell = authPage.locator(`tr[data-feature-key="${f.key}"] td:nth-child(3)`);
       const text = ((await cell.textContent()) || '').trim();
       const expected = f.ramB === 0
@@ -168,7 +170,7 @@ test.describe('Suite-22: 功能配置页', () => {
 
   test('FCFG-005: 零 DRAM 功能归入折叠区', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
-    const zeroRamKeys = status.features.filter(f => !f.ramB).map(f => f.key).sort();
+    const zeroRamKeys = status.features.filter(f => !!f.name && !f.ramB).map(f => f.key).sort();
     const section = authPage.locator('[data-zero-ram-toggle]');
 
     if (zeroRamKeys.length === 0) {
@@ -223,7 +225,7 @@ test.describe('Suite-22: 功能配置页', () => {
     const status = await fetchFeatureStatus(authPage);
     // 选一个已编译、占 RAM、无依赖的管理入口之外功能做本地切换
     const candidate = status.features.find(f =>
-      f.compiled && f.ramB > 0 && !f.dependsOn && f.key !== 'webServer' && f.key !== 'mdns');
+      !!f.name && f.compiled && f.ramB > 0 && !f.dependsOn && f.key !== 'webServer' && f.key !== 'mdns');
     test.skip(!candidate, '无适合本地切换测试的功能');
 
     const row = authPage.locator(`tr[data-feature-key="${candidate!.key}"]`);
@@ -243,7 +245,7 @@ test.describe('Suite-22: 功能配置页', () => {
   test('FCFG-009: 父功能禁用时子功能行隐藏', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
     // 找一个父子均编译入固件的依赖对
-    const child = status.features.find(f => f.dependsOn && f.compiled
+    const child = status.features.find(f => !!f.name && f.dependsOn && f.compiled
       && status.features.find(p => p.key === f.dependsOn)?.compiled);
     test.skip(!child, '当前固件无父子均编译的依赖对');
     const parentKey = child!.dependsOn!;
@@ -272,7 +274,7 @@ test.describe('Suite-22: 功能配置页', () => {
 
   test('FCFG-010: 未编译功能锁定不可启用', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
-    const locked = status.features.filter(f => !f.compiled);
+    const locked = status.features.filter(f => !!f.name && !f.compiled);
     test.skip(locked.length === 0, '统一镜像已编入全部功能，无锁定项');
     const notCompiledText = await resolveI18nText(authPage, 'fc-not-compiled', '未编译入固件');
     for (const f of locked.slice(0, 3)) {

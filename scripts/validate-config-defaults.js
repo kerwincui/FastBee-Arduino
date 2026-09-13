@@ -120,6 +120,40 @@ function validateDefaultAdmin(issues) {
     }
 }
 
+function validateFeatureDefaults(issues) {
+    const featuresDoc = readJson(path.join(DATA_CONFIG_DIR, 'features.json'));
+    const features = featuresDoc && featuresDoc.features;
+    if (featuresDoc.version !== 1) {
+        issues.push('data/config/features.json: version must be 1');
+    }
+    if (!features || typeof features !== 'object' || Array.isArray(features)) {
+        issues.push('data/config/features.json: features must be an object');
+        return;
+    }
+
+    const requiredEnabled = new Set(['webServer', 'mdns']);
+    for (const key of requiredEnabled) {
+        if (!features[key] || features[key].enabled !== true) {
+            issues.push(`data/config/features.json: ${key} must default to enabled=true`);
+        }
+    }
+
+    Object.entries(features).forEach(([key, entry]) => {
+        if (!entry || typeof entry !== 'object' || typeof entry.enabled !== 'boolean') {
+            issues.push(`data/config/features.json: ${key}.enabled must be boolean`);
+            return;
+        }
+        if (!requiredEnabled.has(key) && entry.enabled) {
+            issues.push(`data/config/features.json: optional feature ${key} must default to disabled`);
+        }
+    });
+
+    const networkDoc = readJson(path.join(DATA_CONFIG_DIR, 'network.json'));
+    if (networkDoc.enableMDNS !== features.mdns?.enabled) {
+        issues.push('data/config/network.json: enableMDNS must match features.json mdns default');
+    }
+}
+
 function readArgValue(prefix) {
     const direct = process.argv.find((arg) => arg.startsWith(`${prefix}=`));
     if (direct) return direct.slice(prefix.length + 1);
@@ -310,6 +344,7 @@ function main() {
     const issues = [];
     validateDefaultApPassword(issues);
     validateDefaultAdmin(issues);
+    validateFeatureDefaults(issues);
     const stageRootArg = null; // staging validation disabled - only single version now
     const latestOnly = false;
 
