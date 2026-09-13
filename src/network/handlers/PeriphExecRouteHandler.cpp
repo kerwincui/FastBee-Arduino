@@ -9,6 +9,7 @@
 #include "core/PeriphExecExecutor.h"  // guessSensorDataField（数据源字段推断与执行器同规则）
 #include "core/PeripheralManager.h"
 #include "core/ResourceProfile.h"
+#include "core/RuntimeFeatureManager.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
@@ -934,9 +935,10 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 #if !FASTBEE_ENABLE_OTA
         if (at == static_cast<int>(ExecActionType::ACTION_SYS_OTA)) continue;
 #endif
-#if !FASTBEE_ENABLE_COMMAND_SCRIPT
-        if (at == static_cast<int>(ExecActionType::ACTION_SCRIPT)) continue;
-#endif
+        if (at == static_cast<int>(ExecActionType::ACTION_SCRIPT) &&
+            !FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript")) {
+            continue;
+        }
 
         // 确定分组
         String* targetBuf = nullptr;

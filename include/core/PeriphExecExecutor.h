@@ -67,7 +67,8 @@ public:
                            const String& receivedValue = String());
 
     // 执行规则的所有动作（同步）
-    // reportCountOut（可选）：回填本次实际上报的动作结果数量（reportAfterExec 勾选且产生可上报结果时 > 0）
+    // reportCountOut（可选）：回填本次实际上报的动作结果数量
+    // （采集或属性控制动作在 reportAfterExec 勾选时 > 0）
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
 
     // ========== 具体动作执行方法 ==========

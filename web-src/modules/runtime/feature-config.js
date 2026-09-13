@@ -59,46 +59,7 @@
             if (!list || !this._featureState) return;
             var self = this;
 
-            // 分层展示：ramB===0 的功能运行时不占 DRAM（字模/文案存于 Flash），
-            // 归入折叠的"零 DRAM 可选区"，避免与内存敏感功能混排造成干扰
-            var mainFeatures = [];
-            var zeroRamFeatures = [];
-            this._featureState.forEach(function(f) {
-                if (!f.ramB) zeroRamFeatures.push(f);
-                else mainFeatures.push(f);
-            });
-
-            var html = this.renderGroupTables(mainFeatures);
-            var zeroRamVisibleCount = zeroRamFeatures.filter(function(f) { return !!f.name; }).length;
-            if (zeroRamVisibleCount > 0) {
-                html += '<section style="margin-top:16px;border-top:1px solid var(--border);padding-top:8px;">'
-                    + '<button type="button" class="fb-btn fb-btn-secondary" data-zero-ram-toggle'
-                    + ' aria-controls="features-zero-ram-body" aria-expanded="false"'
-                    + ' style="width:100%;justify-content:space-between;">'
-                    + '<span>零 DRAM 功能 (' + zeroRamVisibleCount + ')</span>'
-                    + '<span id="features-zero-ram-body-icon" aria-hidden="true">&#9654;</span>'
-                    + '</button>'
-                    + '<div id="features-zero-ram-body" class="fb-hidden" style="margin-top:8px;">'
-                    + this.renderGroupTables(zeroRamFeatures)
-                    + '</div></section>';
-            }
-            list.innerHTML = html;
-
-            // 全功能统一固件（所有功能均已编入）时，Flash 占用已固定，
-            // 开关只影响运行时 RAM，给出说明避免误解
-            var allCompiled = (this._featureState || []).every(function(f) { return f.compiled; });
-            var hint = document.getElementById('features-unified-hint');
-            if (!hint) {
-                hint = document.createElement('p');
-                hint.id = 'features-unified-hint';
-                hint.className = 'u-fs-12 u-text-secondary';
-                hint.style.marginTop = '8px';
-                list.parentNode.insertBefore(hint, list.nextSibling);
-            }
-            hint.style.display = allCompiled ? '' : 'none';
-            hint.textContent = allCompiled
-                ? '当前固件已编入全部功能（统一镜像）：Flash 占用已固定，表中 Flash 列仅为编译参考；开关功能只影响运行时 RAM 占用。'
-                : '';
+            list.innerHTML = this.renderGroupTables(this._featureState);
 
             list.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
                 input.addEventListener('change', function() {
@@ -106,22 +67,11 @@
                 });
             });
 
-            // 绑定零 DRAM 折叠区展开/收起
-            var collapseHeader = list.querySelector('[data-zero-ram-toggle]');
-            if (collapseHeader && AppState.toggleSection) {
-                collapseHeader.addEventListener('click', function() {
-                    AppState.toggleSection('features-zero-ram-body');
-                    var body = document.getElementById('features-zero-ram-body');
-                    collapseHeader.setAttribute('aria-expanded',
-                        body && !body.classList.contains('fb-hidden') ? 'true' : 'false');
-                });
-            }
-
             // 初次渲染即应用依赖联动（父功能禁用的子功能行隐藏）
             this.applyDependencyPreview();
         },
 
-        // 按 group 分组渲染功能表格（主表与零 DRAM 折叠区共用）
+        // 按 group 分组渲染功能表格
         renderGroupTables(features) {
             var self = this;
             var groups = {};
@@ -146,9 +96,12 @@
 
         // 渲染单个功能行（支持子功能隐藏）
         buildFeatureRow(f) {
-            var locked = !!f.locked || !f.compiled;
+            var attached = this.getAttachedFeatures(f.key);
+            var bundleCompiled = attached.every(function(child) { return child.compiled; });
+            var bundleEnabled = attached.every(function(child) { return child.userEnabled; });
+            var locked = !!f.locked || !f.compiled || !bundleCompiled;
             var disabledAttr = locked ? ' disabled' : '';
-            var checked = f.userEnabled ? ' checked' : '';
+            var checked = f.userEnabled && bundleEnabled ? ' checked' : '';
             var rowStyle = locked ? ' style="opacity:0.5";' : '';
             var lockLabel = (!f.lockReason || f.lockReason === 'Not compiled into firmware')
                 ? '未编译入固件'
@@ -180,6 +133,9 @@
             var f = this.findFeature(key);
             if (!f) return;
             f.userEnabled = enabled;
+            this.getAttachedFeatures(key).forEach(function(child) {
+                child.userEnabled = enabled;
+            });
             this._featureDirty = true;
             this.applyDependencyPreview();
             this.updateLocalEstimate();
@@ -193,6 +149,13 @@
                 if (this._featureState[i].key === key) return this._featureState[i];
             }
             return null;
+        },
+
+        // 无显示名称且声明 dependsOn 的项是内部附属能力，只随父功能开关。
+        getAttachedFeatures(key) {
+            return (this._featureState || []).filter(function(f) {
+                return !f.name && f.dependsOn === key;
+            });
         },
 
         // 依赖联动预览：父功能禁用/未编译时子功能行隐藏（不修改服务端状态，仅视觉提示）

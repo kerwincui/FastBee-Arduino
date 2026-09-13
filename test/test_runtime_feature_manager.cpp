@@ -34,9 +34,12 @@
 #define FASTBEE_ENABLE_DS1302 1
 #define FASTBEE_ENABLE_LCD1602 1
 #define FASTBEE_ENABLE_RULE_SCRIPT 1
+#define FASTBEE_ENABLE_COMMAND_SCRIPT 1
+#define FASTBEE_ENABLE_LOG_VIEWER 1
+#define FASTBEE_ENABLE_FILE_LOGGING 1
 #define FASTBEE_ENABLE_OTA 1
 #define FASTBEE_ENABLE_OTA_FS 1
-// 刻意不定义: LED_SCREEN / COMMAND_SCRIPT / BLE
+// 刻意不定义: LED_SCREEN / BLE
 // —— 用于验证"未编译功能"路径
 // 注: MODBUS_SLAVE 特性已从注册表彻底移除（不再是"未编译功能"），
 //     由 test_rfm_modbus_slave_removed 专门验证其不存在
@@ -240,6 +243,106 @@ void test_rfm_dependency_cascade() {
     TEST_ASSERT_TRUE(mgr.shouldEnable("lcdGb2312"));
 }
 
+// 组合功能只接受一个用户开关；主键优先，旧成员键仍可兼容调用。
+void test_rfm_bundled_features_follow_primary() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    mgr.setNetworkReady(true);
+
+    JsonDocument enable;
+    enable["features"]["ruleScript"]["enabled"] = true;
+    enable["features"]["commandScript"]["enabled"] = false;
+    enable["features"]["logViewer"]["enabled"] = true;
+    enable["features"]["fileLogging"]["enabled"] = false;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(enable));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("ruleScript"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("commandScript"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("logViewer"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("fileLogging"));
+
+    JsonDocument disable;
+    disable["features"]["ruleScript"]["enabled"] = false;
+    disable["features"]["commandScript"]["enabled"] = true;
+    disable["features"]["logViewer"]["enabled"] = false;
+    disable["features"]["fileLogging"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(disable));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("ruleScript"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("commandScript"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("logViewer"));
+    TEST_ASSERT_FALSE(mgr.isUserEnabled("fileLogging"));
+
+    JsonDocument legacyMemberOnly;
+    legacyMemberOnly["features"]["commandScript"]["enabled"] = true;
+    legacyMemberOnly["features"]["fileLogging"]["enabled"] = true;
+    TEST_ASSERT_TRUE(mgr.updateFromJson(legacyMemberOnly));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("ruleScript"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("commandScript"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("logViewer"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("fileLogging"));
+
+    const uint32_t currentFlashKB = mgr.estimateFlashKB();
+    const uint32_t currentRamB = mgr.estimateRamB();
+    JsonDocument legacyEstimate;
+    legacyEstimate["features"]["commandScript"]["enabled"] = false;
+    legacyEstimate["features"]["fileLogging"]["enabled"] = false;
+    uint32_t estimatedFlashKB = 0;
+    uint32_t estimatedRamB = 0;
+    mgr.estimateFromJson(legacyEstimate, estimatedFlashKB, estimatedRamB);
+    TEST_ASSERT_EQUAL_UINT32(currentFlashKB - 18, estimatedFlashKB);
+    TEST_ASSERT_EQUAL_UINT32(currentRamB - 3548, estimatedRamB);
+}
+
+// 旧版允许成员状态不一致；迁移时任一开启即保留整个组合功能。
+void test_rfm_legacy_bundle_config_is_canonicalized() {
+    resetMockFs();
+    g_mockFiles["/config/features.json"] =
+        "{\"version\":1,\"features\":{\"mdns\":{\"enabled\":true},"
+        "\"ruleScript\":{\"enabled\":false},\"commandScript\":{\"enabled\":true},"
+        "\"logViewer\":{\"enabled\":false},\"fileLogging\":{\"enabled\":true}}}";
+
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("ruleScript"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("commandScript"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("logViewer"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("fileLogging"));
+
+    JsonDocument canonical;
+    TEST_ASSERT_FALSE(deserializeJson(canonical, g_mockFiles["/config/features.json"]));
+    TEST_ASSERT_TRUE(canonical["features"]["ruleScript"]["enabled"].as<bool>());
+    TEST_ASSERT_TRUE(canonical["features"]["commandScript"]["enabled"].as<bool>());
+    TEST_ASSERT_TRUE(canonical["features"]["logViewer"]["enabled"].as<bool>());
+    TEST_ASSERT_TRUE(canonical["features"]["fileLogging"]["enabled"].as<bool>());
+}
+
+// 附属能力不单独显示，资源成本统一归入父功能行。
+void test_rfm_bundle_status_is_single_user_feature() {
+    resetMockFs();
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+
+    JsonDocument status;
+    mgr.getStatusJson(status.as<JsonVariant>());
+    JsonArray features = status["features"];
+    for (JsonObject feature : features) {
+        const char* key = feature["key"] | "";
+        if (strcmp(key, "ruleScript") == 0) {
+            TEST_ASSERT_EQUAL_STRING("规则引擎（含命令脚本）", feature["name"]);
+            TEST_ASSERT_EQUAL_UINT32(11, feature["flashKB"].as<uint32_t>());
+            TEST_ASSERT_EQUAL_UINT32(2548, feature["ramB"].as<uint32_t>());
+        } else if (strcmp(key, "logViewer") == 0) {
+            TEST_ASSERT_EQUAL_STRING("设备日志", feature["name"]);
+            TEST_ASSERT_EQUAL_UINT32(7, feature["flashKB"].as<uint32_t>());
+            TEST_ASSERT_EQUAL_UINT32(1000, feature["ramB"].as<uint32_t>());
+        } else if (strcmp(key, "commandScript") == 0 || strcmp(key, "fileLogging") == 0) {
+            TEST_ASSERT_TRUE(feature["name"].isNull());
+            TEST_ASSERT_EQUAL_UINT32(0, feature["flashKB"].as<uint32_t>());
+            TEST_ASSERT_EQUAL_UINT32(0, feature["ramB"].as<uint32_t>());
+        }
+    }
+}
+
 // Test 4: JSON 损坏回退到默认配置（计划 7.1 Test 3）
 void test_rfm_corrupted_json_fallback() {
     resetMockFs();
@@ -282,9 +385,8 @@ void test_rfm_uncompiled_cannot_enable() {
     TEST_ASSERT_TRUE(mgr.loadConfig());
     mgr.setNetworkReady(true);
 
-    // ble / commandScript / ledScreen 在当前宏下未编译
+    // ble / ledScreen 在当前宏下未编译
     TEST_ASSERT_FALSE(mgr.shouldEnable("ble"));
-    TEST_ASSERT_FALSE(mgr.shouldEnable("commandScript"));
 
     JsonDocument doc;
     doc["features"]["ble"]["enabled"] = true;
@@ -398,6 +500,9 @@ void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_reset_save_failure_preserves_live_state);
     RUN_TEST(test_rfm_persist_and_reload);
     RUN_TEST(test_rfm_dependency_cascade);
+    RUN_TEST(test_rfm_bundled_features_follow_primary);
+    RUN_TEST(test_rfm_legacy_bundle_config_is_canonicalized);
+    RUN_TEST(test_rfm_bundle_status_is_single_user_feature);
     RUN_TEST(test_rfm_corrupted_json_fallback);
     RUN_TEST(test_rfm_estimation);
     RUN_TEST(test_rfm_uncompiled_cannot_enable);

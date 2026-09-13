@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
 
 ## 功能配置原则
 
-`features.json` 保存全部功能的用户期望状态；Web 服务和 mDNS 出厂默认启用，其他可选功能默认关闭。旧版稀疏配置会在首次加载时保留已有选择并自动补全一次。功能生效至少需要满足：
+`features.json` 保存全部功能的用户期望状态；Web 服务和本地域名服务出厂默认启用，其他可选功能默认关闭。旧版稀疏配置会在首次加载时保留已有选择并自动补全一次。功能生效至少需要满足：
 
 ```text
 compiled（编译进固件）
@@ -100,11 +100,11 @@ compiled（编译进固件）
 | 文件 | 内容 |
 | --- | --- |
 | `device.json` | 设备 ID、名称、NTP、时区、日志级别 |
-| `network.json` | WiFi AP/STA、静态 IP、mDNS 兼容镜像、以太网和 4G 参数 |
+| `network.json` | WiFi AP/STA、静态 IP、自定义本地域名、以太网和 4G 参数 |
 | `protocol.json` | MQTT、MQTTS、Modbus RTU 参数 |
 | `peripherals.json` | 外设类型、引脚和参数 |
 | `periph_exec.json` | 触发器、条件和动作规则 |
-| `features.json` | 全部运行时功能的用户期望状态（mDNS 的权威开关） |
+| `features.json` | 全部运行时功能的用户期望状态 |
 | `rule_scripts.json` | 可选规则脚本 |
 | `users.json` / `auth.json` | 用户、密码哈希和认证策略 |
 
@@ -161,6 +161,17 @@ test/              native、设备 API 和浏览器测试
 
 ## 本地验证与设备测试
 
+提交前按改动范围选择测试。`npm test` 是日常快速门禁；涉及 C++、构建参数、依赖或分区时还必须运行后两层，不能用主机测试替代固件编译。
+
+| 范围 | 命令 | 适用场景 |
+| --- | --- | --- |
+| 快速主机门禁 | `npm test` | 文档、Web、配置、脚本和源码契约 |
+| C++ native 回归 | `npm run test:regression` | 核心逻辑、内存治理、外设和协议改动 |
+| 指定固件环境 | `npm run test:firmware -- <环境>` | 芯片宏、库、分区或驱动改动 |
+| 浏览器用例收集 | `npm run test:e2e:collect` | 确认全部 Playwright 用例可解析，不连接设备 |
+
+GitHub Actions 会继续执行 native 回归、9 个发布环境的固件与 LittleFS 构建，以及 Web 发布资源检查；真机冒烟和浏览器测试必须显式提供设备 STA 地址。
+
 ```powershell
 # 静态、native、9 环境构建和合并产物校验
 powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,native,build,artifacts"
@@ -169,7 +180,7 @@ powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks stat
 powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -RequireNetworkConnected
 powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-ip> -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000 -ReportPath test\reports\web-smoke.csv
 
-# 五设备测试台：复制示例并替换实验室地址、串口和可选 mDNS 后再执行
+# 五设备测试台：复制示例并替换实验室地址、串口和可选本地域名后再执行
 powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false
 ```
 

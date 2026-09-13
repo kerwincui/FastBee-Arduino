@@ -15,6 +15,7 @@ const path = require('path');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const NETWORK_HTML = path.join(ROOT_DIR, 'web-src', 'pages', 'network.html');
 const NETWORK_JS = path.join(ROOT_DIR, 'web-src', 'modules', 'runtime', 'network.js');
+const NETWORK_SPEC = path.join(ROOT_DIR, 'test', 'browser', 'suites', '03-network.spec.ts');
 
 let errors = 0;
 let checks = 0;
@@ -50,6 +51,20 @@ for (const { id, label } of REQUIRED_BUTTON_IDS) {
     const regex = new RegExp(`id=["']${id}["']`);
     check(regex.test(htmlContent), `${label} (id="${id}")`);
 }
+
+check(
+    /id=["']custom-domain["']/.test(htmlContent),
+    '域名配置保留自定义域名'
+);
+check(
+    !/id=["']mdns-feature-status["']/.test(htmlContent) &&
+        !/id=["']mdns-feature-config-btn["']/.test(htmlContent),
+    '域名配置不显示重复的 mDNS 功能状态和跳转入口'
+);
+check(
+    !/id=["']enable-mdns["']/.test(htmlContent),
+    '网络高级配置不再提供重复的 mDNS 开关'
+);
 
 // ─── 2. JS 函数存在性验证 ────────────────────────────────────────────────────
 console.log('\n[2] network.js 核心函数验证');
@@ -107,6 +122,30 @@ const pollingCallCount = (jsContent.match(/_startNetworkStatusPolling\s*\(/g) ||
 check(
     pollingCallCount >= 3,
     `_startNetworkStatusPolling 出现次数 (${pollingCallCount} >= 3，含 1 处定义 + 2 处调用)`
+);
+
+// mDNS 启停只允许在功能配置中编辑，网络页不再维护重复状态 UI。
+check(
+    !jsContent.includes('_mdnsFeatureEnabled') && !jsContent.includes('_updateMDNSNotice'),
+    'network.js 不维护重复的 mDNS 功能状态'
+);
+
+const saveAdvancedStart = jsContent.indexOf('saveAdvancedConfig() {');
+const saveAdvancedEnd = jsContent.indexOf('\n        /**', saveAdvancedStart + 1);
+const saveAdvancedBlock = saveAdvancedStart >= 0
+    ? jsContent.slice(saveAdvancedStart, saveAdvancedEnd >= 0 ? saveAdvancedEnd : jsContent.length)
+    : '';
+check(
+    saveAdvancedStart >= 0 && !saveAdvancedBlock.includes('enableMDNS'),
+    '高级配置保存请求不携带 enableMDNS'
+);
+
+const networkSpecContent = fs.readFileSync(NETWORK_SPEC, 'utf8');
+const cleanupGuard = networkSpecContent.indexOf('if (!env.wifi.ssid)');
+const restoreCall = networkSpecContent.indexOf('restoreNetworkConfig(baseURL)', cleanupGuard);
+check(
+    cleanupGuard >= 0 && restoreCall > cleanupGuard,
+    '网络测试未提供 WIFI_SSID 时禁止恢复写入'
 );
 
 // ─── 4. 按钮禁用逻辑验证 ────────────────────────────────────────────────────

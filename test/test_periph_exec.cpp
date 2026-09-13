@@ -3070,22 +3070,26 @@ void test_action_dispatch_trigger_event_empty() {
 }
 
 // ============================================================
-//  TEST GROUP 18J: 物理输出控制动作可上报判定与 reportCount 收集
+//  TEST GROUP 18J: 属性控制动作可上报判定与 reportCount 收集
 //  镜像 isReportableOutputAction（PeriphExecExecutor.cpp:130）
 //  与 executeAllActions 中 reportableResults 收集/reportCount 回填逻辑。
-//  回归背景：GPIO/PWM/DAC 控制动作曾走 else 分支不标记 isReportableAction，
-//           即使 reportAfterExec=true 也从不上报（关闭LED勾选上报平台收不到）。
+//  回归背景：GPIO/PWM/DAC、NeoPixel、Modbus 写控制动作曾遗漏上报分类，
+//           即使 reportAfterExec=true 也不会产生平台属性上报。
 // ============================================================
 
-// 镜像固件 isReportableOutputAction：仅 GPIO 电平/PWM/DAC 物理输出控制类可上报
+// 镜像固件 isReportableOutputAction：属性控制动作可上报，瞬时命令/显示/系统动作不可上报
 static bool mockIsReportableOutputAction(uint8_t actionType) {
     switch (actionType) {
         case 0:  // ACTION_HIGH
         case 1:  // ACTION_LOW
         case 13: // ACTION_HIGH_INVERTED
         case 14: // ACTION_LOW_INVERTED
+        case 30: // ACTION_GPIO_TOGGLE
         case 4:  // ACTION_SET_PWM
         case 5:  // ACTION_SET_DAC
+        case 11: // ACTION_NEOPIXEL_EFFECT
+        case 16: // ACTION_MODBUS_COIL_WRITE
+        case 17: // ACTION_MODBUS_REG_WRITE
             return true;
         default:
             return false;
@@ -3093,7 +3097,7 @@ static bool mockIsReportableOutputAction(uint8_t actionType) {
 }
 
 // 镜像 executeAllActions 的 reportable 收集 + reportCount 回填：
-// 采集类(SENSOR_READ=19 / MODBUS_POLL=18) 与物理输出控制类进入上报列表；
+// 采集类(SENSOR_READ=19 / MODBUS_POLL=18) 与属性控制类进入上报列表；
 // 仅当 reportAfterExec && !suppressReport 且列表非空时 reportCount=可上报数量，否则 0。
 static int mockComputeReportCount(bool reportAfterExec, bool suppressReport,
                                      const uint8_t* actionTypes, size_t n) {
@@ -3104,7 +3108,7 @@ static int mockComputeReportCount(bool reportAfterExec, bool suppressReport,
         if (at == 19 || at == 18) {
             isReportable = true;  // SENSOR_READ / MODBUS_POLL
         } else if (mockIsReportableOutputAction(at)) {
-            isReportable = true;  // GPIO 电平 / PWM / DAC
+            isReportable = true;  // GPIO / PWM / DAC / NeoPixel / Modbus 写
         }
         if (isReportable) reportable++;
     }
@@ -3119,15 +3123,33 @@ void test_reportable_output_pwm() { TEST_ASSERT_TRUE(mockIsReportableOutputActio
 void test_reportable_output_dac() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(5)); }
 void test_reportable_output_high_inverted() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(13)); }
 void test_reportable_output_low_inverted() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(14)); }
+void test_reportable_output_toggle() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(30)); }
+void test_reportable_output_neopixel() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(11)); }
+void test_reportable_output_modbus_coil_write() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(16)); }
+void test_reportable_output_modbus_reg_write() { TEST_ASSERT_TRUE(mockIsReportableOutputAction(17)); }
 void test_reportable_output_blink_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(2)); }
 void test_reportable_output_breathe_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(3)); }
 void test_reportable_output_call_peripheral_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(10)); }
+void test_reportable_output_stepper_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(12)); }
 void test_reportable_output_script_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(15)); }
 void test_reportable_output_modbus_poll_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(18)); }
 void test_reportable_output_sensor_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(19)); }
 void test_reportable_output_event_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(21)); }
 void test_reportable_output_display_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(27)); }
 void test_reportable_output_system_not() { TEST_ASSERT_FALSE(mockIsReportableOutputAction(8)); }
+
+void test_reportable_output_all_known_actions_classified() {
+    // 锁定 ExecActionType 0..32 的完整属性输出分类，新增动作时必须显式决定是否可上报。
+    const bool expected[] = {
+        true,  true,  false, false, true,  true,  false, false, false, false, false,
+        true,  false, true,  true,  false, true,  true,  false, false, false, false,
+        false, false, false, false, false, false, false, false, true,  false, false
+    };
+    for (uint8_t actionType = 0; actionType < sizeof(expected) / sizeof(expected[0]); ++actionType) {
+        TEST_ASSERT_EQUAL_MESSAGE(expected[actionType], mockIsReportableOutputAction(actionType),
+            "unexpected reportable output classification");
+    }
+}
 
 // --- 18J-2: reportCount 收集逻辑（核心回归：GPIO 控制勾选上报后 reportCount>0） ---
 void test_reportcount_gpio_report_enabled() {
@@ -3152,6 +3174,18 @@ void test_reportcount_pwm_report() {
 void test_reportcount_dac_report() {
     uint8_t actions[] = {5};
     TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_toggle_report() {
+    uint8_t actions[] = {30};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_neopixel_report() {
+    uint8_t actions[] = {11};
+    TEST_ASSERT_EQUAL(1, mockComputeReportCount(true, false, actions, 1));
+}
+void test_reportcount_modbus_writes_report() {
+    uint8_t actions[] = {16, 17};
+    TEST_ASSERT_EQUAL(2, mockComputeReportCount(true, false, actions, 2));
 }
 void test_reportcount_sensor_report() {
     // 采集类（SENSOR_READ）仍可上报
@@ -3186,6 +3220,98 @@ void test_reportcount_event_only_zero() {
     // 事件触发(21)不走 reportableResults 路径 → reportCount=0
     uint8_t actions[] = {21};
     TEST_ASSERT_EQUAL(0, mockComputeReportCount(true, false, actions, 1));
+}
+
+void test_reportcount_all_known_actions() {
+    uint8_t actions[33];
+    for (uint8_t i = 0; i < sizeof(actions); ++i) actions[i] = i;
+    // 10 个属性控制动作 + SENSOR_READ + MODBUS_POLL。
+    TEST_ASSERT_EQUAL(12, mockComputeReportCount(true, false, actions, sizeof(actions)));
+}
+
+// 源码契约防止测试镜像与固件实现一起遗漏新加入的属性动作。
+void test_reportable_output_source_contract() {
+    std::string exec = readPeriphExecSrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(exec.empty(), "cannot read PeriphExecExecutor.cpp");
+
+    size_t reportableStart = exec.find("bool isReportableOutputAction");
+    size_t bootReadableStart = exec.find("bool isBootReadableGpioOutputAction", reportableStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, reportableStart,
+        "isReportableOutputAction missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, bootReadableStart,
+        "isBootReadableGpioOutputAction missing");
+    std::string reportable = exec.substr(reportableStart, bootReadableStart - reportableStart);
+    const char* reportableActions[] = {
+        "ACTION_HIGH", "ACTION_LOW", "ACTION_HIGH_INVERTED", "ACTION_LOW_INVERTED",
+        "ACTION_GPIO_TOGGLE", "ACTION_SET_PWM", "ACTION_SET_DAC",
+        "ACTION_NEOPIXEL_EFFECT", "ACTION_MODBUS_COIL_WRITE", "ACTION_MODBUS_REG_WRITE"
+    };
+    for (const char* actionName : reportableActions) {
+        TEST_ASSERT_TRUE_MESSAGE(reportable.find(actionName) != std::string::npos,
+            "known property-control action missing from reportable output helper");
+    }
+    const char* nonReportableActions[] = {
+        "ACTION_BLINK", "ACTION_BREATHE", "ACTION_SYS_RESTART", "ACTION_SYS_FACTORY_RESET",
+        "ACTION_SYS_NTP_SYNC", "ACTION_SYS_OTA", "ACTION_CALL_PERIPHERAL",
+        "ACTION_STEPPER_CONTROL", "ACTION_SCRIPT", "ACTION_MODBUS_POLL", "ACTION_SENSOR_READ",
+        "ACTION_RESERVED_20", "ACTION_TRIGGER_EVENT", "ACTION_ENABLE_EXEC_RULE",
+        "ACTION_DISABLE_EXEC_RULE", "ACTION_DISPLAY_NUMBER", "ACTION_DISPLAY_TEXT",
+        "ACTION_DISPLAY_CLEAR", "ACTION_OLED_DISPLAY", "ACTION_RF_SEND", "ACTION_UART_SEND",
+        "ACTION_FEATURE_ENABLE", "ACTION_FEATURE_DISABLE"
+    };
+    for (const char* actionName : nonReportableActions) {
+        TEST_ASSERT_TRUE_MESSAGE(reportable.find(actionName) == std::string::npos,
+            "non-property action must not enter property report helper");
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("no sensor/poll data to report") == std::string::npos &&
+                             exec.find("reporting disabled") != std::string::npos &&
+                             exec.find("reporting suppressed") != std::string::npos &&
+                             exec.find("no reportable action results") != std::string::npos,
+        "execution log must distinguish disabled, suppressed and non-reportable results");
+
+    size_t bootReadableEnd = exec.find("bool isInvertedOutputAction", bootReadableStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, bootReadableEnd,
+        "boot-readable output helper boundary missing");
+    std::string bootReadable = exec.substr(bootReadableStart, bootReadableEnd - bootReadableStart);
+    TEST_ASSERT_TRUE_MESSAGE(bootReadable.find("ACTION_NEOPIXEL_EFFECT") == std::string::npos &&
+                             bootReadable.find("ACTION_MODBUS_COIL_WRITE") == std::string::npos &&
+                             bootReadable.find("ACTION_MODBUS_REG_WRITE") == std::string::npos,
+        "startup state sync must not treat NeoPixel or Modbus writes as GPIO reads");
+
+    size_t callStart = exec.find("bool isCallPeripheralOutputAction");
+    size_t bootCallStart = exec.find("bool isBootReadableCallPeripheralOutputAction", callStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, callStart,
+        "isCallPeripheralOutputAction missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, bootCallStart,
+        "isBootReadableCallPeripheralOutputAction missing");
+    std::string reportableCall = exec.substr(callStart, bootCallStart - callStart);
+    TEST_ASSERT_TRUE_MESSAGE(reportableCall.find("PeripheralType::NEO_PIXEL") != std::string::npos,
+        "CALL_PERIPHERAL NeoPixel control must be reportable");
+
+    size_t bootCallEnd = exec.find("bool looksLikeHexPayload", bootCallStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, bootCallEnd,
+        "boot-readable CALL_PERIPHERAL helper boundary missing");
+    std::string bootReadableCall = exec.substr(bootCallStart, bootCallEnd - bootCallStart);
+    TEST_ASSERT_TRUE_MESSAGE(bootReadableCall.find("PeripheralType::NEO_PIXEL") == std::string::npos,
+        "startup state sync must not read NeoPixel as a GPIO output");
+
+    std::string manager = readPeriphExecSrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "cannot read PeriphExecManager.cpp");
+    size_t managerStart = manager.find("bool PeriphExecManager::ruleHasReportableStateAction");
+    size_t managerEnd = manager.find("bool PeriphExecManager::shouldAvoidSyncFallback", managerStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, managerStart,
+        "ruleHasReportableStateAction missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, managerEnd,
+        "ruleHasReportableStateAction boundary missing");
+    std::string managerBootFilter = manager.substr(managerStart, managerEnd - managerStart);
+    TEST_ASSERT_TRUE_MESSAGE(managerBootFilter.find("ACTION_GPIO_TOGGLE") != std::string::npos &&
+                             managerBootFilter.find("ACTION_CALL_PERIPHERAL") != std::string::npos,
+        "boot report candidate filter must include all readable GPIO output forms");
+    TEST_ASSERT_TRUE_MESSAGE(managerBootFilter.find("ACTION_NEOPIXEL_EFFECT") == std::string::npos &&
+                             managerBootFilter.find("ACTION_MODBUS_COIL_WRITE") == std::string::npos &&
+                             managerBootFilter.find("ACTION_MODBUS_REG_WRITE") == std::string::npos,
+        "boot report candidate filter must exclude write-only property actions");
 }
 
 // ============================================================
@@ -3401,11 +3527,27 @@ static void test_sensor_template_value_placeholder() {
 //   - 幂等：队列清空后置 done，后续 tick 不再上报
 // ============================================================
 
-// 镜像 ruleHasReportableStateAction：传感器读取/Modbus 轮询/物理输出控制
+// 镜像启动状态可回读范围；与运行后的属性上报范围有意分开。
+static bool mockIsBootReadableOutputAction(uint8_t actionType) {
+    switch (actionType) {
+        case 0:  // ACTION_HIGH
+        case 1:  // ACTION_LOW
+        case 4:  // ACTION_SET_PWM
+        case 5:  // ACTION_SET_DAC
+        case 13: // ACTION_HIGH_INVERTED
+        case 14: // ACTION_LOW_INVERTED
+        case 30: // ACTION_GPIO_TOGGLE
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 镜像 ruleHasReportableStateAction：传感器读取/Modbus 轮询/可回读 GPIO 输出控制
 static bool mockRuleHasReportableStateAction(const std::vector<uint8_t>& actionTypes) {
     for (uint8_t at : actionTypes) {
         if (at == 19 || at == 18) return true;          // SENSOR_READ / MODBUS_POLL
-        if (mockIsReportableOutputAction(at)) return true; // GPIO 电平/PWM/DAC
+        if (mockIsBootReadableOutputAction(at)) return true; // GPIO 电平/PWM/DAC/Toggle
     }
     return false;
 }
@@ -3465,6 +3607,15 @@ void test_boot_reportable_rule_gpio_output() {
 }
 void test_boot_reportable_rule_pwm() {
     TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({4}));
+}
+void test_boot_reportable_rule_toggle() {
+    TEST_ASSERT_TRUE(mockRuleHasReportableStateAction({30}));
+}
+void test_boot_reportable_rule_neopixel_write_not() {
+    TEST_ASSERT_FALSE(mockRuleHasReportableStateAction({11}));
+}
+void test_boot_reportable_rule_modbus_writes_not() {
+    TEST_ASSERT_FALSE(mockRuleHasReportableStateAction({16, 17}));
 }
 void test_boot_reportable_rule_event_only_not() {
     TEST_ASSERT_FALSE(mockRuleHasReportableStateAction({21}));
@@ -4066,11 +4217,11 @@ void test_numeric_dispatch_unsupported_type_rejected() {
     TEST_ASSERT_FALSE(mockNumericDispatch(17, "toggle").handled);
 }
 
-// --- 22C: CALL_PERIPHERAL 调用 GPIO 输出外设 → 结果可上报（isCallPeripheralOutputAction 镜像） ---
+// --- 22C: CALL_PERIPHERAL 调用 GPIO/NeoPixel 输出外设 → 结果可上报（isCallPeripheralOutputAction 镜像） ---
 static bool mockIsCallPeripheralOutputAction(int actionType, int targetType, bool hasTarget) {
     if (actionType != 10 /*ACTION_CALL_PERIPHERAL*/) return false;
     if (!hasTarget) return false;
-    return targetType == 12 || targetType == 17 || targetType == 16;
+    return targetType == 12 || targetType == 17 || targetType == 16 || targetType == 45;
 }
 
 void test_call_periph_led_result_reportable() {
@@ -4082,6 +4233,9 @@ void test_call_periph_buzzer_pwm_result_reportable() {
 }
 void test_call_periph_analog_output_reportable() {
     TEST_ASSERT_TRUE(mockIsCallPeripheralOutputAction(10, 16, true));
+}
+void test_call_periph_neopixel_reportable() {
+    TEST_ASSERT_TRUE(mockIsCallPeripheralOutputAction(10, 45, true));
 }
 void test_call_periph_lcd_target_not_reportable() {
     TEST_ASSERT_FALSE(mockIsCallPeripheralOutputAction(10, 36, true));
@@ -4500,27 +4654,36 @@ void test_periph_exec_group() {
     RUN_TEST(test_action_dispatch_trigger_event_system);
     RUN_TEST(test_action_dispatch_trigger_event_empty);
 
-    // Group 18J: 物理输出控制动作可上报判定与 reportCount 收集
+    // Group 18J: 属性控制动作可上报判定与 reportCount 收集
     RUN_TEST(test_reportable_output_high);
     RUN_TEST(test_reportable_output_low);
     RUN_TEST(test_reportable_output_pwm);
     RUN_TEST(test_reportable_output_dac);
     RUN_TEST(test_reportable_output_high_inverted);
     RUN_TEST(test_reportable_output_low_inverted);
+    RUN_TEST(test_reportable_output_toggle);
+    RUN_TEST(test_reportable_output_neopixel);
+    RUN_TEST(test_reportable_output_modbus_coil_write);
+    RUN_TEST(test_reportable_output_modbus_reg_write);
     RUN_TEST(test_reportable_output_blink_not);
     RUN_TEST(test_reportable_output_breathe_not);
     RUN_TEST(test_reportable_output_call_peripheral_not);
+    RUN_TEST(test_reportable_output_stepper_not);
     RUN_TEST(test_reportable_output_script_not);
     RUN_TEST(test_reportable_output_modbus_poll_not);
     RUN_TEST(test_reportable_output_sensor_not);
     RUN_TEST(test_reportable_output_event_not);
     RUN_TEST(test_reportable_output_display_not);
     RUN_TEST(test_reportable_output_system_not);
+    RUN_TEST(test_reportable_output_all_known_actions_classified);
     RUN_TEST(test_reportcount_gpio_report_enabled);
     RUN_TEST(test_reportcount_gpio_report_disabled);
     RUN_TEST(test_reportcount_gpio_suppressed);
     RUN_TEST(test_reportcount_pwm_report);
     RUN_TEST(test_reportcount_dac_report);
+    RUN_TEST(test_reportcount_toggle_report);
+    RUN_TEST(test_reportcount_neopixel_report);
+    RUN_TEST(test_reportcount_modbus_writes_report);
     RUN_TEST(test_reportcount_sensor_report);
     RUN_TEST(test_reportcount_modbus_poll_report);
     RUN_TEST(test_reportcount_mixed_gpio_sensor);
@@ -4528,12 +4691,17 @@ void test_periph_exec_group() {
     RUN_TEST(test_reportcount_system_only_zero);
     RUN_TEST(test_reportcount_display_only_zero);
     RUN_TEST(test_reportcount_event_only_zero);
+    RUN_TEST(test_reportcount_all_known_actions);
+    RUN_TEST(test_reportable_output_source_contract);
 
     // Group 18M: 启动后一次性物模型状态上报状态机（设备重启主动对齐平台）
     RUN_TEST(test_boot_reportable_rule_sensor);
     RUN_TEST(test_boot_reportable_rule_modbus_poll);
     RUN_TEST(test_boot_reportable_rule_gpio_output);
     RUN_TEST(test_boot_reportable_rule_pwm);
+    RUN_TEST(test_boot_reportable_rule_toggle);
+    RUN_TEST(test_boot_reportable_rule_neopixel_write_not);
+    RUN_TEST(test_boot_reportable_rule_modbus_writes_not);
     RUN_TEST(test_boot_reportable_rule_event_only_not);
     RUN_TEST(test_boot_reportable_rule_script_display_not);
     RUN_TEST(test_boot_reportable_rule_mixed_has_reportable);
@@ -4631,6 +4799,7 @@ void test_periph_exec_group() {
     RUN_TEST(test_call_periph_led_result_reportable);
     RUN_TEST(test_call_periph_buzzer_pwm_result_reportable);
     RUN_TEST(test_call_periph_analog_output_reportable);
+    RUN_TEST(test_call_periph_neopixel_reportable);
     RUN_TEST(test_call_periph_lcd_target_not_reportable);
     RUN_TEST(test_call_periph_non_call_action_not_reportable);
     RUN_TEST(test_call_periph_no_target_not_reportable);

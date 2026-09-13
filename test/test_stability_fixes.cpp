@@ -1387,15 +1387,16 @@ static void test_runtime_gates_use_dram_budget() {
         budget.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)") != std::string::npos,
         "dramLargest must measure internal DRAM only");
 
-    // 抽查代表性调用方：日志系统闸门必须走 DRAM 口径
+    // 抽查代表性调用方：日志文件操作需要 8-bit 内部 DRAM，不能把
+    // 仅具备 MALLOC_CAP_INTERNAL 的 IRAM/RTC 内存计入可用水位。
     std::string logger = readStabilitySrcFile("src/systems/LoggerSystem.cpp");
     if (logger.empty()) {
         TEST_IGNORE_MESSAGE("LoggerSystem.cpp not readable, skipping source check");
         return;
     }
     TEST_ASSERT_TRUE_MESSAGE(
-        logger.find("MemoryBudget::dramFree()") != std::string::npos,
-        "LoggerSystem gates must use MemoryBudget::dramFree()");
+        logger.find("MemoryBudget::dram8Free()") != std::string::npos,
+        "LoggerSystem gates must use MemoryBudget::dram8Free()");
 }
 
 // P2-6：扫描结果序列化预留终止符位，截断时不越界写

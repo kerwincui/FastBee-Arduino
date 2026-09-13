@@ -402,24 +402,19 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     expect(value).toBe('0');
   });
 
-  test('NET-041: mDNS禁用', async ({ authPage }) => {
+  test('NET-041: 网络页不显示重复mDNS控件 @quick', async ({ authPage }) => {
     await authPage.locator('[data-tab="advance"]').click();
     await authPage.waitForTimeout(500);
-    await authPage.locator('#enable-mdns').selectOption('0'); // 禁用
-    await authPage.waitForTimeout(500);
-    const notice = authPage.locator('#mdns-disabled-notice');
-    if (await notice.isVisible()) {
-      await expect(notice).toBeVisible();
-    }
+    await expect(authPage.locator('#enable-mdns')).toHaveCount(0);
+    await expect(authPage.locator('#mdns-feature-status')).toHaveCount(0);
+    await expect(authPage.locator('#mdns-feature-config-btn')).toHaveCount(0);
   });
 
-  test('NET-042: mDNS启用', async ({ authPage }) => {
+  test('NET-042: 域名配置仅保留自定义域名 @quick', async ({ authPage }) => {
     await authPage.locator('[data-tab="advance"]').click();
     await authPage.waitForTimeout(500);
-    await authPage.locator('#enable-mdns').selectOption('1'); // 启用
-    await authPage.waitForTimeout(500);
-    const value = await authPage.locator('#enable-mdns').inputValue();
-    expect(value).toBe('1');
+    await expect(authPage.locator('#custom-domain')).toBeVisible();
+    await expect(authPage.locator('#domain-config-section .fb-form-group')).toHaveCount(1);
   });
 
   test('NET-043: 自定义域名输入', async ({ authPage }) => {
@@ -817,6 +812,10 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
   // ========== 全局清理：网络测试后自动恢复设备 ==========
 
   test.afterAll(async () => {
+    if (!env.wifi.ssid) {
+      console.log('[CLEANUP] Skipped: WIFI_SSID not provided; network configuration was not written');
+      return;
+    }
     const baseURL = `http://${env.deviceIp}`;
     console.log('[CLEANUP] Restoring network config to WiFi STA mode...');
     const restored = await restoreNetworkConfig(baseURL);

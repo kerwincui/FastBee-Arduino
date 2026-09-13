@@ -54,9 +54,10 @@ node test/browser/fleet-stability-monitor.mjs `
 | `path` | API 路径 |
 | `profiles` | 检查适用的 API 矩阵；9 个正式发布环境使用 `unified`，旧 profile 值只保留给有针对性的兼容测试 |
 | `auth` | 是否需要登录态；设备默认使用 HttpOnly `sessionId` Cookie，同时兼容 `session` 和 Authorization Bearer |
-| `type` | 特殊检查类型：`multi-session`、`bearer-over-cookie`、`expect-unavailable`、`expect-error` |
+| `type` | 特殊检查类型：`multi-session`、`bearer-over-cookie`、`expect-unavailable`、`expect-error`、`capability-optional` 等 |
 | `jsonBody` | POST/PUT 请求体 |
-| `allowedStatuses` | `expect-unavailable` 或 `expect-error` 允许的 HTTP 状态码 |
+| `allowedStatuses` | `expect-*` 或 `capability-optional` 允许的 HTTP 状态码 |
+| `allowedMessages` | 可选功能接口 `message`/`error` 字段允许的精确错误文案；与 `allowedStatuses` 同时匹配才视为预期禁用 |
 
 当前矩阵覆盖三类检查：
 

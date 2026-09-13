@@ -129,9 +129,30 @@ MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
 }
 #endif
 
-/** 判断动作是否为“物理输出控制”类（GPIO 电平/PWM/DAC），其执行结果可作为设备属性上报物联网平台。
- *  采集类（SENSOR_READ/MODBUS_POLL）在调用处单独标记；系统指令/脚本/事件/显示类不作为设备属性上报。 */
+/** 判断动作是否产生可作为设备属性上报的控制结果。
+ *  采集类（SENSOR_READ/MODBUS_POLL）在调用处单独标记；系统指令、瞬时传输、
+ *  规则控制和显示类动作不代表设备属性，不进入属性上报。 */
 bool isReportableOutputAction(uint8_t actionType) {
+    switch (static_cast<ExecActionType>(actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
+        case ExecActionType::ACTION_MODBUS_REG_WRITE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/** 启动状态同步只能读取不会产生副作用的 GPIO 输出状态。
+ *  NeoPixel 和 Modbus 写动作虽然运行后可上报，但不能在启动阶段按 GPIO 回读。 */
+bool isBootReadableGpioOutputAction(uint8_t actionType) {
     switch (static_cast<ExecActionType>(actionType)) {
         case ExecActionType::ACTION_HIGH:
         case ExecActionType::ACTION_LOW:
@@ -251,10 +272,22 @@ bool isAllDigits(const String& s) {
     return true;
 }
 
-/** 判断 CALL_PERIPHERAL 动作的目标外设是否为“物理输出”类（GPIO 电平/PWM/模拟输出）。
+/** 判断 CALL_PERIPHERAL 动作的目标外设是否为可上报控制结果的输出类。
  *  此类调用语义上等同 GPIO 控制动作，执行结果同样应作为设备属性上报平台，
- *  否则平台下发 LED/蜂鸣器控制后状态永远不同步。 */
+ *  否则平台下发 LED、蜂鸣器或 NeoPixel 控制后状态永远不同步。 */
 bool isCallPeripheralOutputAction(const ExecAction& action) {
+    if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) return false;
+    if (action.targetPeriphId.isEmpty()) return false;
+    PeripheralConfig cfg;
+    if (!PeripheralManager::getInstance().getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
+    return cfg.type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+           cfg.type == PeripheralType::GPIO_PWM_OUTPUT ||
+           cfg.type == PeripheralType::GPIO_ANALOG_OUTPUT ||
+           cfg.type == PeripheralType::NEO_PIXEL;
+}
+
+/** CALL_PERIPHERAL 的启动状态同步仅限能够无副作用回读引脚的 GPIO 输出。 */
+bool isBootReadableCallPeripheralOutputAction(const ExecAction& action) {
     if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) return false;
     if (action.targetPeriphId.isEmpty()) return false;
     PeripheralConfig cfg;
@@ -348,7 +381,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
     // 可上报动作的结果进入上报队列：采集类（SENSOR_READ / MODBUS_POLL）
-    // 以及物理输出控制类（GPIO 电平/PWM/DAC）。系统指令/脚本/事件/显示类不上报。
+    // 以及属性控制类（GPIO/PWM/DAC、NeoPixel、Modbus 写）。系统指令、
+    // 瞬时传输、规则控制和显示类动作不上报。
     std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
@@ -442,8 +476,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 ok,
                 ok ? "success" : "execute_failed"
             );
-            // 物理输出控制动作（GPIO 电平/PWM/DAC）的结果也作为设备属性上报：
-            // 用户勾选“上报数据”后，LED/继电器等控制状态可同步到物联网平台
+            // 属性控制动作的结果也作为设备属性上报：用户勾选“上报数据”后，
+            // GPIO、NeoPixel、Modbus 继电器/寄存器等控制状态可同步到物联网平台。
             if (isReportableOutputAction(action.actionType)) {
                 isReportableAction = true;
             } else if (ok && isCallPeripheralOutputAction(action)) {
@@ -454,7 +488,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
 
         results.insert(results.end(), actionResults.begin(), actionResults.end());
-        // 采集类（SENSOR_READ / MODBUS_POLL）与物理输出控制类结果进入上报列表
+        // 采集类（SENSOR_READ / MODBUS_POLL）与属性控制类结果进入上报列表
         if (isReportableAction) {
             reportableResults.insert(reportableResults.end(),
                                      actionResults.begin(), actionResults.end());
@@ -468,7 +502,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
     }
 
-    // 精准上报执行结果（采集类 + 物理输出控制类动作的结果）
+    // 精准上报执行结果（采集类 + 属性控制类动作的结果）
     if (rule.reportAfterExec && !suppressReport && !reportableResults.empty()) {
         LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d action results",
             rule.name.c_str(), reportableResults.size());
@@ -478,8 +512,11 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             *reportCountOut = reportableResults.size();
         }
     } else if (!results.empty()) {
-        LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (no sensor/poll data to report)",
-            rule.name.c_str(), results.size());
+        const char* reportState = !rule.reportAfterExec
+            ? "reporting disabled"
+            : (suppressReport ? "reporting suppressed" : "no reportable action results");
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (%s)",
+            rule.name.c_str(), results.size(), reportState);
     }
 
     return results;
@@ -515,7 +552,7 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
                     reportableResults.push_back(pr);
                 }
             }
-        } else if (isReportableOutputAction(action.actionType)) {
+        } else if (isBootReadableGpioOutputAction(action.actionType)) {
             // 物理输出控制：只读当前引脚电平，绝不重写输出（保持设备当前实际状态）
             if (action.targetPeriphId.isEmpty()) continue;
             GPIOState st = pm.readPin(action.targetPeriphId);
@@ -528,7 +565,7 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
             appendActionResult(reportableResults, action.targetPeriphId,
                                physicalStateToLogicalValue(st, action.actionType),
                                true, "boot_state");
-        } else if (isCallPeripheralOutputAction(action)) {
+        } else if (isBootReadableCallPeripheralOutputAction(action)) {
             // CALL_PERIPHERAL 指向 GPIO 数字输出外设：只读当前电平上报启动状态。
             // 极性按非反转语义翻译（CALL_PERIPHERAL 无独立反转配置），与运行时上报一致。
             GPIOState st = pm.readPin(action.targetPeriphId);
@@ -1697,6 +1734,10 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
 
 bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript")) {
+        LOGGER.warning("[PeriphExec] Command script disabled by runtime feature config");
+        return false;
+    }
     if (action.actionValue.isEmpty()) {
         LOGGER.warning("[PeriphExec] Script is empty");
         return false;

@@ -356,7 +356,8 @@ bool PeriphExecManager::ruleHasPollCollectionAction(const PeriphExecRule& rule) 
 
 bool PeriphExecManager::ruleHasReportableStateAction(const PeriphExecRule& rule) const {
     // 与 Executor::reportRuleCurrentState 的采集范围保持一致：
-    //   传感器读取 / Modbus 轮询 / 物理输出控制（GPIO 电平/PWM/DAC）
+    //   传感器读取 / Modbus 轮询 / 可无副作用回读的 GPIO 输出控制。
+    PeripheralManager& pm = PeripheralManager::getInstance();
     for (const auto& action : rule.actions) {
         switch (static_cast<ExecActionType>(action.actionType)) {
             case ExecActionType::ACTION_SENSOR_READ:
@@ -367,7 +368,19 @@ bool PeriphExecManager::ruleHasReportableStateAction(const PeriphExecRule& rule)
             case ExecActionType::ACTION_LOW_INVERTED:
             case ExecActionType::ACTION_SET_PWM:
             case ExecActionType::ACTION_SET_DAC:
+            case ExecActionType::ACTION_GPIO_TOGGLE:
                 return true;
+            case ExecActionType::ACTION_CALL_PERIPHERAL: {
+                if (action.targetPeriphId.isEmpty()) break;
+                PeripheralConfig cfg;
+                if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) break;
+                if (cfg.type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+                    cfg.type == PeripheralType::GPIO_PWM_OUTPUT ||
+                    cfg.type == PeripheralType::GPIO_ANALOG_OUTPUT) {
+                    return true;
+                }
+                break;
+            }
             default:
                 break;
         }

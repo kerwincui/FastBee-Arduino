@@ -289,21 +289,30 @@
     },
     {
       "name": "logs-list",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs/list",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
+      "allowedStatuses": [503],
+      "allowedMessages": ["Device logs disabled by runtime feature config"]
     },
     {
       "name": "logs-tail",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs?file=system.log&tail=80&limit=4096",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
+      "allowedStatuses": [503],
+      "allowedMessages": ["Device logs disabled by runtime feature config"]
     },
     {
       "name": "logs-info",
+      "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs/info",
-      "profiles": ["unified"]
+      "profiles": ["unified"],
+      "allowedStatuses": [503],
+      "allowedMessages": ["Device logs disabled by runtime feature config"]
     },
     {
       "name": "logs-unavailable",

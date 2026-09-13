@@ -686,7 +686,8 @@ function Test-Endpoint {
         [string]$Path,
         [object]$Body = $null,
         [switch]$JsonBody,
-        [int[]]$AllowedStatuses = @()
+        [int[]]$AllowedStatuses = @(),
+        [string[]]$AllowedMessages = @()
     )
 
     $result = $null
@@ -698,12 +699,27 @@ function Test-Endpoint {
         $attempts = $attempt + 1
         $result = Invoke-FastBeeApi -Method $Method -Path $Path -Body $Body -JsonBody:$JsonBody
 
-        # allowedStatuses：部分端点在特性禁用时返回确定性的非 200 状态（如 ruleScript 未启用时 503），
-        # 属于固件设计行为，命中允许状态直接判通过，跳过语义检查
+        # Optional capabilities may return a deterministic non-2xx response when
+        # disabled. When allowedMessages is present, both status and the exact
+        # firmware message must match so a generic busy/memory 503 cannot pass.
         if ($AllowedStatuses.Count -gt 0 -and $result.Status -gt 0 -and @($AllowedStatuses) -contains $result.Status) {
-            $passed = $true
-            $result.Message = "allowed status $($result.Status) (feature disabled by design)"
-            break
+            $curMessage = ""
+            if ($result.Response -and $result.Response.PSObject.Properties.Name -contains "message") {
+                $curMessage = [string]$result.Response.message
+            }
+            elseif ($result.Response -and $result.Response.PSObject.Properties.Name -contains "error") {
+                $curMessage = [string]$result.Response.error
+            }
+            if ($AllowedMessages.Count -eq 0 -or @($AllowedMessages) -ccontains $curMessage) {
+                $passed = $true
+                $result.Message = if ($AllowedMessages.Count -gt 0) {
+                    "allowed status $($result.Status) with expected feature-disabled response"
+                }
+                else {
+                    "allowed status $($result.Status) (feature disabled by design)"
+                }
+                break
+            }
         }
 
         $passed = $result.Success
@@ -1155,7 +1171,8 @@ for ($round = 1; $round -le $Rounds; $round++) {
             -Path ([string]$endpoint.path) `
             -Body (Get-CheckValue -Check $endpoint -Name "body") `
             -JsonBody:([bool](Get-CheckValue -Check $endpoint -Name "jsonBody" -DefaultValue $false)) `
-            -AllowedStatuses @(Get-CheckValue -Check $endpoint -Name "allowedStatuses" -DefaultValue @())
+            -AllowedStatuses @(Get-CheckValue -Check $endpoint -Name "allowedStatuses" -DefaultValue @()) `
+            -AllowedMessages @(Get-CheckValue -Check $endpoint -Name "allowedMessages" -DefaultValue @())
     }
 
     if (($round % 10) -eq 0 -or $round -eq $Rounds) {

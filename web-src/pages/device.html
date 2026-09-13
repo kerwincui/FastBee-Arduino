@@ -215,11 +215,11 @@
                         <h4 class="dev-mode-section-title"><span>固件升级</span></h4>
                         <p class="dev-mode-section-desc">选择 .bin 固件文件后点击上传，升级过程中请勿断电。</p>
                         <p id="dev-ota-capability-hint" class="is-hidden u-fs-12" style="color:var(--warning-text,#ad6800)"></p>
-                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-                            <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-ota-file" style="margin:0;cursor:pointer">选择固件</label>
+                        <div class="file-input-wrapper u-mb-10">
+                            <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-ota-file">选择文件</label>
                             <input type="file" id="dev-ota-file" accept=".bin" class="is-hidden">
                             <button id="dev-ota-upload-btn" type="button" class="fb-btn fb-btn-primary fb-btn-compact" disabled>上传升级</button>
-                            <span id="dev-ota-filename" style="font-size:12px;color:var(--text-secondary)"></span>
+                            <span id="dev-ota-filename" class="file-name-display">未选择任何文件</span>
                         </div>
                         <div id="dev-ota-progress-wrap" class="is-hidden" style="margin-top:8px">
                             <div style="background:var(--bg-gray,#eee);border-radius:4px;overflow:hidden;height:18px">
@@ -314,8 +314,8 @@
                             </h4>
                             <p style="margin:0 0 6px;font-size:12px;color:var(--text-secondary)">选择需要导入或导出的配置文件。</p>
                             <p style="margin:0 0 10px;font-size:11px;color:var(--text-tertiary,--text-secondary);opacity:0.8">提示：配置文件较大时可分多次选择不同文件依次导入。</p>
-                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-                                <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file" style="margin:0;cursor:pointer">
+                            <div class="file-input-wrapper u-mb-10">
+                                <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file">
                                     <span>选择文件</span>
                                 </label>
                                 <input type="file" id="dev-config-import-file" accept="application/json,.json" class="is-hidden" multiple>
@@ -326,7 +326,7 @@
                                     <span>导出</span>
                                 </button>
                             </div>
-                            <div id="dev-config-transfer-status" style="font-size:12px;color:var(--text-secondary)">--</div>
+                            <div id="dev-config-transfer-status" class="file-name-display">--</div>
                         </div>
                     </div>
                 </div>

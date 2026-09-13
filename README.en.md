@@ -75,7 +75,7 @@ Do not commit real WiFi passwords, broker credentials, tokens, or production net
 
 ## Feature Activation
 
-`features.json` stores the complete user-requested feature state. Web service and mDNS are enabled by default; all optional features start disabled. A legacy sparse file is preserved and expanded once on first load. A feature is active only when the relevant conditions remain true:
+`features.json` stores the complete user-requested feature state. The Web service and local-domain service are enabled by default; all optional features start disabled. A legacy sparse file is preserved and expanded once on first load. A feature is active only when the relevant conditions remain true:
 
 ```text
 compiled
@@ -95,11 +95,11 @@ Runtime configuration lives under LittleFS `/config/`:
 | File | Purpose |
 | --- | --- |
 | `device.json` | Device identity, NTP, timezone, and log level |
-| `network.json` | WiFi AP/STA, static IP, an mDNS compatibility mirror, Ethernet, and cellular settings |
+| `network.json` | WiFi AP/STA, static IP, a custom local domain, Ethernet, and cellular settings |
 | `protocol.json` | MQTT, MQTTS, and Modbus RTU settings |
 | `peripherals.json` | Peripheral types, pins, and parameters |
 | `periph_exec.json` | Triggers, conditions, and actions |
-| `features.json` | Complete requested runtime feature state and authoritative mDNS switch |
+| `features.json` | Complete requested runtime feature state |
 | `rule_scripts.json` | Optional rule scripts |
 | `users.json` / `auth.json` | Users, password hashes, and authentication policy |
 
@@ -110,6 +110,17 @@ The five sanitized bench examples, supported source formats, and deployment rule
 `data/config/` is reserved for the factory template: no device identity, no STA/MQTT credentials, and no peripherals or rules enabled by default. It must not be used as a live-device backup; `npm test` enforces this boundary.
 
 ## Validation
+
+Choose the test layer that matches the change. `npm test` is the fast daily gate; C++, build flags, dependencies, partitions, and drivers also require the deeper layers below.
+
+| Scope | Command | Use when |
+| --- | --- | --- |
+| Fast host gate | `npm test` | Documentation, Web, configuration, scripts, and source contracts |
+| Native C++ regression | `npm run test:regression` | Core logic, memory policy, peripheral, or protocol changes |
+| One firmware target | `npm run test:firmware -- <environment>` | Chip flags, libraries, partitions, or drivers change |
+| Browser test collection | `npm run test:e2e:collect` | Parse every Playwright test without contacting a device |
+
+GitHub Actions additionally builds firmware and LittleFS for all nine release environments. Live smoke and browser tests require an explicit device STA address.
 
 ```powershell
 # Static checks, native tests, all 9 environments, and firmware artifacts

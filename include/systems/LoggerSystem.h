@@ -88,7 +88,10 @@ public:
     static constexpr size_t recentLogCapacity() { return RECENT_LOG_LINES; }
 
     // 日志文件管理
+    bool   lockLogFiles(uint32_t timeoutMs = 250);
+    void   unlockLogFiles();
     bool   rotateLogFile(const char* newName = nullptr);
+    bool   clearLogFile(const char* fileName = nullptr);
     size_t getLogFileSize() const;
     bool   deleteLogFile();
     
@@ -121,6 +124,7 @@ private:
     // 环形缓冲内部方法
     void logToBuffer(const char* entry, size_t len);
     void flushBufferInternal();  // 不拿锁版本，供 log() 内部调用
+    bool rotateLogFileInternal(const char* newName);  // 调用方必须持有 _logMutex
     size_t bufferedDataSize() const;
     void checkLogFileSize();     // 检查文件大小并轮转
 

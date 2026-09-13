@@ -3900,6 +3900,92 @@ void test_regression_factory_features_are_memory_safe() {
     TestLog::testEnd(true);
 }
 
+void test_regression_logger_reliability_guards() {
+    TestLog::testStart("Regression: logger concurrency and file lifecycle stay safe");
+
+    std::string logger = readRegressionSrcFile("src/systems/LoggerSystem.cpp");
+    std::string loggerHeader = readRegressionSrcFile("include/systems/LoggerSystem.h");
+    std::string logRoute = readRegressionSrcFile("src/network/handlers/LogRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(logger.empty(), "cannot read LoggerSystem.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(loggerHeader.empty(), "cannot read LoggerSystem.h");
+    TEST_ASSERT_FALSE_MESSAGE(logRoute.empty(), "cannot read LogRouteHandler.cpp");
+
+    const size_t captureStart = logger.find("void LoggerSystem::captureRecentLine");
+    const size_t snapshotStart = logger.find("size_t LoggerSystem::snapshotRecentLogs", captureStart);
+    const size_t cleanupStart = logger.find("void LoggerSystem::cleanupOldLogFiles", snapshotStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, captureStart, "captureRecentLine missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, snapshotStart, "snapshotRecentLogs missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, cleanupStart, "cleanupOldLogFiles missing");
+    const std::string capture = logger.substr(captureStart, snapshotStart - captureStart);
+    const std::string snapshot = logger.substr(snapshotStart, cleanupStart - snapshotStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        capture.find("xSemaphoreTake(_logMutex") != std::string::npos &&
+        capture.find("!= pdTRUE) return") != std::string::npos &&
+        capture.find("bool locked") == std::string::npos,
+        "recent log writes must stop when the mutex cannot be acquired");
+    TEST_ASSERT_TRUE_MESSAGE(
+        snapshot.find("out[0] = '\\0'") != std::string::npos &&
+        snapshot.find("!= pdTRUE) return 0") != std::string::npos &&
+        snapshot.find("bool locked") == std::string::npos,
+        "recent log snapshots must return an empty result on mutex failure");
+
+    const size_t callbackStart = logger.find("int LoggerSystem::espLogCallback");
+    const size_t captureToggleStart = logger.find("void LoggerSystem::enableEspLogCapture", callbackStart);
+    const std::string callback = logger.substr(callbackStart, captureToggleStart - callbackStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        callback.find("actualLen >= sizeof(buffer)") != std::string::npos &&
+        callback.find("buffer[len-1]") == std::string::npos,
+        "ESP-IDF log callback must clamp vsnprintf length before indexing");
+
+    const size_t flushStart = logger.find("void LoggerSystem::flushBufferInternal");
+    const size_t flushPublicStart = logger.find("void LoggerSystem::flushBuffer()", flushStart);
+    const std::string flush = logger.substr(flushStart, flushPublicStart - flushStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        flush.find("if (!fileLoggingEnabled) return") != std::string::npos,
+        "buffer flush must stop immediately when file logging is disabled");
+    TEST_ASSERT_TRUE_MESSAGE(
+        flush.find("_ringBuffer.readPos = _ringBuffer.writePos") != std::string::npos,
+        "a file-open failure must discard the retrying buffer");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("findNextBackupSequence") != std::string::npos &&
+        logger.find("system_%010llu.log") != std::string::npos &&
+        logger.find("system_%lu.log\", millis()") == std::string::npos,
+        "log rotation must use a restart-stable persistent sequence");
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("log file truncated instead") == std::string::npos &&
+        logger.find("Log rotation failed, file logging disabled") != std::string::npos,
+        "rotation failure must preserve the current log instead of truncating it");
+    TEST_ASSERT_TRUE_MESSAGE(
+        loggerHeader.find("clearLogFile") != std::string::npos &&
+        logRoute.find("LOGGER.clearLogFile") != std::string::npos &&
+        logRoute.find("sendBadRequest(request, \"Invalid log file\")") != std::string::npos,
+        "Web log clearing must use the synchronized Logger API and reject invalid names");
+    TEST_ASSERT_TRUE_MESSAGE(
+        loggerHeader.find("lockLogFiles") != std::string::npos &&
+        loggerHeader.find("unlockLogFiles") != std::string::npos &&
+        logRoute.find("ScopedLogFileAccess") != std::string::npos &&
+        logRoute.find("Log file is busy, retry shortly") != std::string::npos,
+        "Web log reads and log rotation must share the logger mutex");
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("buildSafeLogPath") != std::string::npos &&
+        logger.find("else if (value[0] == '/')") != std::string::npos,
+        "custom rotation targets must stay inside /logs");
+    TEST_ASSERT_TRUE_MESSAGE(
+        logger.find("cleared = LittleFS.exists(path) && LittleFS.remove(path)") != std::string::npos,
+        "clearing a missing backup must report failure");
+
+    const std::string cleanup = logger.substr(cleanupStart,
+        logger.find("bool LoggerSystem::lockLogFiles", cleanupStart) - cleanupStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        cleanup.find("MemoryBudget::dram8Free()") != std::string::npos &&
+        cleanup.find("MemoryBudget::dram8Largest()") != std::string::npos &&
+        cleanup.find("MAX_DELETES_PER_PASS") != std::string::npos,
+        "backup cleanup must use internal 8-bit DRAM guards and bounded work");
+
+    TestLog::testEnd(true);
+}
+
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
 
@@ -4055,6 +4141,9 @@ RUN_TEST(test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source);
     RUN_TEST(test_regression_rule_script_gated_in_firmware);
     RUN_TEST(test_regression_unified_web_bundles_rule_script);
     RUN_TEST(test_regression_factory_features_are_memory_safe);
+
+    // 日志并发、长度边界、禁用刷新和文件生命周期回归保护
+    RUN_TEST(test_regression_logger_reliability_guards);
 
     // TLS 内存池原型已退出启动关键路径，但兼容头文件保留
     RUN_TEST(test_regression_tls_pool_stub_not_boot_dependency);

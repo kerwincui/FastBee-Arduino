@@ -2,6 +2,7 @@
 // PageLoader: 动态页面 HTML 片段加载与缓存
 // 供 AppState 调用，管理页面 HTML 的按需加载
 // ============================================================
+var PAGE_FETCH_TIMEOUT_MS = 8000;
 var PageLoader = {
     _loadedPages: {},
     _loadingPages: {},
@@ -29,9 +30,8 @@ var PageLoader = {
     // A timed-out/retried static response can leave the previous page root in
     // the DOM before the loader state is updated. Keep one active root per
     // page so repeated navigation cannot create duplicate element IDs.
-    _dedupePageRoot(moduleName) {
-        var rootId = moduleName + '-page';
-        var roots = Array.prototype.slice.call(document.querySelectorAll('#' + rootId));
+    _dedupePageRoot(pageId) {
+        var roots = Array.prototype.slice.call(document.querySelectorAll('#' + pageId));
         if (roots.length <= 1) return;
         var keep = roots.find(function(root) { return root.classList.contains('active'); }) || roots[0];
         roots.forEach(function(root) {
@@ -48,25 +48,35 @@ var PageLoader = {
         retries = (retries == null) ? 3 : retries;
         var lastErr;
         for (var i = 0; i <= retries; i++) {
+            var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            var timedOut = false;
+            var timer = controller ? setTimeout(function() {
+                timedOut = true;
+                controller.abort();
+            }, PAGE_FETCH_TIMEOUT_MS) : null;
             try {
-                var resp = await fetch(url);
+                var resp = await fetch(url, controller ? { signal: controller.signal } : undefined);
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 return resp;
             } catch (e) {
-                lastErr = e;
-                if (i < retries) {
-                    await new Promise(function(resolve) { setTimeout(resolve, 800 * (i + 1)); });
-                }
+                lastErr = timedOut
+                    ? new Error('Static asset request timed out after ' + PAGE_FETCH_TIMEOUT_MS + 'ms')
+                    : e;
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+            if (i < retries) {
+                await new Promise(function(resolve) { setTimeout(resolve, 800 * (i + 1)); });
             }
         }
         throw lastErr;
     },
 
-    _renderUnavailablePage(moduleName, error) {
+    _renderUnavailablePage(pageId, error) {
         var container = document.getElementById('content-area');
-        if (!container || !moduleName) return false;
+        if (!container || !pageId) return false;
 
-        var rootId = moduleName + '-page';
+        var rootId = /-page$/.test(pageId) ? pageId : pageId + '-page';
         var root = document.getElementById(rootId);
         if (!root) {
             root = document.createElement('div');
@@ -104,7 +114,7 @@ var PageLoader = {
         var moduleName = pageMapping[pageId];
         if (!moduleName) return;
         if (this._loadedPages[moduleName]) {
-            this._dedupePageRoot(moduleName);
+            this._dedupePageRoot(pageId);
             return;
         }
         if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
@@ -117,7 +127,7 @@ var PageLoader = {
 
             var wrapper = document.createElement('div');
             wrapper.innerHTML = html;
-            var rootId = moduleName + '-page';
+            var rootId = pageId;
             var incomingRoot = wrapper.querySelector('#' + rootId);
             if (!incomingRoot) {
                 throw new Error('Page response missing expected root: #' + rootId);
@@ -135,7 +145,7 @@ var PageLoader = {
                 container.appendChild(wrapper.firstChild);
             }
             if (wasActive) incomingRoot.classList.add('active');
-            this._dedupePageRoot(moduleName);
+            this._dedupePageRoot(pageId);
             this._loadedPages[moduleName] = true;
             // 若当前语言非中文，翻译新加载的页面内容
             if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
@@ -151,7 +161,7 @@ var PageLoader = {
             // with 503. Keep navigation usable and explain the controlled
             // degradation instead of leaving a blank page root.
             delete this._loadedPages[moduleName];
-            this._renderUnavailablePage(moduleName, e);
+            this._renderUnavailablePage(pageId, e);
         } finally {
             delete this._loadingPages[moduleName];
         }

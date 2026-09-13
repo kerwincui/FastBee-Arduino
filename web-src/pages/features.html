@@ -28,9 +28,6 @@
             </div>
             <div id="features-summary" class="u-fs-13 u-text-secondary" style="margin-bottom:12px;">加载中...</div>
             <div id="features-list"></div>
-            <p class="u-fs-12 u-text-secondary" style="margin-top:12px;">
-                灰显项表示功能未编译或当前硬件/分区不支持；具体原因显示在功能名称下方。统一固件中的 DS18B20 等驱动已随镜像编入，用户只需在本页启用或禁用即可。出厂默认仅 Web 服务与 mDNS 启用（管理入口），其余功能均为禁用状态，请按实际需求手动启用以最小化内存占用。两者控制逻辑相互独立：Web 服务仅在 STA 生产模式下受开关约束（AP 配置模式始终可用），mDNS 开关与网络模式无关，任何模式下均可启停；禁用后可通过外设执行规则（GPIO 按键/MQTT 指令，动作“启用功能”）动态恢复。修改后点击“保存并重启”，设备约 3 秒后重启生效。功能配置的备份与迁移请使用设备配置页（高级配置）的“配置转移”功能。
-            </p>
         </div>
     </div>
 </div>

@@ -210,6 +210,10 @@ function checkUiRegressionGuards(files) {
         ? readGzipText('js/modules/protocol-modbus-rtu.js.gz')
         : '';
     const devicePage = readGzipText('pages/device.html.gz');
+    const otaPage = assetExists('pages/fragments/device-ota.html.gz')
+        ? readGzipText('pages/fragments/device-ota.html.gz')
+        : '';
+    const mainCss = readGzipText('css/main.css.gz');
 
     const deviceConfig = readGzipText('js/modules/device-config.js.gz');
 
@@ -241,6 +245,23 @@ function checkUiRegressionGuards(files) {
     assert(devicePage.includes('dev-config-import-file'), 'config transfer file input missing');
     assert(devicePage.includes('dev-config-import-btn'), 'config transfer import button missing');
     assert(devicePage.includes('dev-config-export-btn'), 'config transfer export button missing');
+    assert((devicePage.match(/class="file-input-wrapper u-mb-10"/g) || []).length === 2,
+        'device OTA and config transfer must share the file picker layout');
+    assert(!otaPage || otaPage.includes('class="file-input-wrapper file-input-wrapper-top"'),
+        'OTA fragment must share the file picker layout');
+    assert((devicePage + otaPage).match(/class="fb-btn fb-btn-secondary fb-btn-compact"/g).length >= (otaPage ? 3 : 2),
+        'published file picker triggers must share the same button variant');
+    assert(!/<label[^>]*for="(?:dev-ota-file|dev-config-import-file)"[^>]*style=/.test(devicePage),
+        'published file picker triggers must not depend on inline styles');
+    const baseButtonRule = mainCss.match(/\.fb-btn\s*\{(?=[^}]*display:\s*inline-flex)([^}]*)\}/);
+    assert(baseButtonRule,
+        'published CSS must include the shared .fb-btn base style');
+    assert(baseButtonRule
+        && /border:\s*1px\s+solid\s+var\(--border\)/.test(baseButtonRule[1])
+        && !/border:\s*1px\s+solid\s+transparent/.test(baseButtonRule[1]),
+        'published buttons must keep a visible shared border');
+    assert(/\.file-input-wrapper\s*>\s*label\.fb-btn/.test(mainCss),
+        'published CSS must include the shared file picker trigger style');
     const modalsPage = readGzipText('pages/modals.html.gz');
     assert(modalsPage.includes('config-transfer-modal'), 'config transfer modal container missing');
     assert(modalsPage.includes('config-transfer-select-all'), 'config transfer select-all checkbox missing');
@@ -383,18 +404,19 @@ function checkFeatureConfigJsonBodyGuard() {
     assert(!featureJs.includes("apiPost('/api/features/apply'"), 'features/apply must NOT use form-encoded apiPost');
 }
 
-function checkFeatureZeroRamRenderingGuard() {
+function checkFeatureListRenderingGuard() {
     const featureJs = read('web-src/modules/runtime/feature-config.js');
+    const featureHtml = read('web-src/pages/features.html');
     const featureSuite = read('test/browser/suites/22-feature-config.spec.ts');
 
-    assert(featureJs.includes('this.renderGroupTables(zeroRamFeatures)'),
-        'zero-DRAM features must be rendered through the shared group table renderer');
-    assert(featureJs.includes('data-zero-ram-toggle'),
-        'feature config must render the zero-DRAM collapse toggle');
-    assert(featureJs.includes('id="features-zero-ram-body" class="fb-hidden"'),
-        'zero-DRAM feature body must exist and start collapsed');
-    assert(featureJs.includes("AppState.toggleSection('features-zero-ram-body')"),
-        'zero-DRAM feature toggle must use the shared toggleSection helper');
+    assert(featureJs.includes('this.renderGroupTables(this._featureState)'),
+        'all features must be rendered through the regular grouped tables');
+    assert(!featureJs.includes('data-zero-ram-toggle') && !featureJs.includes('features-zero-ram-body'),
+        'feature config must not render a separate zero-DRAM section');
+    assert(!featureJs.includes('features-unified-hint'),
+        'feature config must not inject a redundant footer hint');
+    assert(!featureHtml.includes('灰显项表示功能未编译'),
+        'features page must not contain the redundant footer explanation');
     assert(featureSuite.includes('status.features.filter(f => !!f.name)'),
         'FCFG-003 must compare the DOM with named, displayable API features');
 }
@@ -529,12 +551,19 @@ function checkPageLoaderResponseIntegrity() {
         'PageLoader must validate the expected page root before DOM insertion and loaded caching');
     assert(loadBlock.includes('Page response missing expected root'),
         'PageLoader must reject a 200 response that lacks the expected page root');
+    assert(loadBlock.includes('var rootId = pageId;') &&
+        !loadBlock.includes("var rootId = moduleName + '-page';"),
+        'PageLoader must validate the mapped page ID, which may differ from the HTML module name');
     assert(loadBlock.includes('root.remove()') && loadBlock.includes('wasActive'),
         'A successful retry must replace an existing fallback root');
     assert(catchBlock.includes('delete this._loadedPages[moduleName]'),
         'A failed page load must clear its loaded cache entry');
     assert(!catchBlock.includes('this._loadedPages[moduleName] = true'),
         'A fallback page must remain retryable instead of being cached as loaded');
+    assert(catchBlock.includes('this._renderUnavailablePage(pageId, e)'),
+        'A failed module load must render the fallback under the requested page ID');
+    assert(source.includes('PAGE_FETCH_TIMEOUT_MS') && source.includes('new AbortController()'),
+        'PageLoader fetches must use a bounded abort timeout so the shared asset queue cannot hang forever');
 }
 
 function checkNetworkNotificationRegressionGuards() {
@@ -750,7 +779,7 @@ function run() {
     checkMenuOrderRegressionGuards();
     checkButtonColorRegressionGuards();
     checkFeatureConfigJsonBodyGuard();
-    checkFeatureZeroRamRenderingGuard();
+    checkFeatureListRenderingGuard();
     checkFeatureTransferRegressionGuards();
     checkGovernorOverloadRegressionGuards();
     checkPeriphExecResultsRemoved();

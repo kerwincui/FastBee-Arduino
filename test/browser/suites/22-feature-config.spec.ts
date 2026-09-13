@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
  * 覆盖运行时功能开关页面的 UI 行为：
  * - 列表渲染与 API 数据一致性
  * - RAM 占用显示格式（0KB / <1KB 字节 / KB 分级）
- * - 零 DRAM 功能折叠区分层展示
+ * - 所有功能按类别直接展示，不创建零 DRAM 折叠区
  * - 依赖联动隐藏（父功能禁用时子功能行隐藏）
  * - 未编译功能锁定态
  * - 保存并重启端到端往返（mdns 开关，模式无关、失败态安全）
@@ -19,7 +19,7 @@ import type { Page } from '@playwright/test';
 
 interface FeatureInfo {
   key: string;
-  name: string;
+  name: string | null;
   group: string;
   compiled: boolean;
   userEnabled: boolean;
@@ -152,6 +152,25 @@ test.describe('Suite-22: 功能配置页', () => {
     }
   });
 
+  test('FCFG-003A: 日志与脚本组合功能各只显示一行 @quick', async ({ authPage }) => {
+    const status = await fetchFeatureStatus(authPage);
+    const bundles = [
+      { primary: 'logViewer', member: 'fileLogging' },
+      { primary: 'ruleScript', member: 'commandScript' },
+    ];
+
+    for (const bundle of bundles) {
+      const primary = status.features.find(f => f.key === bundle.primary);
+      const member = status.features.find(f => f.key === bundle.member);
+      expect(primary?.name, `${bundle.primary} 应是可见组合功能`).toBeTruthy();
+      expect(member?.name, `${bundle.member} 应作为内部附属能力隐藏`).toBeFalsy();
+      await expect(authPage.locator(`tr[data-feature-key="${bundle.primary}"]`)).toHaveCount(1);
+      await expect(authPage.locator(`tr[data-feature-key="${bundle.member}"]`)).toHaveCount(0);
+      expect(member?.flashKB).toBe(0);
+      expect(member?.ramB).toBe(0);
+    }
+  });
+
   // ========== RAM 显示格式（formatRam 分级） ==========
 
   test('FCFG-004: RAM 占用显示格式分级', async ({ authPage }) => {
@@ -166,47 +185,21 @@ test.describe('Suite-22: 功能配置页', () => {
     }
   });
 
-  // ========== 零 DRAM 折叠区分层展示 ==========
+  // ========== 简化功能列表 ==========
 
-  test('FCFG-005: 零 DRAM 功能归入折叠区', async ({ authPage }) => {
+  test('FCFG-005: 零DRAM功能直接显示在普通分组', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
     const zeroRamKeys = status.features.filter(f => !!f.name && !f.ramB).map(f => f.key).sort();
-    const section = authPage.locator('[data-zero-ram-toggle]');
-
-    if (zeroRamKeys.length === 0) {
-      // 无零 DRAM 功能时折叠区不应存在
-      expect(await section.count()).toBe(0);
-      return;
-    }
-
-    await expect(section).toBeVisible();
-    // 折叠区内的行 = API 中 ramB===0 的功能集合
-    const partition = await authPage.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll('#features-list [data-feature-key]'));
-      const main: string[] = [];
-      const zero: string[] = [];
-      rows.forEach(r => {
-        const key = r.getAttribute('data-feature-key') || '';
-        (r.closest('#features-zero-ram-body') ? zero : main).push(key);
-      });
-      return { main, zero };
-    });
-    expect(partition.zero.sort()).toEqual(zeroRamKeys);
-    // 主区域不应包含零 DRAM 功能
+    await expect(authPage.locator('[data-zero-ram-toggle]')).toHaveCount(0);
+    await expect(authPage.locator('#features-zero-ram-body')).toHaveCount(0);
     for (const key of zeroRamKeys) {
-      expect(partition.main).not.toContain(key);
+      await expect(authPage.locator(`#features-list tr[data-feature-key="${key}"]`)).toHaveCount(1);
     }
   });
 
-  test('FCFG-006: 零 DRAM 折叠区展开/收起', async ({ authPage }) => {
-    const header = authPage.locator('[data-zero-ram-toggle]');
-    test.skip((await header.count()) === 0, '当前固件无零 DRAM 功能，无折叠区');
-    const body = authPage.locator('#features-zero-ram-body');
-    await expect(body).toBeHidden(); // 默认收起
-    await header.click();
-    await expect(body).toBeVisible();
-    await header.click();
-    await expect(body).toBeHidden();
+  test('FCFG-006: 页面底部无冗余功能说明', async ({ authPage }) => {
+    await expect(authPage.locator('#features-unified-hint')).toHaveCount(0);
+    await expect(authPage.locator('#features-page .fb-card-body > p')).toHaveCount(0);
   });
 
   // ========== 汇总与本地估算 ==========

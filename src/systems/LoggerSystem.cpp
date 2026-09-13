@@ -23,12 +23,100 @@
 #include <vector>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
 #include <core/SystemConstants.h>
 
 #if FASTBEE_ENABLE_LOGGER
 
 // 日志文件固定路径（与 SystemConstants::FileSystem 对应）
 static constexpr const char* LOG_FILE_PATH = "/logs/system.log";
+static constexpr const char* LOG_DIR_PATH = "/logs";
+static constexpr const char* LOG_FILE_NAME = "system.log";
+
+namespace {
+
+const char* logBaseName(const char* path) {
+    if (!path) return "";
+    const char* slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+bool parseBackupSequence(const char* path, uint64_t& sequence) {
+    const char* name = logBaseName(path);
+    static constexpr const char* PREFIX = "system_";
+    static constexpr const char* SUFFIX = ".log";
+    const size_t prefixLen = strlen(PREFIX);
+
+    if (strncmp(name, PREFIX, prefixLen) != 0) return false;
+
+    const char* digits = name + prefixLen;
+    const char* suffix = strstr(digits, SUFFIX);
+    if (!suffix || suffix == digits || suffix[strlen(SUFFIX)] != '\0') return false;
+
+    uint64_t value = 0;
+    for (const char* p = digits; p < suffix; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        const uint8_t digit = static_cast<uint8_t>(*p - '0');
+        if (value > (UINT64_MAX - digit) / 10U) return false;
+        value = value * 10U + digit;
+    }
+
+    sequence = value;
+    return true;
+}
+
+bool isSafeLogFileName(const char* fileName) {
+    if (!fileName || fileName[0] == '\0') return false;
+    if (strchr(fileName, '/') || strchr(fileName, '\\')) return false;
+    const size_t len = strlen(fileName);
+    return len > 4 && strcmp(fileName + len - 4, ".log") == 0;
+}
+
+bool buildSafeLogPath(const char* value, char* out, size_t outSize) {
+    if (!value || !out || outSize == 0) return false;
+
+    static constexpr const char* PREFIX = "/logs/";
+    const size_t prefixLen = strlen(PREFIX);
+    const char* fileName = value;
+    if (strncmp(value, PREFIX, prefixLen) == 0) {
+        fileName = value + prefixLen;
+    } else if (value[0] == '/') {
+        return false;
+    }
+
+    if (!isSafeLogFileName(fileName)) return false;
+    const int written = snprintf(out, outSize, "%s/%s", LOG_DIR_PATH, fileName);
+    return written > 0 && static_cast<size_t>(written) < outSize;
+}
+
+bool findNextBackupSequence(uint64_t& nextSequence) {
+    uint64_t maxSequence = 0;
+    bool found = false;
+
+    File root = LittleFS.open(LOG_DIR_PATH);
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
+        return false;
+    }
+
+    File file = root.openNextFile();
+    while (file) {
+        uint64_t sequence = 0;
+        if (parseBackupSequence(file.name(), sequence) && (!found || sequence > maxSequence)) {
+            maxSequence = sequence;
+            found = true;
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+
+    if (found && maxSequence == UINT64_MAX) return false;
+    nextSequence = found ? maxSequence + 1U : 1U;
+    return true;
+}
+
+}  // namespace
 
 // no-PSRAM 设备在 RuntimeFeatureManager 读取 features.json 之前就会初始化
 // Logger。统一镜像虽然把 fileLogging 编译进固件，但启动阶段默认写 LittleFS
@@ -138,10 +226,27 @@ void LoggerSystem::enableSerialLogging(bool enable) {
 }
 
 void LoggerSystem::enableFileLogging(bool enable) {
-    fileLoggingEnabled = enable;
     // LittleFS 由 ConfigStorage 统一挂载，此处只检测是否已挂载
-    if (initialized && enable && LittleFS.totalBytes() == 0) {
+    const bool storageReady = !enable || !initialized || LittleFS.totalBytes() != 0;
+    const bool targetState = enable && storageReady;
+
+    if (!_logMutex) {
+        // 初始化前允许记录目标状态；初始化后没有互斥锁则不能安全启用文件日志。
+        fileLoggingEnabled = !initialized && targetState;
+    } else if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (fileLoggingEnabled != targetState) {
+            // 禁用/重新启用都从干净边界开始，避免旧缓冲稍后重新写回文件。
+            _ringBuffer.readPos = _ringBuffer.writePos;
+            _ringBuffer.lastFlushMs = millis();
+        }
+        fileLoggingEnabled = targetState;
+        xSemaphoreGive(_logMutex);
+    } else if (!targetState) {
+        // 即使锁正被占用，也先阻止新的写入；持锁路径完成后会看到禁用状态。
         fileLoggingEnabled = false;
+    }
+
+    if (enable && !storageReady) {
         error("LittleFS not mounted, file logging disabled", "Logger");
     }
 }
@@ -244,12 +349,15 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
 
         size_t len = strlen(entry);
         if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            logToBuffer(entry, len);
-            logToBuffer("\n", 1);
+            // 状态可能在等待锁期间被关闭，进入临界区后必须再次确认。
+            if (fileLoggingEnabled) {
+                logToBuffer(entry, len);
+                logToBuffer("\n", 1);
 
-            // 缓冲满 80% 时立即 flush
-            if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
-                flushBufferInternal();
+                // 缓冲满 80% 时立即 flush
+                if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+                    flushBufferInternal();
+                }
             }
             xSemaphoreGive(_logMutex);
         }
@@ -305,11 +413,13 @@ void LoggerSystem::checkLogFileSize() {
     // 2026-08-05：改用 8BIT 口径（INTERNAL 虚高 ~28KB，守卫失效）
     if (FastBee::MemoryBudget::dram8Free() < 10240) return;
     if (getLogFileSize() >= logFileSizeLimit) {
-        rotateLogFile();
+        rotateLogFileInternal(nullptr);
     }
 }
 
 void LoggerSystem::flushBufferInternal() {
+    if (!fileLoggingEnabled) return;
+
     size_t dataSize = bufferedDataSize();
     if (dataSize == 0) return;
 
@@ -323,6 +433,9 @@ void LoggerSystem::flushBufferInternal() {
     File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
     if (!logFile) {
         fileLoggingEnabled = false;
+        // 文件系统故障后丢弃待写数据，避免定时任务持续重试同一缓冲。
+        _ringBuffer.readPos = _ringBuffer.writePos;
+        _ringBuffer.lastFlushMs = millis();
         if (serialEnabled && outputStream) {
             outputStream->println("[Logger] ERROR: Failed to open log file during flush, file logging disabled");
         }
@@ -348,7 +461,7 @@ void LoggerSystem::flushBufferInternal() {
 }
 
 void LoggerSystem::flushBuffer() {
-    if (!_logMutex) return;
+    if (!fileLoggingEnabled || !_logMutex) return;
     if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         flushBufferInternal();
         xSemaphoreGive(_logMutex);
@@ -360,7 +473,7 @@ void LoggerSystem::flushBuffer() {
 void LoggerSystem::captureRecentLine(const char* entry) {
     if (!entry || entry[0] == '\0') return;
     // 短超时拿锁：拿不到则跳过，避免阻塞日志热路径
-    bool locked = _logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) == pdTRUE;
+    if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
     size_t len = strlen(entry);
     if (len >= RECENT_LOG_LINE_LEN) len = RECENT_LOG_LINE_LEN - 1;
     char* slot = _recentLogs[_recentLogWriteIdx];
@@ -368,12 +481,13 @@ void LoggerSystem::captureRecentLine(const char* entry) {
     slot[len] = '\0';
     _recentLogWriteIdx = static_cast<uint8_t>((_recentLogWriteIdx + 1) % RECENT_LOG_LINES);
     if (_recentLogCount < RECENT_LOG_LINES) _recentLogCount++;
-    if (locked) xSemaphoreGive(_logMutex);
+    xSemaphoreGive(_logMutex);
 }
 
 size_t LoggerSystem::snapshotRecentLogs(char* out, size_t outSize) const {
     if (!out || outSize == 0) return 0;
-    bool locked = _logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE;
+    out[0] = '\0';
+    if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) != pdTRUE) return 0;
     const uint8_t count = _recentLogCount;
     size_t written = 0;
     if (count > 0) {
@@ -390,7 +504,7 @@ size_t LoggerSystem::snapshotRecentLogs(char* out, size_t outSize) const {
         }
     }
     out[written] = '\0';
-    if (locked) xSemaphoreGive(_logMutex);
+    xSemaphoreGive(_logMutex);
     return written;
 }
 
@@ -399,92 +513,110 @@ size_t LoggerSystem::snapshotRecentLogs(char* out, size_t outSize) const {
 // 清理多余的日志备份文件，保留最新的MAX_LOG_FILES个
 void LoggerSystem::cleanupOldLogFiles() {
     constexpr size_t MAX_LOG_FILES = 20;
+    constexpr size_t MAX_DELETES_PER_PASS = 2;
 
-    // 内存保护：目录遍历和 vector 分配需要较多内存
-    if (FastBee::MemoryBudget::dramFree() < 12288) return;
+    // 内存保护：目录遍历和 VFS 操作需要连续内存
+    if (FastBee::MemoryBudget::dram8Free() < 12288 ||
+        FastBee::MemoryBudget::dram8Largest() < 4096) return;
 
-    // 收集所有 system_*.log 备份文件
-    std::vector<String> logFiles;
-    File root = LittleFS.open("/logs");
-    if (!root || !root.isDirectory()) {
-        if (root) root.close();
-        return;
-    }
+    // 文件名序号按数值比较；每轮只保留最旧路径，避免 vector/String 堆分配。
+    size_t deleted = 0;
+    while (deleted < MAX_DELETES_PER_PASS) {
+        size_t backupCount = 0;
+        bool foundOldest = false;
+        uint64_t oldestSequence = 0;
+        char oldestPath[64] = {0};
 
-    File file = root.openNextFile();
-    while (file) {
-        const char* name = file.name();
-        // 只收集 system_*.log 备份文件（不含当前日志文件）
-        if (strncmp(name, "system_", 7) == 0 && strstr(name, ".log") != nullptr) {
-            logFiles.push_back(String("/logs/") + name);
+        File root = LittleFS.open(LOG_DIR_PATH);
+        if (!root || !root.isDirectory()) {
+            if (root) root.close();
+            return;
         }
-        file = root.openNextFile();
-    }
-    root.close();
 
-    // 如果文件数量超过限制，删除最旧的
-    while (logFiles.size() > MAX_LOG_FILES) {
-        // 文件名包含时间戳，按字母序排序即可找到最旧的
-        String oldest = logFiles[0];
-        for (const auto& f : logFiles) {
-            if (f < oldest) {
-                oldest = f;
+        File file = root.openNextFile();
+        while (file) {
+            uint64_t sequence = 0;
+            const char* name = logBaseName(file.name());
+            if (parseBackupSequence(name, sequence)) {
+                ++backupCount;
+                if (!foundOldest || sequence < oldestSequence) {
+                    const int written = snprintf(oldestPath, sizeof(oldestPath), "%s/%s", LOG_DIR_PATH, name);
+                    if (written > 0 && static_cast<size_t>(written) < sizeof(oldestPath)) {
+                        oldestSequence = sequence;
+                        foundOldest = true;
+                    }
+                }
             }
+            file.close();
+            file = root.openNextFile();
         }
-        LittleFS.remove(oldest);
-        // 从列表中移除
-        for (auto it = logFiles.begin(); it != logFiles.end(); ++it) {
-            if (*it == oldest) {
-                logFiles.erase(it);
-                break;
-            }
-        }
+        root.close();
+
+        if (backupCount <= MAX_LOG_FILES || !foundOldest) return;
+        if (!LittleFS.remove(oldestPath)) return;
+        ++deleted;
     }
 }
 
+bool LoggerSystem::lockLogFiles(uint32_t timeoutMs) {
+    return _logMutex &&
+           xSemaphoreTake(_logMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void LoggerSystem::unlockLogFiles() {
+    if (_logMutex) xSemaphoreGive(_logMutex);
+}
+
 bool LoggerSystem::rotateLogFile(const char* newName) {
+    if (!lockLogFiles()) return false;
+    const bool result = rotateLogFileInternal(newName);
+    unlockLogFiles();
+    return result;
+}
+
+bool LoggerSystem::rotateLogFileInternal(const char* newName) {
     if (!fileLoggingEnabled || !LittleFS.exists(LOG_FILE_PATH)) {
         return false;
     }
 
-    // 临时禁用文件日志，确保 espLogCallback / writeRawLog 等并发路径
-    // 不会在 rename 期间持有文件句柄（修复 "Cannot rename; src is open" 错误）
-    fileLoggingEnabled = false;
-    delay(5);  // 等待正在进行的文件写入完成
-
-    bool renamed = false;
+    char targetPath[64] = {0};
+    const char* targetName = targetPath;
     if (newName && newName[0] != '\0') {
-        renamed = LittleFS.rename(LOG_FILE_PATH, newName);
+        if (!buildSafeLogPath(newName, targetPath, sizeof(targetPath))) return false;
     } else {
-        // 生成带时间戳的备份文件名
-        char backup[48];
-        snprintf(backup, sizeof(backup), "/logs/system_%lu.log", millis());
-        renamed = LittleFS.rename(LOG_FILE_PATH, backup);
+        // 从已有备份的最大序号递增，设备重启后仍保持唯一和顺序稳定。
+        uint64_t nextSequence = 0;
+        if (!findNextBackupSequence(nextSequence)) return false;
+        const int written = snprintf(targetPath, sizeof(targetPath),
+                                     "%s/system_%010llu.log", LOG_DIR_PATH,
+                                     static_cast<unsigned long long>(nextSequence));
+        if (written <= 0 || static_cast<size_t>(written) >= sizeof(targetPath)) return false;
     }
 
-    if (renamed) {
-        // rename 后原路径不再存在，用 FILE_WRITE 创建新的空日志文件
-        File newLog = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
-        if (newLog) {
-            newLog.close();
-        }
-        // 清理多余的旧日志文件，保留最新的10个
-        cleanupOldLogFiles();
-    } else {
-        // rename 失败（文件可能仍被系统内部引用），回退为截断清空
-        File logFile = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
-        if (logFile) {
-            logFile.close();
-        }
+    if (LittleFS.exists(targetName)) return false;
+
+    if (!LittleFS.rename(LOG_FILE_PATH, targetName)) {
+        // 禁止用截断伪装轮转成功：保留原文件并停止继续增长。
+        fileLoggingEnabled = false;
         if (serialEnabled && outputStream) {
-            outputStream->println("[Logger] WARN: rename failed, log file truncated instead");
+            outputStream->println("[Logger] ERROR: Log rotation failed, file logging disabled");
         }
-        renamed = true;  // 截断视为成功
+        return false;
     }
 
-    // 恢复文件日志
-    fileLoggingEnabled = true;
-    return renamed;
+    // rename 后原路径不再存在，用 FILE_WRITE 创建新的空日志文件。
+    File newLog = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
+    if (!newLog) {
+        fileLoggingEnabled = false;
+        if (serialEnabled && outputStream) {
+            outputStream->println("[Logger] ERROR: Failed to create new log file, file logging disabled");
+        }
+        return false;
+    }
+    newLog.close();
+
+    cleanupOldLogFiles();
+    return true;
 }
 
 size_t LoggerSystem::getLogFileSize() const {
@@ -502,14 +634,31 @@ size_t LoggerSystem::getLogFileSize() const {
     return sz;
 }
 
-bool LoggerSystem::deleteLogFile() {
-    // 清空日志文件内容，但保留文件本身
-    File logFile = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);  // FILE_WRITE 会清空文件
-    if (logFile) {
-        logFile.close();
-        return true;
+bool LoggerSystem::clearLogFile(const char* fileName) {
+    const char* name = (fileName && fileName[0] != '\0') ? fileName : LOG_FILE_NAME;
+    if (!isSafeLogFileName(name) || !lockLogFiles()) return false;
+
+    char path[64];
+    const int written = snprintf(path, sizeof(path), "%s/%s", LOG_DIR_PATH, name);
+    bool cleared = written > 0 && static_cast<size_t>(written) < sizeof(path);
+
+    if (cleared && strcmp(name, LOG_FILE_NAME) == 0) {
+        // 丢弃尚未落盘的数据，防止清空后旧日志被下一次 flush 写回。
+        _ringBuffer.readPos = _ringBuffer.writePos;
+        _ringBuffer.lastFlushMs = millis();
+        File logFile = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
+        cleared = static_cast<bool>(logFile);
+        if (logFile) logFile.close();
+    } else if (cleared) {
+        cleared = LittleFS.exists(path) && LittleFS.remove(path);
     }
-    return false;
+
+    unlockLogFiles();
+    return cleared;
+}
+
+bool LoggerSystem::deleteLogFile() {
+    return clearLogFile(LOG_FILE_NAME);
 }
 
 // ── 日志文件大小限制 ───────────────────────────────────────────────────────
@@ -569,24 +718,33 @@ bool LoggerSystem::isModuleFiltered(const char* module) const {
  */
 int LoggerSystem::espLogCallback(const char* format, va_list args) {
     LoggerSystem& logger = getInstance();
+    if (!format) return 0;
 
     // 格式化日志消息到临时缓冲区
     char buffer[512];
     int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    if (len < 0) {
+        buffer[0] = '\0';
+        return len;
+    }
+
+    size_t actualLen = static_cast<size_t>(len);
+    if (actualLen >= sizeof(buffer)) actualLen = sizeof(buffer) - 1;
 
     // 去除末尾换行符
-    if (len > 0 && buffer[len-1] == '\n') {
-        buffer[len-1] = '\0';
+    while (actualLen > 0 && (buffer[actualLen - 1] == '\n' || buffer[actualLen - 1] == '\r')) {
+        buffer[--actualLen] = '\0';
     }
 
     // 写入到日志文件（通过环形缓冲）
     if (logger.fileLoggingEnabled && logger.initialized && logger._logMutex) {
-        size_t bufLen = strlen(buffer);
         if (xSemaphoreTake(logger._logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            logger.logToBuffer(buffer, bufLen);
-            logger.logToBuffer("\n", 1);
-            if (logger.bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
-                logger.flushBufferInternal();
+            if (logger.fileLoggingEnabled) {
+                logger.logToBuffer(buffer, actualLen);
+                logger.logToBuffer("\n", 1);
+                if (logger.bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+                    logger.flushBufferInternal();
+                }
             }
             xSemaphoreGive(logger._logMutex);
         }
@@ -634,11 +792,13 @@ void LoggerSystem::writeRawLog(const char* message) {
 
     // 通过环形缓冲写入
     if (_logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        size_t len = strlen(message);
-        logToBuffer(message, len);
-        logToBuffer("\n", 1);
-        if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
-            flushBufferInternal();
+        if (fileLoggingEnabled) {
+            size_t len = strlen(message);
+            logToBuffer(message, len);
+            logToBuffer("\n", 1);
+            if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+                flushBufferInternal();
+            }
         }
         xSemaphoreGive(_logMutex);
     }

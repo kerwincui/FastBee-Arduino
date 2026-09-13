@@ -24,6 +24,17 @@
 
 namespace {
 constexpr const char* kConfigPath = "/config/features.json";
+
+struct FeatureBundle {
+    const char* primary;
+    const char* member;
+};
+
+// 保留旧键用于配置兼容，但每组只向用户展示 primary。
+constexpr FeatureBundle kFeatureBundles[] = {
+    {"ruleScript", "commandScript"},
+    {"logViewer", "fileLogging"},
+};
 }  // namespace
 
 namespace FastBee {
@@ -129,7 +140,7 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"modbus", "Modbus 主站", "protocol", 20, 1024,
                      FASTBEE_ENABLE_MODBUS != 0, false,
                      "UART/RS485", nullptr, 20, true});
-    registerFeature({"ruleScript", "规则引擎", "system", 8, 2048,
+    registerFeature({"ruleScript", "规则引擎（含命令脚本）", "system", 8, 2048,
                      FASTBEE_ENABLE_RULE_SCRIPT != 0, false,
                      nullptr, nullptr, 22, true});
 
@@ -161,7 +172,8 @@ void RuntimeFeatureManager::generateDefaults() {
     // modbusSlave 从站特性已移除：从站代码由 FASTBEE_MODBUS_SLAVE_ENABLE=0 关闭编译，
     // 该功能项无运行时门控作用（无 shouldEnable("modbusSlave") 调用）且从站数据源未接入，
     // 故不再注册，功能配置界面不显示从站项。
-    registerFeature({"commandScript", "命令脚本", "system", 3, 500,
+    // commandScript 是规则引擎的附属能力，不再作为独立用户功能展示。
+    registerFeature({"commandScript", nullptr, "system", 3, 500,
                      FASTBEE_ENABLE_COMMAND_SCRIPT != 0, false,
                      nullptr, "ruleScript", 20, true});
     // MQTTS 随 MQTT 栈编入（mbedtls 已链接，Flash 增量为 0）；RAM 为 TLS
@@ -181,12 +193,13 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature(FeatureMeta{"otaFs", nullptr, "system", 3, 500,
                      (true), false,
                      nullptr, "ota", 0, false});
-    registerFeature({"logViewer", "日志查看器", "system", 4, 500,
+    registerFeature({"logViewer", "设备日志", "system", 4, 500,
                      FASTBEE_ENABLE_LOG_VIEWER != 0, false,
                      nullptr, nullptr, 0});
-    registerFeature({"fileLogging", "文件日志记录", "system", 3, 500,
+    // fileLogging 与日志查看器共用一个用户开关，仍保留独立运行态供内存保护降级。
+    registerFeature({"fileLogging", nullptr, "system", 3, 500,
                      FASTBEE_ENABLE_FILE_LOGGING != 0, false,
-                     nullptr, nullptr, 0});
+                     nullptr, "logViewer", 0});
     registerFeature({"userAdmin", "用户管理", "system", 5, 500,
                      FASTBEE_ENABLE_USER_ADMIN != 0, false,
                      nullptr, nullptr, 0});
@@ -203,16 +216,49 @@ void RuntimeFeatureManager::generateDefaults() {
                      "UART2 EC801E-CN", nullptr, 30});
 }
 
-void RuntimeFeatureManager::applyDependencyRules() {
-    // 依赖检查: 父功能未启用则子功能自动禁用
+bool RuntimeFeatureManager::mergeLegacyFeatureBundles() {
+    bool changed = false;
+    for (const auto& bundle : kFeatureBundles) {
+        auto* primary = findFeature(bundle.primary);
+        auto* member = findFeature(bundle.member);
+        if (!primary || !member) continue;
+
+        const bool enabled = primary->userEnabled || member->userEnabled;
+        const bool explicitlyConfigured =
+            primary->explicitlyConfigured || member->explicitlyConfigured;
+        if (primary->userEnabled != enabled ||
+            primary->explicitlyConfigured != explicitlyConfigured) {
+            changed = true;
+        }
+        primary->userEnabled = enabled;
+        primary->explicitlyConfigured = explicitlyConfigured;
+    }
+    return changed;
+}
+
+bool RuntimeFeatureManager::applyDependencyRules() {
+    bool changed = false;
     for (size_t i = 0; i < count_; ++i) {
         if (features_[i].meta.dependsOn) {
             const auto* parent = findFeature(features_[i].meta.dependsOn);
-            if (parent && !parent->userEnabled) {
+            if (!parent) continue;
+
+            // 无显示名称表示内部附属能力（otaFs、commandScript、fileLogging），
+            // 其用户期望状态必须与页面上唯一可见的父功能保持一致。
+            if (!features_[i].meta.displayName) {
+                if (features_[i].userEnabled != parent->userEnabled ||
+                    features_[i].explicitlyConfigured != parent->explicitlyConfigured) {
+                    changed = true;
+                }
+                features_[i].userEnabled = parent->userEnabled;
+                features_[i].explicitlyConfigured = parent->explicitlyConfigured;
+            } else if (!parent->userEnabled && features_[i].userEnabled) {
                 features_[i].userEnabled = false;
+                changed = true;
             }
         }
     }
+    return changed;
 }
 
 void RuntimeFeatureManager::syncBudgetState() {
@@ -317,7 +363,8 @@ bool RuntimeFeatureManager::loadConfig() {
 
     loaded_ = true;
     syncBudgetState();
-    applyDependencyRules();
+    if (mergeLegacyFeatureBundles()) needsCanonicalRewrite = true;
+    if (applyDependencyRules()) needsCanonicalRewrite = true;
 
     if (needsCanonicalRewrite && !needsLegacyMDNSMigration) {
         LOGGER.info("[FeatureCfg] Normalizing legacy sparse config to full snapshot");
@@ -371,6 +418,28 @@ bool RuntimeFeatureManager::hasExplicitSetting(const char* key) const {
 
 bool RuntimeFeatureManager::setUserEnabled(const char* key, bool enabled, bool* changed) {
     if (changed) *changed = false;
+
+    // 兼容旧调用方：无论传入组合主键还是旧成员键，都修改整组功能。
+    for (const auto& bundle : kFeatureBundles) {
+        if (strcmp(key ? key : "", bundle.primary) != 0 &&
+            strcmp(key ? key : "", bundle.member) != 0) {
+            continue;
+        }
+        auto* primary = findFeature(bundle.primary);
+        auto* member = findFeature(bundle.member);
+        if (!primary || !member) return false;
+        if (enabled && (!primary->meta.compiled || !member->meta.compiled)) return false;
+
+        const bool didChange = primary->userEnabled != enabled || member->userEnabled != enabled;
+        primary->userEnabled = enabled;
+        primary->explicitlyConfigured = true;
+        member->userEnabled = enabled;
+        member->explicitlyConfigured = true;
+        applyDependencyRules();
+        if (changed) *changed = didChange;
+        return true;
+    }
+
     auto* feature = findFeature(key);
     if (!feature) return false;
     if (enabled && !feature->meta.compiled) return false;
@@ -440,7 +509,27 @@ bool RuntimeFeatureManager::updateFromJson(const JsonDocument& doc) {
             changed = true;
         }
     }
-    if (changed) applyDependencyRules();
+    if (changed) {
+        // 新页面提交主键；旧调用方可能只提交成员键。主键存在时以主键为准，
+        // 否则把成员值提升为整组状态，再同步所有附属能力。
+        for (const auto& bundle : kFeatureBundles) {
+            JsonObjectConst primaryEntry = features[bundle.primary];
+            JsonObjectConst memberEntry = features[bundle.member];
+            const bool hasPrimary = !primaryEntry.isNull() &&
+                                    primaryEntry["enabled"].is<bool>();
+            const bool hasMember = !memberEntry.isNull() &&
+                                   memberEntry["enabled"].is<bool>();
+            if (!hasPrimary && !hasMember) continue;
+
+            auto* primary = findFeature(bundle.primary);
+            if (!primary) continue;
+            primary->userEnabled = hasPrimary
+                ? primaryEntry["enabled"].as<bool>()
+                : memberEntry["enabled"].as<bool>();
+            primary->explicitlyConfigured = true;
+        }
+        applyDependencyRules();
+    }
     return changed;
 }
 
@@ -507,10 +596,40 @@ void RuntimeFeatureManager::estimateFromJson(const JsonDocument& doc, uint32_t& 
         const auto& st = features_[i];
         if (!st.meta.compiled) continue;
         bool enabled = st.userEnabled;
+        bool bundleOverride = false;
         if (!features.isNull()) {
             JsonObjectConst entry = features[st.meta.key];
             if (!entry.isNull() && entry["enabled"].is<bool>()) {
                 enabled = entry["enabled"].as<bool>();
+            }
+            // 组合主键与旧成员键必须得到同一个预估值。新请求以主键为准；
+            // 兼容请求只传成员键时，成员值提升为整个组合的状态。
+            for (const auto& bundle : kFeatureBundles) {
+                if (strcmp(st.meta.key, bundle.primary) != 0 &&
+                    strcmp(st.meta.key, bundle.member) != 0) {
+                    continue;
+                }
+                JsonObjectConst primaryEntry = features[bundle.primary];
+                JsonObjectConst memberEntry = features[bundle.member];
+                if (!primaryEntry.isNull() && primaryEntry["enabled"].is<bool>()) {
+                    enabled = primaryEntry["enabled"].as<bool>();
+                    bundleOverride = true;
+                } else if (!memberEntry.isNull() && memberEntry["enabled"].is<bool>()) {
+                    enabled = memberEntry["enabled"].as<bool>();
+                    bundleOverride = true;
+                }
+                break;
+            }
+            // 附属能力由父功能唯一控制。即使旧调用方提交了冲突值，预估也应
+            // 与保存后的规范化状态一致，避免页面切换组合功能时少算资源。
+            if (!bundleOverride && !st.meta.displayName && st.meta.dependsOn) {
+                JsonObjectConst parentEntry = features[st.meta.dependsOn];
+                if (!parentEntry.isNull() && parentEntry["enabled"].is<bool>()) {
+                    enabled = parentEntry["enabled"].as<bool>();
+                } else {
+                    const auto* parent = findFeature(st.meta.dependsOn);
+                    if (parent) enabled = parent->userEnabled;
+                }
             }
         }
         if (enabled) {
@@ -540,8 +659,25 @@ bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) c
     if (st.runtimeDisabled && st.runtimeReason[0] != '\0') {
         obj["runtimeDisableReason"] = st.runtimeReason;
     }
-    obj["flashKB"] = st.meta.flashKB;
-    obj["ramB"] = st.meta.ramB;
+    uint32_t displayFlashKB = st.meta.flashKB;
+    uint32_t displayRamB = st.meta.ramB;
+    if (!st.meta.displayName && st.meta.dependsOn) {
+        // 附属项仍保留在状态 API 中供诊断，但资源归入可见父项，避免前端
+        // 在组合功能行中重复统计。
+        displayFlashKB = 0;
+        displayRamB = 0;
+    } else if (st.meta.displayName) {
+        for (size_t i = 0; i < count_; ++i) {
+            const auto& child = features_[i];
+            if (!child.meta.displayName && child.meta.dependsOn &&
+                strcmp(child.meta.dependsOn, st.meta.key) == 0 && child.meta.compiled) {
+                displayFlashKB += child.meta.flashKB;
+                displayRamB += child.meta.ramB;
+            }
+        }
+    }
+    obj["flashKB"] = displayFlashKB;
+    obj["ramB"] = displayRamB;
     if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
     if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
     // 延迟初始化标记：true 表示该功能在网络就绪后才激活（错峰启动）

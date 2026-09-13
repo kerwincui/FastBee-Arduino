@@ -186,6 +186,8 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
     });
 
     const allowedStatuses = Array.isArray(check && check.allowedStatuses) ? check.allowedStatuses : [];
+    const hasAllowedMessages = check && Object.prototype.hasOwnProperty.call(check, 'allowedMessages');
+    const allowedMessages = Array.isArray(check && check.allowedMessages) ? check.allowedMessages : [];
     if (type === 'expect-unavailable' || type === 'expect-error' || type === 'capability-optional') {
         if (allowedStatuses.length === 0) {
             issues.push(`${label} (${name}): ${type} requires allowedStatuses`);
@@ -197,6 +199,19 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
         });
     } else if (allowedStatuses.length > 0) {
         issues.push(`${label} (${name}): allowedStatuses is only valid for expect-* or capability-optional checks`);
+    }
+    if (hasAllowedMessages) {
+        if (type !== 'capability-optional') {
+            issues.push(`${label} (${name}): allowedMessages is only valid for capability-optional checks`);
+        }
+        if (!Array.isArray(check.allowedMessages) || allowedMessages.length === 0) {
+            issues.push(`${label} (${name}): allowedMessages must be a non-empty array`);
+        }
+        allowedMessages.forEach((message) => {
+            if (typeof message !== 'string' || message.trim() === '') {
+                issues.push(`${label} (${name}): allowedMessages entries must be non-empty strings`);
+            }
+        });
     }
 
     if (check && Object.prototype.hasOwnProperty.call(check, 'jsonBody')) {

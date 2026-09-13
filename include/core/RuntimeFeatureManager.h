@@ -162,7 +162,10 @@ private:
     FeatureState* findFeature(const char* key);
     const FeatureState* findFeature(const char* key) const;
     void buildConfigDoc(JsonDocument& doc) const;  // 序列化当前状态
-    void applyDependencyRules();   // 依赖检查: 父功能禁用则子功能自动禁用
+    // 同步依赖项。无显示名称的附属能力自动跟随父功能，返回是否修改了状态。
+    bool applyDependencyRules();
+    // 旧配置曾允许组合成员独立开关；升级时按“任一开启”保留用户意图。
+    bool mergeLegacyFeatureBundles();
 };
 
 }  // namespace FastBee

@@ -5,8 +5,17 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/RuleScriptManager.h"
+#include "core/RuntimeFeatureManager.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
 #include <ArduinoJson.h>
+
+namespace {
+bool requireRuleEngine(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
+    if (FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript")) return true;
+    ctx->sendError(request, 503, "Rule engine disabled by runtime feature config");
+    return false;
+}
+}  // namespace
 
 RuleScriptRouteHandler::RuleScriptRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -36,6 +45,7 @@ void RuleScriptRouteHandler::setupRoutes(AsyncWebServer* server) {
 
 void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Script rule list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -113,6 +123,7 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     RuleScript rule;
@@ -146,6 +157,7 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -186,6 +198,7 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -210,6 +223,7 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -234,6 +248,7 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");

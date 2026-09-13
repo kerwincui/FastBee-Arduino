@@ -701,7 +701,8 @@ function Add-Check {
         [string]$Path,
         [object]$Body = $null,
         [switch]$JsonBody,
-        [int[]]$AllowedStatuses = @()
+        [int[]]$AllowedStatuses = @(),
+        [string[]]$AllowedMessages = @()
     )
 
     $response = $null
@@ -714,14 +715,31 @@ function Add-Check {
         $attempts = $attempt + 1
         $response = Invoke-FastBeeApi -Method $Method -Path $Path -Body $Body -JsonBody:$JsonBody
 
-        # allowedStatuses：部分端点在特性禁用时返回确定性的非 200 状态（如 ruleScript 未启用时
-        # /api/rule-script 返回 503 "Service busy"），属固件设计行为，命中允许状态直接判通过
+        # Optional capabilities may return a deterministic non-2xx response when
+        # disabled. When allowedMessages is present, both status and the exact
+        # firmware message must match so a generic busy/memory 503 cannot pass.
         $curStatus = $null
         if ($response -and $response.PSObject.Properties.Name -contains "status") { $curStatus = $response.status }
         if ($AllowedStatuses.Count -gt 0 -and $null -ne $curStatus -and $curStatus -gt 0 -and @($AllowedStatuses) -contains [int]$curStatus) {
-            $ok = $true
-            $message = "allowed status $curStatus (feature disabled by design)"
-            break
+            $curMessage = if ($response.PSObject.Properties.Name -contains "message") {
+                [string]$response.message
+            }
+            elseif ($response.PSObject.Properties.Name -contains "error") {
+                [string]$response.error
+            }
+            else {
+                ""
+            }
+            if ($AllowedMessages.Count -eq 0 -or @($AllowedMessages) -ccontains $curMessage) {
+                $ok = $true
+                $message = if ($AllowedMessages.Count -gt 0) {
+                    "allowed status $curStatus with expected feature-disabled response"
+                }
+                else {
+                    "allowed status $curStatus (feature disabled by design)"
+                }
+                break
+            }
         }
 
         $ok = $true
@@ -1132,7 +1150,8 @@ foreach ($check in Get-MatrixChecks) {
         -Path ([string]$check.path) `
         -Body (Get-CheckValue -Check $check -Name "body") `
         -JsonBody:([bool](Get-CheckValue -Check $check -Name "jsonBody" -DefaultValue $false)) `
-        -AllowedStatuses @(Get-CheckValue -Check $check -Name "allowedStatuses" -DefaultValue @())
+        -AllowedStatuses @(Get-CheckValue -Check $check -Name "allowedStatuses" -DefaultValue @()) `
+        -AllowedMessages @(Get-CheckValue -Check $check -Name "allowedMessages" -DefaultValue @())
 }
 
 # 压力测试后堆内存检查（仅 full profile，验证 PSRAM 阈值生效后并发 HTTP 不会耗尽内部 DRAM）

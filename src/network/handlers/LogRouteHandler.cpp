@@ -1,5 +1,6 @@
 #include "network/handlers/LogRouteHandler.h"
 #include "core/MemoryBudget.h"
+#include "core/RuntimeFeatureManager.h"
 #include "network/handlers/HandlerUtils.h"
 #include "network/WebHandlerContext.h"
 #include "core/FeatureFlags.h"
@@ -18,6 +19,37 @@ bool hasLogPermission(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     return ctx && ctx->requiresAuth(request);
 }
 
+bool requireDeviceLogs(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
+    auto& features = FastBee::RuntimeFeatureManager::instance();
+    if (features.shouldEnable("logViewer") || features.shouldEnable("fileLogging")) {
+        return true;
+    }
+    ctx->sendError(request, 503, "Device logs disabled by runtime feature config");
+    return false;
+}
+
+class ScopedLogFileAccess {
+public:
+    explicit ScopedLogFileAccess(uint32_t timeoutMs = 100)
+        : _locked(LOGGER.lockLogFiles(timeoutMs)) {}
+
+    ~ScopedLogFileAccess() {
+        if (_locked) LOGGER.unlockLogFiles();
+    }
+
+    bool locked() const { return _locked; }
+
+private:
+    bool _locked;
+};
+
+bool requireLogFileAccess(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                          ScopedLogFileAccess& access) {
+    if (access.locked()) return true;
+    ctx->sendError(request, 503, "Log file is busy, retry shortly");
+    return false;
+}
+
 void sendLowMemoryLogPlaceholder(AsyncWebServerRequest* request) {
     request->send(200, "application/json",
         F("{\"success\":true,\"data\":{\"content\":\"[Low memory - log temporarily unavailable]\","
@@ -26,7 +58,8 @@ void sendLowMemoryLogPlaceholder(AsyncWebServerRequest* request) {
 
 String sanitizeLogFileName(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     String name = ctx->getParamValue(request, "file", DEFAULT_LOG_FILE);
-    if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || !name.endsWith(".log")) {
+    if (name.length() <= 4 || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 ||
+        !name.endsWith(".log")) {
         return String();
     }
     return name;
@@ -62,6 +95,7 @@ void LogRouteHandler::setupRoutes(AsyncWebServer* server) {
 
 void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireDeviceLogs(ctx, request)) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
@@ -70,15 +104,20 @@ void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
     doc["data"]["level"] = static_cast<int>(LOGGER.getLogLevel());
     doc["data"]["maxSize"] = LOGGER.getLogFileSizeLimit();
 
-    String path = String(LOG_DIR) + "/" + DEFAULT_LOG_FILE;
-    if (LittleFS.exists(path)) {
-        File file = LittleFS.open(path, "r");
-        doc["data"]["exists"] = (bool)file;
-        doc["data"]["size"] = file ? file.size() : 0;
-        if (file) file.close();
-    } else {
-        doc["data"]["exists"] = false;
-        doc["data"]["size"] = 0;
+    {
+        ScopedLogFileAccess access;
+        if (!requireLogFileAccess(ctx, request, access)) return;
+
+        String path = String(LOG_DIR) + "/" + DEFAULT_LOG_FILE;
+        if (LittleFS.exists(path)) {
+            File file = LittleFS.open(path, "r");
+            doc["data"]["exists"] = (bool)file;
+            doc["data"]["size"] = file ? file.size() : 0;
+            if (file) file.close();
+        } else {
+            doc["data"]["exists"] = false;
+            doc["data"]["size"] = 0;
+        }
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -86,36 +125,40 @@ void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
 
 void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireDeviceLogs(ctx, request)) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     JsonArray files = doc["data"].to<JsonArray>();
 
-    File root = LittleFS.open(LOG_DIR);
-    if (!root || !root.isDirectory()) {
-        if (root) root.close();
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
-    }
+    {
+        ScopedLogFileAccess access;
+        if (!requireLogFileAccess(ctx, request, access)) return;
 
-    File file = root.openNextFile();
-    while (file) {
-        const char* name = file.name();
-        if (name && strstr(name, ".log")) {
-            JsonObject item = files.add<JsonObject>();
-            item["name"] = name;
-            item["size"] = file.size();
-            item["current"] = strcmp(name, DEFAULT_LOG_FILE) == 0;
+        File root = LittleFS.open(LOG_DIR);
+        if (root && root.isDirectory()) {
+            File file = root.openNextFile();
+            while (file) {
+                const char* name = file.name();
+                if (name && strstr(name, ".log")) {
+                    JsonObject item = files.add<JsonObject>();
+                    item["name"] = name;
+                    item["size"] = file.size();
+                    item["current"] = strcmp(name, DEFAULT_LOG_FILE) == 0;
+                }
+                file.close();
+                file = root.openNextFile();
+            }
         }
-        file = root.openNextFile();
+        if (root) root.close();
     }
-    root.close();
 
     HandlerUtils::sendJsonStream(request, doc);
 }
 
 void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireDeviceLogs(ctx, request)) return;
 
     const bool psramBacked = HandlerUtils::psramCanServeJson(8192);
     auto* fw = FastBeeFramework::getInstance();
@@ -135,21 +178,6 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
         return;
     }
 
-    String path = String(LOG_DIR) + "/" + name;
-    if (!LittleFS.exists(path)) {
-        request->send(200, "application/json",
-            F("{\"success\":true,\"data\":{\"content\":\"Log file does not exist\",\"size\":0,\"lines\":0,\"truncated\":false}}"));
-        return;
-    }
-
-    File file = LittleFS.open(path, "r");
-    if (!file) {
-        ctx->sendError(request, 500, "Failed to open log file");
-        return;
-    }
-
-    const size_t fileSize = file.size();
-    
     // WP-74: Adaptive read size based on available memory
     size_t maxSize = FastBee::MemoryBudget::dramFree() < 61440 ? 1536 : 4096;
     if (psramBacked && ESP.getMaxAllocHeap() < 4096) {
@@ -165,31 +193,49 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
         maxSize = min(maxSize, static_cast<size_t>(requestedLimit));  // Respect smaller of enforced/requested limit
     }
     
-    // Read only last N bytes from the log file (tail mode by default)
-    const size_t start = fileSize > maxSize ? fileSize - maxSize : 0;
-    file.seek(start);
-
+    size_t fileSize = 0;
+    size_t start = 0;
     String content;
     content.reserve(maxSize + 1);
     bool readBudgetExceeded = false;
-    unsigned long readStartMs = millis();
-    size_t remaining = maxSize;
-    char buffer[129];
-    while (remaining > 0 && file.available()) {
-        size_t chunk = remaining < (sizeof(buffer) - 1) ? remaining : (sizeof(buffer) - 1);
-        size_t bytesRead = file.read(reinterpret_cast<uint8_t*>(buffer), chunk);
-        if (bytesRead == 0) {
-            break;
+    {
+        ScopedLogFileAccess access;
+        if (!requireLogFileAccess(ctx, request, access)) return;
+
+        String path = String(LOG_DIR) + "/" + name;
+        if (!LittleFS.exists(path)) {
+            request->send(200, "application/json",
+                F("{\"success\":true,\"data\":{\"content\":\"Log file does not exist\",\"size\":0,\"lines\":0,\"truncated\":false}}"));
+            return;
         }
-        buffer[bytesRead] = '\0';
-        content.concat(buffer, bytesRead);
-        remaining -= bytesRead;
-        if (millis() - readStartMs > 120) {
-            readBudgetExceeded = true;
-            break;
+
+        File file = LittleFS.open(path, "r");
+        if (!file) {
+            ctx->sendError(request, 500, "Failed to open log file");
+            return;
         }
+
+        fileSize = file.size();
+        start = fileSize > maxSize ? fileSize - maxSize : 0;
+        file.seek(start);
+
+        unsigned long readStartMs = millis();
+        size_t remaining = maxSize;
+        char buffer[129];
+        while (remaining > 0 && file.available()) {
+            size_t chunk = remaining < (sizeof(buffer) - 1) ? remaining : (sizeof(buffer) - 1);
+            size_t bytesRead = file.read(reinterpret_cast<uint8_t*>(buffer), chunk);
+            if (bytesRead == 0) break;
+            buffer[bytesRead] = '\0';
+            content.concat(buffer, bytesRead);
+            remaining -= bytesRead;
+            if (millis() - readStartMs > 120) {
+                readBudgetExceeded = true;
+                break;
+            }
+        }
+        file.close();
     }
-    file.close();
 
     int maxLines = ctx->getParamInt(request, "tail", ctx->getParamInt(request, "lines", 80));
     if (maxLines <= 0) maxLines = 80;  // Default: show last 80 lines
@@ -217,11 +263,14 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
 
 void LogRouteHandler::handleClear(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireDeviceLogs(ctx, request)) return;
 
     String name = sanitizeLogFileName(ctx, request);
-    if (name.isEmpty()) name = DEFAULT_LOG_FILE;
-    String path = String(LOG_DIR) + "/" + name;
-    if (LittleFS.exists(path) && !LittleFS.remove(path)) {
+    if (name.isEmpty()) {
+        ctx->sendBadRequest(request, "Invalid log file");
+        return;
+    }
+    if (!LOGGER.clearLogFile(name.c_str())) {
         ctx->sendError(request, 500, "Failed to clear log file");
         return;
     }

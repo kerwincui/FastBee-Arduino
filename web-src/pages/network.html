@@ -491,29 +491,12 @@
                         <div class="config-form-grid">
                             <div class="config-form-column">
                                 <div class="fb-form-group">
-                                    <label for="enable-mdns">mDNS</label>
-                                    <select id="enable-mdns" class="">
-                                        <option value="1" selected>启用</option>
-                                        <option value="0">禁用</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="config-form-column">
-                                <div class="fb-form-group">
                                     <label for="custom-domain">自定义域名</label>
                                     <input type="text" id="custom-domain" class=""
                                         placeholder="fastbee">
                                     <small class="fb-text-muted">访问地址：<span id="mdns-url-preview">fastbee.local</span>（保存后约 15 秒生效）</small>
                                 </div>
                             </div>
-                        </div>
-
-                        <!-- mDNS 禁用提示 -->
-                        <div class="message message-warning fb-hidden fb-mt-2" id="mdns-disabled-notice">
-                            <strong>提示：</strong>
-                            <span>mDNS 已禁用，您将无法通过自定义域名访问系统。请通过设备 IP 地址访问：</span>
-                            <code id="mdns-disabled-ip-display"></code>
                         </div>
 
                         <!-- 4G 模式域名配置不可用提示 -->

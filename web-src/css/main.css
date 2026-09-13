@@ -182,18 +182,20 @@ a:hover { text-decoration: underline; }
 /* ============================================
    5. Button System with Glassmorphism & Animations
    ============================================ */
-/* File Input Wrapper */
-.file-input-wrapper { display: flex; align-items: center; gap: var(--space-3); }
-.file-name-display { color: var(--text-secondary); font-size: 13px; }
+/* Shared file picker */
+.file-input-wrapper { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; min-width: 0; }
+.file-input-wrapper > .fb-btn { flex: 0 0 auto; min-width: 92px; }
+.file-input-wrapper > label.fb-btn { margin: 0; cursor: pointer; }
+.file-name-display { flex: 1 1 160px; min-width: 0; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 
 /* ============================================
    FastBee 统一组件系统 (fb- prefix)
    ============================================ */
 
 /* 按钮基础 */
-.fb-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); font-size: 13px; font-weight: 500; border: 1px solid var(--slate-300); border-radius: var(--rounded-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 0.2s; white-space: nowrap; text-decoration: none; }
-.fb-btn:hover { border-color: var(--primary); color: var(--primary); }
-.fb-btn:active { transform: scale(0.97); }
+.fb-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 31px; padding: 0 var(--space-4); font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); white-space: nowrap; text-decoration: none; }
+.fb-btn:hover { border-color: var(--primary); color: var(--primary); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.fb-btn:active { transform: translateY(0); }
 .fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 确保所有按钮都有可见边框 */
 .fb-btn.dev-mode-locked,
@@ -230,7 +232,7 @@ button.dev-mode-locked,
 [data-theme="dark"] .fb-btn-link { color: var(--text-muted); border-color: var(--border); }
 [data-theme="dark"] .fb-btn-link:hover { color: #4096ff; background: rgba(22, 119, 255, 0.1); border-color: #4096ff; }
 /* 按钮尺寸 */
-.fb-btn-sm { padding: var(--space-1) var(--space-2); font-size: 12px; }
+.fb-btn-sm { min-height: 32px; padding: 0 var(--space-2); font-size: 12px; }
 .fb-btn-xs { padding: 2px var(--space-2); font-size: 11px; }
 .fb-btn-compact { width: auto !important; min-width: 0; flex: 0 0 auto; padding-left: 10px; padding-right: 10px; }
 .fb-btn-sm.fb-btn-compact { padding-left: 8px; padding-right: 8px; }
@@ -845,10 +847,6 @@ body { background-image: radial-gradient(1200px 500px at -10% -20%, color-mix(in
 .sidebar-menu .menu-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-text); box-shadow: inset 2px 0 0 var(--sidebar-active-border); }
 .header { background: color-mix(in srgb, var(--bg-card) 92%, transparent); border-bottom: 1px solid var(--border-secondary); backdrop-filter: blur(6px); }
 .fb-btn, button, select, input, textarea { border-radius: var(--rounded-md); }
-.fb-btn { border: 1px solid transparent; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); min-height: 31px; padding-top: 0; padding-bottom: 0; }
-.fb-btn-sm { min-height: 32px; }
-.fb-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.fb-btn:active { transform: translateY(0); }
 /* Section 24 按钮已合并到 Section 5 */
 input, textarea { background: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 28px; line-height: 1.5; }
 select { background-color: var(--bg-input) !important; background-image: var(--select-arrow) !important; background-repeat: no-repeat !important; background-position: right 10px center !important; background-size: 10px !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 40px; line-height: 1.5; padding-right: 28px !important; cursor: pointer; }
@@ -1138,9 +1136,6 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 #dev-advanced .config-transfer-scope { display: grid; grid-template-columns: 72px minmax(180px, 1fr); align-items: center; gap: 10px; }
 #dev-advanced .config-transfer-scope label { margin: 0; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 #dev-advanced .config-transfer-scope select { min-height: 38px; }
-#dev-advanced .config-transfer-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; align-items: stretch; overflow: visible; width: 100%; }
-#dev-advanced .config-transfer-actions .fb-btn,
-#dev-advanced .config-transfer-actions label.fb-btn { width: 100% !important; min-width: 0 !important; justify-content: center; white-space: nowrap; }
 @media (max-width: 900px) {
     #dev-advanced.active { grid-template-columns: 1fr; }
     #dev-advanced .factory-reset-actions { grid-template-columns: 1fr; align-items: stretch; }
