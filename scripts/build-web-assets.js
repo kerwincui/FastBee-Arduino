@@ -6,6 +6,7 @@ const zlib = require('zlib');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
 const { createWebAssetReport, printWebAssetReport } = require('./web-asset-report');
+const { runWebQualityGate } = require('./web-quality-gate');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
@@ -112,7 +113,6 @@ function deleteCompressedOriginals() {
 function runBuild() {
     console.log('Web publish build');
     console.log('=================');
-    process.env.FASTBEE_ENABLE_DEVICE_CONTROL = '1';
     const buildResult = buildWebModules();
 
     console.log('\nGenerating service-worker manifest...');
@@ -149,6 +149,7 @@ function runBuild() {
 
     const report = createWebAssetReport();
     printWebAssetReport(report);
+    runWebQualityGate({ report, context: buildResult.context });
 
     return { buildResult, manifest, staleGzipStats, gzipStats, cleanupStats, report };
 }

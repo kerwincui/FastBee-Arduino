@@ -5,14 +5,40 @@
 (function() {
     AppState.registerModule('users', {
 
+        _usersEventsBound: false,
+
+        _updateUsersSummary(users, errorText) {
+            const summary = document.getElementById('users-list-summary');
+            if (!summary) return;
+            summary.classList.toggle('is-warning', !!errorText);
+            if (errorText) {
+                summary.textContent = errorText;
+                return;
+            }
+            const list = Array.isArray(users) ? users : [];
+            const available = list.filter(user => user && user.enabled !== false && !user.isLocked).length;
+            summary.textContent = '共 ' + list.length + ' 个用户 · ' + available + ' 个可用';
+        },
+
         // ============ 事件绑定 ============
         setupUsersEvents() {
+            if (this._usersEventsBound) return;
             // 添加用户按钮
             const addUserBtn = document.getElementById('add-user-btn');
             if (addUserBtn) {
                 addUserBtn.addEventListener('click', () => this.showAddUserModal());
             }
+            const usersRefreshBtn = document.getElementById('users-refresh-btn');
+            if (usersRefreshBtn) usersRefreshBtn.addEventListener('click', () => this._refreshUsersList());
 
+            if (typeof this._registerModalBinder === 'function') {
+                this._registerModalBinder('users', () => this._bindUserModalEvents());
+            }
+            this._usersEventsBound = true;
+        },
+
+        _bindUserModalEvents() {
+            if (this._userModalBound || !document.getElementById('add-user-modal')) return;
             // 关闭用户添加/编辑 modal 时重置状态
             const closeUserModal = () => {
                 const modal = document.getElementById('add-user-modal');
@@ -33,9 +59,7 @@
             // 确认添加用户
             const confirmAdd = document.getElementById('confirm-add-user-btn');
             if (confirmAdd) confirmAdd.addEventListener('click', () => this.addUser());
-            // 刷新按钮
-            const usersRefreshBtn = document.getElementById('users-refresh-btn');
-            if (usersRefreshBtn) usersRefreshBtn.addEventListener('click', () => this._refreshUsersList());
+            this._userModalBound = true;
         },
 
         // ============ 用户列表（从 API 加载）============
@@ -55,19 +79,25 @@
 
         loadUsers(options) {
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            getter('/api/users', { page: 1, limit: 100 })
+            const summary = document.getElementById('users-list-summary');
+            if (summary && !document.querySelector('#users-table-body tr')) summary.textContent = '加载中...';
+            return getter('/api/users', { page: 1, limit: 100 })
                 .then(res => {
-                    if (!res || !res.success) return;
+                    if (!res || !res.success) throw new Error(res && (res.error || res.message) || 'load failed');
                     const users = (res.data && res.data.users) ? res.data.users : [];
                     this._renderUsers(users);
                 })
-                .catch(() => {});
+                .catch((err) => {
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    this._updateUsersSummary(null, '用户列表加载失败');
+                });
         },
 
         _renderUsers(users) {
             const tbody = document.getElementById('users-table-body');
             if (!tbody) return;
 
+            this._updateUsersSummary(users);
             tbody.innerHTML = '';
             if (!users || users.length === 0) {
                 this.renderEmptyTableRow(tbody, 5, '暂无用户数据');
@@ -160,8 +190,8 @@
         },
 
         // ============ 添加用户 ============
-        showAddUserModal() {
-            const modal = document.getElementById('add-user-modal');
+        async showAddUserModal() {
+            const modal = await this._ensureModalForAction('add-user-modal');
             if (modal) {
                 // 先重置为添加模式，再显示弹窗
                 modal.dataset.editMode = 'add';
@@ -254,10 +284,10 @@
         },
 
         // ============ 编辑用户（复用添加用户弹窗）============
-        showEditUserModal(user) {
+        async showEditUserModal(user) {
 
             // 复用添加用户的 modal
-            const modal = document.getElementById('add-user-modal');
+            const modal = await this._ensureModalForAction('add-user-modal');
             if (!modal) {
                 console.error('[showEditUserModal] Modal not found!');
                 Notification.info(`编辑用户: ${user.username}`, '编辑用户');

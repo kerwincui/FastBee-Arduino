@@ -10,7 +10,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
 
   test('NET-001: 进入网络设置页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#network-page')).toBeVisible();
-    await expect(authPage.locator('#network-title')).toContainText(/网络|Network/);
+    await expect(authPage.locator('#network-title')).toHaveCount(0);
   });
 
   test('NET-002: 网络连接状态展示', async ({ authPage }) => {
@@ -26,6 +26,41 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     await refreshBtn.click();
     await authPage.waitForTimeout(2000);
     await expect(authPage.locator('#network-page')).toBeVisible();
+  });
+
+  test('NET-003A: 状态请求返回前保持中性检测态 @quick', async ({ authPage }) => {
+    let releaseStatus!: () => void;
+    const statusGate = new Promise<void>(resolve => { releaseStatus = resolve; });
+    await authPage.route('**/api/network/status', async route => {
+      await statusGate;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            status: 'connected',
+            deviceNetworkType: 0,
+            mode: 'STA',
+            ssid: 'test-network',
+            ipAddress: '192.168.1.20',
+            rssi: -55,
+            signalStrength: 90,
+            connectedTime: 30,
+          },
+        }),
+      });
+    });
+
+    await authPage.locator('#refresh-status-btn').click();
+    await expect(authPage.locator('#wifi-status-badge')).toHaveText('检测中');
+    await expect(authPage.locator('#wifi-status-badge')).toHaveClass(/status-detecting/);
+    expect(await authPage.locator('#wifi-status-panel .fb-skeleton-text').count()).toBeGreaterThan(0);
+
+    releaseStatus();
+    await expect(authPage.locator('#wifi-status-badge')).toHaveText('已连接');
+    await expect(authPage.locator('#wifi-status-panel .fb-skeleton-text')).toHaveCount(0);
+    await authPage.unroute('**/api/network/status');
   });
 
   test('NET-004: 联网方式默认WiFi', async ({ authPage }) => {

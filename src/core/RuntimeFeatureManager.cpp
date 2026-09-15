@@ -148,9 +148,6 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"lcdGb2312", "GB2312 中文字库", "peripheral", 248, 0,
                      FASTBEE_ENABLE_LCD_GB2312 != 0, false,
                      nullptr, "lcd", 0});
-    registerFeature({"ledScreen", "RMT LED 大屏", "peripheral", 10, 6144,
-                     FASTBEE_ENABLE_LED_SCREEN != 0, false,
-                     "ESP32 RMT", nullptr, 15, true});  // 设备大屏默认禁用
     registerFeature({"irRemote", "红外遥控", "peripheral", 8, 300,
                      FASTBEE_ENABLE_IR_REMOTE != 0, false,
                      "IR receiver + GPIO", nullptr, 25, true});
@@ -183,9 +180,9 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"mqtts", "MQTTS (加密传输)", "protocol", 0, 43008,
                      FASTBEE_ENABLE_MQTT != 0, false,
                      "TLS handshake ~42KB DRAM (~52KB without PSRAM)", nullptr, 45});
-    registerFeature({"deviceControl", "设备控制面板", "system", 27, 4096,
+    registerFeature({"deviceControl", "设备控制面板", "system", 27, 0,
                      FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
-                     "PSRAM required (Web JS ~106KB browser-side)", nullptr, 110});  // 设备大屏控制面板默认禁用
+                     "No resident device RAM; browser assets streamed; API heap is transient/on-demand", nullptr, 0});
     registerFeature({"ota", "OTA 固件升级", "system", 10, 1024,
                      FASTBEE_ENABLE_OTA != 0, false,
                      "Dual partition + LittleFS support", nullptr, 20});
@@ -200,7 +197,7 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"fileLogging", nullptr, "system", 3, 500,
                      FASTBEE_ENABLE_FILE_LOGGING != 0, false,
                      nullptr, "logViewer", 0});
-    registerFeature({"userAdmin", "用户管理", "system", 5, 500,
+    registerFeature({"userAdmin", "多用户管理", "system", 5, 500,
                      FASTBEE_ENABLE_USER_ADMIN != 0, false,
                      nullptr, nullptr, 0});
 
@@ -319,10 +316,17 @@ bool RuntimeFeatureManager::loadConfig() {
         const bool hasStoredConfig = LittleFS.exists(kConfigPath) ||
                                      LittleFS.exists(String(kConfigPath) + ".bak");
         if (hasStoredConfig) {
-            LOGGER.warning("[FeatureCfg] Primary and backup JSON invalid, using safe defaults");
+            LOGGER.warning("[FeatureCfg] Primary and backup JSON invalid, repairing safe defaults");
             loaded_ = true;
             syncBudgetState();
             applyDependencyRules();
+            // The status API must never diverge from the persisted feature
+            // snapshot. Both stored generations are already unusable, so
+            // rebuild the complete factory document and discard corrupt
+            // history instead of leaving an empty/broken file on LittleFS.
+            if (!resetToDefaults()) {
+                LOGGER.error("[FeatureCfg] Safe defaults active in memory but config repair failed");
+            }
             return false;
         }
         // 首次运行: 生成默认配置并写入文件

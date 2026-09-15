@@ -1,7 +1,7 @@
 {
   "version": 2,
   "mqtt": {
-    "enabled": false,
+    "enabled": true,
     "scheme": "mqtt",
     "server": "iot.fastbee.cn",
     "port": 1883,

@@ -2,6 +2,10 @@
 #define PERIPHERAL_ROUTE_HANDLER_H
 
 #include <ESPAsyncWebServer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+#include "core/PeripheralResourcePlanner.h"
 
 class WebHandlerContext;
 
@@ -13,12 +17,18 @@ class WebHandlerContext;
 class PeripheralRouteHandler {
 public:
     explicit PeripheralRouteHandler(WebHandlerContext* ctx);
+    ~PeripheralRouteHandler();
 
     void setupRoutes(AsyncWebServer* server);
 
 private:
     WebHandlerContext* ctx;
+    FastBee::PreflightResult preflightResult;
+    SemaphoreHandle_t preflightMutex = nullptr;
 
+    void handleGetBoardProfiles(AsyncWebServerRequest* request);
+    void handleGetPeripheralResources(AsyncWebServerRequest* request);
+    void handlePreflightPeripheral(AsyncWebServerRequest* request);
     void handleGetPeripherals(AsyncWebServerRequest* request);
     void handleGetPeripheralTypes(AsyncWebServerRequest* request);
     void handleGetPeripheral(AsyncWebServerRequest* request);

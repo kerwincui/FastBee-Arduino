@@ -803,9 +803,9 @@
         /**
          * 扫描 WiFi 网络
          */
-        scanWifiNetworks() {
+        async scanWifiNetworks() {
             const scanBtn = document.getElementById('wifi-scan-btn');
-            const modal = document.getElementById('wifi-modal');
+            const modal = await this._ensureModalForAction('wifi-modal');
             const modalBody = document.getElementById('wifi-modal-body');
 
             if (!modal || !modalBody) return;
@@ -939,6 +939,7 @@
                     // DNS解析失败（如4G模式关闭WiFi后mDNS不可用）无需重试
                     if (this._isDnsError(err)) {
                         console.warn('[Network] DNS resolution failed, device may be unreachable via current hostname');
+                        this._showNetworkStatusFailure('无法读取设备网络状态，请检查当前访问地址');
                         return;
                     }
                     // 其他网络错误时重试（可能是内存压力导致503）
@@ -969,7 +970,10 @@
                 : (typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
             getter('/api/system/status')
                 .then(res => {
-                    if (!res || !res.success || !res.data) return;
+                    if (!res || !res.success || !res.data) {
+                        this._showNetworkStatusFailure('网络状态暂时不可用，请稍后刷新');
+                        return;
+                    }
                     const d = res.data || {};
                     this._updateNetworkStatus({
                         status: d.networkConnected ? 'connected' : 'disconnected',
@@ -984,7 +988,43 @@
                 })
                 .catch(err => {
                     console.warn('Network status fallback failed:', err);
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    this._showNetworkStatusFailure('网络状态请求失败，请检查设备连接');
                 });
+        },
+
+        _setNetworkStatusLoading() {
+            const panel = document.querySelector('#network-status-card .status-panel:not(.fb-hidden)')
+                || document.getElementById('wifi-status-panel');
+            if (!panel) return;
+            const badge = panel.querySelector('.status-badge');
+            if (badge) {
+                badge.className = 'status-badge status-detecting';
+                badge.textContent = '检测中';
+                badge.removeAttribute('title');
+            }
+            panel.querySelectorAll('.status-value').forEach(function(el) {
+                el.textContent = '';
+                el.classList.add('fb-skeleton-text');
+                el.setAttribute('aria-label', '检测中');
+            });
+        },
+
+        _showNetworkStatusFailure(reason) {
+            const panel = document.querySelector('#network-status-card .status-panel:not(.fb-hidden)')
+                || document.getElementById('wifi-status-panel');
+            if (!panel) return;
+            const badge = panel.querySelector('.status-badge');
+            if (badge) {
+                badge.className = 'status-badge status-disconnected';
+                badge.textContent = '状态获取失败';
+                badge.title = reason || '';
+            }
+            panel.querySelectorAll('.status-value').forEach(function(el) {
+                el.classList.remove('fb-skeleton-text');
+                el.removeAttribute('aria-label');
+                if (!el.textContent) el.textContent = '--';
+            });
         },
 
         /**
@@ -1017,6 +1057,16 @@
                     this._updateCellularStatus(data);
                     document.getElementById('cellular-status-panel')?.classList.remove('fb-hidden');
                     break;
+            }
+
+            const activePanel = document.querySelector('#network-status-card .status-panel:not(.fb-hidden)');
+            if (activePanel) {
+                activePanel.querySelectorAll('.fb-skeleton-text').forEach(function(el) {
+                    el.classList.remove('fb-skeleton-text');
+                    el.removeAttribute('aria-label');
+                });
+                const badge = activePanel.querySelector('.status-badge');
+                if (badge) badge.removeAttribute('title');
             }
         },
 
@@ -1176,6 +1226,7 @@
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
                     refreshBtn.disabled = true;
+                    this._setNetworkStatusLoading();
                     this.loadNetworkStatus();
                     setTimeout(() => {
                         refreshBtn.disabled = false;

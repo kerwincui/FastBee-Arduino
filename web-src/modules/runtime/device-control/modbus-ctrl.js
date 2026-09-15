@@ -21,11 +21,13 @@
 
         _dcRefreshCoilStatus: function(devIdx) {
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetCoilParams(devIdx);
             return apiGetSilent('/api/modbus/coil/status', {
                 slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                 coilBase: p.coilBase, mode: p.relayMode
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
                     self._dcUpdateAllCoilUI(devIdx);
@@ -34,6 +36,7 @@
                     self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (!self._dcCoilStates[devIdx]) {
                     self._dcCoilStates[devIdx] = new Array(p.channelCount).fill(false);
                     self._dcRerenderCoilGrid(devIdx);
@@ -107,6 +110,7 @@
         _dcToggleCoil: function(devIdx, ch, cardEl) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetCoilParams(devIdx);
 
             // 乐观更新：立即反转本地状态并更新 UI
@@ -124,6 +128,7 @@
                 slaveAddress: p.slaveAddress, channel: ch, coilBase: p.coilBase,
                 action: 'toggle', mode: p.relayMode
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data) {
                     var st = self._dcCoilStates[devIdx] || [];
                     if (ch < st.length && st[ch] !== res.data.state) {
@@ -141,6 +146,7 @@
                 if (cardEl) cardEl.style.pointerEvents = '';
                 self._dcCoilPending[devIdx + '_' + ch] = false;
             }, function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 var st = self._dcCoilStates[devIdx] || [];
                 if (ch < st.length) st[ch] = prevState;
                 self._dcCoilStates[devIdx] = st;
@@ -154,6 +160,7 @@
         _dcBatchCoil: function(devIdx, action, btnEl) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetCoilParams(devIdx);
             var modbusAction = action;
             if (p.ncMode) {
@@ -176,6 +183,7 @@
                 slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                 coilBase: p.coilBase, action: modbusAction, mode: p.relayMode
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
                     self._dcUpdateAllCoilUI(devIdx);
@@ -187,6 +195,7 @@
                 if (btnEl) btnEl.disabled = false;
                 self._dcBatchPending = false;
             }, function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 self._dcCoilStates[devIdx] = prevStates;
                 self._dcUpdateAllCoilUI(devIdx);
                 Notification.error('操作失败');
@@ -198,6 +207,7 @@
         _dcStartCoilDelay: function(devIdx, channel, delayUnits) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetCoilParams(devIdx);
             var dev = this._modbusDevices[devIdx] || {};
 
@@ -212,6 +222,7 @@
             };
 
             apiPostPriority('/api/modbus/coil/delay', params).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     window.Notification && Notification.success(
                         '延时已启动 CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
@@ -222,6 +233,7 @@
                     );
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 window.Notification && Notification.error('延时启动失败');
             });
         },
@@ -242,6 +254,7 @@
 
         _dcRefreshPwmStatus: function(devIdx) {
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetPwmParams(devIdx);
             return apiGetSilent('/api/modbus/register/read', {
                 slaveAddress: p.slaveAddress,
@@ -249,6 +262,7 @@
                 quantity: p.channelCount,
                 functionCode: 3
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data && res.data.values) {
                     self._dcPwmStates[devIdx] = res.data.values;
                     self._dcRerenderPwmGrid(devIdx);
@@ -257,6 +271,7 @@
                     self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (!self._dcPwmStates[devIdx]) {
                     self._dcPwmStates[devIdx] = new Array(p.channelCount).fill(0);
                     self._dcRerenderPwmGrid(devIdx);
@@ -286,6 +301,7 @@
         _dcSetPwmChannel: function(devIdx, ch, value) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetPwmParams(devIdx);
             value = Math.max(0, Math.min(value, p.maxValue));
             var states = (this._dcPwmStates[devIdx] || []).slice();
@@ -298,6 +314,7 @@
                 registerAddress: p.regBase + ch,
                 value: value
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     Notification.success('操作成功');
                 } else {
@@ -308,6 +325,7 @@
                     Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 var s = (self._dcPwmStates[devIdx] || []).slice();
                 if (ch < s.length) s[ch] = prevVal;
                 self._dcPwmStates[devIdx] = s;
@@ -319,6 +337,7 @@
         _dcBatchPwm: function(devIdx, action) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetPwmParams(devIdx);
             var prevStates = (this._dcPwmStates[devIdx] || []).slice();
             var values = [];
@@ -331,6 +350,7 @@
                 startAddress: p.regBase,
                 values: JSON.stringify(values)
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     Notification.success('操作成功');
                 } else {
@@ -339,6 +359,7 @@
                     Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 self._dcPwmStates[devIdx] = prevStates;
                 self._dcRerenderPwmGrid(devIdx);
                 Notification.error('操作失败');
@@ -371,6 +392,7 @@
 
         _dcRefreshPidStatus: function(devIdx) {
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetPidParams(devIdx);
             if (!p.slaveAddress) return Promise.resolve();
             var addrs = [p.pvAddr, p.svAddr, p.outAddr, p.pAddr, p.iAddr, p.dAddr];
@@ -382,6 +404,7 @@
                 slaveAddress: p.slaveAddress, startAddress: minAddr,
                 quantity: quantity, functionCode: 3
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data && res.data.values) {
                     var vals = res.data.values;
                     self._dcPidValues[devIdx] = {
@@ -395,6 +418,7 @@
                     self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (!self._dcPidValues[devIdx]) {
                     self._dcPidValues[devIdx] = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
                     self._dcRerenderPidGrid(devIdx);
@@ -413,6 +437,7 @@
         _dcSetPidParam: function(devIdx, paramName, displayValue) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetPidParams(devIdx);
             var addrMap = { sv: p.svAddr, p: p.pAddr, i: p.iAddr, d: p.dAddr };
             var addr = addrMap[paramName];
@@ -422,6 +447,7 @@
             apiPostPriority('/api/modbus/register/write', {
                 slaveAddress: p.slaveAddress, registerAddress: addr, value: rawValue
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     var v = self._dcPidValues[devIdx] || {};
                     v[paramName] = rawValue;
@@ -432,6 +458,7 @@
                     Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 Notification.error('操作失败');
             });
         },
@@ -440,10 +467,12 @@
 
         _dcRefreshMotorStatus: function(devIdx) {
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetMotorParams(devIdx);
             return apiPostSilent('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: 'readStatus'
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success && res.data) {
                     self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
                     self._dcUpdatePanelOnlineState(devIdx, true);
@@ -451,6 +480,7 @@
                     self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 self._dcUpdatePanelOnlineState(devIdx, false);
             });
         },
@@ -484,10 +514,12 @@
         _dcMotorAction: function(devIdx, action) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetMotorParams(devIdx);
             apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     Notification.success(action === 'forward' ? '正转指令已发送' : action === 'reverse' ? '反转指令已发送' : '停止指令已发送');
                     var elDir = document.getElementById('dc-motor-dir-' + devIdx);
@@ -509,6 +541,7 @@
                     Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 Notification.error('操作失败');
             });
         },
@@ -516,6 +549,7 @@
         _dcMotorSet: function(devIdx, param) {
             this._dcCancelInit();
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var p = this._dcGetMotorParams(devIdx);
             var inputId = 'dc-motor-' + param + '-in-' + devIdx;
             var input = document.getElementById(inputId);
@@ -524,12 +558,14 @@
             apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action, value: value
             }).then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 if (res && res.success) {
                     Notification.success(param === 'speed' ? '速度设置成功' : '脉冲数设置成功');
                 } else {
                     Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 Notification.error('操作失败');
             });
         }

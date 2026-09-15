@@ -126,14 +126,20 @@ test.describe('Suite-22: 功能配置页', () => {
     await expect(authPage.locator('#features-page')).toBeVisible();
   });
 
-  test('FCFG-002: 工具栏与 RAM 监控卡片 @quick', async ({ authPage }) => {
-    await expect(authPage.locator('#features-refresh-btn')).toBeVisible();
-    const saveBtn = authPage.locator('#features-save-btn');
+  test('FCFG-002: RAM 状态与操作按钮共用顶部工具栏 @quick', async ({ authPage }) => {
+    const toolbar = authPage.locator('#features-page > .fb-card > .fb-card-header');
+    await expect(toolbar).toHaveClass(/fb-data-toolbar/);
+    await expect(toolbar.locator('#features-refresh-btn')).toBeVisible();
+    const saveBtn = toolbar.locator('#features-save-btn');
     await expect(saveBtn).toBeVisible();
     await expect(saveBtn).toBeDisabled(); // 初始无修改，保存按钮禁用
-    await expect(authPage.locator('#ram-free8')).toBeVisible();
-    await expect(authPage.locator('#ram-largest8')).toBeVisible();
-    await expect(authPage.locator('#ram-active')).toBeVisible();
+    const ramMonitor = toolbar.locator('#features-ram-monitor');
+    await expect(ramMonitor.locator('#ram-free8')).toBeVisible();
+    await expect(ramMonitor.locator('#ram-largest8')).toBeVisible();
+    await expect(ramMonitor.locator('#ram-active')).toBeVisible();
+    await expect(authPage.locator('#features-page .fb-card-body #features-ram-monitor')).toHaveCount(0);
+    await expect(authPage.locator('#features-summary')).toHaveCount(0);
+    await expect(authPage.locator('#features-list .feature-name')).toHaveCount(0);
   });
 
   test('FCFG-003: 功能列表与 API 数据一致 @quick', async ({ authPage }) => {
@@ -176,7 +182,7 @@ test.describe('Suite-22: 功能配置页', () => {
   test('FCFG-004: RAM 占用显示格式分级', async ({ authPage }) => {
     const status = await fetchFeatureStatus(authPage);
     for (const f of status.features.filter(feature => !!feature.name)) {
-      const cell = authPage.locator(`tr[data-feature-key="${f.key}"] td:nth-child(3)`);
+      const cell = authPage.locator(`tr[data-feature-key="${f.key}"] [data-feature-resource="ram"]`);
       const text = ((await cell.textContent()) || '').trim();
       const expected = f.ramB === 0
         ? '0KB'
@@ -197,18 +203,27 @@ test.describe('Suite-22: 功能配置页', () => {
     }
   });
 
+  test('FCFG-004A: 功能状态资源依赖和开关同一行直接显示 @quick', async ({ authPage }) => {
+    const firstTable = authPage.locator('#features-list table').first();
+    await expect(firstTable.locator('thead th')).toHaveText(['功能', '状态', 'Flash', 'RAM', '依赖', '启用']);
+
+    const rows = authPage.locator('#features-list tr[data-feature-key]');
+    await expect(rows.locator('details.feature-details')).toHaveCount(0);
+    const firstRow = rows.first();
+    await expect(firstRow.locator('[data-feature-resource="flash"]')).toBeVisible();
+    await expect(firstRow.locator('[data-feature-resource="ram"]')).toBeVisible();
+    await expect(firstRow.locator('[data-feature-resource="dependency"]')).toBeVisible();
+  });
+
   test('FCFG-006: 页面底部无冗余功能说明', async ({ authPage }) => {
     await expect(authPage.locator('#features-unified-hint')).toHaveCount(0);
     await expect(authPage.locator('#features-page .fb-card-body > p')).toHaveCount(0);
   });
 
-  // ========== 汇总与本地估算 ==========
+  // ========== RAM 监控 ==========
 
-  test('FCFG-007: 资源汇总与 RAM 监控填充', async ({ authPage }) => {
-    const summaryText = (await authPage.locator('#features-summary').textContent()) || '';
-    // 数值结构断言与语言无关（zh/en 均保留 Flash/RAM 技术词）
-    expect(summaryText).toMatch(/Flash\s+\d+\s*KB\s*\|\s*RAM/);
-    // RAM 监控卡片已由 API summary 填充（非占位符 --）
+  test('FCFG-007: RAM 监控填充且无冗余资源汇总', async ({ authPage }) => {
+    await expect(authPage.locator('#features-summary')).toHaveCount(0);
     await expect(authPage.locator('#ram-free8')).toHaveText(/\d+KB/);
     await expect(authPage.locator('#ram-largest8')).toHaveText(/\d+KB/);
     await expect(authPage.locator('#ram-active')).toHaveText(/\d+(\.\d+)?KB/);
@@ -225,10 +240,6 @@ test.describe('Suite-22: 功能配置页', () => {
     await expect(authPage.locator('#features-save-btn')).toBeDisabled();
     await row.locator('.toggle-switch').click();
     await expect(authPage.locator('#features-save-btn')).toBeEnabled();
-    // 本地估算文案更新（按当前 locale 解析期望前缀）
-    const estimate = (await authPage.locator('#features-summary').textContent()) || '';
-    const estimatePrefix = await resolveI18nText(authPage, 'fc-summary-flash', '预估启用资源: Flash');
-    expect(estimate).toContain(estimatePrefix);
     // 切回（仍不保存，beforeEach 下次刷新即恢复）
     await row.locator('.toggle-switch').click();
   });

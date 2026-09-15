@@ -16,32 +16,22 @@ async function selectByPartialText(locator: Locator, text: string) {
 
 /** 打开新增外设弹窗并等待就绪 */
 async function openAddModal(page: Page) {
-  // 等待 modals.html 片段加载完成（modal 元素存在于 DOM）
-  await page.waitForSelector('#peripheral-modal', { state: 'attached', timeout: 20000 });
-  // 先关闭可能残留的模态框
+  // Modal templates are cached after login and mounted only when opened.
   const modal = page.locator('#peripheral-modal');
-  if (await modal.isVisible().catch(() => false)) {
+  if (await modal.count() && await modal.isVisible().catch(() => false)) {
     await page.locator('#close-peripheral-modal').click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(500);
   }
   await page.click('#add-peripheral-btn');
-  // 等待 modal 变为可见（带重试，嵌入式设备响应可能较慢）
   try {
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 20000 });
   } catch {
-    // 重试点击
-    await page.click('#add-peripheral-btn');
-    try {
-      await expect(modal).toBeVisible({ timeout: 5000 });
-    } catch {
-      // JS 直接调用（事件委托可能尚未绑定）
-      await page.evaluate(() => {
-        if (typeof AppState !== 'undefined' && AppState.openPeripheralModal) {
-          AppState.openPeripheralModal();
-        }
-      });
-      await expect(modal).toBeVisible({ timeout: 8000 });
-    }
+    await page.evaluate(async () => {
+      if (typeof AppState !== 'undefined' && AppState.openPeripheralModal) {
+        await AppState.openPeripheralModal();
+      }
+    });
+    await expect(modal).toBeVisible({ timeout: 12000 });
   }
 }
 
@@ -125,9 +115,16 @@ test.describe('Suite-05: 外设配置', () => {
 
   test('PER-001: 进入外设配置页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#peripheral-page')).toBeVisible();
-    await expect(authPage.locator('#add-peripheral-btn')).toBeVisible();
-    await expect(authPage.locator('#peripheral-refresh-btn')).toBeVisible();
-    await expect(authPage.locator('#peripheral-filter-type')).toBeVisible();
+    const toolbar = authPage.locator('#peripheral-page > .fb-card > .fb-card-header');
+    await expect(toolbar).toHaveClass(/fb-data-toolbar/);
+    await expect(toolbar.locator('#add-peripheral-btn')).toBeVisible();
+    await expect(toolbar.locator('#peripheral-refresh-btn')).toBeVisible();
+    await expect(toolbar.locator('#peripheral-filter-type')).toBeVisible();
+    const summary = toolbar.locator('#peripheral-list-summary');
+    await expect(summary).toHaveText(/共\s*\d+\s*项/);
+
+    const total = Number(((await summary.textContent()) || '').match(/共\s*(\d+)\s*项/)?.[1] || 0);
+    if (total <= 10) await expect(authPage.locator('#periph-pagination')).toBeHidden();
   });
 
   test('PER-002: 列表表头完整性', async ({ authPage }) => {
@@ -723,8 +720,9 @@ test.describe('Suite-05: 外设配置', () => {
     await test.step('编码器默认值', async () => {
       await openAddModal(authPage);
       await selectPeriphType(authPage, '43');
-      expect(await authPage.locator('#encoder-resolution').inputValue()).toBe('1024');
+      expect(await authPage.locator('#encoder-resolution').inputValue()).toBe('20');
       expect(await authPage.locator('#encoder-use-interrupt').isChecked()).toBe(true);
+      await expect(authPage.locator('#encoder-use-interrupt')).toBeDisabled();
       await authPage.locator('#cancel-peripheral-btn').click();
       await authPage.waitForTimeout(500);
     });

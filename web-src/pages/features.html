@@ -1,32 +1,30 @@
 <!-- 功能配置页面 -->
 <div id="features-page" class="page">
     <div class="fb-card">
-        <div class="fb-card-header u-header-between">
-            <h2 class="fb-card-title">功能配置</h2>
-            <div class="u-toolbar-sm">
-                <button class="fb-btn fb-btn-refresh" id="features-refresh-btn">刷新</button>
-                <button class="fb-btn fb-btn-primary" id="features-save-btn" disabled>保存并重启</button>
+        <div class="fb-card-header fb-card-header-toolbar fb-data-toolbar feature-config-toolbar">
+            <div id="features-ram-monitor" class="feature-ram-monitor" role="status" aria-live="polite" aria-label="运行内存状态">
+                <div class="feature-ram-stat">
+                    <span class="feature-ram-label">空闲 DRAM</span>
+                    <strong id="ram-free8" class="feature-ram-value">--</strong>
+                </div>
+                <div class="feature-ram-stat">
+                    <span class="feature-ram-label">最大连续块</span>
+                    <strong id="ram-largest8" class="feature-ram-value">--</strong>
+                </div>
+                <div class="feature-ram-stat">
+                    <span class="feature-ram-label">活跃 RAM</span>
+                    <strong id="ram-active" class="feature-ram-value">--</strong>
+                </div>
+            </div>
+            <div class="fb-card-header-actions">
+                <button class="fb-btn fb-btn-refresh" id="features-refresh-btn" type="button">刷新</button>
+                <button class="fb-btn fb-btn-primary" id="features-save-btn" type="button" disabled>保存并重启</button>
             </div>
         </div>
-        <div id="feature-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none;margin:0 16px;padding:8px 12px;">
+        <div id="feature-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint fb-hidden">
             <span>开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
         </div>
         <div class="fb-card-body">
-            <div id="features-ram-monitor" style="display:flex;gap:12px;margin-bottom:12px;">
-                <div style="flex:1;padding:8px 12px;border:1px solid var(--fb-border,#ddd);border-radius:6px;text-align:center;">
-                    <span class="u-fs-12 u-text-secondary">空闲 DRAM</span><br>
-                    <strong id="ram-free8" class="u-fs-16">--</strong>
-                </div>
-                <div style="flex:1;padding:8px 12px;border:1px solid var(--fb-border,#ddd);border-radius:6px;text-align:center;">
-                    <span class="u-fs-12 u-text-secondary">最大连续块</span><br>
-                    <strong id="ram-largest8" class="u-fs-16">--</strong>
-                </div>
-                <div style="flex:1;padding:8px 12px;border:1px solid var(--fb-border,#ddd);border-radius:6px;text-align:center;">
-                    <span class="u-fs-12 u-text-secondary">活跃 RAM</span><br>
-                    <strong id="ram-active" class="u-fs-16">--</strong>
-                </div>
-            </div>
-            <div id="features-summary" class="u-fs-13 u-text-secondary" style="margin-bottom:12px;">加载中...</div>
             <div id="features-list"></div>
         </div>
     </div>

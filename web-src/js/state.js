@@ -33,30 +33,89 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     },
 
     // ============ 委托给 PageLoader ============
-    loadPage(pageId) {
-        return PageLoader.loadPage(pageId, this._pageMapping);
+    loadPage(pageId, options) {
+        return PageLoader.loadPage(pageId, this._pageMapping, options);
     },
 
     _loadModals() {
-        var self = this;
         return PageLoader.loadModals().then(function() {
-            // 模态窗 DOM 加载后重新绑定事件（setupEvents 调用时这些元素还不存在）
-            var closeId = function(id) { self.hideModal(id); };
+            AppState._modalsLoaded = true;
+        }).catch(function(error) {
+            AppState._modalsLoaded = false;
+            throw error;
+        });
+    },
+
+    ensureModal(modalId) {
+        var existing = document.getElementById(modalId);
+        if (existing) return existing;
+        if (typeof PageLoader === 'undefined' || typeof PageLoader.mountModal !== 'function') return null;
+        var modal = PageLoader.mountModal(modalId);
+        if (modal) this._bindMountedModal(modalId);
+        return modal;
+    },
+
+    async ensureModalAsync(modalId, expectedNavSeq) {
+        var modal = this.ensureModal(modalId);
+        if (modal) return modal;
+        if (typeof PageLoader === 'undefined' || typeof PageLoader.loadModals !== 'function') {
+            throw new Error('Modal loader unavailable: #' + modalId);
+        }
+        var modalNavSeq = expectedNavSeq === undefined ? (this._pageNavSeq || 0) : expectedNavSeq;
+        await this._loadModals();
+        // The template request may outlive the page that initiated it. Keep the
+        // cached template, but never mount a modal into a newer page context.
+        if (modalNavSeq !== (this._pageNavSeq || 0)) return null;
+        modal = this.ensureModal(modalId);
+        if (!modal) throw new Error('Modal template unavailable: #' + modalId);
+        return modal;
+    },
+
+    async _ensureModalForAction(modalId) {
+        var actionNavSeq = this._pageNavSeq || 0;
+        try {
+            return await this.ensureModalAsync(modalId, actionNavSeq);
+        } catch (error) {
+            console.error('[Modal] Failed to load #' + modalId + ':', error);
+            if (typeof Notification !== 'undefined' && Notification.error) {
+                Notification.error('弹窗加载失败，请稍后重试', '页面加载');
+            }
+            return null;
+        }
+    },
+
+    _bindMountedModal(modalId) {
+        this._resetModalBindingState(modalId);
+        if (modalId === 'change-password-modal') {
+            var self = this;
             ['close-password-modal', 'cancel-password-btn'].forEach(function(id) {
                 var el = document.getElementById(id);
-                if (el && !el._modalBound) {
-                    el._modalBound = true;
-                    el.addEventListener('click', function() { closeId('change-password-modal'); });
-                }
+                if (el) el.addEventListener('click', function() { self.hideModal(modalId); });
             });
             var confirmPwd = document.getElementById('confirm-password-btn');
-            if (confirmPwd && !confirmPwd._modalBound) {
-                confirmPwd._modalBound = true;
-                confirmPwd.addEventListener('click', function() { self.changePassword(); });
-            }
-            // 通知各模块重新绑定模态窗内的事件（模态窗 DOM 此时已就绪）
-            self._rebindAllModalEvents();
-            self._modalsLoaded = true;
+            if (confirmPwd) confirmPwd.addEventListener('click', function() { self.changePassword(); });
+        }
+        this._rebindAllModalEvents();
+        if (/^(modbus-device-|task-edit-|mapping-)/.test(modalId) &&
+            typeof this.setupProtocolEvents === 'function') {
+            this.setupProtocolEvents();
+        }
+    },
+
+    _resetModalBindingState(modalId) {
+        if (modalId === 'peripheral-modal' || modalId === 'gpio-modal') this._periphModalBound = false;
+        if (modalId === 'periph-exec-modal') this._peModalBound = false;
+        if (modalId === 'rule-script-modal') {
+            this._ruleScriptModalBound = false;
+            this._ruleScriptProtocolBound = false;
+        }
+        if (modalId === 'add-user-modal') this._userModalBound = false;
+    },
+
+    _destroyMountedModals() {
+        var self = this;
+        Array.prototype.slice.call(document.querySelectorAll('.modal')).forEach(function(modal) {
+            self.hideModal(modal);
         });
     },
 
@@ -68,10 +127,10 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     _modalsLoaded: false,
     _registerModalBinder(name, fn) {
         if (typeof fn !== 'function') return;
+        this._modalBinders = this._modalBinders.filter(function(binder) { return binder.name !== name; });
         this._modalBinders.push({ name: name, fn: fn });
-        // If modals DOM already loaded, bind immediately to avoid race condition
-        // (each binder has its own guard to prevent duplicate binding)
-        if (this._modalsLoaded) {
+        // Late-loaded modules may register after their modal has been mounted.
+        if (this._modalsLoaded && document.querySelector('.modal')) {
             try { fn.call(this); } catch (e) {
                 console.warn('[ModalBind] late-bind ' + name + ' failed:', e);
             }
@@ -120,6 +179,37 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 console.warn('[' + tag + '] ' + h.name + ' handler failed:', e);
             }
         });
+    },
+
+    _preparePageMount(page) {
+        var bindingFlags = {
+            peripheral: ['_periphEventsBound'],
+            'periph-exec': ['_peEventsBound'],
+            protocol: ['_protocolEventsBound'],
+            'device-control': ['_eventsBound'],
+            logs: ['_logsEventsBound'],
+            users: ['_usersEventsBound'],
+            'rule-script': ['_ruleScriptEventsBound'],
+            features: ['_featuresEventsBound']
+        };
+        (bindingFlags[page] || []).forEach((flag) => { this[flag] = false; });
+    },
+
+    _rebindMountedPageEvents(page) {
+        var setupMethods = {
+            dashboard: 'setupDashboardEvents',
+            network: 'setupNetworkEvents',
+            device: 'setupDeviceConfigEvents',
+            peripheral: 'setupPeripheralsEvents',
+            'periph-exec': 'setupPeriphExecEvents',
+            protocol: 'setupProtocolEvents',
+            'device-control': 'setupDeviceControlEvents',
+            logs: 'setupLogsEvents',
+            users: 'setupUsersEvents',
+            'rule-script': 'setupRuleScriptEvents'
+        };
+        var method = setupMethods[page];
+        if (method && typeof this[method] === 'function') this[method]();
     },
 
     isDeveloperModeEnabled() {
@@ -228,14 +318,24 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         delete this._pendingUrlPage;
         delete this._pendingUrlFullscreen;
         // 跳转到指定页面
-        this.changePage(page);
-        // 延迟进入全屏（等待页面和模块加载完成）
+        var navigation = this.changePage(page);
+        // 页面和功能门控完成后再进入全屏，避免禁用直达页的旧定时器误触发。
         if (goFullscreen && page === 'device-control') {
-            setTimeout(function() {
-                if (typeof AppState._dcToggleFullscreen === 'function') {
-                    AppState._dcToggleFullscreen();
-                }
-            }, 1500);
+            var urlNavSeq = this._pageNavSeq;
+            Promise.resolve(navigation).then(function() {
+                if (urlNavSeq !== AppState._pageNavSeq ||
+                    AppState.currentPage !== 'device-control' ||
+                    !AppState._featureActive || AppState._featureActive.deviceControl !== true) return;
+                AppState._dcFullscreenLaunchTimer = setTimeout(function() {
+                    AppState._dcFullscreenLaunchTimer = null;
+                    if (urlNavSeq === AppState._pageNavSeq &&
+                        AppState.currentPage === 'device-control' &&
+                        AppState._featureActive && AppState._featureActive.deviceControl === true &&
+                        typeof AppState._dcToggleFullscreen === 'function') {
+                        AppState._dcToggleFullscreen();
+                    }
+                }, 1500);
+            });
         }
     },
 
@@ -390,13 +490,12 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             peripheral: () => { this.loadPeripherals(); },
             'periph-exec': () => { this.loadPeriphExecPage(); },
             protocol: () => {
-                // Modbus 功能禁用时隐藏 Modbus RTU 子项；状态未就绪时补拉一次
-                if (this._featureActive) {
-                    this.applyProtocolFeatureGate();
-                } else {
-                    this.applyFeatureMenuVisibility();
-                }
+                // 协议页每次进入都刷新轻量功能状态，避免启动期请求失败后
+                // 把临时的待定状态长期当成 Modbus 已禁用。
+                this.applyProtocolFeatureGate();
+                const featureStatus = this.applyFeatureMenuVisibility();
                 this.loadProtocolConfig('mqtt');
+                return featureStatus;
             },
             logs: () => { this.loadLogsPage({ noCache: true }); },
             users: () => { this.loadUsers({ noCache: true }); },
@@ -560,6 +659,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // 最近一次 /api/features/status 的激活状态缓存（key → active）
     _featureActive: null,
+    _featureStatusReady: false,
+    _featureStatusPromise: null,
 
     /**
      * 登录后拉取功能状态，按启用情况显示/隐藏左侧菜单项
@@ -569,9 +670,11 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
      */
     applyFeatureMenuVisibility() {
         if (typeof apiGet !== 'function') return;
+        if (this._featureStatusPromise) return this._featureStatusPromise;
         const map = this._featureMenuMap;
         const self = this;
         const featureKeys = Object.keys(map);
+        const statusKeys = featureKeys.concat(['modbus']);
         const menuPages = featureKeys.map(function(key) { return map[key]; });
         const pageToFeature = {};
         featureKeys.forEach(function(key) { pageToFeature[map[key]] = key; });
@@ -581,31 +684,39 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             item.style.display = visible ? '' : 'none';
             item.setAttribute('aria-hidden', visible ? 'false' : 'true');
         };
-        const applyMenuState = function(active) {
+        const applyMenuVisibility = function(active) {
             menuPages.forEach(function(page) {
                 const key = pageToFeature[page];
                 setMenuVisible(page, active[key] === true);
             });
             // 设备配置是所有设备都必须保留的基础入口，不受可选功能门控。
             setMenuVisible('device', true);
+        };
+        const applyMenuState = function(active) {
+            applyMenuVisibility(active);
             self._featureActive = active;
+            self._featureStatusReady = true;
             self.applyProtocolFeatureGate();
         };
         const featureGetter = typeof apiGetSilentFresh === 'function'
             ? apiGetSilentFresh
             : apiGet;
 
-        // 在状态请求完成前先隐藏可选项，避免 C3 请求失败时展示错误菜单。
+        // 首次状态请求完成前隐藏可选项，但不要把待定值写入功能状态缓存。
+        // 否则协议页会把一次启动期等待永久解释为 Modbus 已禁用。
         const pending = {};
         Object.keys(map).forEach(function(key) { pending[key] = false; });
-        applyMenuState(pending);
+        if (!this._featureStatusReady) {
+            applyMenuVisibility(pending);
+            this.applyProtocolFeatureGate();
+        }
 
         const applyFeatureResponse = function(res) {
             if (!res || !res.success || !res.data || !Array.isArray(res.data.features)) {
                 throw new Error('feature status unavailable');
             }
             const active = {};
-            featureKeys.forEach(function(key) {
+            statusKeys.forEach(function(key) {
                 active[key] = false;
             });
             res.data.features.forEach(function(f) {
@@ -626,7 +737,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             Object.keys(states).forEach(function(key) {
                 active[key] = states[key] === 'active';
             });
-            featureKeys.forEach(function(key) {
+            statusKeys.forEach(function(key) {
                 if (!Object.prototype.hasOwnProperty.call(active, key)) {
                     active[key] = false;
                 }
@@ -635,16 +746,25 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             return res;
         };
 
-        return featureGetter('/api/system/status')
+        const request = featureGetter('/api/system/status')
             .then(applySystemStatusFallback)
             .catch(function() {
                 return featureGetter('/api/features/status')
                     .then(applyFeatureResponse)
                     .catch(function() {
-                        // 两个状态接口都不可用时保持可选项隐藏，基础菜单仍可用。
-                        applyMenuState(pending);
+                        // 首次请求失败时保持 fail-closed；刷新失败则保留上一份
+                        // 已确认状态，协议页下次进入仍会重新尝试轻量请求。
+                        if (!self._featureStatusReady) {
+                            applyMenuVisibility(pending);
+                            self.applyProtocolFeatureGate();
+                        }
                     });
             });
+        const tracked = request.finally(function() {
+            if (self._featureStatusPromise === tracked) self._featureStatusPromise = null;
+        });
+        this._featureStatusPromise = tracked;
+        return tracked;
     },
 
     /**
@@ -657,11 +777,13 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         // boards. Keep the Modbus tab fail-closed until the backend explicitly
         // reports the feature as active; restore it when a later fallback
         // status call confirms that Modbus is running.
-        const enabled = !!active && active.modbus === true;
+        const ready = this._featureStatusReady === true;
+        const enabled = ready && !!active && active.modbus === true;
         const tab = document.querySelector('#protocol-page .config-tab[data-tab="modbus-rtu"]');
         if (tab) {
             tab.style.display = enabled ? '' : 'none';
             tab.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+            tab.setAttribute('data-feature-state', ready ? (enabled ? 'active' : 'disabled') : 'pending');
         }
         const content = document.getElementById('modbus-rtu');
         if (content) content.style.display = enabled ? '' : 'none';
@@ -671,34 +793,80 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     async changePage(page) {
         const navSeq = (this._pageNavSeq || 0) + 1;
         this._pageNavSeq = navSeq;
+        if (this._dcFullscreenLaunchTimer) {
+            clearTimeout(this._dcFullscreenLaunchTimer);
+            this._dcFullscreenLaunchTimer = null;
+        }
         // 取消旧页面排队中的请求，释放 ESP32 资源
         if (typeof window.apiAbortPageRequests === 'function') {
             window.apiAbortPageRequests();
         }
         // 通知旧页面模块清理（定时器/轮询），避免切走后继续请求设备
         this._firePageLifecycle(this._pageHideHandlers, 'page-hide');
+        this._destroyMountedModals();
 
         const pageAlias = { monitor: 'dashboard' };
         const normalizedPage = pageAlias[page] || page;
-
-        // 先确保页面HTML已加载
-        await this.loadPage(normalizedPage + '-page');
-        if (navSeq !== this._pageNavSeq) return;
-
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        let target = document.getElementById(normalizedPage + '-page');
-        if (!target) {
-            // 首次加载失败（登录后设备繁忙期静态资源响应可能被截断），
-            // 等待设备恢复后重试一次，避免用户需手动二次点击
-            await new Promise(resolve => setTimeout(resolve, 1200));
+        const featureEntry = normalizedPage === 'device-control' ? 'deviceControl' : null;
+        if (featureEntry && this._featureActive === null &&
+            typeof this.applyFeatureMenuVisibility === 'function') {
+            await this.applyFeatureMenuVisibility();
             if (navSeq !== this._pageNavSeq) return;
-            await this.loadPage(normalizedPage + '-page');
-            if (navSeq !== this._pageNavSeq) return;
+        }
+        const featureUnavailable = !!featureEntry &&
+            (!this._featureActive || this._featureActive[featureEntry] !== true);
+
+        // Cleanup has completed. Release the old page DOM before mounting the
+        // next template so repeated navigation cannot accumulate hidden pages.
+        if (typeof PageLoader !== 'undefined' && typeof PageLoader.unmountPages === 'function') {
+            PageLoader.unmountPages();
+        }
+        this._preparePageMount(normalizedPage);
+
+        let target = null;
+        if (featureUnavailable && typeof PageLoader !== 'undefined' &&
+            typeof PageLoader._renderUnavailablePage === 'function') {
+            const disabledError = new Error('Feature disabled: ' + featureEntry);
+            disabledError.code = 'FEATURE_DISABLED';
+            PageLoader._renderUnavailablePage(normalizedPage + '-page', disabledError);
             target = document.getElementById(normalizedPage + '-page');
+        } else {
+            // 先确保页面HTML已加载
+            await this.loadPage(normalizedPage + '-page', { mount: false });
+            if (navSeq !== this._pageNavSeq) return;
+            target = (typeof PageLoader !== 'undefined' && typeof PageLoader.mountPage === 'function')
+                ? PageLoader.mountPage(normalizedPage + '-page')
+                : document.getElementById(normalizedPage + '-page');
+            if (!target) {
+                // 首次加载失败（登录后设备繁忙期静态资源响应可能被截断），
+                // 等待设备恢复后重试一次，避免用户需手动二次点击
+                await new Promise(resolve => setTimeout(resolve, 1200));
+                if (navSeq !== this._pageNavSeq) return;
+                await this.loadPage(normalizedPage + '-page', { mount: false });
+                if (navSeq !== this._pageNavSeq) return;
+                target = (typeof PageLoader !== 'undefined' && typeof PageLoader.mountPage === 'function')
+                    ? PageLoader.mountPage(normalizedPage + '-page')
+                    : document.getElementById(normalizedPage + '-page');
+            }
         }
         if (!target) {
             console.warn('[changePage] target page not found:', page, '=>', normalizedPage);
             return;
+        }
+
+        const pageModuleMap = this._getPageModuleMap();
+        const pageLoaders = this._getPageLoaders();
+        const moduleName = pageModuleMap[normalizedPage];
+        const loader = pageLoaders[normalizedPage];
+        const moduleWasLoaded = !!(moduleName && typeof ModuleLoader !== 'undefined' &&
+            typeof ModuleLoader.isLoaded === 'function' && ModuleLoader.isLoaded(moduleName));
+        // Page HTML can arrive before its runtime module on constrained devices.
+        // Keep visible controls inert until their handlers are registered so an
+        // eager click cannot be silently lost.
+        if (moduleName && loader && !moduleWasLoaded) {
+            target.setAttribute('inert', '');
+            target.setAttribute('aria-busy', 'true');
+            target.setAttribute('data-module-loading', 'true');
         }
         target.classList.add('active');
 
@@ -731,10 +899,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         // 通知新页面模块进入（与 _pageHideHandlers 对称的生命周期钩子）
         this._firePageLifecycle(this._pageShowHandlers, 'page-show');
 
-        // 模块名到页面的映射
-        const pageModuleMap = this._getPageModuleMap();
-        const pageLoaders = this._getPageLoaders();
-
         if (normalizedPage !== 'device-control' && typeof this._dcStopAllAutoRefresh === 'function') {
             this._dcStopAllAutoRefresh();
         }
@@ -760,11 +924,21 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             }
         }
 
-        const moduleName = pageModuleMap[normalizedPage];
-        const loader = pageLoaders[normalizedPage];
+        // 禁用功能的直达页面只保留轻量提示，不加载运行模块或业务接口。
+        if (featureUnavailable) return;
+
         const runLoader = () => {
             if (navSeq !== this._pageNavSeq || this.currentPage !== normalizedPage) return;
-            loader();
+            try {
+                if (moduleWasLoaded) this._rebindMountedPageEvents(normalizedPage);
+                loader();
+            } finally {
+                if (target && target.isConnected) {
+                    target.removeAttribute('inert');
+                    target.removeAttribute('aria-busy');
+                    target.removeAttribute('data-module-loading');
+                }
+            }
         };
         
         if (moduleName && loader) {
@@ -780,21 +954,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // ============ 关闭所有浮层（token 过期时调用）============
     closeAllOverlays() {
-        // 1. 关闭所有 .modal 弹窗并清理事件
-        document.querySelectorAll('.modal').forEach(function (m) {
-            // 清理遮罩点击事件
-            if (m._modalOverlayHandler) {
-                m.removeEventListener('click', m._modalOverlayHandler);
-                m._modalOverlayHandler = null;
-            }
-            // 清理关闭按钮事件
-            const closeBtn = m.querySelector('.modal-close, .modal-close-btn');
-            if (closeBtn && closeBtn._modalCloseHandler) {
-                closeBtn.removeEventListener('click', closeBtn._modalCloseHandler);
-                closeBtn._modalCloseHandler = null;
-            }
-            m.style.display = 'none';
-        });
+        // 1. 关闭并销毁所有已挂载模态框
+        this._destroyMountedModals();
 
         // 2. 关闭动态创建的全屏浮层
         document.querySelectorAll('div[style*="position: fixed"][style*="z-index"]').forEach(function (el) {

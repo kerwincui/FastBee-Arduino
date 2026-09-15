@@ -127,7 +127,7 @@ function readChunkSource(dir, file) {
     return readUtf8(path.join(dir, file)).trim();
 }
 
-function buildChunkContent(chunk) {
+function buildChunkContent(chunk, options = {}) {
     if (chunk.i18nZhSplit) {
         return buildI18nZhChunk(chunk.i18nZhSplit);
     }
@@ -139,15 +139,19 @@ function buildChunkContent(chunk) {
         if (!fs.existsSync(fp)) {
             throw new Error(`Missing source file: ${fp}`);
         }
+        const source = readChunkSource(dir, file);
+        const transformed = typeof options.transformSource === 'function'
+            ? options.transformSource(file, source)
+            : source;
         return [
             `/* ===== ${file} ===== */`,
-            readChunkSource(dir, file)
+            transformed
         ].join('\n');
     });
     return sections.join('\n\n') + '\n';
 }
 
-function buildAppChunks() {
+function buildAppChunks(options = {}) {
     if (!fs.existsSync(WWW_JS_DIR)) {
         fs.mkdirSync(WWW_JS_DIR, { recursive: true });
     }
@@ -156,7 +160,7 @@ function buildAppChunks() {
     const results = [];
 
     CHUNK_GROUPS.forEach((chunk) => {
-        const raw = buildChunkContent(chunk);
+        const raw = buildChunkContent(chunk, options);
         const finalContent = noMinify ? raw : minifyJS(raw);
         const outPath = path.join(WWW_JS_DIR, chunk.outName);
         fs.writeFileSync(outPath, finalContent, 'utf8');
@@ -187,8 +191,8 @@ function buildAppChunks() {
 
 // Backward-compat shim: build-web-modules.js still calls buildAppBundle()
 // and reads { outputFile, size, minified } from the result for logging.
-function buildAppBundle() {
-    const r = buildAppChunks();
+function buildAppBundle(options = {}) {
+    const r = buildAppChunks(options);
     return {
         outputFile: r.chunks[0].outPath, // legacy field — first chunk path for logging
         fileCount: r.chunkCount,

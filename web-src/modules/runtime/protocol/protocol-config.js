@@ -174,14 +174,22 @@
                 this._mqttAutoReconnectTriggered = false;
                 // MQTT 启用时自动开始状态轮询，确保顶部状态指示器反映实际连接状态
                 if (mqtt.enabled) {
+                    if (typeof this._setMqttStatusLoading === 'function') {
+                        this._setMqttStatusLoading();
+                    }
                     this._startMqttStatusPolling({ initialDelayMs: 1500 });
                 } else {
-                    // MQTT 未启用时，直接显示"未连接"，不进行状态检测
+                    // 配置禁用不等于运行状态；读取一次状态后再显示禁用或内存保护原因。
                     this._stopMqttStatusPolling();
-                    var badge = document.getElementById('mqtt-status-badge');
-                    if (badge) {
-                        badge.className = 'mqtt-status-badge mqtt-status-offline';
-                        badge.textContent = '未连接';
+                    if (typeof this._setMqttStatusLoading === 'function') {
+                        this._setMqttStatusLoading();
+                    }
+                    if (typeof this._loadMqttStatus === 'function') {
+                        var fullSelf = this;
+                        this._mqttStatusTimer = setTimeout(function() {
+                            fullSelf._mqttStatusTimer = null;
+                            fullSelf._loadMqttStatus();
+                        }, 3000);
                     }
                 }
             }

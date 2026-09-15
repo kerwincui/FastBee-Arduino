@@ -33,7 +33,7 @@
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 #include "peripherals/SensorDriver.h"
 #endif
-#include "core/DriverRegistry.h"
+#include "core/SensorDriverCache.h"
 #include "network/WebConfigManager.h"
 #include "network/NetworkManager.h"
 #if FASTBEE_ENABLE_LCD
@@ -1291,6 +1291,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     float rawValue = 0;
+    String detectedUnit;
 
     if (strcmp(category, "analog") == 0) {
         // 热路径零分配：避免 String(periphId) 每周期堆构造
@@ -1316,9 +1317,22 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             return false;
         }
         rawValue = level ? 1.0f : 0.0f;
-    } else if (strcmp(category, "pulse") == 0) {
-        LOGGER.warning("[PeriphExec] Sensor read: pulse/frequency not yet implemented");
-        rawValue = 0;
+    } else if (strcmp(category, "pulse") == 0 || strcmp(category, "frequency") == 0) {
+        EncoderReading reading;
+        if (!pm.getEncoderReading(String(periphId), reading)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: encoder '%s' is not ready", periphId);
+            return false;
+        }
+        if (strcmp(category, "frequency") == 0) {
+            rawValue = strcmp(dataField, "rpm") == 0
+                ? reading.rpm : reading.frequencyHz;
+        } else if (strcmp(dataField, "delta") == 0) {
+            rawValue = static_cast<float>(reading.delta);
+        } else if (strcmp(dataField, "direction") == 0) {
+            rawValue = static_cast<float>(reading.direction);
+        } else {
+            rawValue = static_cast<float>(reading.count);
+        }
 #if FASTBEE_ENABLE_SENSOR_DRIVER
     } else if (strcmp(category, "dht11") == 0 || strcmp(category, "dht22") == 0) {
         // DHT11/DHT22 温湿度传感器
@@ -1540,47 +1554,34 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         }
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER
     } else {
-        // 尝试通过 DriverRegistry 查找注册的驱动（BMP280/MPU6050 等）
-        ISensorDriver* driver = FastBee::DriverRegistry::getInstance().createDriver(category);
-        if (driver) {
-            PeripheralConfig cfg;
-            uint8_t pin = pm.getPeripheralSnapshot(String(periphId), cfg) ? cfg.getPrimaryPin() : 0;
-            String driverParamsBuffer;
-            const char* driverParams = nullptr;
-            JsonVariantConst driverParamsNode = doc["driverParams"];
-            if (driverParamsNode.is<const char*>()) {
-                driverParams = driverParamsNode.as<const char*>();
-            } else if (driverParamsNode.is<JsonObjectConst>() || driverParamsNode.is<JsonArrayConst>()) {
-                serializeJson(driverParamsNode, driverParamsBuffer);
-                driverParams = driverParamsBuffer.c_str();
-            }
-            if (!driver->init(pin, driverParams)) {
-                LOGGER.warningf("[PeriphExec] Sensor read: driver '%s' init failed", category);
-                delete driver;
-                return false;
-            }
-            SensorReading reading;
-            if (!driver->read(reading)) {
-                LOGGER.warningf("[PeriphExec] Sensor read: driver '%s' read failed", category);
-                driver->deinit();
-                delete driver;
-                return false;
-            }
-            // 根据 dataField 选择通道
-            uint8_t ch = 0;
-            for (uint8_t i = 0; i < reading.channelCount; i++) {
-                if (strcmp(dataField, driver->getChannelName(i)) == 0) {
-                    ch = i;
-                    break;
-                }
-            }
-            rawValue = reading.values[ch];
-            driver->deinit();
-            delete driver;
-        } else {
-            LOGGER.warningf("[PeriphExec] Sensor read: unknown category '%s'", category);
+        PeripheralConfig cfg;
+        const bool hasConfig = pm.getPeripheralSnapshot(String(periphId), cfg);
+        const uint8_t pin = hasConfig ? cfg.getPrimaryPin() : 0;
+        String driverParamsBuffer;
+        JsonVariantConst driverParamsNode = doc["driverParams"];
+        if (driverParamsNode.is<const char*>()) {
+            driverParamsBuffer = driverParamsNode.as<const char*>();
+        } else if (driverParamsNode.is<JsonObjectConst>() ||
+                   driverParamsNode.is<JsonArrayConst>()) {
+            serializeJson(driverParamsNode, driverParamsBuffer);
+        } else if (hasConfig && cfg.type == PeripheralType::SENSOR_GENERIC &&
+                   cfg.params.sensor.driver[0] != '\0') {
+            JsonDocument paramsDoc;
+            paramsDoc["addr"] = cfg.params.sensor.address;
+            if (cfg.params.sensor.mode == 1) paramsDoc["mode"] = "gyro";
+            serializeJson(paramsDoc, driverParamsBuffer);
+        }
+
+        String sensorError;
+        if (!FastBee::SensorDriverCache::instance().readChannel(
+                String(periphId), category, pin,
+                driverParamsBuffer.isEmpty() ? nullptr : driverParamsBuffer.c_str(),
+                dataField, rawValue, detectedUnit, sensorError)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: %s",
+                            sensorError.c_str());
             return false;
         }
+        if (strlen(unit) == 0 && !detectedUnit.isEmpty()) unit = detectedUnit.c_str();
     }
 
     float processed = rawValue * scaleFactor + offset;
@@ -1684,7 +1685,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             const char* configFiles[] = {
                 "/config/device.json", "/config/network.json", "/config/protocol.json",
                 "/config/features.json", "/config/users.json", "/config/auth.json",
-                "/config/system.json", "/config/mqtt.json", "/config/mqtt-backup.json",
+                "/config/system.json", "/config/ai.json", "/config/mqtt.json", "/config/mqtt-backup.json",
                 "/config/modbus.json", "/config/coap.json", "/config/http.json",
                 "/config/tcp.json", "/config/provision.json", "/config/ble_provision.json",
                 PERIPH_EXEC_CONFIG_FILE, "/config/rule_scripts.json",
@@ -1961,15 +1962,16 @@ bool PeriphExecExecutor::executeRuleControlAction(const ExecAction& action) {
     }
 
     bool enable = (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_ENABLE_EXEC_RULE));
-    bool ok = enable ? _manager->enableRule(ruleId) : _manager->disableRule(ruleId);
+    String errorMsg;
+    bool ok = enable ? _manager->enableRuleAndSave(ruleId, errorMsg)
+                     : _manager->disableRuleAndSave(ruleId, errorMsg);
     if (ok) {
-        // 状态变化后持久化
-        _manager->saveConfiguration();
         LOGGER.infof("[PeriphExec] Rule control: %s rule '%s' success",
                      enable ? "enable" : "disable", ruleId.c_str());
     } else {
-        LOGGER.warningf("[PeriphExec] Rule control: %s rule '%s' failed (not found)",
-                        enable ? "enable" : "disable", ruleId.c_str());
+        LOGGER.warningf("[PeriphExec] Rule control: %s rule '%s' failed: %s",
+                        enable ? "enable" : "disable", ruleId.c_str(),
+                        errorMsg.isEmpty() ? "unknown error" : errorMsg.c_str());
     }
     return ok;
 }

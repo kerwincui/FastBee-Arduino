@@ -1,9 +1,6 @@
 <!-- 网络设置页面 -->
 <div id="network-page" class="page page-layout-flat">
     <div class="fb-card">
-        <div class="fb-card-header">
-            <h2 class="fb-card-title" id="network-title">网络设置</h2>
-        </div>
         <div class="fb-card-body">
             <!-- 网络连接状态面板 -->
             <div id="network-status-card" class="fb-status-card fb-mb-3">
@@ -17,27 +14,27 @@
                     <div class="status-grid">
                         <div class="status-item">
                             <span class="status-label">连接状态</span>
-                            <span id="wifi-status-badge" class="status-badge status-disconnected">未连接</span>
+                            <span id="wifi-status-badge" class="status-badge status-detecting">检测中</span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">网络模式</span>
-                            <span id="wifi-mode-display" class="status-value">--</span>
+                            <span id="wifi-mode-display" class="status-value fb-skeleton-text" aria-label="检测中"></span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">WiFi名称</span>
-                            <span id="wifi-ssid-display" class="status-value">--</span>
+                            <span id="wifi-ssid-display" class="status-value fb-skeleton-text" aria-label="检测中"></span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">IP地址</span>
-                            <span id="wifi-ip-display" class="status-value">--</span>
+                            <span id="wifi-ip-display" class="status-value fb-skeleton-text" aria-label="检测中"></span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">信号强度</span>
-                            <span id="wifi-signal-display" class="status-value">--</span>
+                            <span id="wifi-signal-display" class="status-value fb-skeleton-text" aria-label="检测中"></span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">连接时长</span>
-                            <span id="wifi-uptime-display" class="status-value">--</span>
+                            <span id="wifi-uptime-display" class="status-value fb-skeleton-text" aria-label="检测中"></span>
                         </div>
                     </div>
                 </div>
@@ -47,7 +44,7 @@
                     <div class="status-grid">
                         <div class="status-item">
                             <span class="status-label">连接状态</span>
-                            <span id="eth-status-badge" class="status-badge status-disconnected">未连接</span>
+                            <span id="eth-status-badge" class="status-badge status-detecting">检测中</span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">IP地址</span>
@@ -81,7 +78,7 @@
                     <div class="status-grid">
                         <div class="status-item">
                             <span class="status-label">连接状态</span>
-                            <span id="cell-status-badge" class="status-badge status-disconnected">未连接</span>
+                            <span id="cell-status-badge" class="status-badge status-detecting">检测中</span>
                         </div>
                         <div class="status-item">
                             <span class="status-label">SIM卡状态</span>

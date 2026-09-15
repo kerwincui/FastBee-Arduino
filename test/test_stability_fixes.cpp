@@ -487,6 +487,7 @@ static void test_encoder_isr_static_slots() {
         "encoderCounters map (heap allocation in ISR path) must be removed");
 
     std::string src = readStabilitySrcFile("src/core/PeripheralManager.cpp");
+    src += readStabilitySrcFile("src/core/PeripheralManagerIo.cpp");
     if (src.empty()) {
         TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
         return;

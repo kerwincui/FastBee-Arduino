@@ -19,6 +19,7 @@
   #define CHIP_IS_CLASSIC_ESP32 1
   #define CHIP_IS_ESP32C3      0
   #define CHIP_IS_ESP32S3      0
+  #define CHIP_IS_ESP32C6      0
   #define CHIP_MAX_GPIO       39
   #define CHIP_HAS_DAC        1
   #define CHIP_HAS_TOUCH      1
@@ -31,6 +32,7 @@
   #define CHIP_IS_CLASSIC_ESP32 0
   #define CHIP_IS_ESP32C3      0
   #define CHIP_IS_ESP32S3      1
+  #define CHIP_IS_ESP32C6      0
   #define CHIP_MAX_GPIO       48
   #define CHIP_HAS_DAC        0
   #define CHIP_HAS_TOUCH      1
@@ -43,6 +45,7 @@
   #define CHIP_IS_CLASSIC_ESP32 0
   #define CHIP_IS_ESP32C3      1
   #define CHIP_IS_ESP32S3      0
+  #define CHIP_IS_ESP32C6      0
   #define CHIP_MAX_GPIO       21
   #define CHIP_HAS_DAC        0
   #define CHIP_HAS_TOUCH      0
@@ -55,6 +58,7 @@
   #define CHIP_IS_CLASSIC_ESP32 0
   #define CHIP_IS_ESP32C3      0
   #define CHIP_IS_ESP32S3      0
+  #define CHIP_IS_ESP32C6      1
   // C6 实际可用 GPIO 仅 0-23（24-30 为封装内部 Flash/PSRAM SPI，无外部焊盘）；
   // 旧值 30 会让 GPIO25-27 通过校验，对其寄存器操作直接触发 panic（2026-08-05 实测）。
   #define CHIP_MAX_GPIO       23
@@ -70,6 +74,7 @@
   #define CHIP_IS_CLASSIC_ESP32 1
   #define CHIP_IS_ESP32C3      0
   #define CHIP_IS_ESP32S3      0
+  #define CHIP_IS_ESP32C6      0
   #define CHIP_MAX_GPIO       39
   #define CHIP_HAS_DAC        1
   #define CHIP_HAS_TOUCH      1

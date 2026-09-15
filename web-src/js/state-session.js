@@ -109,8 +109,10 @@
     };
 
     AppState._bootDashboardAfterAuth = async function() {
+        var bootNavSeq = this._pageNavSeq || 0;
+        var dashboardReady = false;
         try {
-            await this._showAppPage();
+            dashboardReady = await this._showAppPage(bootNavSeq);
         } catch (e) {
             console.error('[Auth] Failed to prepare app shell:', e);
         }
@@ -125,31 +127,28 @@
             }
         }
 
-        this._loadModule('dashboard', () => {
-            var self = this;
-            if (typeof this.bootDashboardPage === 'function') {
-                this.bootDashboardPage();
-            } else {
-                this.renderDashboard();
-                setTimeout(function() {
-                    self.loadSystemMonitor();
-                }, 120);
-            }
-
-        });
+        if (dashboardReady && bootNavSeq === (this._pageNavSeq || 0) && this.currentPage === 'dashboard') {
+            this._loadModule('dashboard', () => {
+                if (bootNavSeq !== (this._pageNavSeq || 0) || this.currentPage !== 'dashboard') return;
+                var self = this;
+                if (typeof this.bootDashboardPage === 'function') {
+                    this.bootDashboardPage();
+                } else {
+                    this.renderDashboard();
+                    setTimeout(function() {
+                        if (bootNavSeq === (self._pageNavSeq || 0) && self.currentPage === 'dashboard') {
+                            self.loadSystemMonitor();
+                        }
+                    }, 120);
+                }
+            });
+        }
 
         var self = this;
-        setTimeout(function() {
-            self._loadModals();
-        }, 3000);
-
-        // Background page/API preloading is useful on larger targets but can
-        // starve the classic ESP32/C3 during repeated browser sessions. Read
-        // the public health snapshot first and only preload when there is a
-        // meaningful memory reserve (PSRAM is preferred when present).
-        setTimeout(function() {
-            var allowBackgroundPreload = function() {
-                return fetch('/api/health', { cache: 'no-store' })
+        var backgroundPreloadAllowance = null;
+        var allowBackgroundPreload = function() {
+            if (!backgroundPreloadAllowance) {
+                backgroundPreloadAllowance = fetch('/api/health', { cache: 'no-store' })
                     .then(function(resp) { return resp.ok ? resp.json() : null; })
                     .then(function(payload) {
                         var memory = payload && payload.data && payload.data.memory;
@@ -160,8 +159,31 @@
                         return Number(memory.heapFree || payload.data.freeHeap || 0) >= 64 * 1024;
                     })
                     .catch(function() { return false; });
-            };
+            }
+            return backgroundPreloadAllowance;
+        };
 
+        // Modal templates are fetched lazily on constrained targets. Pulling
+        // the full template bundle during login competes with the first page's
+        // runtime modules and can trigger an otherwise avoidable 503.
+        setTimeout(function() {
+            allowBackgroundPreload().then(function(allow) {
+                if (!allow) {
+                    console.info('[Preloader] modal templates deferred on constrained memory target');
+                    return;
+                }
+                self._loadModals().catch(function() {
+                    // PageLoader already logged the failure. Keep login usable;
+                    // the first modal action will retry the shared lazy request.
+                });
+            });
+        }, 3000);
+
+        // Background page/API preloading is useful on larger targets but can
+        // starve the classic ESP32/C3 during repeated browser sessions. Reuse
+        // the same health snapshot as modal preloading so login adds one small
+        // probe rather than two competing requests.
+        setTimeout(function() {
             allowBackgroundPreload().then(function(allow) {
                 if (!allow) {
                     console.info('[Preloader] skipped on constrained memory target');
@@ -186,18 +208,38 @@
      * 显示主应用页面
      * @private
      */
-    AppState._showAppPage = async function() {
+    AppState._showAppPage = async function(expectedNavSeq) {
+        var appNavSeq = expectedNavSeq === undefined ? (this._pageNavSeq || 0) : expectedNavSeq;
         document.getElementById('login-page').style.display = 'none';
         document.getElementById('app-container').classList.remove('fb-hidden');
         if (location.pathname !== '/' || location.hash) {
             history.replaceState(null, '', '/');
         }
-        await this.loadPage('dashboard-page');
+        // Cache the first page without mounting it. A user can select another
+        // menu item while this request is in flight; only the current
+        // navigation is allowed to add a page root to #content-area.
+        await this.loadPage('dashboard-page', { mount: false });
+        var skeleton = document.getElementById('skeleton-screen');
+        if (skeleton) skeleton.remove();
+        if (appNavSeq !== (this._pageNavSeq || 0)) return false;
+
+        if (typeof PageLoader !== 'undefined' && typeof PageLoader.unmountPages === 'function') {
+            PageLoader.unmountPages();
+        }
+        var dashboardPage = (typeof PageLoader !== 'undefined' && typeof PageLoader.mountPage === 'function')
+            ? PageLoader.mountPage('dashboard-page')
+            : document.getElementById('dashboard-page');
+        if (!dashboardPage && typeof PageLoader !== 'undefined' &&
+            typeof PageLoader._renderUnavailablePage === 'function') {
+            PageLoader._renderUnavailablePage('dashboard-page', new Error('Dashboard page unavailable'));
+            dashboardPage = document.getElementById('dashboard-page');
+        }
+        if (!dashboardPage) return false;
+        dashboardPage.classList.add('active');
+        this.currentPage = 'dashboard';
         if (typeof this._refreshDeveloperModeState === 'function') {
             this._refreshDeveloperModeState({ silent: true, noCache: true });
         }
-        var skeleton = document.getElementById('skeleton-screen');
-        if (skeleton) skeleton.remove();
         setTimeout(function() {
             var sidebarLogo = document.getElementById('sidebar-logo');
             if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
@@ -205,6 +247,7 @@
             if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
         }, 2000);
         if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
+        return !dashboardPage.querySelector('[data-page-fallback]');
     };
 
     // ============ 登录 ============
@@ -301,8 +344,10 @@
     /**
      * 显示修改密码模态框
      */
-    AppState.showChangePasswordModal = function() {
-        this.showModal('change-password-modal');
+    AppState.showChangePasswordModal = async function() {
+        var modal = await this._ensureModalForAction('change-password-modal');
+        if (!modal) return;
+        this.showModal(modal);
         ['current-password-input', 'new-password-input', 'confirm-password-input'].forEach(id => {
             const el = document.getElementById(id); if (el) el.value = '';
         });

@@ -6,8 +6,17 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
+#include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
+
+namespace {
+bool requireUserAdministration(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
+    if (FastBee::RuntimeFeatureManager::instance().shouldEnable("userAdmin")) return true;
+    ctx->sendError(request, 503, "User administration disabled by runtime feature config");
+    return false;
+}
+}  // namespace
 
 UserRouteHandler::UserRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -26,6 +35,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/users/unlock-account", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!requireUserAdministration(ctx, request)) return;
         String username = ctx->getParamValue(request, "username", "");
         if (username.isEmpty()) {
             ctx->sendBadRequest(request, "Username is required");
@@ -51,6 +61,8 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
     // ESPAsyncWebServer 按注册顺序匹配，该 prefix 路由不会吸走这些固定路径。
     server->on(AsyncURIMatcher::prefix("/api/users/"), HTTP_GET,
               [this](AsyncWebServerRequest* request) {
+        if (!ctx->requireAuth(request)) return;
+        if (!requireUserAdministration(ctx, request)) return;
         // 从 URL 路径提取用户名
         String path = request->url();
         int lastSlash = path.lastIndexOf('/');
@@ -88,6 +100,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
 
 void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "User list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -160,6 +173,7 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
 
 void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String password = ctx->getParamValue(request, "password", "");
@@ -200,6 +214,7 @@ void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
 
 void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     if (username.isEmpty()) {
@@ -246,6 +261,7 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
 
 void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     String path = request->url();
     int lastSlash = path.lastIndexOf('/');
@@ -285,6 +301,7 @@ void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
 
 void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Online user list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -319,6 +336,7 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
 
 void UserRouteHandler::handleResetPassword(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!requireUserAdministration(ctx, request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String newPassword = ctx->getParamValue(request, "newPassword", "");

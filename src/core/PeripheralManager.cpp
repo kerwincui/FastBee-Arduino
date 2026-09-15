@@ -11,8 +11,10 @@
 #include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
 #include "core/FeatureBudget.h"
+#include "core/SensorDriverCache.h"
 #include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
+#include "peripherals/SDCardManager.h"
 #include <driver/gpio.h>
 #include <esp_heap_caps.h>
 // WS2812 NeoPixel 支持：使用 Adafruit_NeoPixel 库（跨芯片兼容）
@@ -31,6 +33,15 @@
 #endif
 #if FASTBEE_ENABLE_RF_LEARN
 #include "peripherals/drivers/RFLearnDriver.h"
+#endif
+#if FASTBEE_ENABLE_DS1302
+#include "peripherals/drivers/DS1302Driver.h"
+#endif
+#if FASTBEE_ENABLE_LCD1602
+#include "peripherals/drivers/LCD1602Driver.h"
+#endif
+#if FASTBEE_ENABLE_RFID
+#include "peripherals/drivers/RFIDDriver.h"
 #endif
 #include <Wire.h>
 #include <SPI.h>
@@ -69,6 +80,7 @@ constexpr uint16_t RADAR_DEFAULT_HOLD_MS = 2000;
 constexpr uint32_t SENSOR_DEFAULT_SAMPLE_INTERVAL_MS = 1000;
 constexpr uint32_t SENSOR_MIN_SAMPLE_INTERVAL_MS = 100;
 constexpr uint32_t SENSOR_MAX_SAMPLE_INTERVAL_MS = 86400000UL;
+constexpr uint32_t SERVO_RELEASE_DELAY_MS = 500;
 
 // Optional drivers are the first recovery targets because they may retain
 // display/RMT buffers or bus-driver state. GPIO, ADC and UART remain available
@@ -165,14 +177,6 @@ uint8_t clampRfBitLength(uint8_t bitLength) {
     return bitLength;
 }
 
-bool isPrintablePayload(const uint8_t* data, size_t len) {
-    if (!data || len == 0 || len > 64) return false;
-    for (size_t i = 0; i < len; i++) {
-        if (data[i] < 32 || data[i] > 126) return false;
-    }
-    return true;
-}
-
 bool parseRfCodeText(String text, uint32_t& code, uint8_t& inferredBits) {
     text.trim();
     text.replace(" ", "");
@@ -264,71 +268,42 @@ HardwareSerial* serialForPort(uint8_t port) {
 }
 
 uint32_t uartSerialConfig(const PeripheralConfig& config) {
-    uint8_t parity = config.params.uart.parity;
-    uint8_t stopBits = config.params.uart.stopBits;
-    if (parity == 1) return stopBits == 2 ? SERIAL_8O2 : SERIAL_8O1;
-    if (parity == 2) return stopBits == 2 ? SERIAL_8E2 : SERIAL_8E1;
-    return stopBits == 2 ? SERIAL_8N2 : SERIAL_8N1;
+    const uint8_t dataBits = config.params.uart.dataBits;
+    const uint8_t parity = config.params.uart.parity;
+    const bool twoStopBits = config.params.uart.stopBits == 2;
+
+    switch (dataBits) {
+        case 5:
+            if (parity == 1) return twoStopBits ? SERIAL_5O2 : SERIAL_5O1;
+            if (parity == 2) return twoStopBits ? SERIAL_5E2 : SERIAL_5E1;
+            return twoStopBits ? SERIAL_5N2 : SERIAL_5N1;
+        case 6:
+            if (parity == 1) return twoStopBits ? SERIAL_6O2 : SERIAL_6O1;
+            if (parity == 2) return twoStopBits ? SERIAL_6E2 : SERIAL_6E1;
+            return twoStopBits ? SERIAL_6N2 : SERIAL_6N1;
+        case 7:
+            if (parity == 1) return twoStopBits ? SERIAL_7O2 : SERIAL_7O1;
+            if (parity == 2) return twoStopBits ? SERIAL_7E2 : SERIAL_7E1;
+            return twoStopBits ? SERIAL_7N2 : SERIAL_7N1;
+        case 8:
+        default:
+            if (parity == 1) return twoStopBits ? SERIAL_8O2 : SERIAL_8O1;
+            if (parity == 2) return twoStopBits ? SERIAL_8E2 : SERIAL_8E1;
+            return twoStopBits ? SERIAL_8N2 : SERIAL_8N1;
+    }
 }
 
-bool isUsbSerialPins(uint8_t rxPin, uint8_t txPin) {
-    // Normal order is RX,TX. The legacy default stored UART0 as TX,RX, so accept both.
-    return (rxPin == 3 && txPin == 1) || (rxPin == 1 && txPin == 3);
+uint16_t boundedUartAvailable(HardwareSerial* serial) {
+    if (!serial) return 0;
+    const int available = serial->available();
+    if (available <= 0) return 0;
+    return available > UINT16_MAX ? UINT16_MAX : static_cast<uint16_t>(available);
 }
 
 bool isProtocolOwnedUartId(const String& id) {
     String lowered = id;
     lowered.toLowerCase();
     return lowered.startsWith("modbus") || lowered.startsWith("rs485");
-}
-
-struct ModbusMotorLimitResult {
-    bool enabled = false;
-    bool allowed = true;
-    bool isMove = false;
-    uint16_t pulse = 0;
-    int32_t nextPosition = 0;
-};
-
-ModbusMotorLimitResult evaluateModbusMotorLimit(const PeripheralConfig& config, uint16_t regAddr, uint16_t value) {
-    ModbusMotorLimitResult r;
-    r.nextPosition = config.params.modbus.motorCurrentPosition;
-    if (config.params.modbus.deviceType != 3) return r;
-    if (config.params.modbus.motorMaxPosition <= config.params.modbus.motorMinPosition) return r;
-
-    const bool forward = (regAddr == config.params.modbus.motorRegs[0]);
-    const bool reverse = (regAddr == config.params.modbus.motorRegs[1]);
-    if (!forward && !reverse) return r;
-
-    r.enabled = true;
-    r.isMove = true;
-    int32_t desiredPulse = value > 1 ? value : 0;
-    if (desiredPulse <= 0 && config.params.modbus.motorLastPulse > 0) {
-        desiredPulse = config.params.modbus.motorLastPulse;
-    }
-    if (desiredPulse <= 0 && config.params.modbus.motorMoveStep > 0) {
-        desiredPulse = config.params.modbus.motorMoveStep;
-    }
-    if (desiredPulse <= 0) {
-        r.allowed = false;
-        return r;
-    }
-
-    int32_t room = forward
-        ? (config.params.modbus.motorMaxPosition - config.params.modbus.motorCurrentPosition)
-        : (config.params.modbus.motorCurrentPosition - config.params.modbus.motorMinPosition);
-    if (room <= 0) {
-        r.allowed = false;
-        return r;
-    }
-
-    if (desiredPulse > room) desiredPulse = room;
-    if (desiredPulse > 65535) desiredPulse = 65535;
-    r.pulse = static_cast<uint16_t>(desiredPulse);
-    r.nextPosition = forward
-        ? config.params.modbus.motorCurrentPosition + desiredPulse
-        : config.params.modbus.motorCurrentPosition - desiredPulse;
-    return r;
 }
 
 void stepperTickerCallback(PeripheralManager::StepperTickerData* data) {
@@ -594,6 +569,38 @@ bool PeripheralManager::initialize() {
 
 // ========== 外设管理（增删改查） ==========
 
+bool PeripheralManager::validateUartCapacity(const PeripheralConfig& candidate,
+                                             const String& excludeId,
+                                             String& errorMsg) const {
+    if (candidate.type != PeripheralType::UART || !candidate.enabled ||
+        isProtocolOwnedUartId(candidate.id)) {
+        return true;
+    }
+
+#if CHIP_UART_COUNT <= 1
+    errorMsg = "UART_RESOURCE_EXHAUSTED: UART0 reserved for logging/USB; no generic UART port available";
+    return false;
+#else
+    size_t enabledGenericUarts = 0;
+    for (const auto& pair : peripherals) {
+        if (!excludeId.isEmpty() && pair.first == excludeId) continue;
+        const PeripheralConfig& existing = pair.second;
+        if (existing.enabled && existing.type == PeripheralType::UART &&
+            !isProtocolOwnedUartId(existing.id)) {
+            ++enabledGenericUarts;
+        }
+    }
+
+    const size_t genericCapacity = static_cast<size_t>(CHIP_UART_COUNT - 1);
+    if (enabledGenericUarts >= genericCapacity) {
+        errorMsg = String("UART_RESOURCE_EXHAUSTED: all ") + String(genericCapacity) +
+                   " generic UART port(s) are in use; UART0 is reserved for logging/USB";
+        return false;
+    }
+    return true;
+#endif
+}
+
 bool PeripheralManager::addPeripheral(const PeripheralConfig& config) {
     String errorMsg;
     return addPeripheral(config, errorMsg);
@@ -612,6 +619,13 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& er
     if (hasPeripheral(config.id)) {
         errorMsg = String("外设 ID '") + config.id + "' 已存在";
         LOG_ERRORF("Peripheral Manager: Peripheral with ID '%s' already exists", config.id.c_str());
+        return false;
+    }
+
+    // UART0 is never borrowed by generic peripherals. Reject capacity errors
+    // before mutating the in-memory configuration or attempting persistence.
+    if (!validateUartCapacity(config, "", errorMsg)) {
+        LOG_ERRORF("Peripheral Manager: %s", errorMsg.c_str());
         return false;
     }
 
@@ -673,7 +687,16 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& er
 
     // 如果启用，初始化硬件
     if (config.enabled) {
-        initHardware(config.id);
+        if (!initHardware(config.id)) {
+            teardownHardware(config);
+            runtimeStates.erase(config.id);
+            peripherals.erase(config.id);
+            rebuildPinMapping();
+            errorMsg = String("外设 '") + config.id + "' 硬件初始化失败";
+            LOG_ERRORF("Peripheral Manager: Add '%s' rolled back after hardware init failure",
+                       config.id.c_str());
+            return false;
+        }
     }
 
     return true;
@@ -701,6 +724,11 @@ bool PeripheralManager::updatePeripheral(const String& id, const PeripheralConfi
     const String targetId = config.id;
     if (targetId != id && peripherals.find(targetId) != peripherals.end()) {
         errorMsg = String("外设 ID '") + targetId + "' 已存在";
+        return false;
+    }
+
+    if (!validateUartCapacity(config, id, errorMsg)) {
+        LOG_ERRORF("Peripheral Manager: %s", errorMsg.c_str());
         return false;
     }
 
@@ -756,10 +784,16 @@ bool PeripheralManager::updatePeripheral(const String& id, const PeripheralConfi
             runtimeStates[id] = restored;
         }
         updatePinMapping(id, oldConfig);
-        if (oldConfig.enabled && !initHardware(id)) {
+        const bool rollbackRestored = !oldConfig.enabled || initHardware(id);
+        if (!rollbackRestored) {
+            errorMsg = String("ROLLBACK_FAILED: 外设 '") + targetId +
+                       "' 硬件初始化失败，且原外设 '" + id +
+                       "' 无法重新初始化";
             LOG_ERRORF("Peripheral Manager: rollback reinit failed for '%s'", id.c_str());
+        } else {
+            errorMsg = String("HARDWARE_INIT_FAILED: 外设 '") + targetId +
+                       "' 硬件初始化失败，已恢复原配置";
         }
-        errorMsg = String("外设 '") + targetId + "' 硬件初始化失败，已恢复原配置";
         LOG_ERRORF("Peripheral Manager: Update '%s' rolled back after hardware init failure", id.c_str());
         return false;
     }
@@ -891,6 +925,29 @@ bool PeripheralManager::enablePeripheral(const String& id) {
     auto config = getPeripheral(id);
     if (!config) return false;
 
+    const PeripheralConfig previousConfig = *config;
+    const size_t previousMemorySuspendedCount = _memorySuspendedCount;
+    PeripheralRuntimeState previousState;
+    bool hadPreviousState = false;
+    auto stateIt = runtimeStates.find(id);
+    if (stateIt != runtimeStates.end()) {
+        previousState = stateIt->second;
+        hadPreviousState = true;
+        if (config->enabled &&
+            stateIt->second.status == PeripheralStatus::PERIPHERAL_INITIALIZED) {
+            lastEnableError = "";
+            return true;
+        }
+    }
+
+    String capacityError;
+    if (!validateUartCapacity(*config, id, capacityError)) {
+        lastEnableError = capacityError;
+        LOG_ERRORF("Peripheral Manager: Cannot enable '%s': %s",
+                   id.c_str(), capacityError.c_str());
+        return false;
+    }
+
     // 启用前检查引脚冲突（禁用状态下允许共享引脚定义，此处重新校验）
     if (!config->isModbusPeripheral()) {
         for (int i = 0; i < config->pinCount && i < 8; i++) {
@@ -907,14 +964,25 @@ bool PeripheralManager::enablePeripheral(const String& id) {
 
     config->enabled = true;
 
-    if (runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].status = PeripheralStatus::PERIPHERAL_ENABLED;
-        runtimeStates[id].memorySuspended = false;
+    if (stateIt != runtimeStates.end()) {
+        if (stateIt->second.memorySuspended && _memorySuspendedCount > 0) {
+            _memorySuspendedCount--;
+        }
+        stateIt->second.status = PeripheralStatus::PERIPHERAL_ENABLED;
+        stateIt->second.memorySuspended = false;
     }
 
     if (!initHardware(id)) {
         lastEnableError = "Hardware init failed for '" + id + "'";
-        config->enabled = false;
+        teardownHardware(*config);
+        *config = previousConfig;
+        _memorySuspendedCount = previousMemorySuspendedCount;
+        if (hadPreviousState) {
+            runtimeStates[id] = previousState;
+        } else {
+            runtimeStates.erase(id);
+        }
+        rebuildPinMapping();
         return false;
     }
     lastEnableError = "";
@@ -937,6 +1005,132 @@ bool PeripheralManager::disablePeripheral(const String& id) {
     }
 
     return deinitHardware(id);
+}
+
+bool PeripheralManager::applyMutationTransactional(
+    const String& snapshotId, const String& resultId,
+    const std::function<bool(String&)>& mutation, String& errorMsg) {
+    RecursiveMutexGuard lock(_mutex);
+
+    MutationSnapshot snapshot;
+    snapshot.id = snapshotId;
+    snapshot.memorySuspendedCount = _memorySuspendedCount;
+    auto configIt = peripherals.find(snapshotId);
+    if (configIt != peripherals.end()) {
+        snapshot.existed = true;
+        snapshot.config = configIt->second;
+    }
+    auto stateIt = runtimeStates.find(snapshotId);
+    if (stateIt != runtimeStates.end()) {
+        snapshot.hadRuntimeState = true;
+        snapshot.runtimeState = stateIt->second;
+    }
+
+    String mutationError;
+    if (!mutation(mutationError)) {
+        errorMsg = mutationError;
+        return false;
+    }
+    if (saveConfiguration()) {
+        errorMsg = "";
+        return true;
+    }
+
+    String rollbackError;
+    const bool restored = restoreMutationSnapshot(snapshot, resultId, rollbackError);
+    if (restored) {
+        errorMsg = "PERSISTENCE_WRITE_FAILED: 配置未保存，运行态已回滚";
+    } else {
+        errorMsg = "PERSISTENCE_WRITE_FAILED: 配置未保存，运行态回滚失败";
+        errorMsg += String("; ROLLBACK_FAILED: ") + rollbackError;
+    }
+    return false;
+}
+
+bool PeripheralManager::restoreMutationSnapshot(const MutationSnapshot& snapshot,
+                                                const String& resultId,
+                                                String& errorMsg) {
+    RecursiveMutexGuard lock(_mutex);
+
+    auto removeCurrent = [this](const String& id) {
+        auto it = peripherals.find(id);
+        if (it == peripherals.end()) return;
+        teardownHardware(it->second);
+        peripherals.erase(it);
+        runtimeStates.erase(id);
+    };
+    removeCurrent(resultId);
+    if (snapshot.id != resultId) removeCurrent(snapshot.id);
+
+    _memorySuspendedCount = snapshot.memorySuspendedCount;
+    if (snapshot.existed) {
+        peripherals[snapshot.id] = snapshot.config;
+        if (snapshot.hadRuntimeState) {
+            runtimeStates[snapshot.id] = snapshot.runtimeState;
+        } else {
+            PeripheralRuntimeState state;
+            state.id = snapshot.id;
+            state.status = snapshot.config.enabled ? PeripheralStatus::PERIPHERAL_ENABLED
+                                                   : PeripheralStatus::PERIPHERAL_DISABLED;
+            runtimeStates[snapshot.id] = state;
+        }
+    }
+    rebuildPinMapping();
+
+    if (snapshot.existed && snapshot.config.enabled &&
+        !(snapshot.hadRuntimeState && snapshot.runtimeState.memorySuspended)) {
+        if (!initHardware(snapshot.id)) {
+            errorMsg = String("无法重新初始化外设 '") + snapshot.id + "'";
+            return false;
+        }
+    }
+    errorMsg = "";
+    return true;
+}
+
+bool PeripheralManager::addPeripheralAndSave(const PeripheralConfig& config, String& errorMsg) {
+    return applyMutationTransactional(config.id, config.id,
+        [this, &config](String& mutationError) {
+            return addPeripheral(config, mutationError);
+        }, errorMsg);
+}
+
+bool PeripheralManager::updatePeripheralAndSave(const String& id,
+                                                const PeripheralConfig& config,
+                                                String& errorMsg) {
+    return applyMutationTransactional(id, config.id,
+        [this, &id, &config](String& mutationError) {
+            return updatePeripheral(id, config, mutationError);
+        }, errorMsg);
+}
+
+bool PeripheralManager::removePeripheralAndSave(const String& id, String& errorMsg) {
+    return applyMutationTransactional(id, id,
+        [this, &id](String& mutationError) {
+            if (removePeripheral(id)) return true;
+            mutationError = String("外设 '") + id + "' 不存在";
+            return false;
+        }, errorMsg);
+}
+
+bool PeripheralManager::enablePeripheralAndSave(const String& id, String& errorMsg) {
+    return applyMutationTransactional(id, id,
+        [this, &id](String& mutationError) {
+            if (enablePeripheral(id)) return true;
+            mutationError = lastEnableError.isEmpty()
+                ? String("无法启用外设 '") + id + "'"
+                : lastEnableError;
+            return false;
+        }, errorMsg);
+}
+
+bool PeripheralManager::disablePeripheralAndSave(const String& id, String& errorMsg) {
+    return applyMutationTransactional(id, id,
+        [this, &id](String& mutationError) {
+            if (disablePeripheral(id)) return true;
+            mutationError = String("无法禁用外设 '") + id + "'";
+            return false;
+        }, errorMsg);
 }
 
 bool PeripheralManager::isPeripheralEnabled(const String& id) const {
@@ -968,6 +1162,21 @@ bool PeripheralManager::getRuntimeStateSnapshot(const String& id, PeripheralRunt
     auto it = runtimeStates.find(id);
     if (it == runtimeStates.end()) return false;
     snapshot = it->second;
+
+    auto configIt = peripherals.find(id);
+    auto uartIt = uartPortById.find(id);
+    if (configIt != peripherals.end() && configIt->second.type == PeripheralType::UART) {
+        if (uartIt != uartPortById.end()) {
+            HardwareSerial* serial = serialForPort(uartIt->second);
+            snapshot.state.comm.isConnected = serial != nullptr;
+            snapshot.state.comm.port = uartIt->second;
+            snapshot.state.comm.rxAvailable = boundedUartAvailable(serial);
+        } else {
+            snapshot.state.comm.isConnected = false;
+            snapshot.state.comm.port = UART_PORT_UNASSIGNED;
+            snapshot.state.comm.rxAvailable = 0;
+        }
+    }
     return true;
 }
 
@@ -1137,6 +1346,7 @@ size_t PeripheralManager::restoreOptionalAfterMemory() {
 static const char* deferredFeatureKeyForType(PeripheralType type) {
     switch (type) {
         case PeripheralType::IR_RECEIVER: return "irRemote";
+        case PeripheralType::RFID_MFRC522: return "rfid";
         default: return nullptr;
     }
 }
@@ -1326,7 +1536,7 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
             return GPIOState::STATE_UNDEFINED;
         }
         portENTER_CRITICAL(&_encoderMux);
-        int32_t cnt = slot->count;
+        int64_t cnt = slot->count;
         portEXIT_CRITICAL(&_encoderMux);
         return cnt != 0 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
@@ -1378,13 +1588,7 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     // 编码器：支持重置计数器（写入LOW表示重置）
     if (config->type == PeripheralType::ENCODER) {
         if (state == GPIOState::STATE_LOW) {
-            EncoderIsrSlot* slot = findEncoderSlot(peripheralId);
-            if (slot) {
-                portENTER_CRITICAL(&_encoderMux);
-                slot->count = 0;
-                portEXIT_CRITICAL(&_encoderMux);
-            }
-            LOG_INFOF("Peripheral Manager: Encoder '%s' counter reset to 0", peripheralId.c_str());
+            return resetEncoder(peripheralId);
         }
         return true;
     }
@@ -1430,7 +1634,7 @@ bool PeripheralManager::writePWM(uint8_t pin, uint32_t dutyCycle) {
 bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle) {
     RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
-    if (!config) return false;
+    if (!config || !config->enabled) return false;
 
     // Modbus PWM 外设：通过委托回调写入寄存器
     if (config->isModbusPeripheral()) {
@@ -1446,14 +1650,20 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
         return false;
     }
 
-    uint8_t pwmResolution = config->params.gpio.pwmResolution;
+    if (config->type == PeripheralType::PWM_SERVO && !attachServoSignal(*config)) {
+        return false;
+    }
+
+    uint8_t pwmResolution = config->type == PeripheralType::PWM_SERVO
+        ? config->params.servo.pwmResolution
+        : config->params.gpio.pwmResolution;
     if (pwmResolution < 1 || pwmResolution > 16) pwmResolution = 8;
     uint32_t maxVal = (1UL << pwmResolution) - 1UL;
 
     // AO 模拟量输出模式：输入值视为 0-100% 百分比，线性映射到
     // [aoMinPct, aoMaxPct] 区间的占空比（无 DAC 芯片的工业 AO 方案）。
     // 边界钳位：超范围输入收敛到区间两端，避免执行器过冲。
-    if (config->params.gpio.aoMode) {
+    if (config->type != PeripheralType::PWM_SERVO && config->params.gpio.aoMode) {
         uint32_t duty = mapAnalogOutputPercent(
             dutyCycle,
             config->params.gpio.aoMinPct,
@@ -1463,7 +1673,52 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
     }
 
     uint32_t duty = dutyCycle > maxVal ? maxVal : dutyCycle;
-    return ledcWrite(config->getPrimaryPin(), duty);
+    const bool success = ledcWrite(config->getPrimaryPin(), duty);
+    if (success) {
+        auto stateIt = runtimeStates.find(peripheralId);
+        if (stateIt != runtimeStates.end()) {
+            stateIt->second.lastActivity = millis();
+            if (config->type == PeripheralType::PWM_SERVO) {
+                stateIt->second.state.servo.signalAttached = true;
+            }
+        }
+        if (config->type == PeripheralType::PWM_SERVO && config->params.servo.releaseAfterMove) {
+            scheduleServoRelease(peripheralId);
+        }
+    }
+    return success;
+}
+
+bool PeripheralManager::writeServoAngle(const String& peripheralId, int angle) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(peripheralId);
+    if (!config || !config->enabled || config->type != PeripheralType::PWM_SERVO ||
+        !isServoConfigValid(*config)) {
+        return false;
+    }
+
+    if (angle < config->params.servo.minAngle) angle = config->params.servo.minAngle;
+    if (angle > config->params.servo.maxAngle) angle = config->params.servo.maxAngle;
+    if (!attachServoSignal(*config)) return false;
+
+    const uint16_t pulseUs = servoAngleToPulseUs(
+        angle, config->params.servo.minAngle, config->params.servo.maxAngle,
+        config->params.servo.minPulse, config->params.servo.maxPulse,
+        config->params.servo.inverted);
+    const uint32_t duty = servoPulseUsToDuty(
+        pulseUs, config->params.servo.frequency, config->params.servo.pwmResolution);
+    if (!ledcWrite(config->getPrimaryPin(), duty)) return false;
+
+    auto stateIt = runtimeStates.find(peripheralId);
+    if (stateIt != runtimeStates.end()) {
+        stateIt->second.status = PeripheralStatus::PERIPHERAL_RUNNING;
+        stateIt->second.lastActivity = millis();
+        stateIt->second.state.servo.currentAngle = static_cast<int16_t>(angle);
+        stateIt->second.state.servo.currentPulseUs = pulseUs;
+        stateIt->second.state.servo.signalAttached = true;
+    }
+    if (config->params.servo.releaseAfterMove) scheduleServoRelease(peripheralId);
+    return true;
 }
 
 uint16_t PeripheralManager::readAnalog(uint8_t pin) {
@@ -1601,6 +1856,7 @@ uint16_t PeripheralManager::adcFilterRead(uint8_t pin, uint8_t samples, uint8_t 
 // ========== 持久化 ==========
 
 bool PeripheralManager::saveConfiguration() {
+    RecursiveMutexGuard lock(_mutex);
     FastBeeJsonDocLarge doc;
     JsonArray periphs = doc["peripherals"].to<JsonArray>();
 
@@ -1633,6 +1889,10 @@ bool PeripheralManager::saveConfiguration() {
             params["stopBits"] = config.params.uart.stopBits;
             params["parity"] = config.params.uart.parity;
         }
+        else if (config.type == PeripheralType::ENCODER) {
+            params["resolution"] = config.params.encoder.resolution;
+            params["useInterrupt"] = config.params.encoder.useInterrupt;
+        }
         else if (config.type == PeripheralType::I2C) {
             params["frequency"] = config.params.i2c.frequency;
             params["address"] = config.params.i2c.address;
@@ -1642,6 +1902,18 @@ bool PeripheralManager::saveConfiguration() {
             params["frequency"] = config.params.spi.frequency;
             params["mode"] = config.params.spi.mode;
             params["msbFirst"] = config.params.spi.msbFirst;
+        }
+        else if (config.type == PeripheralType::PWM_SERVO) {
+            params["frequency"] = config.params.servo.frequency;
+            params["minPulse"] = config.params.servo.minPulse;
+            params["maxPulse"] = config.params.servo.maxPulse;
+            params["minAngle"] = config.params.servo.minAngle;
+            params["maxAngle"] = config.params.servo.maxAngle;
+            params["initialAngle"] = config.params.servo.initialAngle;
+            params["pwmChannel"] = config.params.servo.pwmChannel;
+            params["pwmResolution"] = config.params.servo.pwmResolution;
+            params["inverted"] = config.params.servo.inverted;
+            params["releaseAfterMove"] = config.params.servo.releaseAfterMove;
         }
         else if (config.isGPIOPeripheral() && !isAdcInputType(config.type)) {
             params["initialState"] = static_cast<int>(config.params.gpio.initialState);
@@ -1717,6 +1989,23 @@ bool PeripheralManager::saveConfiguration() {
             params["stepsPerRevolution"] = config.params.stepper.stepsPerRevolution;
             params["speed"] = config.params.stepper.speed;
         }
+        else if (config.type == PeripheralType::SDIO) {
+            params["interface"] = config.params.sdcard.interface;
+            params["frequency"] = config.params.sdcard.frequency;
+        }
+        else if (config.type == PeripheralType::DS1302_RTC) {
+            params["use24Hour"] = config.params.ds1302.use24Hour;
+            params["trickleCharge"] = config.params.ds1302.trickleCharge;
+        }
+        else if (config.type == PeripheralType::LCD1602) {
+            params["cols"] = config.params.lcd1602.cols;
+            params["rows"] = config.params.lcd1602.rows;
+            params["address"] = config.params.lcd1602.address;
+            params["backlight"] = config.params.lcd1602.backlight;
+        }
+        else if (config.type == PeripheralType::RFID_MFRC522) {
+            params["frequency"] = config.params.rfid.frequency;
+        }
         else if (config.type == PeripheralType::LCD) {
             params["width"]     = config.params.lcd.width;
             params["height"]    = config.params.lcd.height;
@@ -1749,20 +2038,41 @@ bool PeripheralManager::saveConfiguration() {
             if (interval < SENSOR_MIN_SAMPLE_INTERVAL_MS) interval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
             if (interval > SENSOR_MAX_SAMPLE_INTERVAL_MS) interval = SENSOR_MAX_SAMPLE_INTERVAL_MS;
             params["sampleInterval"] = interval;
+            if (config.params.sensor.driver[0] != '\0') {
+                params["driver"] = config.params.sensor.driver;
+                params["address"] = config.params.sensor.address;
+                params["mode"] = config.params.sensor.mode;
+                params["frequency"] = config.params.sensor.frequency;
+            }
         }
     }
 
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-
-    // 原子写入：先写临时文件再 rename，防止断电导致配置损坏
-    if (FileUtils::atomicWriteFile(PERIPHERAL_CONFIG_FILE, jsonStr)) {
-        LOG_INFO("Peripheral Manager: Configuration saved successfully");
-        return true;
-    } else {
-        LOG_ERROR("Peripheral Manager: Failed to save configuration (atomic write)");
+    if (doc.overflowed()) {
+        LOG_ERROR("Peripheral Manager: Configuration JSON overflowed; refusing partial save");
         return false;
     }
+
+    const size_t expected = measureJson(doc);
+    File out = FileUtils::openAtomicWrite(PERIPHERAL_CONFIG_FILE);
+    if (!out) return false;
+    const size_t written = serializeJson(doc, out);
+    out.flush();
+    out.close();
+
+    const String tmpPath = String(PERIPHERAL_CONFIG_FILE) + ".tmp";
+    if (written != expected) {
+        LittleFS.remove(tmpPath);
+        LOG_ERRORF("Peripheral Manager: Configuration write truncated (%u/%u)",
+                   static_cast<unsigned>(written), static_cast<unsigned>(expected));
+        return false;
+    }
+    if (!FileUtils::commitAtomicWrite(tmpPath, PERIPHERAL_CONFIG_FILE)) {
+        LOG_ERROR("Peripheral Manager: Failed to commit configuration atomically");
+        return false;
+    }
+
+    LOG_INFO("Peripheral Manager: Configuration saved successfully");
+    return true;
 }
 
 bool PeripheralManager::loadConfiguration() {
@@ -1830,7 +2140,11 @@ bool PeripheralManager::loadConfiguration() {
             LOG_WARNINGF("Peripheral Manager: Skipping removed peripheral type 46 for '%s'", config.id.c_str());
             continue;
         }
-        if (config.type == PeripheralType::STEPPER_MOTOR) {
+        if (config.type == PeripheralType::UART) {
+            initializeUartDefaults(config);
+        } else if (config.type == PeripheralType::ENCODER) {
+            initializeEncoderDefaults(config);
+        } else if (config.type == PeripheralType::STEPPER_MOTOR) {
             config.params.stepper.stepsPerRevolution = STEPPER_DEFAULT_STEPS_PER_REV;
             config.params.stepper.speed = STEPPER_DEFAULT_RPM;
         } else if (config.type == PeripheralType::NEO_PIXEL) {
@@ -1848,10 +2162,19 @@ bool PeripheralManager::loadConfiguration() {
             config.params.radar.debounceMs = RADAR_DEFAULT_DEBOUNCE_MS;
             config.params.radar.holdMs = RADAR_DEFAULT_HOLD_MS;
         } else if (config.type == PeripheralType::SENSOR_GENERIC) {
-            config.params.sensor.sensorType = 0;
-            config.params.sensor.sampleInterval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
+            initializeSensorDefaults(config);
+        } else if (config.type == PeripheralType::SDIO) {
+            initializeSdCardDefaults(config);
+        } else if (config.type == PeripheralType::DS1302_RTC) {
+            initializeDs1302Defaults(config);
+        } else if (config.type == PeripheralType::LCD1602) {
+            initializeLcd1602Defaults(config);
+        } else if (config.type == PeripheralType::RFID_MFRC522) {
+            initializeRfidDefaults(config);
         } else if (isAdcInputType(config.type)) {
             initializeAdcDefaults(config);
+        } else if (config.type == PeripheralType::PWM_SERVO) {
+            initializeServoDefaults(config);
         }
 
         // 引脚配置
@@ -1868,10 +2191,14 @@ bool PeripheralManager::loadConfiguration() {
         JsonObject params = obj["params"].as<JsonObject>();
         if (!params.isNull()) {
             if (config.type == PeripheralType::UART) {
-                config.params.uart.baudRate = params["baudRate"] | 115200;
-                config.params.uart.dataBits = params["dataBits"] | 8;
-                config.params.uart.stopBits = params["stopBits"] | 1;
-                config.params.uart.parity = params["parity"] | 0;
+                config.params.uart.baudRate = params["baudRate"] | UART_DEFAULT_BAUD_RATE;
+                config.params.uart.dataBits = params["dataBits"] | UART_DEFAULT_DATA_BITS;
+                config.params.uart.stopBits = params["stopBits"] | UART_DEFAULT_STOP_BITS;
+                config.params.uart.parity = params["parity"] | UART_DEFAULT_PARITY;
+            }
+            else if (config.type == PeripheralType::ENCODER) {
+                config.params.encoder.resolution = params["resolution"] | ENCODER_DEFAULT_RESOLUTION;
+                config.params.encoder.useInterrupt = params["useInterrupt"] | true;
             }
             else if (config.type == PeripheralType::I2C) {
                 config.params.i2c.frequency = params["frequency"] | 100000;
@@ -1882,6 +2209,18 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.spi.frequency = params["frequency"] | 1000000;
                 config.params.spi.mode = params["mode"] | 0;
                 config.params.spi.msbFirst = params["msbFirst"] | true;
+            }
+            else if (config.type == PeripheralType::PWM_SERVO) {
+                config.params.servo.frequency = params["frequency"] | SERVO_DEFAULT_FREQUENCY_HZ;
+                config.params.servo.minPulse = params["minPulse"] | SERVO_DEFAULT_MIN_PULSE_US;
+                config.params.servo.maxPulse = params["maxPulse"] | SERVO_DEFAULT_MAX_PULSE_US;
+                config.params.servo.minAngle = params["minAngle"] | SERVO_DEFAULT_MIN_ANGLE;
+                config.params.servo.maxAngle = params["maxAngle"] | SERVO_DEFAULT_MAX_ANGLE;
+                config.params.servo.initialAngle = params["initialAngle"] | SERVO_DEFAULT_INITIAL_ANGLE;
+                config.params.servo.pwmChannel = params["pwmChannel"] | SERVO_DEFAULT_PWM_CHANNEL;
+                config.params.servo.pwmResolution = params["pwmResolution"] | SERVO_DEFAULT_PWM_RESOLUTION;
+                config.params.servo.inverted = params["inverted"] | false;
+                config.params.servo.releaseAfterMove = params["releaseAfterMove"] | false;
             }
             else if (config.isGPIOPeripheral() && !isAdcInputType(config.type)) {
                 config.params.gpio.initialState = static_cast<GPIOState>(params["initialState"] | 0);
@@ -1945,6 +2284,23 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.stepper.stepsPerRevolution = params["stepsPerRevolution"] | STEPPER_DEFAULT_STEPS_PER_REV;
                 config.params.stepper.speed = clampStepperSpeed(params["speed"] | STEPPER_DEFAULT_RPM);
             }
+            else if (config.type == PeripheralType::SDIO) {
+                config.params.sdcard.interface = params["interface"] | SDCARD_INTERFACE_SPI;
+                config.params.sdcard.frequency = params["frequency"] | SDCARD_DEFAULT_FREQUENCY;
+            }
+            else if (config.type == PeripheralType::DS1302_RTC) {
+                config.params.ds1302.use24Hour = params["use24Hour"] | true;
+                config.params.ds1302.trickleCharge = params["trickleCharge"] | 0;
+            }
+            else if (config.type == PeripheralType::LCD1602) {
+                config.params.lcd1602.cols = params["cols"] | LCD1602_DEFAULT_COLS;
+                config.params.lcd1602.rows = params["rows"] | LCD1602_DEFAULT_ROWS;
+                config.params.lcd1602.address = params["address"] | LCD1602_DEFAULT_ADDRESS;
+                config.params.lcd1602.backlight = params["backlight"] | true;
+            }
+            else if (config.type == PeripheralType::RFID_MFRC522) {
+                config.params.rfid.frequency = params["frequency"] | RFID_DEFAULT_FREQUENCY;
+            }
             else if (config.type == PeripheralType::LCD) {
                 // 支持扩展宽度/高度（用 int 读取避免 uint8_t 默认值裁剪）
                 int w = params["width"]  | 128;
@@ -1988,6 +2344,12 @@ bool PeripheralManager::loadConfiguration() {
                 if (interval < SENSOR_MIN_SAMPLE_INTERVAL_MS) interval = SENSOR_DEFAULT_SAMPLE_INTERVAL_MS;
                 if (interval > SENSOR_MAX_SAMPLE_INTERVAL_MS) interval = SENSOR_MAX_SAMPLE_INTERVAL_MS;
                 config.params.sensor.sampleInterval = interval;
+                const char* driver = params["driver"] | "";
+                strlcpy(config.params.sensor.driver, driver,
+                        sizeof(config.params.sensor.driver));
+                config.params.sensor.address = params["address"] | 0;
+                config.params.sensor.mode = params["mode"] | 0;
+                config.params.sensor.frequency = params["frequency"] | 100000;
             }
         }
 
@@ -2064,6 +2426,20 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         return false;
     }
 
+    if (config.type == PeripheralType::SDIO ||
+        config.type == PeripheralType::DS1302_RTC ||
+        config.type == PeripheralType::LCD1602 ||
+        config.type == PeripheralType::RFID_MFRC522) {
+        for (const auto& pair : peripherals) {
+            if (pair.first != config.id && pair.second.type == config.type) {
+                errorMsg = String("SINGLETON_RESOURCE_BUSY: ") +
+                           getPeripheralTypeName(config.type) +
+                           " 当前固件仅允许一个实例";
+                return false;
+            }
+        }
+    }
+
     // Modbus 外设不需要引脚配置
     if (config.isModbusPeripheral()) {
         if (config.params.modbus.slaveAddress < 1 || config.params.modbus.slaveAddress > 247) {
@@ -2088,7 +2464,34 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
             errorMsg = "通用传感器采样间隔必须在 100ms 到 24h 之间";
             return false;
         }
-        if (config.pinCount == 0) return true;
+        if (config.params.sensor.driver[0] != '\0') {
+            const String driver(config.params.sensor.driver);
+            if (!driver.equalsIgnoreCase("BMP280") &&
+                !driver.equalsIgnoreCase("MPU6050")) {
+                errorMsg = "SENSOR_DRIVER_UNSUPPORTED: 仅支持 BMP280 或 MPU6050";
+                return false;
+            }
+            if (config.pinCount < 2 || config.pins[0] == config.pins[1]) {
+                errorMsg = "I2C 传感器需要不同的 SDA/SCL 两个引脚";
+                return false;
+            }
+            if (config.params.sensor.address == 0 ||
+                config.params.sensor.address > 0x7F) {
+                errorMsg = "I2C 传感器地址必须在 0x01-0x7F";
+                return false;
+            }
+            if (config.params.sensor.frequency != 100000 &&
+                config.params.sensor.frequency != 400000) {
+                errorMsg = "I2C 传感器频率仅支持 100000 或 400000";
+                return false;
+            }
+            if (config.params.sensor.mode > 1) {
+                errorMsg = "传感器模式无效";
+                return false;
+            }
+        } else if (config.pinCount == 0) {
+            return true;
+        }
     }
 
     if (config.pinCount == 0) {
@@ -2191,7 +2594,6 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
 
         case PeripheralType::GPIO_PWM_OUTPUT:
         case PeripheralType::GPIO_ANALOG_OUTPUT:
-        case PeripheralType::PWM_SERVO:
             // PWM 参数验证
             if (config.params.gpio.pwmChannel >= CHIP_MAX_PWM_CH) {
                 errorMsg = "PWM 通道无效 (有效范围: 0-" + String(CHIP_MAX_PWM_CH - 1) + ")";
@@ -2214,6 +2616,22 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
                     errorMsg = "PWM 频率和分辨率组合无效 (freq * 2^resolution 不能超过 80MHz)";
                     return false;
                 }
+            }
+            break;
+
+        case PeripheralType::PWM_SERVO:
+            if (!isServoConfigValid(config)) {
+                errorMsg = "舵机参数无效：频率 40-400Hz，脉宽 100-5000us，角度 0-360 度";
+                return false;
+            }
+            if (config.params.servo.pwmChannel >= CHIP_MAX_PWM_CH) {
+                errorMsg = "舵机 PWM 通道无效 (有效范围: 0-" + String(CHIP_MAX_PWM_CH - 1) + ")";
+                return false;
+            }
+            if (static_cast<uint64_t>(config.params.servo.frequency) *
+                    (1ULL << config.params.servo.pwmResolution) > 80000000ULL) {
+                errorMsg = "舵机 PWM 频率和分辨率组合无效";
+                return false;
             }
             break;
 
@@ -2305,25 +2723,86 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
                 errorMsg = "编码器需要 2 个引脚 (A相, B相)";
                 return false;
             }
+            if (config.pins[0] == config.pins[1]) {
+                errorMsg = "编码器 A相和B相不能使用同一引脚";
+                return false;
+            }
             if (config.params.encoder.resolution == 0) {
                 errorMsg = "编码器每转脉冲数不能为0";
+                return false;
+            }
+            if (!config.params.encoder.useInterrupt) {
+                errorMsg = "ENCODER_INTERRUPT_REQUIRED: 当前固件仅支持 GPIO ISR 编码器模式";
                 return false;
             }
             break;
 
         case PeripheralType::SDIO:
-            // SD卡参数验证
-            {
-                if (config.params.sdcard.interface > 1) {
-                    errorMsg = "SD卡接口模式无效 (0=SDMMC, 1=SPI)";
+            if (config.params.sdcard.interface != SDCARD_INTERFACE_SPI) {
+                errorMsg = "SDMMC_UNSUPPORTED: 当前固件仅支持 SDSPI";
+                return false;
+            }
+            if (config.pinCount < 4) {
+                errorMsg = "SDSPI 需要 4 个引脚 (SCK,MOSI,MISO,CS)";
+                return false;
+            }
+            if (config.params.sdcard.frequency < 100000UL ||
+                config.params.sdcard.frequency > 40000000UL) {
+                errorMsg = "SDSPI 频率必须在 100kHz-40MHz";
+                return false;
+            }
+            break;
+
+        case PeripheralType::DS1302_RTC:
+            if (config.pinCount < 3 || config.pins[0] == config.pins[1] ||
+                config.pins[0] == config.pins[2] || config.pins[1] == config.pins[2]) {
+                errorMsg = "DS1302 需要不同的 CE/IO/SCLK 三个引脚";
+                return false;
+            }
+            switch (config.params.ds1302.trickleCharge) {
+                case 0x00: case 0xA5: case 0xA6: case 0xA7:
+                case 0xA9: case 0xAA: case 0xAB:
+                    break;
+                default:
+                    errorMsg = "DS1302 涓流充电模式无效";
                     return false;
+            }
+            break;
+
+        case PeripheralType::LCD1602:
+            if (config.pinCount < 2 || config.pins[0] == config.pins[1]) {
+                errorMsg = "LCD1602 需要不同的 SDA/SCL 两个引脚";
+                return false;
+            }
+            if (!((config.params.lcd1602.cols == 16 && config.params.lcd1602.rows == 2) ||
+                  (config.params.lcd1602.cols == 20 && config.params.lcd1602.rows == 4))) {
+                errorMsg = "LCD1602 尺寸仅支持 16x2 或 20x4";
+                return false;
+            }
+            if (config.params.lcd1602.address != 0 &&
+                !((config.params.lcd1602.address >= 0x20 && config.params.lcd1602.address <= 0x27) ||
+                  (config.params.lcd1602.address >= 0x38 && config.params.lcd1602.address <= 0x3F))) {
+                errorMsg = "LCD1602 I2C 地址需为 0(自动)、0x20-0x27 或 0x38-0x3F";
+                return false;
+            }
+            break;
+
+        case PeripheralType::RFID_MFRC522:
+            if (config.pinCount < 5) {
+                errorMsg = "MFRC522 需要 5 个引脚 (SCK,MOSI,MISO,SS,RST)";
+                return false;
+            }
+            for (uint8_t i = 0; i < 5; ++i) {
+                for (uint8_t j = i + 1; j < 5; ++j) {
+                    if (config.pins[i] == config.pins[j]) {
+                        errorMsg = "MFRC522 的 SCK/MOSI/MISO/SS/RST 引脚不能重复";
+                        return false;
+                    }
                 }
-                // SPI模式至少需要4个引脚,SDMMC模式需要6个引脚
-                uint8_t minPins = (config.params.sdcard.interface == 0) ? 6 : 4;
-                if (config.pinCount < minPins) {
-                    errorMsg = "SD卡需要 " + String(minPins) + " 个引脚";
-                    return false;
-                }
+            }
+            if (config.params.rfid.frequency != RFID_DEFAULT_FREQUENCY) {
+                errorMsg = "MFRC522 SPI 频率固定为 4000000Hz";
+                return false;
             }
             break;
 
@@ -2461,6 +2940,42 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         return true;
     }
 
+    if (config.type == PeripheralType::SDIO) {
+        String errorMsg;
+        const bool ok = SDCardManager::getInstance().unmount(config.id, &errorMsg);
+        if (!ok) {
+            LOG_WARNINGF("Peripheral Manager: SD '%s' unmount failed: %s",
+                         config.id.c_str(), errorMsg.c_str());
+        }
+        return ok;
+    }
+
+    if (config.type == PeripheralType::DS1302_RTC) {
+#if FASTBEE_ENABLE_DS1302
+        DS1302Driver::getInstance().end();
+#endif
+        return true;
+    }
+
+    if (config.type == PeripheralType::LCD1602) {
+#if FASTBEE_ENABLE_LCD1602
+        LCD1602Driver::getInstance().end();
+#endif
+        return true;
+    }
+
+    if (config.type == PeripheralType::RFID_MFRC522) {
+#if FASTBEE_ENABLE_RFID
+        RFIDDriver::getInstance().stop();
+#endif
+        return true;
+    }
+
+    if (config.type == PeripheralType::SENSOR_GENERIC) {
+        FastBee::SensorDriverCache::instance().release(config.id);
+        return true;
+    }
+
     if (config.type == PeripheralType::NEO_PIXEL) {
         if (config.pinCount < 1) {
             LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' requires 1 data pin", config.id.c_str());
@@ -2548,12 +3063,7 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
 #endif
     }
 
-    // ========== 编码器初始化 ==========
-    // 注意：当前版本使用GPIO中断方式实现编码器计数
-    // 未来优化方向：使用ESP32 PCNT（Pulse Counter）硬件模块
-    //   - PCNT优势：硬件级计数，无需CPU干预，精度更高
-    //   - 适用芯片：ESP32/ESP32-S3支持PCNT，ESP32-C3/C6不支持
-    //   - 实现方式：pcnt_unit_config() + pcnt_chan_config()
+    // ========== 编码器初始化（GPIO ISR） ==========
     if (config.type == PeripheralType::ENCODER) {
         if (config.pinCount < 2) {
             LOG_WARNINGF("Peripheral Manager: Encoder '%s' requires 2 pins (A, B)", config.id.c_str());
@@ -2566,95 +3076,113 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
                        config.id.c_str(), pinA, pinB, CHIP_NAME);
             return false;
         }
-        
+
         // 配置两个GPIO为输入模式（上拉）
         // A相和B相都需要上拉电阻以确保稳定读取
         pinMode(pinA, INPUT_PULLUP);
         pinMode(pinB, INPUT_PULLUP);
         
-        // 如果启用中断模式，附加GPIO中断
-        if (config.params.encoder.useInterrupt) {
-            // 分配静态 ISR 槽位（含计数器初始化），ISR 参数指向槽位而非 map 节点
-            EncoderIsrSlot* slot = allocEncoderSlot(config.id, pinA, pinB);
-            if (slot) {
-                // 附加中断到A相（上升沿和下降沿都触发）
-                attachInterruptArg(pinA, handleEncoderInterrupt, slot, CHANGE);
-
-                LOG_INFOF("Peripheral Manager: Encoder '%s' using GPIO interrupt mode (A=%d, B=%d)",
-                          config.id.c_str(), pinA, pinB);
-            } else {
-                LOG_WARNINGF("Peripheral Manager: Encoder '%s' interrupt slots exhausted (max %u), polling only",
-                             config.id.c_str(), (unsigned)MAX_ENCODER_SLOTS);
-            }
+        if (!config.params.encoder.useInterrupt) {
+            LOG_ERRORF("Peripheral Manager: Encoder '%s' requires GPIO interrupt mode",
+                       config.id.c_str());
+            return false;
         }
-        
+
+        // 分配静态 ISR 槽位（含计数器和测速状态），槽位不足必须失败，
+        // 因为当前固件没有轮询或 PCNT 回退实现。
+        EncoderIsrSlot* slot = allocEncoderSlot(config.id, pinA, pinB);
+        if (!slot) {
+            LOG_ERRORF("Peripheral Manager: ENCODER_RESOURCE_EXHAUSTED for '%s' (max %u)",
+                       config.id.c_str(), (unsigned)MAX_ENCODER_SLOTS);
+            return false;
+        }
+
+        // A 相上升沿和下降沿都触发；ISR 同时读取 A/B 相完成方向判定。
+        attachInterruptArg(pinA, handleEncoderInterrupt, slot, CHANGE);
+
+        auto stateIt = runtimeStates.find(config.id);
+        if (stateIt != runtimeStates.end()) {
+            memset(&stateIt->second.state.encoder, 0, sizeof(stateIt->second.state.encoder));
+        }
+
+        LOG_INFOF("Peripheral Manager: Encoder '%s' using GPIO interrupt mode (A=%d, B=%d)",
+                  config.id.c_str(), pinA, pinB);
+
         LOG_INFOF("Peripheral Manager: Encoder '%s' initialized A=%d B=%d resolution=%d interrupt=%d",
                   config.id.c_str(), pinA, pinB,
                   config.params.encoder.resolution,
-                  config.params.encoder.useInterrupt ? 1 : 0);
+                  1);
         return true;
     }
 
-    // ========== SD卡初始化 ==========
-    // 设计说明：采用延迟挂载策略（Lazy Mount）
-    //   1. 初始化阶段仅配置GPIO，不立即挂载文件系统
-    //   2. 首次文件操作时触发实际挂载（节省内存）
-    //   3. 避免未使用SD卡时浪费PSRAM/DRAM资源
-    // 
-    // 文件系统挂载流程：
-    //   - SPI模式：esp_vfs_fat_sdspi_mount()
-    //   - SDMMC模式：esp_vfs_fat_sdmmc_mount()
-    //   - 挂载点：/sdcard
-    //
-    // 内存考虑：
-    //   - FATFS挂载约占用 5-10KB RAM
-    //   - 低内存设备（ESP32-C3无PSRAM）应谨慎使用
+    // ========== SD 卡（SDSPI）初始化 ==========
     if (config.type == PeripheralType::SDIO) {
-        // 当前版本仅支持SPI模式，SDMMC需要ESP-IDF底层驱动
-        if (config.params.sdcard.interface == 1) {
-            // SPI模式：需要CLK, MOSI, MISO, CS四个引脚
-            if (config.pinCount < 4) {
-                LOG_WARNINGF("Peripheral Manager: SD card SPI '%s' requires 4 pins", config.id.c_str());
-                return false;
-            }
-            uint8_t clk  = config.pins[0];
-            uint8_t mosi = config.pins[1];
-            uint8_t miso = config.pins[2];
-            uint8_t cs   = config.pins[3];
-            
-            if (isReservedPin(cs)) {
-                LOG_ERRORF("Peripheral Manager: SD card SPI '%s' rejects reserved CS GPIO%d on %s",
-                           config.id.c_str(), cs, CHIP_NAME);
-                return false;
-            }
-            
-            // 配置引脚
-            pinMode(clk, OUTPUT);
-            pinMode(mosi, OUTPUT);
-            pinMode(miso, INPUT);
-            pinMode(cs, OUTPUT);
-            digitalWrite(cs, HIGH);  // CS默认高（未选中）
-            
-            uint32_t freq = config.params.sdcard.frequency;
-            if (freq == 0) freq = 20000000;  // 默认20MHz
-            
-            LOG_INFOF("Peripheral Manager: SD card SPI '%s' initialized CLK=%d MOSI=%d MISO=%d CS=%d freq=%u (lazy mount)",
-                      config.id.c_str(), clk, mosi, miso, cs, (unsigned)freq);
-            // 注意：采用延迟挂载策略，文件系统将在首次读写时挂载
-            // 调用 SDCardManager::mount(config.id) 触发实际挂载
-            return true;
-        } else {
-            // SDMMC模式（仅部分ESP32支持）
-            LOG_WARNINGF("Peripheral Manager: SD card SDMMC '%s' not fully supported on %s, using GPIO init only (lazy mount)",
-                         config.id.c_str(), CHIP_NAME);
-            // 初始化SDMMC所需引脚（CMD, CLK, D0-D3）
-            for (uint8_t i = 0; i < config.pinCount && i < 8; i++) {
-                if (!isReservedPin(config.pins[i])) {
-                    pinMode(config.pins[i], INPUT_PULLUP);
-                }
-            }
-            return true;
+        if (config.params.sdcard.interface != SDCARD_INTERFACE_SPI ||
+            config.pinCount < 4) {
+            LOG_ERRORF("Peripheral Manager: SD '%s' requires SDSPI SCK/MOSI/MISO/CS",
+                       config.id.c_str());
+            return false;
         }
+        String errorMsg;
+        const bool mounted = SDCardManager::getInstance().configureAndMount(
+            config.id, config.pins[0], config.pins[1], config.pins[2],
+            config.pins[3], config.params.sdcard.frequency, errorMsg);
+        if (!mounted) {
+            LOG_ERRORF("Peripheral Manager: SD '%s' mount failed: %s",
+                       config.id.c_str(), errorMsg.c_str());
+        }
+        return mounted;
+    }
+
+    // ========== DS1302 RTC ==========
+    if (config.type == PeripheralType::DS1302_RTC) {
+#if FASTBEE_ENABLE_DS1302
+        if (config.pinCount < 3 ||
+            !DS1302Driver::getInstance().begin(config.pins[0], config.pins[1],
+                                                config.pins[2])) {
+            LOG_ERRORF("Peripheral Manager: DS1302 '%s' initialization failed",
+                       config.id.c_str());
+            return false;
+        }
+        DS1302Driver::getInstance().set24HourMode(config.params.ds1302.use24Hour);
+        DS1302Driver::getInstance().setTrickleCharge(
+            static_cast<DS1302TrickleCharge>(config.params.ds1302.trickleCharge));
+        return true;
+#else
+        LOG_ERROR("Peripheral Manager: DS1302 support is not compiled");
+        return false;
+#endif
+    }
+
+    // ========== LCD1602 I2C ==========
+    if (config.type == PeripheralType::LCD1602) {
+#if FASTBEE_ENABLE_LCD1602
+        if (config.pinCount < 2) return false;
+        LCD1602Config lcdConfig;
+        lcdConfig.cols = config.params.lcd1602.cols;
+        lcdConfig.rows = config.params.lcd1602.rows;
+        lcdConfig.i2cAddress = config.params.lcd1602.address;
+        lcdConfig.backlight = config.params.lcd1602.backlight;
+        return LCD1602Driver::getInstance().begin(config.pins[0], config.pins[1],
+                                                   lcdConfig);
+#else
+        LOG_ERROR("Peripheral Manager: LCD1602 support is not compiled");
+        return false;
+#endif
+    }
+
+    // ========== MFRC522 RFID ==========
+    if (config.type == PeripheralType::RFID_MFRC522) {
+#if FASTBEE_ENABLE_RFID
+        if (config.pinCount < 5) return false;
+        // pins: SCK, MOSI, MISO, SS, RST
+        return RFIDDriver::getInstance().begin(
+            config.pins[3], config.pins[4], config.pins[0], config.pins[1],
+            config.pins[2]);
+#else
+        LOG_ERROR("Peripheral Manager: RFID support is not compiled");
+        return false;
+#endif
     }
 
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
@@ -2794,8 +3322,16 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
 
     // ========== SENSOR_GENERIC 通用传感器容器初始化 ==========
     if (config.type == PeripheralType::SENSOR_GENERIC) {
-        uint8_t pin = config.getPrimaryPin();
-        if (pin != 255) {
+        if (config.params.sensor.driver[0] != '\0') {
+            if (config.pinCount < 2) return false;
+            Wire.begin(static_cast<int>(config.pins[0]),
+                       static_cast<int>(config.pins[1]),
+                       config.params.sensor.frequency);
+            LOG_INFOF("Peripheral Manager: I2C sensor '%s' driver=%s SDA=%d SCL=%d addr=0x%02X",
+                      config.id.c_str(), config.params.sensor.driver,
+                      config.pins[0], config.pins[1], config.params.sensor.address);
+        } else if (config.getPrimaryPin() != 255) {
+            const uint8_t pin = config.getPrimaryPin();
             // 根据传感器类型设置引脚模式
             pinMode(pin, INPUT_PULLUP);
             LOG_INFOF("Peripheral Manager: Generic Sensor '%s' initialized pin=%d sensorType=%d interval=%ums",
@@ -2836,24 +3372,62 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         auto it = uartPortById.find(config.id);
         if (it != uartPortById.end()) {
             HardwareSerial* serial = serialForPort(it->second);
-            if (serial && it->second != 0) {
-                serial->end();
-            }
+            if (serial) serial->end();
             uartPortById.erase(it);
+        }
+        auto stateIt = runtimeStates.find(config.id);
+        if (stateIt != runtimeStates.end()) {
+            stateIt->second.state.comm.isConnected = false;
+            stateIt->second.state.comm.port = UART_PORT_UNASSIGNED;
+            stateIt->second.state.comm.rxAvailable = 0;
         }
         return true;
     }
 
     // I2C 总线清理
     if (config.type == PeripheralType::I2C) {
-        Wire.end();
-        LOG_INFOF("Peripheral Manager: I2C '%s' bus released", config.id.c_str());
+        bool sharedBusActive = false;
+        for (const auto& pair : peripherals) {
+            if (pair.first == config.id || !pair.second.enabled || pair.second.pinCount < 2) continue;
+            const PeripheralConfig& other = pair.second;
+            const bool i2cUser = other.type == PeripheralType::I2C ||
+                                 other.type == PeripheralType::LCD1602 ||
+                                 (other.type == PeripheralType::SENSOR_GENERIC &&
+                                  other.params.sensor.driver[0] != '\0');
+            if (i2cUser && other.pins[0] == config.pins[0] &&
+                other.pins[1] == config.pins[1]) {
+                sharedBusActive = true;
+                break;
+            }
+        }
+        if (!sharedBusActive) Wire.end();
+        LOG_INFOF("Peripheral Manager: I2C '%s' %s", config.id.c_str(),
+                  sharedBusActive ? "released; shared bus retained" : "bus released");
         return true;
     }
 
     // SPI 总线清理
     if (config.type == PeripheralType::SPI) {
-        SPI.end();
+        bool sharedBusActive = false;
+        for (const auto& pair : peripherals) {
+            if (pair.first == config.id || !pair.second.enabled) continue;
+            const PeripheralConfig& other = pair.second;
+            if (other.type == PeripheralType::SDIO && other.pinCount >= 4 &&
+                other.pins[0] == config.pins[2] &&
+                other.pins[1] == config.pins[1] &&
+                other.pins[2] == config.pins[0]) {
+                sharedBusActive = true;
+                break;
+            }
+            if (other.type == PeripheralType::RFID_MFRC522 && other.pinCount >= 5 &&
+                other.pins[0] == config.pins[2] &&
+                other.pins[1] == config.pins[1] &&
+                other.pins[2] == config.pins[0]) {
+                sharedBusActive = true;
+                break;
+            }
+        }
+        if (!sharedBusActive) SPI.end();
         // 释放 CS 引脚
         if (config.pinCount >= 4) {
             uint8_t cs = config.pins[3];
@@ -2861,7 +3435,8 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
                 pinMode(cs, INPUT);
             }
         }
-        LOG_INFOF("Peripheral Manager: SPI '%s' bus released", config.id.c_str());
+        LOG_INFOF("Peripheral Manager: SPI '%s' %s", config.id.c_str(),
+                  sharedBusActive ? "released; shared bus retained" : "bus released");
         return true;
     }
 
@@ -2935,6 +3510,10 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         }
     }
 
+    if (config.type == PeripheralType::PWM_SERVO) {
+        cancelServoRelease(config.id);
+    }
+
     // PWM / 模拟输出 / 舵机清理：断开 LEDC 并释放引脚
     if (config.type == PeripheralType::GPIO_PWM_OUTPUT ||
         config.type == PeripheralType::GPIO_ANALOG_OUTPUT ||
@@ -2947,6 +3526,10 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
                 ledcDetachPin(config.pins[0]);
             #endif
             pinMode(config.pins[0], INPUT);
+            auto stateIt = runtimeStates.find(config.id);
+            if (stateIt != runtimeStates.end() && config.type == PeripheralType::PWM_SERVO) {
+                stateIt->second.state.servo.signalAttached = false;
+            }
         }
     }
 
@@ -3046,6 +3629,10 @@ bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
 }
 
 bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
+    if (config.type == PeripheralType::PWM_SERVO) {
+        return setupServoPin(config);
+    }
+
     uint8_t pin = config.getPrimaryPin();
     if (pin == 255) return false;
     if (!isValidPin(pin)) {
@@ -3077,6 +3664,121 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
     return true;
 }
 
+bool PeripheralManager::attachServoSignal(const PeripheralConfig& config) {
+    if (config.type != PeripheralType::PWM_SERVO || !isServoConfigValid(config)) return false;
+    const uint8_t pin = config.getPrimaryPin();
+    if (pin == 255 || !isValidPin(pin) || isReservedPin(pin) || isInputOnlyPin(pin)) {
+        return false;
+    }
+
+    auto stateIt = runtimeStates.find(config.id);
+    if (stateIt != runtimeStates.end() && stateIt->second.state.servo.signalAttached) {
+        return true;
+    }
+    auto releaseIt = servoReleaseTickers.find(config.id);
+    if (releaseIt != servoReleaseTickers.end()) releaseIt->second->ticker.detach();
+
+    if (!ledcAttachChannel(pin, config.params.servo.frequency,
+                           config.params.servo.pwmResolution,
+                           config.params.servo.pwmChannel)) {
+        LOG_ERRORF("Peripheral Manager: Servo LEDC attach failed id='%s' pin=%u channel=%u",
+                   config.id.c_str(), static_cast<unsigned>(pin),
+                   static_cast<unsigned>(config.params.servo.pwmChannel));
+        return false;
+    }
+    if (stateIt != runtimeStates.end()) {
+        stateIt->second.state.servo.signalAttached = true;
+    }
+    return true;
+}
+
+bool PeripheralManager::setupServoPin(const PeripheralConfig& config) {
+    if (!attachServoSignal(config)) return false;
+    const uint16_t pulseUs = servoAngleToPulseUs(
+        config.params.servo.initialAngle,
+        config.params.servo.minAngle, config.params.servo.maxAngle,
+        config.params.servo.minPulse, config.params.servo.maxPulse,
+        config.params.servo.inverted);
+    const uint32_t duty = servoPulseUsToDuty(
+        pulseUs, config.params.servo.frequency, config.params.servo.pwmResolution);
+    if (!ledcWrite(config.getPrimaryPin(), duty)) {
+        ledcDetach(config.getPrimaryPin());
+        return false;
+    }
+
+    auto stateIt = runtimeStates.find(config.id);
+    if (stateIt != runtimeStates.end()) {
+        stateIt->second.state.servo.currentAngle = config.params.servo.initialAngle;
+        stateIt->second.state.servo.currentPulseUs = pulseUs;
+        stateIt->second.state.servo.signalAttached = true;
+    }
+    if (config.params.servo.releaseAfterMove) scheduleServoRelease(config.id);
+    LOG_INFOF("Peripheral Manager: Servo '%s' initialized pin=%u angle=%d pulse=%uus",
+              config.id.c_str(), static_cast<unsigned>(config.getPrimaryPin()),
+              static_cast<int>(config.params.servo.initialAngle),
+              static_cast<unsigned>(pulseUs));
+    return true;
+}
+
+void PeripheralManager::servoReleaseTickerCallback(ServoReleaseTickerData* data) {
+    if (data && data->mgr) data->mgr->releaseServoSignal(data->id);
+}
+
+void PeripheralManager::scheduleServoRelease(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
+    ServoReleaseTickerData* data = nullptr;
+    auto it = servoReleaseTickers.find(id);
+    if (it != servoReleaseTickers.end()) {
+        data = it->second;
+        data->ticker.detach();
+    } else {
+        data = new (std::nothrow) ServoReleaseTickerData();
+        if (!data) {
+            LOG_WARNINGF("Peripheral Manager: Servo release timer allocation failed for '%s'", id.c_str());
+            return;
+        }
+        data->mgr = this;
+        data->id = id;
+        servoReleaseTickers[id] = data;
+    }
+    data->ticker.once_ms(SERVO_RELEASE_DELAY_MS, servoReleaseTickerCallback, data);
+}
+
+void PeripheralManager::cancelServoRelease(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
+    auto it = servoReleaseTickers.find(id);
+    if (it == servoReleaseTickers.end()) return;
+    it->second->ticker.detach();
+    delete it->second;
+    servoReleaseTickers.erase(it);
+}
+
+bool PeripheralManager::releaseServoSignal(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || !config->enabled || config->type != PeripheralType::PWM_SERVO ||
+        !config->params.servo.releaseAfterMove) {
+        return false;
+    }
+    const uint8_t pin = config->getPrimaryPin();
+    if (pin == 255 || isReservedPin(pin) || isInputOnlyPin(pin)) return false;
+
+    ledcWrite(pin, 0);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
+    ledcDetach(pin);
+#else
+    ledcDetachPin(pin);
+#endif
+    pinMode(pin, INPUT);
+    auto stateIt = runtimeStates.find(id);
+    if (stateIt != runtimeStates.end()) {
+        stateIt->second.status = PeripheralStatus::PERIPHERAL_INITIALIZED;
+        stateIt->second.lastActivity = millis();
+        stateIt->second.state.servo.signalAttached = false;
+    }
+    return true;
+}
+
 HardwareSerial* PeripheralManager::getUartSerial(const String& id) {
     auto it = uartPortById.find(id);
     if (it == uartPortById.end()) return nullptr;
@@ -3092,7 +3794,20 @@ bool PeripheralManager::setupUartHardware(const PeripheralConfig& config) {
     if (isProtocolOwnedUartId(config.id)) {
         LOG_INFOF("Peripheral Manager: UART '%s' reserved for protocol stack, skip generic serial init",
                   config.id.c_str());
+        auto stateIt = runtimeStates.find(config.id);
+        if (stateIt != runtimeStates.end()) {
+            stateIt->second.state.comm.isConnected = false;
+            stateIt->second.state.comm.port = UART_PORT_UNASSIGNED;
+            stateIt->second.state.comm.rxAvailable = 0;
+        }
         return true;
+    }
+
+    String capacityError;
+    if (!validateUartCapacity(config, config.id, capacityError)) {
+        lastEnableError = capacityError;
+        LOG_WARNINGF("Peripheral Manager: %s", capacityError.c_str());
+        return false;
     }
 
     uint8_t rxPin = config.pins[0];
@@ -3102,11 +3817,9 @@ bool PeripheralManager::setupUartHardware(const PeripheralConfig& config) {
     auto existing = uartPortById.find(config.id);
     if (existing != uartPortById.end()) {
         port = existing->second;
-    } else if (isUsbSerialPins(rxPin, txPin)) {
-        port = 0;
     } else {
         bool used[CHIP_UART_COUNT] = {false};
-        used[0] = true; // UART0 is shared with USB/logging.
+        used[0] = true; // UART0 is exclusively reserved for logging/USB.
         for (const auto& pair : uartPortById) {
             if (pair.second < CHIP_UART_COUNT) used[pair.second] = true;
         }
@@ -3125,16 +3838,21 @@ bool PeripheralManager::setupUartHardware(const PeripheralConfig& config) {
     }
 
     uartPortById[config.id] = port;
-    if (port == 0) {
-        LOG_INFOF("Peripheral Manager: UART '%s' mapped to Serial0 (USB/log shared)", config.id.c_str());
-        return true;
-    }
-
-    uint32_t baud = config.params.uart.baudRate > 0 ? config.params.uart.baudRate : 115200;
+    uint32_t baud = config.params.uart.baudRate > 0
+        ? config.params.uart.baudRate : UART_DEFAULT_BAUD_RATE;
     serial->begin(baud, uartSerialConfig(config), rxPin, txPin);
     serial->setTimeout(0);
-    LOG_INFOF("Peripheral Manager: UART '%s' initialized on Serial%d RX=%d TX=%d baud=%lu",
-              config.id.c_str(), port, rxPin, txPin, (unsigned long)baud);
+    auto stateIt = runtimeStates.find(config.id);
+    if (stateIt != runtimeStates.end()) {
+        stateIt->second.state.comm.bytesSent = 0;
+        stateIt->second.state.comm.bytesReceived = 0;
+        stateIt->second.state.comm.isConnected = true;
+        stateIt->second.state.comm.port = port;
+        stateIt->second.state.comm.rxAvailable = boundedUartAvailable(serial);
+    }
+    LOG_INFOF("Peripheral Manager: UART '%s' initialized on Serial%d RX=%d TX=%d baud=%lu framing=%s",
+              config.id.c_str(), port, rxPin, txPin, (unsigned long)baud,
+              uartFramingName(config).c_str());
     return true;
 }
 
@@ -3704,14 +4422,16 @@ String PeripheralManager::getPinConflictInfo(uint8_t pin, const String& excludeI
         return String("GPIO") + String(pin) + ": " + reservedReason;
     }
 
-    // 检查是否与现有外设冲突
-    auto it = pinToPeripheral.find(pin);
-    if (it != pinToPeripheral.end() && (excludeId.isEmpty() || it->second != excludeId)) {
-        auto config = getPeripheral(it->second);
-        if (config) {
-            return String("GPIO") + String(pin) + " 已被外设 \"" + config->name + "\" (" + it->second + ") 使用";
+    // 只有已启用外设才占用资源；直接扫描真实配置，避免缓存中禁用项产生误报。
+    for (const auto& pair : peripherals) {
+        if ((!excludeId.isEmpty() && pair.first == excludeId) ||
+            !pair.second.enabled || pair.second.isModbusPeripheral()) {
+            continue;
         }
-        return String("GPIO") + String(pin) + " 已被外设 " + it->second + " 使用";
+        if (pair.second.usesPin(pin)) {
+            return String("GPIO") + String(pin) + " 已被外设 \"" + pair.second.name +
+                   "\" (" + pair.first + ") 使用";
+        }
     }
 
     // 系统保留引脚警告（非错误）
@@ -4059,540 +4779,4 @@ bool PeripheralManager::readRadarState(const String& id, bool& detected) {
         runtimeStates[id].state.gpio.currentState = detected ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
     return true;
-}
-
-// ========== 通用数据读写接口 ==========
-
-bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t len) {
-    auto config = getPeripheral(id);
-    if (!config || !config->enabled) {
-        LOG_WARNINGF("writeData: Peripheral '%s' not found or disabled", id.c_str());
-        return false;
-    }
-
-    bool success = false;
-
-    switch (config->type) {
-        // GPIO 数字输出
-        case PeripheralType::GPIO_DIGITAL_OUTPUT:
-            if (len >= 1) {
-                GPIOState state = (data[0] != 0) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
-                success = writePin(id, state);
-            }
-            break;
-
-        // PWM / 模拟输出
-        case PeripheralType::GPIO_PWM_OUTPUT:
-        case PeripheralType::GPIO_ANALOG_OUTPUT:
-        case PeripheralType::PWM_SERVO:
-            if (len >= 2) {
-                uint32_t dutyCycle = data[0] | (data[1] << 8);
-                if (len >= 4) {
-                    dutyCycle |= (data[2] << 16) | (data[3] << 24);
-                }
-                success = writePWM(id, dutyCycle);
-            } else if (len == 1) {
-                // 单字节作为 0-255 占空比
-                uint32_t maxVal = (1U << config->params.gpio.pwmResolution) - 1;
-                uint32_t dutyCycle = (data[0] * maxVal) / 255;
-                success = writePWM(id, dutyCycle);
-            }
-            break;
-
-        // DAC 输出
-        case PeripheralType::DAC:
-#if CHIP_HAS_DAC
-            if (len >= 1) {
-                uint8_t pin = config->getPrimaryPin();
-                if (pin == 25 || pin == 26) {
-                    dacWrite(pin, data[0]);
-                    success = true;
-                }
-            }
-#else
-            LOG_WARNING("DAC not supported on this chip");
-#endif
-            break;
-
-        // UART 发送
-        case PeripheralType::UART:
-            if (HardwareSerial* serial = getUartSerial(id)) {
-                success = (serial->write(data, len) == len);
-            }
-            break;
-
-        // I2C 写入
-        case PeripheralType::I2C:
-            if (config->params.i2c.isMaster && config->params.i2c.address > 0) {
-                Wire.beginTransmission(config->params.i2c.address);
-                Wire.write(data, len);
-                success = (Wire.endTransmission() == 0);
-            }
-            break;
-
-        // SPI 传输
-        case PeripheralType::SPI:
-            SPI.beginTransaction(SPISettings(config->params.spi.frequency,
-                config->params.spi.msbFirst ? MSBFIRST : LSBFIRST,
-                config->params.spi.mode));
-            for (size_t i = 0; i < len; i++) {
-                SPI.transfer(data[i]);
-            }
-            SPI.endTransaction();
-            success = true;
-            break;
-
-        case PeripheralType::RF_MODULE:
-            if (len > 0) {
-                if (isPrintablePayload(data, len)) {
-                    String code((const char*)data, len);
-                    success = sendRfCode(id, code);
-                } else {
-                    uint32_t code = 0;
-                    size_t n = len > 4 ? 4 : len;
-                    for (size_t i = 0; i < n; i++) {
-                        code |= ((uint32_t)data[i]) << (i * 8);
-                    }
-                    success = sendRfCode(id, String(code));
-                }
-            }
-            break;
-
-        default:
-            LOG_WARNINGF("writeData: Unsupported peripheral type %d", static_cast<int>(config->type));
-            break;
-    }
-
-    // 更新运行时状态
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-        if (config->type != PeripheralType::RF_MODULE) {
-            runtimeStates[id].state.comm.bytesSent += len;
-        }
-    }
-
-    return success;
-}
-
-bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len) {
-    auto config = getPeripheral(id);
-    if (!config || !config->enabled) {
-        LOG_WARNINGF("readData: Peripheral '%s' not found or disabled", id.c_str());
-        len = 0;
-        return false;
-    }
-
-    bool success = false;
-    size_t maxLen = len;
-    len = 0;
-
-    switch (config->type) {
-        // GPIO 数字输入
-        case PeripheralType::GPIO_DIGITAL_INPUT:
-        case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
-        case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
-        case PeripheralType::GPIO_INTERRUPT_RISING:
-        case PeripheralType::GPIO_INTERRUPT_FALLING:
-        case PeripheralType::GPIO_INTERRUPT_CHANGE:
-        case PeripheralType::GPIO_TOUCH:
-            if (maxLen >= 1) {
-                GPIOState state = readPin(id);
-                buffer[0] = (state == GPIOState::STATE_HIGH) ? 1 : 0;
-                len = 1;
-                success = true;
-            }
-            break;
-
-        // ADC / 模拟输入
-        case PeripheralType::GPIO_ANALOG_INPUT:
-        case PeripheralType::ADC:
-            if (maxLen >= 2) {
-                uint16_t value = readAnalog(id);
-                buffer[0] = value & 0xFF;
-                buffer[1] = (value >> 8) & 0xFF;
-                len = 2;
-                success = true;
-            }
-            break;
-
-        // UART 接收
-        case PeripheralType::UART:
-            if (HardwareSerial* serial = getUartSerial(id)) {
-                len = 0;
-                while (serial->available() && len < maxLen) {
-                    buffer[len++] = serial->read();
-                }
-                success = true;
-            }
-            break;
-
-        // I2C 读取
-        case PeripheralType::I2C:
-            if (config->params.i2c.isMaster && config->params.i2c.address > 0) {
-                size_t requestLen = (maxLen < 32) ? maxLen : 32;  // I2C 一次最多读取 32 字节
-                Wire.requestFrom(config->params.i2c.address, (uint8_t)requestLen);
-                len = 0;
-                while (Wire.available() && len < maxLen) {
-                    buffer[len++] = Wire.read();
-                }
-                success = (len > 0);
-            }
-            break;
-
-        // SPI 读取（需要先发送才能读取）
-        case PeripheralType::SPI:
-            SPI.beginTransaction(SPISettings(config->params.spi.frequency,
-                config->params.spi.msbFirst ? MSBFIRST : LSBFIRST,
-                config->params.spi.mode));
-            for (size_t i = 0; i < maxLen; i++) {
-                buffer[i] = SPI.transfer(0xFF);  // 发送 dummy 字节读取数据
-            }
-            SPI.endTransaction();
-            len = maxLen;
-            success = true;
-            break;
-
-        case PeripheralType::RADAR_SENSOR:
-            if (maxLen >= 1) {
-                bool detected = false;
-                success = readRadarState(id, detected);
-                if (success) {
-                    buffer[0] = detected ? 1 : 0;
-                    len = 1;
-                }
-            }
-            break;
-
-        case PeripheralType::RF_MODULE:
-            if (maxLen >= 1) {
-                bool level = false;
-                success = readRfLevel(id, level);
-                if (success) {
-                    buffer[0] = level ? 1 : 0;
-                    len = 1;
-                }
-            }
-            break;
-
-        default:
-            LOG_WARNINGF("readData: Unsupported peripheral type %d", static_cast<int>(config->type));
-            break;
-    }
-
-    // 更新运行时状态
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-        runtimeStates[id].state.comm.bytesReceived += len;
-    }
-
-    return success;
-}
-
-bool PeripheralManager::writeString(const String& id, const String& data) {
-    return writeData(id, (const uint8_t*)data.c_str(), data.length());
-}
-
-String PeripheralManager::readString(const String& id) {
-    uint8_t buffer[256];
-    size_t len = sizeof(buffer);
-    if (readData(id, buffer, len)) {
-        return String((char*)buffer, len);
-    }
-    return "";
-}
-
-bool PeripheralManager::attachInterrupt(uint8_t pin, GPIOInterruptCallback callback) {
-    String id = getPinPeripheralId(pin);
-    if (id.isEmpty()) return false;
-    return attachInterrupt(id, callback);
-}
-
-bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterruptCallback callback) {
-    // 线程安全（T4 修复）：旧实现在 getPeripheral 释放锁后继续解引用返回的裸指针，
-    // 并发 removePeripheral 会使指针悬垂；改为持锁内直接访问容器
-    RecursiveMutexGuard lock(_mutex);
-    auto it = peripherals.find(peripheralId);
-    if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
-    PeripheralConfig& config = it->second;
-
-    uint8_t pin = config.getPrimaryPin();
-    // 引脚验证（T3）：attach 前验证引脚合法性，避免向非法 GPIO 注册中断
-    if (pin == 255 || !isValidPin(pin)) return false;
-
-    config.params.gpio.interruptCallback = callback;
-
-    uint8_t mode = CHANGE;
-    if (config.type == PeripheralType::GPIO_INTERRUPT_RISING) {
-        mode = config.params.gpio.invertLogic ? FALLING : RISING;
-    } else if (config.type == PeripheralType::GPIO_INTERRUPT_FALLING) {
-        mode = config.params.gpio.invertLogic ? RISING : FALLING;
-    }
-
-    ::attachInterruptArg(digitalPinToInterrupt(pin), isrHandler, (void*)(uintptr_t)pin, mode);
-
-    auto rs = runtimeStates.find(peripheralId);
-    if (rs != runtimeStates.end()) {
-        rs->second.state.gpio.interruptAttached = true;
-    }
-
-    return true;
-}
-
-bool PeripheralManager::popDigitalInputInterruptEvent(uint8_t& pin, GPIOState& state) {
-    RecursiveMutexGuard lock(_mutex);
-    if (_digitalInterruptCount == 0) return false;
-
-    const DigitalInputInterruptEvent& event = _digitalInterruptEvents[_digitalInterruptHead];
-    pin = event.pin;
-    state = event.state;
-    _digitalInterruptHead = (_digitalInterruptHead + 1) % ISR_QUEUE_SIZE;
-    _digitalInterruptCount--;
-    return true;
-}
-
-bool PeripheralManager::detachInterrupt(uint8_t pin) {
-    String id = getPinPeripheralId(pin);
-    if (id.isEmpty()) return false;
-    return detachInterrupt(id);
-}
-
-bool PeripheralManager::detachInterrupt(const String& peripheralId) {
-    // 同 attachInterrupt：持锁内直接访问容器，避免锁外解引用裸指针
-    RecursiveMutexGuard lock(_mutex);
-    auto it = peripherals.find(peripheralId);
-    if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
-    PeripheralConfig& config = it->second;
-
-    uint8_t pin = config.getPrimaryPin();
-    if (pin == 255 || !isValidPin(pin)) return false;
-
-    ::detachInterrupt(digitalPinToInterrupt(pin));
-    config.params.gpio.interruptCallback = nullptr;
-
-    auto rs = runtimeStates.find(peripheralId);
-    if (rs != runtimeStates.end()) {
-        rs->second.state.gpio.interruptAttached = false;
-    }
-
-    return true;
-}
-
-// ========== Modbus 外设委托 ==========
-
-void PeripheralManager::setModbusCallbacks(ModbusCoilWriteFunc coilWrite, ModbusRegWriteFunc regWrite) {
-    RecursiveMutexGuard lock(_mutex);
-    _modbusCoilWrite = coilWrite;
-    _modbusRegWrite  = regWrite;
-    LOG_INFO("Peripheral Manager: Modbus write callbacks registered");
-}
-
-void PeripheralManager::clearModbusCallbacks() {
-    RecursiveMutexGuard lock(_mutex);
-    _modbusCoilWrite = nullptr;
-    _modbusRegWrite  = nullptr;
-    LOG_INFO("Peripheral Manager: Modbus write callbacks cleared");
-}
-
-bool PeripheralManager::writeModbusPin(const String& id, const PeripheralConfig& config, GPIOState state) {
-    if (!_modbusCoilWrite && !_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus write callbacks not set");
-        return false;
-    }
-
-    bool value = (state == GPIOState::STATE_HIGH);
-    if (config.params.modbus.ncMode) value = !value;
-
-    uint16_t addr = config.params.modbus.coilBase;
-    bool success = false;
-
-    if (config.params.modbus.controlProtocol == 0) {
-        // 线圈模式 (FC05)
-        if (_modbusCoilWrite) {
-            success = _modbusCoilWrite(config.params.modbus.slaveAddress, addr, value);
-        }
-    } else {
-        // 寄存器模式 (FC06)
-        uint16_t regVal = value ? 0xFF00 : 0x0000;
-        if (_modbusRegWrite) {
-            success = _modbusRegWrite(config.params.modbus.slaveAddress, addr, regVal);
-        }
-    }
-
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].state.gpio.currentState = state;
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writePin '%s' slave=%d addr=%d state=%s %s",
-              id.c_str(), config.params.modbus.slaveAddress, addr,
-              state == GPIOState::STATE_HIGH ? "HIGH" : "LOW",
-              success ? "OK" : "FAIL");
-    return success;
-}
-
-bool PeripheralManager::writeModbusPWM(const String& id, const PeripheralConfig& config, uint32_t dutyCycle) {
-    if (!_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
-        return false;
-    }
-
-    // PWM 类型设备：写入 pwmRegBase 寄存器
-    if (config.params.modbus.deviceType != 1) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a PWM Modbus device", id.c_str());
-        return false;
-    }
-
-    uint16_t regAddr = config.params.modbus.pwmRegBase;
-    uint16_t regVal = (uint16_t)dutyCycle;
-    bool success = _modbusRegWrite(config.params.modbus.slaveAddress, regAddr, regVal);
-
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writePWM '%s' slave=%d reg=%d duty=%d %s",
-              id.c_str(), config.params.modbus.slaveAddress, regAddr, (int)dutyCycle,
-              success ? "OK" : "FAIL");
-    return success;
-}
-
-bool PeripheralManager::writeModbusCoil(const String& id, uint16_t coilAddr, bool value) {
-    RecursiveMutexGuard lock(_mutex);
-    if (!_modbusCoilWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus coil write callback not set");
-        return false;
-    }
-
-    auto config = getPeripheral(id);
-    if (!config || !config->isModbusPeripheral()) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
-        return false;
-    }
-
-    bool success = _modbusCoilWrite(config->params.modbus.slaveAddress, coilAddr, value);
-
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writeCoil '%s' slave=%d coil=%d val=%d %s",
-              id.c_str(), config->params.modbus.slaveAddress, coilAddr, value,
-              success ? "OK" : "FAIL");
-    return success;
-}
-
-bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint16_t value) {
-    RecursiveMutexGuard lock(_mutex);
-    if (!_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
-        return false;
-    }
-
-    auto config = getPeripheral(id);
-    if (!config || !config->isModbusPeripheral()) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
-        return false;
-    }
-
-    ModbusMotorLimitResult motorLimit = evaluateModbusMotorLimit(*config, regAddr, value);
-    if (motorLimit.enabled && !motorLimit.allowed) {
-        LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' blocked by soft limit (pos=%ld min=%ld max=%ld reg=%u)",
-                     id.c_str(),
-                     static_cast<long>(config->params.modbus.motorCurrentPosition),
-                     static_cast<long>(config->params.modbus.motorMinPosition),
-                     static_cast<long>(config->params.modbus.motorMaxPosition),
-                     static_cast<unsigned int>(regAddr));
-        return false;
-    }
-    if (motorLimit.enabled && motorLimit.isMove && config->params.modbus.motorRegs[4] != 0) {
-        bool pulseOk = _modbusRegWrite(config->params.modbus.slaveAddress,
-                                       config->params.modbus.motorRegs[4],
-                                       motorLimit.pulse);
-        if (!pulseOk) {
-            LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' failed to write bounded pulse=%u",
-                         id.c_str(),
-                         static_cast<unsigned int>(motorLimit.pulse));
-            return false;
-        }
-    }
-
-    bool success = _modbusRegWrite(config->params.modbus.slaveAddress, regAddr, value);
-
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-    if (success && config->params.modbus.deviceType == 3) {
-        if (regAddr == config->params.modbus.motorRegs[4]) {
-            config->params.modbus.motorLastPulse = value;
-        } else if (motorLimit.enabled && motorLimit.isMove) {
-            config->params.modbus.motorCurrentPosition = motorLimit.nextPosition;
-            config->params.modbus.motorLastPulse = motorLimit.pulse;
-        }
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writeReg '%s' slave=%d reg=%d val=%d %s",
-              id.c_str(), config->params.modbus.slaveAddress, regAddr, value,
-              success ? "OK" : "FAIL");
-    return success;
-}
-
-// ========== 编码器中断处理 ==========
-// 编码器使用正交解码原理：
-// - A相和B相相差90度相位
-// - 根据A相上升/下降沿时B相的状态判断转向
-// - 顺时针：计数+1；逆时针：计数-1
-
-// 静态槽位存储：ISR 只触碰固定内存，不做任何堆分配
-PeripheralManager::EncoderIsrSlot PeripheralManager::_encoderSlots[PeripheralManager::MAX_ENCODER_SLOTS];
-portMUX_TYPE PeripheralManager::_encoderMux = portMUX_INITIALIZER_UNLOCKED;
-
-PeripheralManager::EncoderIsrSlot* PeripheralManager::findEncoderSlot(const String& id) {
-    for (auto& slot : _encoderSlots) {
-        if (slot.used && slot.id == id) return &slot;
-    }
-    return nullptr;
-}
-
-PeripheralManager::EncoderIsrSlot* PeripheralManager::allocEncoderSlot(const String& id,
-                                                                       uint8_t pinA, uint8_t pinB) {
-    EncoderIsrSlot* slot = findEncoderSlot(id);
-    if (!slot) {
-        for (auto& s : _encoderSlots) {
-            if (!s.used) { slot = &s; break; }
-        }
-    }
-    if (!slot) return nullptr;
-    slot->id = id;  // String 赋值在临界区外（关中断时不可 malloc）
-    portENTER_CRITICAL(&_encoderMux);
-    slot->pinA = pinA;
-    slot->pinB = pinB;
-    slot->count = 0;
-    slot->used = true;
-    portEXIT_CRITICAL(&_encoderMux);
-    return slot;
-}
-
-void PeripheralManager::releaseEncoderSlot(const String& id) {
-    EncoderIsrSlot* slot = findEncoderSlot(id);
-    if (!slot) return;
-    portENTER_CRITICAL(&_encoderMux);
-    slot->used = false;
-    slot->pinA = 255;
-    slot->pinB = 255;
-    slot->count = 0;
-    portEXIT_CRITICAL(&_encoderMux);
-    slot->id = "";  // String 释放在临界区外
-}
-
-void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
-    // arg 指向静态槽位：不做 String 拷贝/map 插入等堆分配（非 ISR-safe），
-    // 外设删除后槽位被标记 used=false，不存在悬垂解引用
-    EncoderIsrSlot* slot = static_cast<EncoderIsrSlot*>(arg);
-    if (!slot) return;
-    portENTER_CRITICAL_ISR(&_encoderMux);
-    if (slot->used) {
-        // A相变化时根据B相状态判断方向：B=HIGH 顺时针，B=LOW 逆时针
-        slot->count += digitalRead(slot->pinB) ? 1 : -1;
-    }
-    portEXIT_CRITICAL_ISR(&_encoderMux);
 }

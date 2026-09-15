@@ -22,11 +22,11 @@
   /* Legacy Slate Variables (for compatibility) */
   --slate-50: #f5f5f5; --slate-100: #f0f0f0; --slate-200: #d9d9d9; --slate-300: #bfbfbf; --slate-400: #8c8c8c; --slate-500: #595959; --slate-600: #434343; --slate-700: #262626; --slate-800: #1f1f1f; --slate-900: #141414;
   /* Background Colors - Clean Light Theme */
-  --bg-body: linear-gradient(135deg, #f5f5f5 0%, #fafafa 50%, #f0f0f0 100%); --bg-body-fallback: #f5f5f5; --bg-card: rgba(255, 255, 255, 0.92); --bg-sidebar: #0a66e7; --bg-input: #ffffff; --bg-content: #f2f5f9;
+  --bg-body: #f3f5f7; --bg-body-fallback: #f3f5f7; --bg-card: #ffffff; --bg-sidebar: #0a66e7; --bg-input: #ffffff; --bg-content: #f3f5f7;
   /* Sidebar semantic colors (light default) */
   --sidebar-text: rgba(255, 255, 255, 0.96); --sidebar-text-muted: rgba(255, 255, 255, 0.85); --sidebar-hover-bg: rgba(255, 255, 255, 0.12); --sidebar-active-bg: rgba(255, 255, 255, 0.22); --sidebar-active-border: #ffffff; --sidebar-grad-top: color-mix(in srgb, var(--bg-sidebar) 86%, var(--primary-hover) 14%); --sidebar-grad-bottom: color-mix(in srgb, var(--bg-sidebar) 90%, var(--primary-active) 10%);
   /* Glassmorphism Colors */
-  --glass-bg: rgba(255, 255, 255, 0.78); --glass-border: rgba(22, 119, 255, 0.12); --glass-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12), 0 9px 28px 8px rgba(0, 0, 0, 0.05);
+  --glass-bg: #ffffff; --glass-border: #e6e8eb; --glass-shadow: var(--shadow-sm);
   /* Text Colors - Ant Design Typography */
   --text-primary: rgba(0, 0, 0, 0.88); --text-secondary: rgba(0, 0, 0, 0.65); --text-tertiary: rgba(0, 0, 0, 0.45); --text-quaternary: rgba(0, 0, 0, 0.25); --text-muted: rgba(0, 0, 0, 0.45); --text-inverse: #ffffff;
   /* Border Colors */
@@ -53,11 +53,11 @@
   --danger: #ff4d4f; --danger-hover: #ff7875; --danger-bg: #2a1215; --danger-border: #58181c;
   --info: #1677ff; --info-hover: #4096ff; --info-bg: #111d2c;
   /* Background Colors - Dark Mode */
-  --bg-body: #141414; --bg-body-fallback: #141414; --bg-card: rgba(26, 26, 26, 0.95); --bg-sidebar: #000000; --bg-input: #1f1f1f; --bg-content: #1a1a1a;
+  --bg-body: #141414; --bg-body-fallback: #141414; --bg-card: #1a1a1a; --bg-sidebar: #000000; --bg-input: #1f1f1f; --bg-content: #1a1a1a;
   /* Sidebar semantic colors (dark) */
   --sidebar-text: rgba(255, 255, 255, 0.92); --sidebar-text-muted: rgba(255, 255, 255, 0.82); --sidebar-hover-bg: rgba(255, 255, 255, 0.10); --sidebar-active-bg: rgba(255, 255, 255, 0.16); --sidebar-active-border: #ffffff; --sidebar-grad-top: color-mix(in srgb, var(--bg-sidebar) 94%, #0a1530); --sidebar-grad-bottom: color-mix(in srgb, var(--bg-sidebar) 98%, #05070f);
   /* Glassmorphism Colors - Dark */
-  --glass-bg: rgba(26, 26, 26, 0.85); --glass-border: rgba(255, 255, 255, 0.08); --glass-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.32), 0 3px 6px -4px rgba(0, 0, 0, 0.48), 0 9px 28px 8px rgba(0, 0, 0, 0.2);
+  --glass-bg: #1a1a1a; --glass-border: #303030; --glass-shadow: var(--shadow-sm);
   /* Text Colors - Dark Mode */
   --text-primary: rgba(255, 255, 255, 0.85); --text-secondary: rgba(255, 255, 255, 0.65); --text-tertiary: rgba(255, 255, 255, 0.45); --text-quaternary: rgba(255, 255, 255, 0.25); --text-muted: rgba(255, 255, 255, 0.45);
   /* Border Colors - Dark Mode */
@@ -69,7 +69,7 @@
 }
 
 /* Dark mode - Cards & Panels */
-[data-theme="dark"] .fb-card:hover { box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.4); }
+[data-theme="dark"] .fb-card:hover { box-shadow: none; }
 [data-theme="dark"] .fb-card-header { background: rgba(26, 26, 26, 0.6); }
 [data-theme="dark"] .fb-card-title { color: var(--text-primary); }
 [data-theme="dark"] .fb-panel { background: color-mix(in srgb, var(--bg-card) 96%, #0f172a 4%); box-shadow: none; }
@@ -104,7 +104,7 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
-body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'; background: var(--bg-body-fallback); background-image: var(--bg-body); background-attachment: fixed; color: var(--text-primary); line-height: 1.6; min-height: 100vh; font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
+body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'; background: var(--bg-body); color: var(--text-primary); line-height: 1.6; min-height: 100vh; font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
 
 a { color: var(--primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -162,20 +162,21 @@ a:hover { text-decoration: underline; }
 /* Page Container */
 .page { display: none; }
 .page.active { display: block; }
+.page[data-module-loading="true"] { pointer-events: none; }
 
 /* ============================================
    4. Card Component with Glassmorphism
    ============================================ */
-.fb-card { background: var(--glass-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--glass-border); border-radius: var(--rounded-lg); margin-bottom: var(--space-6); transition: var(--transition-transform), var(--transition-shadow); }
+.fb-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); margin-bottom: var(--space-6); }
 /* Flattened inner panel */
 .fb-panel { background: color-mix(in srgb, var(--bg-card) 96%, var(--primary-light) 4%); border: 1px solid var(--border); border-radius: var(--rounded-md); margin-bottom: 20px; box-shadow: none; overflow: hidden; }
 .fb-panel .fb-card-header { background: color-mix(in srgb, var(--bg-card) 97%, var(--primary-light) 3%); border-bottom: none; padding: var(--space-3) var(--space-4); border-radius: 0; }
-.fb-panel .fb-card-header h4 { font-weight: 600; letter-spacing: 0.2px; }
+.fb-panel .fb-card-header h4 { font-weight: 600; letter-spacing: 0; }
 .fb-panel .fb-card-header [class*="fa-"] { opacity: 0.85; }
 .fb-panel .fb-card-body { padding: var(--space-4); }
 .fb-panel-info { border: none; }
 [data-theme="light"] .sidebar { box-shadow: inset -1px 0 0 color-mix(in srgb, var(--primary) 24%, transparent), 4px 0 18px rgba(22, 119, 255, 0.10); }
-.fb-card-header { padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--glass-border); display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.5); border-radius: var(--rounded-lg) var(--rounded-lg) 0 0; backdrop-filter: blur(8px); }
+.fb-card-header { padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--border-secondary); display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); border-radius: var(--rounded-lg) var(--rounded-lg) 0 0; }
 .fb-card-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; }
 .fb-card-body { padding: var(--space-6); }
 
@@ -193,9 +194,9 @@ a:hover { text-decoration: underline; }
    ============================================ */
 
 /* 按钮基础 */
-.fb-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 31px; padding: 0 var(--space-4); font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); white-space: nowrap; text-decoration: none; }
-.fb-btn:hover { border-color: var(--primary); color: var(--primary); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.fb-btn:active { transform: translateY(0); }
+.fb-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 36px; padding: 0 var(--space-4); font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: var(--transition-colors); white-space: nowrap; text-decoration: none; }
+.fb-btn:hover { border-color: var(--primary); color: var(--primary); }
+.fb-btn:active { background: var(--slate-100); }
 .fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 确保所有按钮都有可见边框 */
 .fb-btn.dev-mode-locked,
@@ -207,18 +208,18 @@ button.dev-mode-locked,
   box-shadow: none !important;
 }
 /* 按钮变体 — 渐变背景（合并 Section 5 + Section 24） */
-.fb-btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-hover)) !important; color: #fff !important; border-color: var(--primary); }
+.fb-btn-primary { background: var(--primary) !important; color: #fff !important; border-color: var(--primary); }
 .fb-btn-primary:hover { filter: brightness(1.03); }
-.fb-btn-primary:active { background: linear-gradient(135deg, var(--primary-active), var(--primary)); }
-.fb-btn-success { background: linear-gradient(135deg, var(--success), var(--success-hover)) !important; color: #fff !important; border-color: var(--success); }
+.fb-btn-primary:active { background: var(--primary-active) !important; }
+.fb-btn-success { background: var(--success) !important; color: #fff !important; border-color: var(--success); }
 .fb-btn-success:hover { filter: brightness(1.03); }
-.fb-btn-success:active { background: linear-gradient(135deg, var(--success-active), var(--success)); }
-.fb-btn-danger { background: linear-gradient(135deg, var(--danger), var(--danger-hover)) !important; color: #fff !important; border-color: var(--danger); }
+.fb-btn-success:active { background: var(--success-active) !important; }
+.fb-btn-danger { background: var(--danger) !important; color: #fff !important; border-color: var(--danger); }
 .fb-btn-danger:hover { filter: brightness(1.03); }
-.fb-btn-danger:active { background: linear-gradient(135deg, var(--danger-active), var(--danger)); }
-.fb-btn-warning { background: linear-gradient(135deg, var(--warning), var(--warning-hover)) !important; color: #fff !important; border-color: var(--warning); }
+.fb-btn-danger:active { background: var(--danger-active) !important; }
+.fb-btn-warning { background: var(--warning) !important; color: #fff !important; border-color: var(--warning); }
 .fb-btn-warning:hover { filter: brightness(1.03); }
-.fb-btn-warning:active { background: linear-gradient(135deg, var(--warning-active), var(--warning)); }
+.fb-btn-warning:active { background: var(--warning-active) !important; }
 .fb-btn-secondary { background: var(--bg-card); color: var(--text-primary); border-color: var(--border); }
 .fb-btn-secondary:hover { background: var(--slate-200); border-color: var(--slate-300); color: var(--primary); }
 .fb-btn-outline-primary { background: transparent; color: var(--primary); border-color: var(--primary); }
@@ -419,8 +420,9 @@ label:not(.toggle-switch):has(> input[type="checkbox"]) > span {
 .section-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-4); padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
 .fb-form .fb-form-group { margin-bottom: var(--space-4); }
 .fb-form .fb-form-group label { margin-bottom: var(--space-2); display: block; font-weight: 500; color: var(--text-secondary); }
-.config-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-3) var(--space-5); margin-bottom:10px; }
+.config-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-5); margin-bottom:10px; }
 .config-form-grid > .fb-form-group { margin-bottom: 0; }
+.config-form-column, .modal-body > .fb-form { min-width: 0; max-width: 100%; }
 /* 红外管理紧凑行：自适应列数 + 缩小间距 */
 .ir-compact-row { grid-template-columns: repeat(auto-fit, minmax(150px, auto)); gap: 6px 12px; margin-bottom: 4px; align-items: end; }
 .fb-inline-group { display: flex; align-items: center; gap: 8px; }
@@ -456,6 +458,7 @@ select::-ms-expand { display: none; }
 select:hover, .form-select:hover { border-color: var(--slate-400); }
 .form-textarea { min-height: 100px; padding: var(--space-3); resize: vertical; }
 .form-hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-1); }
+.modal-body .form-hint, .modal-body .field-hint, .modal-body .field-error { max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .form-readonly { background: var(--slate-50) !important; color: var(--text-secondary) !important; cursor: not-allowed; border-color: var(--border-secondary) !important; }
 input[readonly], textarea[readonly] { background: var(--slate-50) !important; color: var(--text-secondary) !important; cursor: not-allowed; border-color: var(--border-secondary) !important; }
 input[disabled], textarea[disabled], select[disabled] { background: var(--slate-50) !important; color: var(--text-quaternary) !important; cursor: not-allowed; border-color: var(--border-secondary) !important; opacity: 0.75; }
@@ -496,6 +499,13 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .fb-table-bordered { border: 1px solid var(--border); }
 .fb-table-bordered th, .fb-table-bordered td { border: 1px solid var(--border); }
 
+/* Shared responsive management tables. ui-components.js supplies data-label. */
+.fb-table-action-cell .u-table-action-row,
+.fb-table-action-cell .u-action-row { justify-content: flex-start; }
+.fb-table-action-menu { display: inline-flex; }
+.fb-table-action-menu-toggle { display: none; }
+.fb-table-action-menu-panel { display: inline-flex; align-items: center; gap: 6px; }
+
 /* ============================================
    8. Badge System
    ============================================ */
@@ -511,7 +521,7 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .modal.is-visible { display: flex; }
 .modal-content { background: var(--bg-card); border-radius: var(--rounded-xl); box-shadow: var(--shadow-lg); width: 90%; max-width: 500px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; margin: auto; }
 .modal-header { flex-shrink: 0; padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1; background: var(--bg-card); }
-.modal-body { flex: 1; padding: var(--space-6); overflow-y: auto; }
+.modal-body { flex: 1; min-width: 0; padding: var(--space-6); overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; }
 .modal-footer { flex-shrink: 0; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: var(--space-3); flex-wrap: nowrap; overflow-x: auto; background: var(--bg-card); }
 .modal-footer .fb-btn { width: auto; min-width: 88px; flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
 .modal-footer .fb-btn:not(.fb-btn-primary) { border: 1px solid var(--slate-300); }
@@ -726,7 +736,6 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .mqtt-status-online { background: var(--success-light); color: var(--success); }
 .mqtt-status-offline { background: var(--danger-light); color: var(--danger); }
 .mqtt-status-connecting { background: var(--warning-light); color: var(--warning); }
-.mqtt-status-detecting { background: var(--warning-light); color: var(--warning); }
 .mqtt-status-reason-row .mqtt-status-value { overflow-wrap: anywhere; word-break: break-word; }
 
 /* Periph Exec Dynamic Config Items */
@@ -836,29 +845,29 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .theme-toggle .icon-moon { display: none; }
 
 /* === 24. Unified Neo-IoT Layout Refactor === */
-body { background-image: radial-gradient(1200px 500px at -10% -20%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 70%), radial-gradient(900px 380px at 120% 0%, color-mix(in srgb, var(--info) 14%, transparent), transparent 72%), var(--bg-body); }
+body { background: var(--bg-body); }
 .fb-card, .form-section, .resource-card, .info-card, .modal-content, .mqtt-collapsible-section, #mqtt-status-panel { background: var(--glass-bg) !important; border: 2px solid var(--glass-border) !important; box-shadow: none !important; }
 .login-card { background: var(--glass-bg) !important; border: none !important; box-shadow: var(--glass-shadow) !important; }
-.fb-card { border: 1px solid var(--glass-border) !important; box-shadow: var(--glass-shadow) !important; }
-.fb-card-title, .section-title, .info-card-header, .modal-header h2, .modal-header h3, #mqtt-status-panel .mqtt-status-label { letter-spacing: 0.2px; font-weight: 600; }
-.sidebar { background: linear-gradient(180deg, var(--sidebar-grad-top), var(--sidebar-grad-bottom)); border-right: 1px solid color-mix(in srgb, var(--primary) 20%, transparent); }
+.fb-card { border: 1px solid var(--border-secondary) !important; box-shadow: none !important; }
+.fb-card-title, .section-title, .info-card-header, .modal-header h2, .modal-header h3, #mqtt-status-panel .mqtt-status-label { letter-spacing: 0; font-weight: 600; }
+.sidebar { background: var(--bg-sidebar); border-right: 1px solid color-mix(in srgb, var(--primary) 20%, transparent); }
 .sidebar-menu .menu-item { border-radius: var(--rounded-md); margin: 2px 6px; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); }
 .sidebar-menu .menu-item:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); transform: translateX(2px); }
 .sidebar-menu .menu-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-text); box-shadow: inset 2px 0 0 var(--sidebar-active-border); }
 .header { background: color-mix(in srgb, var(--bg-card) 92%, transparent); border-bottom: 1px solid var(--border-secondary); backdrop-filter: blur(6px); }
 .fb-btn, button, select, input, textarea { border-radius: var(--rounded-md); }
 /* Section 24 按钮已合并到 Section 5 */
-input, textarea { background: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 28px; line-height: 1.5; }
-select { background-color: var(--bg-input) !important; background-image: var(--select-arrow) !important; background-repeat: no-repeat !important; background-position: right 10px center !important; background-size: 10px !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 40px; line-height: 1.5; padding-right: 28px !important; cursor: pointer; }
+input, textarea { background: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 36px; line-height: 1.5; }
+select { background-color: var(--bg-input) !important; background-image: var(--select-arrow) !important; background-repeat: no-repeat !important; background-position: right 10px center !important; background-size: 10px !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 36px; line-height: 1.5; padding-right: 28px !important; cursor: pointer; }
 [data-theme="dark"] select { background-image: var(--select-arrow) !important; }
 input:focus, select:focus, textarea:focus { border-color: var(--border-focus) !important; outline: none !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); }
 .fb-table { border-radius: var(--rounded-lg); overflow: hidden; border: 1px solid var(--border-secondary); }
 .fb-table thead th { background: color-mix(in srgb, var(--primary) 8%, var(--bg-card)); font-weight: 600; }
 .fb-table tbody tr:hover { background: color-mix(in srgb, var(--primary) 8%, transparent); }
 .stat-card { border: 1px solid color-mix(in srgb, var(--primary) 12%, transparent); position: relative; overflow: hidden; }
-.stat-card::after { content: ""; position: absolute; inset: auto -10% -100% auto; width: 260px; height: 260px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--primary) 8%, transparent), transparent 70%); pointer-events: none; }
+.stat-card::after { display: none; }
 .progress-bar { background: color-mix(in srgb, var(--text-muted) 10%, transparent); border-radius: var(--rounded-full); overflow: hidden; }
-.progress-fill { border-radius: inherit; box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 30%, transparent); }
+.progress-fill { border-radius: inherit; box-shadow: none; }
 .badge { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: var(--rounded-full); }
 .modal, .modal-overlay { background: rgba(10, 16, 28, 0.5) !important; backdrop-filter: blur(2px); }
 .modal-content { background: var(--bg-card) !important; color: var(--text-primary); }
@@ -1251,6 +1260,49 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 .status-badge-danger::before { background: var(--danger); }
 .status-badge-info { background: var(--info-light, var(--info-bg, #e6f4ff)); color: var(--info); }
 .status-badge-info::before { background: var(--info); }
+.status-badge-neutral { background: var(--gray-3); color: var(--text-secondary); }
+.status-badge-neutral::before { background: var(--gray-7); }
+
+/* Neutral loading states used before the device has returned real status. */
+.status-detecting,
+.mqtt-status-detecting {
+  background: var(--gray-3);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.fb-skeleton-text {
+  display: inline-block;
+  width: min(100%, 112px);
+  min-height: 16px;
+  border-radius: var(--rounded);
+  background: var(--border-secondary);
+  color: transparent !important;
+  animation: fb-skeleton-pulse 1.4s ease-in-out infinite;
+}
+@keyframes fb-skeleton-pulse { 50% { opacity: 0.48; } }
+
+/* Feature configuration */
+.fb-card-header-actions-only { justify-content: flex-end; }
+.developer-mode-hint { margin: 0 var(--space-4) var(--space-3); }
+.log-viewer-body { position: relative; height: calc(100vh - 220px); min-height: 320px; overflow: hidden; }
+.log-content { width: 100%; height: 100%; overflow: auto; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--text-primary); background: var(--gray-2); padding: var(--space-3); border: 1px solid var(--border-secondary); border-radius: var(--rounded); white-space: pre-wrap; word-break: break-word; }
+[data-theme="dark"] .log-content { background: var(--gray-11); }
+.fb-data-toolbar { min-height: 62px; }
+.fb-data-toolbar-leading { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-4); min-width: 0; }
+.fb-data-toolbar-summary { color: var(--text-muted); font-size: 13px; line-height: 1.4; white-space: nowrap; }
+.fb-data-toolbar-summary.is-warning { color: var(--warning-active, var(--warning)); font-weight: 600; }
+.fb-data-toolbar > .fb-card-header-actions { flex: 0 0 auto; margin-left: auto; }
+.feature-ram-monitor { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; margin: 0; }
+.feature-ram-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 0 var(--space-4); text-align: left; white-space: nowrap; }
+.feature-ram-stat:first-child { padding-left: 0; }
+.feature-ram-stat + .feature-ram-stat { border-left: 1px solid var(--border); }
+.feature-ram-label { color: var(--text-secondary); font-size: 12px; }
+.feature-ram-value { color: var(--text-primary); font-size: 15px; font-variant-numeric: tabular-nums; }
+.feature-group-title { margin: var(--space-3) 0 var(--space-2); font-size: 14px; }
+.feature-row-locked { opacity: 0.55; }
+.feature-state { white-space: nowrap; }
+.feature-resource { white-space: nowrap; font-size: 12px; }
+.feature-dependency { font-size: 12px; overflow-wrap: anywhere; }
 /* Text Utilities */
 .muted-text { color: var(--text-muted); }
 .mono-text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 13px; }
@@ -1363,7 +1415,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (max-width: 1024px) {
   .content { padding: var(--space-4); }
   .fb-card-body { padding: var(--space-4); }
-  .form-grid, .config-form-grid, .dev-basic-footer-row, .resource-grid { grid-template-columns: 1fr !important; gap: var(--space-4) !important; }
+  .form-grid, .config-form-grid, .dev-basic-footer-row, .resource-grid { grid-template-columns: minmax(0, 1fr) !important; gap: var(--space-4) !important; }
   .pe-action-grid { grid-template-columns: 1fr; gap: var(--space-3); }
   .pe-action-grid > [style*="grid-column"], .pe-action-grid > .pe-span-all { grid-column: auto; }
   .pe-sensor-config-grid { grid-template-columns: 1fr; }
@@ -1382,6 +1434,89 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .modal-footer .fb-btn { flex: 0 0 auto; }
   .fb-table { font-size: 12px; min-width: 560px; }
   .fb-table th, .fb-table td { padding: var(--space-2); white-space: nowrap; }
+  .fb-table-responsive { display: block; min-width: 0; border: 0; border-radius: 0; }
+  .fb-table-responsive thead { display: none; }
+  .fb-table-responsive tbody { display: block; width: 100%; }
+  .fb-table-responsive tbody tr { display: block; width: 100%; padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+  .fb-table-responsive tbody tr:last-child { border-bottom: 0; }
+  .fb-table-responsive tbody td {
+    display: grid;
+    grid-template-columns: minmax(72px, 0.7fr) minmax(0, 1.3fr);
+    align-items: start;
+    gap: var(--space-3);
+    width: 100%;
+    min-width: 0;
+    padding: 6px var(--space-2);
+    border: 0 !important;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .fb-table-responsive tbody td::before { content: attr(data-label); color: var(--text-muted); font-size: 11px; font-weight: 600; }
+  .fb-table-responsive tbody td.fb-table-span-cell { display: block; }
+  .fb-table-responsive tbody td.fb-table-span-cell::before { content: none; }
+  .fb-table-responsive tbody td.fb-table-action-cell--compact { display: block; padding-top: var(--space-2); }
+  .fb-table-responsive tbody td.fb-table-action-cell--compact::before { content: none; }
+  .fb-table-responsive-container { overflow: visible !important; }
+  .fb-table-responsive .fb-table-action-cell .fb-table-action-menu { position: relative; display: inline-flex; }
+  .fb-table-responsive .fb-table-action-cell .fb-table-action-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--rounded-md);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+  }
+  .fb-table-responsive .fb-table-action-menu-toggle:hover,
+  .fb-table-responsive .fb-table-action-menu.is-open .fb-table-action-menu-toggle { background: var(--slate-100); border-color: var(--primary); color: var(--primary); }
+  .fb-table-responsive .fb-table-action-menu-panel {
+    display: none;
+    position: absolute;
+    z-index: 1200;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 132px;
+    max-width: min(240px, calc(100vw - 32px));
+    box-sizing: border-box;
+    padding: 4px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    border: 1px solid var(--border);
+    border-radius: var(--rounded-md);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-md);
+  }
+  .fb-table-responsive .fb-table-action-menu.is-open .fb-table-action-menu-panel { display: flex; }
+  .fb-table-responsive .fb-table-action-menu-panel .u-table-action-row,
+  .fb-table-responsive .fb-table-action-menu-panel .u-action-row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+  .fb-table-responsive .fb-table-action-menu-panel button,
+  .fb-table-responsive .fb-table-action-menu-panel a {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    margin: 0 !important;
+    padding: 8px 12px;
+    text-align: left;
+    justify-content: flex-start;
+  }
+  .fb-data-toolbar { align-items: stretch; padding: var(--space-3) var(--space-4); }
+  .fb-data-toolbar-leading { flex: 1 1 100%; width: 100%; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+  .fb-data-toolbar-leading > select { flex: 1 1 150px; max-width: 220px; }
+  .fb-data-toolbar > .fb-card-header-actions { width: 100%; margin: 0; justify-content: flex-end; flex-wrap: nowrap; }
+  .feature-ram-monitor { display: grid; flex: 1 1 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .feature-ram-stat { padding: 0 var(--space-3); white-space: normal; }
+  .feature-ram-stat:first-child { padding-left: 0; }
+  .feature-ram-stat:last-child { padding-right: 0; }
+  .feature-ram-label, .feature-ram-value { white-space: nowrap; }
   .fb-card-header-actions { flex-wrap: wrap; justify-content: flex-end; width: 100%; margin-top: var(--space-2); }
   .modal-content { width: calc(100% - 12px) !important; border-radius: var(--rounded-lg); max-height: 90vh; }
   .modal-header, .modal-body, .modal-footer { padding-left: var(--space-4); padding-right: var(--space-4); }
@@ -1423,7 +1558,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     font-size: 72px;
     font-weight: 700;
     line-height: 1;
-    letter-spacing: 2px;
+    letter-spacing: 0;
     color: #d0d7e2;
 }
 
@@ -1478,7 +1613,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modbus-health-main { display: flex; align-items: center; gap: var(--space-2); min-width: 140px; }
 .modbus-health-metrics { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .modbus-health-metric { display: flex; flex-direction: column; gap: 2px; min-width: 72px; }
-.modbus-risk-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 58px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: .03em; }
+.modbus-risk-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 58px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0; }
 .modbus-risk-low { color: var(--success-dark); background: color-mix(in srgb, var(--success) 16%, white); border: 1px solid color-mix(in srgb, var(--success) 40%, transparent); }
 .modbus-risk-medium { color: var(--warning-dark); background: color-mix(in srgb, var(--warning) 18%, white); border: 1px solid color-mix(in srgb, var(--warning) 42%, transparent); }
 .modbus-risk-high { color: var(--danger-dark); background: color-mix(in srgb, var(--danger) 14%, white); border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); }
@@ -1586,7 +1721,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .master-data-name { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .master-data-val { font-size: 15px; font-weight: 600; color: var(--text-primary); font-family: 'Consolas', monospace; white-space: nowrap; }
 .master-data-meta { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
-.master-data-status { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+.master-data-status { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0; }
 .master-data-status.is-ok { color: var(--success-dark); background: color-mix(in srgb, var(--success) 14%, white); }
 .master-data-status.is-stale { color: var(--warning-dark); background: color-mix(in srgb, var(--warning) 14%, white); }
 .master-data-status.is-error { color: var(--danger-dark); background: color-mix(in srgb, var(--danger) 12%, white); }
@@ -1640,7 +1775,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .pid-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-3); }
 .pid-card { background: var(--gray-2); border: 1px solid var(--border); border-radius: var(--rounded-lg); padding: var(--space-4); text-align: center; transition: border-color 0.2s; }
 .pid-card:hover { border-color: var(--primary); }
-.pid-card-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1); letter-spacing: 0.5px; }
+.pid-card-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: var(--space-1); letter-spacing: 0; }
 .pid-card-value { font-size: 24px; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-1); }
 .pid-card.pid-pv-card { grid-column: span 2; }
 .pid-card.pid-pv-card .pid-card-value { font-size: 32px; color: var(--primary); }
@@ -1690,19 +1825,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-monitor-unit { font-size: 11px; color: var(--text-muted); }
 /* Card header with colored badge */
 .dc-card-header { display: flex; align-items: center; gap: 8px; padding: 0 0 10px; }
-.dc-card-badge { font-size: 10px; color: #fff; padding: 2px 10px; border-radius: 10px; font-weight: 700; line-height: 1.5; letter-spacing: 0.3px; white-space: nowrap; }
+.dc-card-badge { font-size: 10px; color: #fff; padding: 2px 10px; border-radius: 10px; font-weight: 700; line-height: 1.5; letter-spacing: 0; white-space: nowrap; }
 .dc-card-badge--system { background: var(--warning); }
 .dc-card-badge--gpio { background: var(--primary); }
 .dc-card-badge--relay { background: #67C23A; }
 .dc-card-badge--pwm { background: #E6A23C; }
 .dc-card-badge--pid { background: #F56C6C; }
 .dc-card-badge--motor { background: #409EFF; }
+.dc-card-badge--modbus { background: var(--primary); }
 .dc-card-title { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Control group card */
 .dc-control-group { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); transition: border-color 0.2s; }
 .dc-control-group:hover { border-color: rgba(22,119,255,0.2); }
-.dc-control-group-title { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; padding-left: 2px; }
+.dc-control-group-title { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0; font-weight: 600; padding-left: 2px; }
 .dc-control-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* Control flow layout (responsive fixed-width cards) */
@@ -1711,6 +1847,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-control-flow > .dc-modbus-device-panel { position: absolute; width: 340px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
 .dc-control-flow > .dc-risk-banner { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
 .dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-modbus-device-inventory { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
 .dc-control-flow > .dc-risk-banner[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
 .dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
 
@@ -1721,8 +1858,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-header-card { margin-bottom: 15px !important; box-shadow: none !important; width: 100%; box-sizing: border-box; }
 .dc-header-card .dc-header-card-inner { padding: var(--space-3) var(--space-5); }
 .dc-header-card .dc-header-title { font-size: 16px; font-weight: 600; }
-.dc-header-actions { display: flex; gap: 8px; align-items: center; }
-.dc-sid-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); margin-right: 8px; cursor: pointer; user-select: none; }
+.dc-header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; width: 100%; min-width: 0; }
+.dc-sid-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); margin-right: 8px; cursor: pointer; user-select: none; white-space: nowrap; }
 .dc-sid-toggle input { margin: 0; }
 .dc-action-stack { display: inline-flex; flex-direction: column; align-items: center; }
 .dc-sid-tag { display: block; font-size: 10px; color: #8a9bb5; text-align: center; line-height: 1.2; margin-top: 2px; }
@@ -1773,6 +1910,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ====== Modbus sub-device panels (card style) ====== */
 .dc-modbus-device-panel { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); transition: border-color 0.2s; }
 .dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.25); }
+.dc-modbus-device-inventory { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; }
+.dc-modbus-device-inventory .dc-card-header { border-bottom: 1px solid var(--border-secondary); margin-bottom: 4px; }
+.dc-modbus-inventory-count { margin-left: auto; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.dc-modbus-inventory-list { display: grid; }
+.dc-modbus-inventory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 48px; padding: 8px 2px; border-bottom: 1px solid var(--border-secondary); }
+.dc-modbus-inventory-row:last-child { border-bottom: 0; }
+.dc-modbus-inventory-identity { display: flex; flex-direction: column; min-width: 0; }
+.dc-modbus-inventory-identity strong { overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.dc-modbus-inventory-identity span { overflow: hidden; color: var(--text-muted); font: 10px/1.4 'Consolas','Monaco',monospace; text-overflow: ellipsis; white-space: nowrap; }
+.dc-modbus-inventory-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+.dc-modbus-inventory-state { display: inline-flex; align-items: center; justify-content: center; min-width: 52px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.dc-modbus-inventory-state.is-enabled { color: var(--success); background: var(--success-light); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.dc-modbus-inventory-state.is-disabled { color: var(--text-muted); background: var(--gray-2); }
 
 /* Offline / unreachable device panel (softer gray for readability) */
 .dc-modbus-device-panel.dc-offline { opacity: 0.88; background: var(--bg-card); border-color: var(--gray-4); border-style: dashed; }
@@ -1837,7 +1987,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-pid-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .dc-pid-card { background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: 8px; padding: 8px 10px; text-align: center; transition: border-color 0.15s; }
 .dc-pid-card:hover { border-color: var(--primary); }
-.dc-pid-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.dc-pid-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0; }
 .dc-pid-value { font-size: 17px; font-weight: 700; color: var(--text-primary); margin: 3px 0; font-family: 'Consolas',monospace; }
 .dc-pid-edit { display: flex; gap: 4px; align-items: center; justify-content: center; margin-top: 2px; }
 .dc-pid-input { width: 58px; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); }
@@ -1894,6 +2044,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 [data-theme="dark"] .dc-ctrl-btn.dc-other { border-color: var(--gray-7); color: var(--text-secondary); background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-other:hover { background: var(--gray-7); color: #fff; }
 [data-theme="dark"] .dc-modbus-device-panel { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+[data-theme="dark"] .dc-modbus-device-inventory { background: var(--gray-11); border-color: var(--gray-9); }
+[data-theme="dark"] .dc-modbus-device-inventory .dc-card-header,
+[data-theme="dark"] .dc-modbus-inventory-row { border-color: var(--gray-9); }
+[data-theme="dark"] .dc-modbus-inventory-state.is-disabled { background: var(--gray-12); }
 [data-theme="dark"] .dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.3); }
 [data-theme="dark"] .dc-modbus-device-panel .dc-card-header { border-bottom-color: var(--gray-9); }
 [data-theme="dark"] .dc-coil-card.dc-coil-on { background: rgba(82,196,26,0.1); border-color: var(--success); }
@@ -1932,6 +2086,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .dc-coil-grid { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); gap: 6px; }
 }
 @media (max-width: 640px) {
+  .dc-header-card .dc-header-card-inner { padding: var(--space-3); }
+  .dc-header-actions { justify-content: flex-start; gap: 6px; }
+  .dc-sid-toggle { flex: 1 0 100%; margin-right: 0; }
   .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
   .dc-monitor-card { padding: 8px 10px; }
   .dc-monitor-value { font-size: 18px; }
@@ -1950,6 +2107,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .dc-pwm-row { padding: 6px 10px; gap: 8px; }
   .dc-pid-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
   .dc-modbus-device-panel { padding: 10px; }
+  .dc-modbus-device-inventory { padding: 10px; }
+  .dc-modbus-inventory-row { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+  .dc-modbus-inventory-meta { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+  .dc-modbus-inventory-state { grid-column: 2; grid-row: 1; }
   .dc-modbus-actions { gap: 5px; }
   .dc-btn-sm { padding: 4px 10px; font-size: 11px; }
 }
@@ -2017,7 +2178,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: var(--text-tertiary);
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
 }
 
 .status-value {
@@ -2115,5 +2276,92 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   
   .fb-status-card {
     padding: var(--space-3);
+  }
+}
+
+/* UART terminal and encoder diagnostics */
+.peripheral-io-heading,
+.peripheral-io-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.peripheral-io-heading {
+  min-height: 40px;
+  margin-bottom: var(--space-3);
+}
+
+.peripheral-io-heading .u-text-muted {
+  margin-left: var(--space-2);
+  font-family: 'Courier New', monospace;
+}
+
+.peripheral-io-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.peripheral-io-status-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.peripheral-io-terminal-grid {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.3fr) minmax(0, 1.7fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.peripheral-io-payload-group,
+.peripheral-io-actions {
+  grid-column: 1 / -1;
+}
+
+.peripheral-io-payload,
+.peripheral-io-output {
+  width: 100%;
+  min-height: 88px;
+  max-height: 180px;
+  overflow: auto;
+  box-sizing: border-box;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+.peripheral-io-output-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.peripheral-io-output {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--rounded-md);
+  background: var(--gray-2);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .peripheral-io-status-grid,
+  .peripheral-io-output-grid,
+  .peripheral-io-terminal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .peripheral-io-actions {
+    justify-content: stretch;
+  }
+
+  .peripheral-io-actions .fb-btn {
+    flex: 1 1 0;
   }
 }

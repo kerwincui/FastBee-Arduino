@@ -722,8 +722,10 @@
          * @param {string} mode - 'export' 或 'import'
          * @returns {Promise<Array>} 用户选中的文件列表
          */
-        _showConfigTransferModal(items, mode) {
+        async _showConfigTransferModal(items, mode) {
             const self = this;
+            const modal = await AppState._ensureModalForAction('config-transfer-modal');
+            if (!modal) throw new Error(t('dc-transfer-modal-missing', '弹窗元素不存在'));
             return new Promise((resolve, reject) => {
                 const titleEl = document.getElementById('config-transfer-modal-title');
                 const listEl = document.getElementById('config-transfer-list');
@@ -731,6 +733,7 @@
                 const summaryEl = document.getElementById('config-transfer-summary');
                 const confirmBtn = document.getElementById('config-transfer-confirm-btn');
                 const cancelBtn = document.getElementById('config-transfer-cancel-btn');
+                const closeBtn = document.querySelector('#config-transfer-modal .modal-close-btn');
                 if (!listEl || !confirmBtn || !cancelBtn) { reject(new Error(t('dc-transfer-modal-missing', '弹窗元素不存在'))); return; }
 
                 // 设置标题和确认按钮文字
@@ -781,6 +784,7 @@
                     listEl.removeEventListener('change', onItemChange);
                     confirmBtn.removeEventListener('click', onConfirm);
                     cancelBtn.removeEventListener('click', onCancel);
+                    if (closeBtn) closeBtn.removeEventListener('click', onCancel);
                     AppState.hideModal('config-transfer-modal');
                 }
 
@@ -800,6 +804,7 @@
 
                 confirmBtn.addEventListener('click', onConfirm);
                 cancelBtn.addEventListener('click', onCancel);
+                if (closeBtn) closeBtn.addEventListener('click', onCancel);
                 AppState.showModal('config-transfer-modal');
             });
         },

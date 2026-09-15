@@ -5,10 +5,8 @@
             <h2 class="modal-title">选择WiFi网络</h2>
             <button id="close-wifi-modal" class="modal-close-btn">×</button>
         </div>
-        <div class="modal-body modal-body-compact">
-            <div id="wifi-modal-body" class="u-min-h-120">
-                <!-- 扫描结果动态加载 -->
-            </div>
+        <div id="wifi-modal-body" class="modal-body modal-body-compact u-min-h-120">
+            <!-- 扫描结果动态加载 -->
         </div>
     </div>
 </div>
@@ -79,7 +77,8 @@
                             </div>
                             <div class="fb-form-group">
                                 <label for="peripheral-type-input">外设类型</label>
-                                <select id="peripheral-type-input" class="" required>
+                                <select id="peripheral-type-input" class="" required disabled
+                                    aria-describedby="peripheral-type-status">
                                     <optgroup label="通信接口">
                                         <option value="1">UART</option>
                                         <option value="2">I2C</option>
@@ -115,17 +114,19 @@
                                         <option value="47">TM1637 数码管</option>
                                         <option value="48">433MHz 射频模块</option>
                                         <option value="49">雷达感应模块</option>
-<option value="50">DS1302 实时时钟</option>
-<option value="52">LCD1602 字符液晶</option>
-<option value="53">红外接收头</option>
+                                        <option value="50" disabled data-implemented="false">DS1302 实时时钟（待驱动）</option>
+                                        <option value="52" disabled data-implemented="false">LCD1602 字符液晶（待驱动）</option>
+                                        <option value="53">红外接收头</option>
+                                        <option value="54" disabled data-implemented="false">MFRC522 RFID（待驱动）</option>
                                         <option value="60">设备事件</option>
                                     </optgroup>
                                 </select>
+                                <small id="peripheral-type-status" class="field-hint u-text-warning">正在加载设备外设能力，请稍后重试</small>
                             </div>
                             <div class="fb-form-group">
                                 <label for="peripheral-enabled-input">启用</label>
                                 <label class="toggle-switch">
-                                    <input type="checkbox" id="peripheral-enabled-input" checked>
+                                    <input type="checkbox" id="peripheral-enabled-input">
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
@@ -183,6 +184,7 @@
                                     placeholder="例如: 2,4,5 (逗号分隔)" required>
                                 <small id="peripheral-pins-validation-hint" class="field-hint"></small>
                                 <small id="peripheral-pins-recommend" class="field-hint" style="color:var(--text-muted);display:none"></small>
+                                <small id="peripheral-pin-role-hint" class="field-hint u-text-info" role="status"></small>
                                 <small id="uart-pin-direction-hint" class="field-hint is-hidden">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
                             </div>
 
@@ -479,6 +481,40 @@
                                 <div id="generic-sensor-params" class="peripheral-params-group is-hidden">
                                     <h4 class="u-mb-10">通用传感器参数</h4>
                                     <div class="fb-form-group">
+                                        <label for="generic-sensor-driver">本地 I2C 驱动</label>
+                                        <select id="generic-sensor-driver">
+                                            <option value="" selected>逻辑数据源（不初始化驱动）</option>
+                                            <option value="bmp280">BMP280</option>
+                                            <option value="mpu6050">MPU6050</option>
+                                            <option value="sht30">SHT30</option>
+                                            <option value="sht31">SHT31</option>
+                                            <option value="aht20">AHT20</option>
+                                        </select>
+                                        <small>只有设备 descriptor 声明对应驱动可用时才会启用本地探测。</small>
+                                    </div>
+                                    <div id="generic-sensor-i2c-fields" class="fb-grid-2 is-hidden">
+                                        <div class="fb-form-group">
+                                            <label for="generic-sensor-bus-id">I2C 总线外设 ID</label>
+                                            <input type="text" id="generic-sensor-bus-id" placeholder="例如: i2c_bus_1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="generic-sensor-address">I2C 地址</label>
+                                            <input type="text" id="generic-sensor-address" value="0x76" inputmode="text"
+                                                pattern="^0[xX][0-9a-fA-F]{2}$" placeholder="0x76">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="generic-sensor-channel">默认通道</label>
+                                            <select id="generic-sensor-channel">
+                                                <option value="temperature">温度</option>
+                                                <option value="humidity">湿度</option>
+                                                <option value="pressure">气压</option>
+                                                <option value="altitude">海拔</option>
+                                                <option value="accel_x">加速度 X</option>
+                                                <option value="gyro_x">角速度 X</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="fb-form-group">
                                         <label for="generic-sensor-type">传感器类型 ID</label>
                                         <input type="number" id="generic-sensor-type" value="0" min="0" max="255">
                                         <small>用于逻辑/外部数据源标识，不会假定具体厂商协议</small>
@@ -498,6 +534,53 @@
                                             (0-255)</label>
                                         <input type="number" id="dac-default-value" class="" value="0"
                                             min="0" max="255">
+                                    </div>
+                                </div>
+
+                                <!-- 舵机参数 -->
+                                <div id="servo-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">舵机参数</h4>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label for="servo-frequency">PWM 频率 (Hz)</label>
+                                            <input type="number" id="servo-frequency" value="50" min="40" max="400" step="1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="servo-initial-angle">启动角度 (度)</label>
+                                            <input type="number" id="servo-initial-angle" value="90" min="0" max="360" step="1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="servo-min-pulse">最小脉宽 (us)</label>
+                                            <input type="number" id="servo-min-pulse" value="500" min="100" max="5000" step="1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="servo-max-pulse">最大脉宽 (us)</label>
+                                            <input type="number" id="servo-max-pulse" value="2500" min="100" max="5000" step="1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="servo-min-angle">最小角度 (度)</label>
+                                            <input type="number" id="servo-min-angle" value="0" min="0" max="360" step="1">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="servo-max-angle">最大角度 (度)</label>
+                                            <input type="number" id="servo-max-angle" value="180" min="0" max="360" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="servo-inverted">
+                                            <span>反向角度映射</span>
+                                        </label>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="servo-release-after-move">
+                                            <span>动作后释放 PWM 信号</span>
+                                        </label>
+                                        <small>仅在舵机无需持续保持扭矩时启用</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small>引脚顺序：只填 1 个舵机信号引脚；新增配置默认禁用</small>
                                     </div>
                                 </div>
 
@@ -540,16 +623,16 @@
                                     <h4 class="u-mb-10">编码器参数</h4>
                                     <div class="fb-form-group">
                                         <label for="encoder-resolution">每转脉冲数</label>
-                                        <input type="number" id="encoder-resolution" class="" value="1024"
+                                        <input type="number" id="encoder-resolution" class="" value="20"
                                             min="1" max="65535">
-                                        <small>常用值：600, 1024, 2048, 4096</small>
+                                        <small>普中旋转编码器通常填 20；其他型号请按每转脉冲数填写</small>
                                     </div>
                                     <div class="fb-form-group">
                                         <label class="fb-checkbox fb-m-0">
-                                            <input type="checkbox" id="encoder-use-interrupt" checked>
-                                            <span>使用硬件中断</span>
+                                            <input type="checkbox" id="encoder-use-interrupt" checked disabled>
+                                            <span>GPIO 中断采集</span>
                                         </label>
-                                        <small>中断模式可提高采样精度</small>
+                                        <small>当前固件固定使用中断采集，不支持轮询模式</small>
                                     </div>
                                     <div class="fb-form-group">
                                         <small>引脚顺序：A相, B相；例如 GPIO4, GPIO5</small>
@@ -563,9 +646,9 @@
                                         <label for="sdcard-interface">接口模式</label>
                                         <select id="sdcard-interface" class="">
                                             <option value="1" selected>SPI 模式</option>
-                                            <option value="0">SDMMC 模式 (仅部分ESP32)</option>
+                                            <option value="0" disabled>SDMMC 模式（设备声明支持后可用）</option>
                                         </select>
-                                        <small>SPI模式兼容性更好，SDMMC速度更快</small>
+                                        <small>接口能力以设备 descriptor 为准。</small>
                                     </div>
                                     <div class="fb-form-group">
                                         <label for="sdcard-frequency">通信频率 (Hz)</label>
@@ -577,6 +660,57 @@
                                         <small id="sdcard-pin-hint-spi">SPI引脚顺序：CLK, MOSI, MISO, CS</small>
                                         <small id="sdcard-pin-hint-sdmmc" class="is-hidden">SDMMC引脚顺序：CMD, CLK, D0, D1, D2, D3</small>
                                     </div>
+                                </div>
+
+                                <!-- DS1302 参数 -->
+                                <div id="ds1302-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">DS1302 参数</h4>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label for="ds1302-hour-mode">显示制式</label>
+                                            <select id="ds1302-hour-mode">
+                                                <option value="1" selected>24 小时制</option>
+                                                <option value="0">12 小时制</option>
+                                            </select>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="ds1302-trickle-charge">涓流充电</label>
+                                            <select id="ds1302-trickle-charge">
+                                                <option value="0" selected>关闭（推荐）</option>
+                                                <option value="165">1 二极管 + 2K</option>
+                                                <option value="166">1 二极管 + 4K</option>
+                                                <option value="167">1 二极管 + 8K</option>
+                                                <option value="169">2 二极管 + 2K</option>
+                                                <option value="170">2 二极管 + 4K</option>
+                                                <option value="171">2 二极管 + 8K</option>
+                                            </select>
+                                            <small class="u-text-warning">普通不可充电纽扣电池必须保持关闭。</small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- LCD1602 参数 -->
+                                <div id="lcd1602-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">LCD1602 参数</h4>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label for="lcd1602-size">屏幕尺寸</label>
+                                            <select id="lcd1602-size">
+                                                <option value="16x2" selected>16 x 2</option>
+                                                <option value="20x4">20 x 4</option>
+                                            </select>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="lcd1602-address">I2C 地址</label>
+                                            <input id="lcd1602-address" type="text" value="0x27" inputmode="text"
+                                                pattern="^(0[xX][0-9a-fA-F]{2}|0)$" placeholder="0x27 或 0">
+                                            <small>填 0 自动探测；也可使用 0x20-0x27 或 0x38-0x3F。</small>
+                                        </div>
+                                    </div>
+                                    <label class="fb-checkbox">
+                                        <input id="lcd1602-backlight" type="checkbox" checked>
+                                        <span>初始化后开启背光</span>
+                                    </label>
                                 </div>
 
                                 <!-- WS2812B / NeoPixel 参数 -->
@@ -811,13 +945,14 @@
                         </div>
                     </div>
 
+                    <div id="peripheral-preflight-result" class="u-hint-bar u-hint-bar-info is-hidden" role="status"></div>
                     <div id="peripheral-error" class="message message-error is-hidden"></div>
                 </fieldset>
             </form>
         </div>
         <div class="modal-footer">
             <button class="fb-btn" id="cancel-peripheral-btn" type="button">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button">保存</button>
+            <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button" disabled>保存</button>
         </div>
     </div>
 </div>
@@ -958,63 +1093,6 @@
         <div class="modal-footer">
             <button class="fb-btn" id="cancel-rule-script-btn" type="button">取消</button>
             <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button">保存</button>
-        </div>
-    </div>
-</div>
-
-<!-- 兼容旧版：GPIO配置模态窗 -->
-<div id="gpio-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h2 class="modal-title" id="gpio-modal-title">新增GPIO
-            </h2>
-            <button id="close-gpio-modal" class="modal-close-btn">×</button>
-        </div>
-        <div class="modal-body">
-            <form id="gpio-form" class="fb-form">
-                <fieldset>
-                    <input type="hidden" id="gpio-original-pin" value="">
-
-                    <div class="fb-form-group">
-                        <label for="gpio-pin-input">引脚号 (0-39)</label>
-                        <input type="number" id="gpio-pin-input" class="" min="0" max="39"
-                            placeholder="请输入GPIO引脚号" required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="gpio-name-input">名称</label>
-                        <input type="text" id="gpio-name-input" class="" placeholder="例如: LED、Relay"
-                            required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="gpio-mode-input">模式</label>
-                        <select id="gpio-mode-input" class="">
-                            <option value="1">数字输入</option>
-                            <option value="2">数字输出</option>
-                            <option value="3">数字输入(上拉)</option>
-                            <option value="4">数字输入(下拉)</option>
-                            <option value="5">模拟输入</option>
-                            <option value="6">模拟输出</option>
-                            <option value="7">PWM输出</option>
-                        </select>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="gpio-default-input">初始值</label>
-                        <select id="gpio-default-input" class="">
-                            <option value="0">低电平 (LOW)</option>
-                            <option value="1">高电平 (HIGH)</option>
-                        </select>
-                    </div>
-
-                    <div id="gpio-error" class="message message-error is-hidden"></div>
-                </fieldset>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button class="fb-btn" id="cancel-gpio-btn" type="button">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button">保存</button>
         </div>
     </div>
 </div>

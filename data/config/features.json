@@ -10,7 +10,6 @@
     "modbus": { "enabled": false },
     "ruleScript": { "enabled": false },
     "lcdGb2312": { "enabled": false },
-    "ledScreen": { "enabled": false },
     "irRemote": { "enabled": false },
     "rfid": { "enabled": false },
     "i2cSensors": { "enabled": false },

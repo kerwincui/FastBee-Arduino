@@ -60,13 +60,16 @@ public:
     bool addPeripheral(const PeripheralConfig& config);
     // 添加外设（带错误信息输出，用于 API 返回具体失败原因）
     bool addPeripheral(const PeripheralConfig& config, String& errorMsg);
+    bool addPeripheralAndSave(const PeripheralConfig& config, String& errorMsg);
 
     // 更新外设
     bool updatePeripheral(const String& id, const PeripheralConfig& config);
     bool updatePeripheral(const String& id, const PeripheralConfig& config, String& errorMsg);
+    bool updatePeripheralAndSave(const String& id, const PeripheralConfig& config, String& errorMsg);
 
     // 删除外设
     bool removePeripheral(const String& id);
+    bool removePeripheralAndSave(const String& id, String& errorMsg);
 
     // 获取外设配置
     PeripheralConfig* getPeripheral(const String& id);
@@ -91,6 +94,8 @@ public:
     // 启用/禁用外设
     bool enablePeripheral(const String& id);
     bool disablePeripheral(const String& id);
+    bool enablePeripheralAndSave(const String& id, String& errorMsg);
+    bool disablePeripheralAndSave(const String& id, String& errorMsg);
     bool isPeripheralEnabled(const String& id) const;
     String lastEnableError;  // 最近一次 enablePeripheral 失败原因
 
@@ -129,6 +134,10 @@ public:
     bool writeString(const String& id, const String& data);
     String readString(const String& id);
 
+    // 编码器实时读数。delta 为自上次读取以来的增量；读取后原子清零。
+    bool getEncoderReading(const String& id, EncoderReading& reading);
+    bool resetEncoder(const String& id);
+
     // ========== GPIO兼容层（保持向后兼容） ==========
 
     // 配置单个GPIO引脚（内部转换为PeripheralConfig）
@@ -165,6 +174,7 @@ public:
     // PWM操作
     bool writePWM(uint8_t pin, uint32_t dutyCycle);
     bool writePWM(const String& peripheralId, uint32_t dutyCycle);
+    bool writeServoAngle(const String& peripheralId, int angle);
 
     // 模拟读取
     uint16_t readAnalog(uint8_t pin);
@@ -255,6 +265,12 @@ public:
         uint16_t stepsPerRev;
         bool running;
     };
+
+    struct ServoReleaseTickerData {
+        PeripheralManager* mgr;
+        String id;
+        Ticker ticker;
+    };
     bool controlStepper(const String& id, const String& action, int value = 0);
     bool stopStepper(const String& id);
 
@@ -312,6 +328,9 @@ private:
     std::map<String, StepperTickerData*, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, StepperTickerData*>>> stepperTickers;
 
+    std::map<String, ServoReleaseTickerData*, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, ServoReleaseTickerData*>>> servoReleaseTickers;
+
     std::map<String, uint8_t, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, uint8_t>>> neopixelRainbowIndex;
 
@@ -326,7 +345,11 @@ private:
         volatile bool used = false;
         uint8_t pinA = 255;
         uint8_t pinB = 255;
-        volatile int32_t count = 0;
+        volatile int64_t count = 0;
+        volatile int64_t delta = 0;
+        volatile int8_t direction = 0;
+        volatile uint32_t lastEdgeMicros = 0;
+        volatile uint32_t edgePeriodMicros = 0;
         String id;   // 仅任务上下文读写，ISR 不触碰
     };
     static EncoderIsrSlot _encoderSlots[MAX_ENCODER_SLOTS];
@@ -348,10 +371,32 @@ private:
     bool teardownHardware(const PeripheralConfig& config);
     bool setupUartHardware(const PeripheralConfig& config);
     HardwareSerial* getUartSerial(const String& id);
+    bool validateUartCapacity(const PeripheralConfig& candidate,
+                              const String& excludeId, String& errorMsg) const;
 
     // GPIO硬件设置
     bool setupGPIOPin(const PeripheralConfig& config);
     bool setupPWMPin(const PeripheralConfig& config);
+    bool setupServoPin(const PeripheralConfig& config);
+    bool attachServoSignal(const PeripheralConfig& config);
+    void scheduleServoRelease(const String& id);
+    void cancelServoRelease(const String& id);
+    bool releaseServoSignal(const String& id);
+    static void servoReleaseTickerCallback(ServoReleaseTickerData* data);
+
+    struct MutationSnapshot {
+        String id;
+        bool existed = false;
+        bool hadRuntimeState = false;
+        PeripheralConfig config;
+        PeripheralRuntimeState runtimeState;
+        size_t memorySuspendedCount = 0;
+    };
+    bool applyMutationTransactional(const String& snapshotId, const String& resultId,
+                                    const std::function<bool(String&)>& mutation,
+                                    String& errorMsg);
+    bool restoreMutationSnapshot(const MutationSnapshot& snapshot,
+                                 const String& resultId, String& errorMsg);
 
     // Modbus外设写入（内部实现）
     bool writeModbusPin(const String& id, const PeripheralConfig& config, GPIOState state);

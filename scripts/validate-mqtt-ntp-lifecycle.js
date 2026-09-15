@@ -193,28 +193,28 @@ function checkMqttLifecycle() {
     // 2025-06 修复: _loadMqttStatus 应追踪连续失败次数
     assert(loadStatusFn[0].includes('_mqttApiFailCount'), '_loadMqttStatus should track API failure count');
     assert(loadStatusFn[0].includes('_handleMqttApiFail'), '_loadMqttStatus should call _handleMqttApiFail on failure');
+    assert(loadStatusFn[0].includes('_mqttStatusRequestSeq'), '_loadMqttStatus must sequence requests so stale callbacks cannot update the UI');
+    assert(loadStatusFn[0].includes('requestSeq !== self._mqttStatusRequestSeq'), '_loadMqttStatus must ignore stale success and failure callbacks');
+    assert(loadStatusFn[0].includes('clearTimeout(self._mqttRetryTimer)'), 'A successful MQTT status response must cancel a pending retry');
     assert(ui.includes('_getMqttStatusFailureReason(err)'), 'MQTT reconnect failures should surface a readable status reason');
     assert(ui.includes("this._loadMqttStatus();") && ui.includes("currentBadge.textContent === '内存保护'"), 'MQTT disabled refresh should still query status and surface memory protection');
 
-    // _handleMqttApiFail 应存在且在连续失败时更新 badge
+    // _handleMqttApiFail 应存在且在连续失败时显示可读原因。
     assert(ui.includes('_handleMqttApiFail'), '_handleMqttApiFail helper should exist');
-    const handleFailFn = ui.match(/_handleMqttApiFail\(\)\s*\{[\s\S]{0,600}/);
+    const handleFailFn = ui.match(/_handleMqttApiFail\(reason\)\s*\{[\s\S]{0,600}/);
     assert(handleFailFn, '_handleMqttApiFail function should exist');
-    assert(handleFailFn[0].includes('mqtt-status-detecting'), '_handleMqttApiFail should handle detecting state');
     assert(handleFailFn[0].includes('_mqttApiFailCount'), '_handleMqttApiFail should check failure count');
-    assert(handleFailFn[0].includes('连接超时'), '_handleMqttApiFail should show 连接超时 after threshold');
+    assert(handleFailFn[0].includes('_mqttApiFailCount < 2'), '_handleMqttApiFail should tolerate one transient failure');
+    assert(handleFailFn[0].includes('_setMqttFailureStatus'), '_handleMqttApiFail should expose the failure reason after threshold');
 
     // 2025-06 修复: MQTT 状态轮询应有 setInterval 定期备份，确保状态不依赖纯 SSE
     const startPollingFn = ui.match(/_startMqttStatusPolling\(options\)\s*\{[\s\S]{0,1200}/);
     assert(startPollingFn, '_startMqttStatusPolling function definition should exist');
     assert(startPollingFn[0].includes('_mqttPollInterval'), '_startMqttStatusPolling should set _mqttPollInterval');
     assert(startPollingFn[0].includes('setInterval'), '_startMqttStatusPolling should use setInterval as backup poller');
-    // _startMqttStatusPolling 应立即更新 badge，避免卡在“检测中...”
-    assert(startPollingFn[0].includes('_ensureBadgeNotStuck'), '_startMqttStatusPolling should call _ensureBadgeNotStuck immediately');
-
-    // _ensureBadgeNotStuck 应存在且仅在 badge 为 detecting 时更新
-    assert(ui.includes('_ensureBadgeNotStuck'), '_ensureBadgeNotStuck helper should exist');
-    assert(ui.includes('mqtt-status-detecting'), '_ensureBadgeNotStuck should check for detecting class');
+    // 状态刷新入口应显式进入中性加载态，避免沿用旧的成功/失败状态。
+    assert(ui.includes('_setMqttStatusLoading'), '_setMqttStatusLoading helper should exist');
+    assert(ui.includes('mqtt-status-detecting'), '_setMqttStatusLoading should render the detecting class');
 
     // 2025-06 修复: _updateMqttStatusUI 应利用 lastError 区分"连接中"和"连接失败"
     // The status mapper also handles stopped/error states and actionable HTTP
@@ -235,9 +235,10 @@ function checkMqttLifecycle() {
     assert(!updateUIFn.includes('d.autoStartAttempted'), '_updateMqttStatusUI should NOT use overly broad autoStartAttempted in connecting check');
 
     // _stopMqttStatusPolling 应清除 _mqttPollInterval
-    const stopPollingFn = ui.match(/_stopMqttStatusPolling\(\)\s*\{[\s\S]{0,600}/);
+    const stopPollingFn = balancedBlock(ui, '_stopMqttStatusPolling() {');
     assert(stopPollingFn, '_stopMqttStatusPolling function should exist');
-    assert(stopPollingFn[0].includes('_mqttPollInterval'), '_stopMqttStatusPolling should clear _mqttPollInterval');
+    assert(stopPollingFn.includes('_mqttPollInterval'), '_stopMqttStatusPolling should clear _mqttPollInterval');
+    assert(stopPollingFn.includes('_mqttStatusRequestSeq'), '_stopMqttStatusPolling must invalidate in-flight status callbacks');
 }
 
 function checkMqttStatusPollingFix() {
@@ -305,7 +306,14 @@ function checkMqttStatusPollingFix() {
     // 规则4：protocol-lite-config.js 必须包含状态查询（防止状态卡死）
     // ═══════════════════════════════════════════════════════════════════════
     assert(lite.includes('_loadMqttStatus'), '[Rule4] protocol-lite-config.js 必须调用 _loadMqttStatus — 否则MQTT badge会卡在"检测中..."');
-    assert(lite.includes('mqtt.enabled !== false'), '[Rule4] protocol-lite-config.js 应在 mqtt.enabled 时才执行状态查询');
+    assert(lite.includes('mqtt.enabled !== false'), '[Rule4] protocol-lite-config.js 应对启用状态执行有限轮询');
+    const disabledLiteBranch = balancedBlock(lite, 'else if (mqtt.enabled === false');
+    assert(disabledLiteBranch, '[Rule4] protocol-lite-config.js 必须包含 MQTT 禁用状态分支');
+    assert(disabledLiteBranch.includes('_loadMqttStatus'), '[Rule4] MQTT 禁用时必须读取一次后端状态，以展示内存保护原因');
+    assert(disabledLiteBranch.includes('setTimeout'), '[Rule4] MQTT 禁用状态查询必须延迟执行，避免与页面资源争用连接');
+    assert(!disabledLiteBranch.includes('mqtt-status-offline'), '[Rule4] MQTT 状态响应前不得由配置值提前显示离线');
+    assert(!disabledLiteBranch.includes("textContent = '未连接'"), '[Rule4] MQTT 状态响应前必须保持中性检测态');
+    assert(lite.includes('_setMqttStatusLoading'), '[Rule4] MQTT 配置加载后必须显式保持中性检测态');
     assert(lite.includes("typeof this._loadMqttStatus === 'function'"), '[Rule4] protocol-lite-config.js 应用 typeof 守卫防止模块未加载时报错');
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -328,8 +336,8 @@ function checkMqttStatusPollingFix() {
     // 规则6：_stopMqttStatusPolling 必须清理所有timer
     // 必须清理：_mqttRetryTimer、_mqttStatusTimer、_mqttPollInterval
     // ═══════════════════════════════════════════════════════════════════════
-    const stopPollingFn = ui.match(/_stopMqttStatusPolling\(\)\s*\{[\s\S]{0,800}/);
-    const stopPollingBody = stopPollingFn ? stopPollingFn[0] : '';
+    const stopPollingFn = balancedBlock(ui, '_stopMqttStatusPolling() {');
+    const stopPollingBody = stopPollingFn || '';
     assert(stopPollingBody.includes('_mqttStatusTimer'), '[Rule6] _stopMqttStatusPolling 必须清理 _mqttStatusTimer');
     assert(stopPollingBody.includes('clearTimeout') && stopPollingBody.includes('_mqttStatusTimer'), '[Rule6] _stopMqttStatusPolling 必须 clearTimeout(_mqttStatusTimer)');
     assert(stopPollingBody.includes('_mqttPollInterval'), '[Rule6] _stopMqttStatusPolling 必须清理 _mqttPollInterval');
@@ -342,15 +350,12 @@ function checkMqttStatusPollingFix() {
     assert(stopPollingBody.includes('_mqttRetryTimer = null'), '[Rule6] _mqttRetryTimer 清理后必须置 null');
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 规则7：_ensureBadgeNotStuck 必须存在（即时视觉反馈）
+    // 规则7：刷新入口必须显式进入中性加载态（即时视觉反馈）
     // ═══════════════════════════════════════════════════════════════════════
-    assert(startPollingBody.includes('_ensureBadgeNotStuck'), '[Rule7] _startMqttStatusPolling 必须调用 _ensureBadgeNotStuck() 提供即时视觉反馈');
-    // _ensureBadgeNotStuck 应在 setTimeout 之前被调用（即时生效）
-    assert(ensureBadgeIdx > 0 && ensureBadgeIdx < firstSetTimeoutIdx, '[Rule7] _ensureBadgeNotStuck 必须在 setTimeout 之前调用（确保即时视觉响应）');
-    // _ensureBadgeNotStuck 函数应存在且处理 detecting 状态
-    const ensureBadgeFn = ui.match(/_ensureBadgeNotStuck\(\)\s*\{[\s\S]{0,400}/);
-    assert(ensureBadgeFn, '[Rule7] _ensureBadgeNotStuck 函数定义必须存在');
-    assert(ensureBadgeFn && ensureBadgeFn[0].includes('mqtt-status-detecting'), '[Rule7] _ensureBadgeNotStuck 应检测 mqtt-status-detecting 状态');
+    assert(ui.includes('_setMqttStatusLoading()'), '[Rule7] MQTT 状态刷新入口必须调用 _setMqttStatusLoading()');
+    const loadingFn = ui.match(/_setMqttStatusLoading\(\)\s*\{[\s\S]{0,700}/);
+    assert(loadingFn, '[Rule7] _setMqttStatusLoading 函数定义必须存在');
+    assert(loadingFn && loadingFn[0].includes('mqtt-status-detecting'), '[Rule7] _setMqttStatusLoading 应显示检测中状态');
 
     // ═══════════════════════════════════════════════════════════════════════
     // 规则8：protocol-lite-config.js 禁止创建持久SSE连接

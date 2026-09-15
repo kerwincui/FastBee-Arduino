@@ -53,6 +53,7 @@ enum class PeripheralType {
     DS1302_RTC = 50,    // DS1302 实时时钟模块（3线接口：CE/IO/SCLK）
     LCD1602 = 52,       // LCD1602 I2C 字符液晶（通过 PCF8574 扩展板）
     IR_RECEIVER = 53,   // 红外接收头（VS1838B/HS0038 等，1个数据引脚，IRremoteESP8266 解码）
+    RFID_MFRC522 = 54,  // MFRC522 RFID（SPI：SCK/MOSI/MISO/SS/RST）
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -154,6 +155,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::DS1302_RTC: return "DS1302 RTC";
         case PeripheralType::LCD1602: return "LCD1602";
         case PeripheralType::IR_RECEIVER: return "IR Receiver";
+        case PeripheralType::RFID_MFRC522: return "MFRC522 RFID";
 
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
@@ -187,6 +189,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::RF_MODULE:
         case PeripheralType::RADAR_SENSOR:
         case PeripheralType::IR_RECEIVER:
+        case PeripheralType::PWM_SERVO:
             return 1;
             
         // 双引脚
@@ -195,15 +198,21 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::ENCODER:
         case PeripheralType::SEVEN_SEGMENT_TM1637:  // CLK + DIO
         case PeripheralType::LCD1602:               // SDA + SCL
+        case PeripheralType::SENSOR_GENERIC:        // Local BMP280/MPU6050: SDA + SCL
             return 2;
             
         // 三引脚
         case PeripheralType::SPI:
+        case PeripheralType::SDIO:  // SDSPI: SCK + MOSI + MISO + CS
             return 4;  // MISO, MOSI, SCK, CS
         
         // DS1302 需要 3 个引脚：CE, IO, SCLK
         case PeripheralType::DS1302_RTC:
             return 3;
+
+        // MFRC522 使用共享 SPI 三根总线引脚，加独立 SS 和 RST。
+        case PeripheralType::RFID_MFRC522:
+            return 5;
             
         // 四引脚
         case PeripheralType::STEPPER_MOTOR:
@@ -211,15 +220,12 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
             
         // 多引脚（可变）
         case PeripheralType::LCD:
-        case PeripheralType::SDIO:
         case PeripheralType::CAMERA:
         case PeripheralType::ETHERNET:
         case PeripheralType::JTAG:
         case PeripheralType::SWD:
         case PeripheralType::CAN:
         case PeripheralType::USB:
-        case PeripheralType::SENSOR_GENERIC:
-        case PeripheralType::PWM_SERVO:
             return 8;  // 最大支持8个引脚
         
         // Modbus外设不使用GPIO引脚
@@ -293,6 +299,9 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
         strcasecmp(typeStr, "RTC_DS1302") == 0) return PeripheralType::DS1302_RTC;
     if (strcasecmp(typeStr, "LCD1602") == 0 ||
         strcasecmp(typeStr, "LCD_1602") == 0) return PeripheralType::LCD1602;
+    if (strcasecmp(typeStr, "RFID_MFRC522") == 0 ||
+        strcasecmp(typeStr, "MFRC522") == 0 ||
+        strcasecmp(typeStr, "RFID") == 0) return PeripheralType::RFID_MFRC522;
 
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
@@ -412,6 +421,9 @@ inline bool isPeripheralTypeImplemented(PeripheralType type) {
         case PeripheralType::SEVEN_SEGMENT_TM1637:
         case PeripheralType::RF_MODULE:
         case PeripheralType::RADAR_SENSOR:
+        case PeripheralType::DS1302_RTC:
+        case PeripheralType::LCD1602:
+        case PeripheralType::RFID_MFRC522:
         case PeripheralType::MODBUS_DEVICE:
         case PeripheralType::IR_RECEIVER:
         case PeripheralType::DEVICE_EVENT:

@@ -1,11 +1,42 @@
 (function() {
     AppState.registerModule('logs', {
+        _logFileCount: null,
+        _logCurrentSize: null,
+        _logCurrentTruncated: false,
+
+        _formatLogSize(bytes) {
+            const value = Number(bytes || 0);
+            if (value < 1024) return value + ' B';
+            if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10 * 1024 ? 1 : 0) + ' KB';
+            return (value / (1024 * 1024)).toFixed(1) + ' MB';
+        },
+
+        _updateLogToolbarSummary(errorText) {
+            const summary = document.getElementById('log-meta');
+            if (!summary) return;
+            summary.classList.toggle('is-warning', !!errorText);
+            if (errorText) {
+                summary.textContent = errorText;
+                return;
+            }
+            if (this._logFileCount === null && this._logCurrentSize === null) {
+                summary.textContent = '加载中...';
+                return;
+            }
+            const fileCount = this._logFileCount === null ? 0 : this._logFileCount;
+            const size = this._logCurrentSize === null ? '--' : this._formatLogSize(this._logCurrentSize);
+            summary.textContent = fileCount + ' 个文件 · 当前 ' + size +
+                (this._logCurrentTruncated ? ' · 已截断' : '');
+        },
+
         setupLogsEvents() {
             if (this._logsEventsBound) return;
             this._logsEventsBound = true;
 
             const refreshListBtn = document.getElementById('log-refresh-list-btn');
-            if (refreshListBtn) refreshListBtn.addEventListener('click', () => this.loadLogFileList({ noCache: true }));
+            if (refreshListBtn) refreshListBtn.addEventListener('click', () => {
+                this.loadLogFileList({ noCache: true }).then(() => this.loadLogs({ noCache: true }));
+            });
 
             const refreshBtn = document.getElementById('refresh-logs-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', () => this.loadLogs({ noCache: true }));
@@ -25,8 +56,11 @@
             }
 
             this.setupLogsEvents();
-            this.loadLogFileList(options);
-            this.loadLogs(options);
+            this._logFileCount = null;
+            this._logCurrentSize = null;
+            this._logCurrentTruncated = false;
+            this._updateLogToolbarSummary();
+            return this.loadLogFileList(options).then(() => this.loadLogs(options));
         },
 
         loadLogFileList(options) {
@@ -37,12 +71,14 @@
                     if (!select) return;
                     const current = select.value || 'system.log';
                     const files = res && res.success && Array.isArray(res.data) ? res.data : [];
+                    this._logFileCount = files.length;
                     select.innerHTML = '';
                     if (!files.length) {
                         const opt = document.createElement('option');
                         opt.value = 'system.log';
                         opt.textContent = 'system.log';
                         select.appendChild(opt);
+                        this._updateLogToolbarSummary();
                         return;
                     }
                     files.forEach((file) => {
@@ -54,6 +90,7 @@
                     if (Array.from(select.options).some((opt) => opt.value === current)) {
                         select.value = current;
                     }
+                    this._updateLogToolbarSummary();
                 })
                 .catch(err => {
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
@@ -62,6 +99,7 @@
                     } else {
                         Notification.warning('日志文件列表加载失败');
                     }
+                    this._updateLogToolbarSummary('日志文件列表加载失败');
                 });
         },
 
@@ -78,14 +116,14 @@
                     if (!res || !res.success) throw new Error(res && (res.error || res.message) || 'load failed');
                     const data = res.data || {};
                     if (content) content.textContent = data.content || '暂无日志';
-                    if (meta) {
-                        meta.textContent = `${file} | ${data.size || 0} bytes${data.truncated ? ' | 已截断显示' : ''}`;
-                    }
+                    this._logCurrentSize = Number(data.size || 0);
+                    this._logCurrentTruncated = data.truncated === true;
+                    this._updateLogToolbarSummary();
                 })
                 .catch((err) => {
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     if (content) content.textContent = '日志加载失败：' + (err && err.message ? err.message : '');
-                    if (meta) meta.textContent = '日志接口不可用或当前构建未启用日志查看';
+                    if (meta) this._updateLogToolbarSummary('日志接口不可用或当前构建未启用日志查看');
                     if (typeof window.apiNotifyError === 'function') {
                         window.apiNotifyError(err, '日志加载失败', '日志管理');
                     }

@@ -26,6 +26,9 @@
 #if FASTBEE_ENABLE_RF_LEARN
 #include "peripherals/drivers/RFLearnDriver.h"
 #endif
+#if FASTBEE_ENABLE_RFID
+#include "peripherals/drivers/RFIDDriver.h"
+#endif
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
@@ -71,9 +74,6 @@ namespace {
 
 // 检查顺序按 DRAM 需求从大到小，确保重型功能优先获得内存
 const FastBee::FeatureBudget kFeatureBudgets[] = {
-#if FASTBEE_ENABLE_DEVICE_CONTROL
-    {"deviceControl", 110},  // 设备大屏 JS 解压（需 PSRAM/大 DRAM）
-#endif
 #if FASTBEE_ENABLE_MQTT
     {"mqtts", 45},           // TLS 握手 ~42KB DRAM（无 PSRAM 准入需 ~52KB 空闲）
 #endif
@@ -109,9 +109,6 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #endif
 #if FASTBEE_ENABLE_ETHERNET
     {"ethernet", 15},      // W5500 SPI 缓冲
-#endif
-#if FASTBEE_ENABLE_LED_SCREEN
-    {"ledScreen", 15},     // RMT 缓冲
 #endif
 #if FASTBEE_ENABLE_OTA
     {"ota", 20},           // OTA 流式缓冲 1KB + 下载临时块
@@ -526,7 +523,7 @@ bool FastBeeFramework::initialize() {
 #endif  // FASTBEE_WEB_START_EARLY
 
     // 步骤7.8: 延迟初始化解锁 —— 标记网络子系统已就绪（两条启动路径均已过 network->initialize()）
-    // requiresNetwork 功能（modbus/ruleScript/i2cSensors/rfid/irRemote/ledScreen）在启动
+    // requiresNetwork 功能（modbus/ruleScript/i2cSensors/rfid/irRemote）在启动
     // 早期被 shouldEnable() 门控为 false，此处解锁后激活；把重型外设/协议的内存分配
     // 错峰到 WiFi 启动之后，抬高启动期可用 DRAM（见内存优化方向 4）。
     FastBee::RuntimeFeatureManager::instance().setNetworkReady(true);
@@ -534,16 +531,20 @@ bool FastBeeFramework::initialize() {
     PeripheralManager::getInstance().retryDeferredPeripherals();
 
 #if FASTBEE_ENABLE_BLE
-    // 步骤7.6: BLE 配网器（仅创建实例并注入 Web 上下文；协议栈内存延迟到 begin() 才占用）
-    // AP 模式（无可用 STA 配置的配网场景）自动启动广播，其余情况由 Web/API 手动启动
-    bleProvisioner.reset(new BLEProvisioner(network.get()));
-    webConfig->setBLEProvisioner(bleProvisioner.get());
-    if (network && network->getConfig().mode == NetworkMode::NETWORK_AP) {
-        if (bleProvisioner->begin(false)) {
-            Serial.println("[STEP7.6] BLE provisioning auto-started (AP mode)");
-        } else {
-            Serial.println("[STEP7.6] WARN: BLE provisioning auto-start failed");
+    // 步骤7.6: BLE 配网器仅在编译能力和运行开关同时开启时创建。
+    // AP 模式（无可用 STA 配置的配网场景）自动启动广播，其余情况由 Web/API 手动启动。
+    if (FastBee::RuntimeFeatureManager::instance().shouldEnable("ble")) {
+        bleProvisioner.reset(new BLEProvisioner(network.get()));
+        webConfig->setBLEProvisioner(bleProvisioner.get());
+        if (network && network->getConfig().mode == NetworkMode::NETWORK_AP) {
+            if (bleProvisioner->begin(false)) {
+                Serial.println("[STEP7.6] BLE provisioning auto-started (AP mode)");
+            } else {
+                Serial.println("[STEP7.6] WARN: BLE provisioning auto-start failed");
+            }
         }
+    } else {
+        Serial.println("[STEP7.6] BLE provisioning disabled by runtime feature config");
     }
 #endif
 
@@ -1344,6 +1345,16 @@ bool FastBeeFramework::addSystemTasks() {
         RFLearnDriver::getInstance().check();
     }, nullptr, 50)) {
         LOG_WARNING("Failed to add RF learn check task");
+    }
+#endif
+
+#if FASTBEE_ENABLE_RFID
+    // The driver applies its own 200 ms gate and returns immediately when no
+    // reader is active.
+    if (!taskManager->addTask("rfid_check", [](void* param) {
+        RFIDDriver::getInstance().check();
+    }, nullptr, 100)) {
+        LOG_WARNING("Failed to add RFID check task");
     }
 #endif
 

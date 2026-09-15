@@ -274,9 +274,28 @@ static void sendServiceUnavailable(AsyncWebServerRequest* request) {
 // serial chain, and a 503 on the document request itself left the browser on
 // a blank JSON page. Two concurrent gz streams (each <=22KB gz) stay within
 // the DRAM gates above; small uncompressed assets bypass the cap entirely.
-static volatile uint8_t s_staticInFlight = 0;
-static unsigned long s_staticInFlightTouchMs = 0;
 static constexpr uint8_t STATIC_MAX_INFLIGHT = 3;
+
+struct StaticInFlightLease {
+    uint32_t generation;
+    uint8_t slot;
+
+    bool valid() const {
+        return generation != 0 && slot < STATIC_MAX_INFLIGHT;
+    }
+};
+
+struct StaticInFlightSlot {
+    uint32_t generation;
+    unsigned long acquiredAtMs;
+    bool active;
+};
+
+// A fixed table avoids heap work on the AsyncTCP path. Each slot advances its
+// generation before reuse, so a late disconnect from a watchdog-reclaimed
+// request cannot release the newer request now occupying the same slot.
+static StaticInFlightSlot s_staticInFlightSlots[STATIC_MAX_INFLIGHT] = {};
+static portMUX_TYPE s_staticInFlightMux = portMUX_INITIALIZER_UNLOCKED;
 // The public cap remains 3 for PSRAM targets and source compatibility, but
 // no-PSRAM targets reserve more DRAM for AsyncTCP/response headers.  The
 // effective limit drops again as fragmentation grows so a burst cannot race
@@ -297,7 +316,7 @@ static uint8_t staticInFlightLimit() {
 // 503 拒绝后重试，串行化延迟严重（实测页面加载 >5s）。3 路并发每路
 // send_buffer ≤2872B（含降级分配）+ lwIP PCB ≈ 4.5KB/路 × 3 ≈ 13.5KB，
 // 稳态 free8=24KB 下仍留 10KB+ 余量给 AsyncTCP/其他任务。
-// Shortened from 20s: a stuck counter blocked every static request (incl. the
+// Shortened from 20s: a stuck lease blocked every static request (incl. the
 // login page document) until the watchdog fired; 12s bounds the worst case
 // while still covering any legitimate single-file transfer.
 static constexpr unsigned long STATIC_INFLIGHT_WATCHDOG_MS = 12000UL;
@@ -307,36 +326,98 @@ static constexpr unsigned long STATIC_INFLIGHT_WATCHDOG_MS = 12000UL;
 // 300ms 再拒绝”，比立即拒绝更糟（实测 conc>=2 出现 13s 慢请求）。
 // 改回立即判定：单文件 gz ≤ 22KB 传输 <100ms，前端已有 300/800ms 快速
 // 退避重试（index.html boot loader + module-loader），503 风暴不会放大。
-static bool staticInFlightAllowed() {
-    unsigned long now = millis();
-    // watchdog: force-reset a stuck counter to avoid permanent 503
-    if (s_staticInFlight > 0 &&
-        (now - s_staticInFlightTouchMs) > STATIC_INFLIGHT_WATCHDOG_MS) {
-        ets_printf("[MemGuard] Static in-flight counter stuck (%u), resetting\n",
-                   (unsigned)s_staticInFlight);
-        s_staticInFlight = 0;
+// Caller must hold s_staticInFlightMux. Keeping reclamation in one helper makes
+// both admission and the Web-busy query self-heal when onDisconnect is lost.
+static uint8_t reapExpiredStaticInFlightLeasesLocked(unsigned long now) {
+    uint8_t reclaimedCount = 0;
+    for (uint8_t i = 0; i < STATIC_MAX_INFLIGHT; ++i) {
+        StaticInFlightSlot& slot = s_staticInFlightSlots[i];
+        if (!slot.active ||
+            (now - slot.acquiredAtMs) <= STATIC_INFLIGHT_WATCHDOG_MS) {
+            continue;
+        }
+
+        // Leave the generation intact. Reuse increments it, invalidating the
+        // stale request's captured lease before that callback runs.
+        slot.active = false;
+        slot.acquiredAtMs = 0;
+        reclaimedCount++;
     }
-    const uint8_t limit = staticInFlightLimit();
-    // Keep the public cap check explicit; the effective DRAM-aware limit can
-    // be lower on no-PSRAM/fragmented heaps.
-    if (s_staticInFlight < STATIC_MAX_INFLIGHT) {
-        if (s_staticInFlight >= limit) return false;
-        s_staticInFlight++;
-        s_staticInFlightTouchMs = now;
-        return true;
-    }
-    return false;
+    return reclaimedCount;
 }
 
-static void registerStaticInFlightRelease(AsyncWebServerRequest* request) {
+static void logStaticInFlightReclaims(uint8_t reclaimedCount) {
+    if (reclaimedCount == 0) return;
+    ets_printf("[MemGuard] Reclaimed %u stale static lease(s)\n",
+               (unsigned)reclaimedCount);
+}
+
+static StaticInFlightLease acquireStaticInFlightLease() {
+    const unsigned long now = millis();
+    const uint8_t limit = staticInFlightLimit();
+    StaticInFlightLease lease = {0, STATIC_MAX_INFLIGHT};
+    uint8_t activeCount = 0;
+
+    portENTER_CRITICAL(&s_staticInFlightMux);
+    const uint8_t reclaimedCount = reapExpiredStaticInFlightLeasesLocked(now);
+    for (uint8_t i = 0; i < STATIC_MAX_INFLIGHT; ++i) {
+        StaticInFlightSlot& slot = s_staticInFlightSlots[i];
+        if (!slot.active) continue;
+        activeCount++;
+    }
+
+    if (activeCount < limit) {
+        for (uint8_t i = 0; i < STATIC_MAX_INFLIGHT; ++i) {
+            StaticInFlightSlot& slot = s_staticInFlightSlots[i];
+            if (slot.active) continue;
+            slot.generation++;
+            if (slot.generation == 0) slot.generation = 1;
+            slot.acquiredAtMs = now;
+            slot.active = true;
+            lease = {slot.generation, i};
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_staticInFlightMux);
+
+    logStaticInFlightReclaims(reclaimedCount);
+    return lease;
+}
+
+static void releaseStaticInFlightLease(const StaticInFlightLease& lease) {
+    if (!lease.valid()) return;
+
+    portENTER_CRITICAL(&s_staticInFlightMux);
+    StaticInFlightSlot& slot = s_staticInFlightSlots[lease.slot];
+    if (slot.active && slot.generation == lease.generation) {
+        slot.active = false;
+        slot.acquiredAtMs = 0;
+    }
+    portEXIT_CRITICAL(&s_staticInFlightMux);
+}
+
+static void registerStaticInFlightRelease(AsyncWebServerRequest* request,
+                                          const StaticInFlightLease& lease) {
     // Connection: close guarantees _onDisconnect on finish/timeout/abort
-    request->onDisconnect([]() {
-        if (s_staticInFlight > 0) s_staticInFlight--;
+    request->onDisconnect([lease]() {
+        releaseStaticInFlightLease(lease);
     });
 }
 
 bool WebHandlerContext::isStaticTransferActive() const {
-    return s_staticInFlight > 0;
+    const unsigned long now = millis();
+    bool active = false;
+    portENTER_CRITICAL(&s_staticInFlightMux);
+    const uint8_t reclaimedCount = reapExpiredStaticInFlightLeasesLocked(now);
+    for (uint8_t i = 0; i < STATIC_MAX_INFLIGHT; ++i) {
+        if (s_staticInFlightSlots[i].active) {
+            active = true;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_staticInFlightMux);
+    logStaticInFlightReclaims(reclaimedCount);
+    return active;
 }
 
 // 浏览器导航请求（登录页文档）被限流/内存门控拒绝时，返回带自动刷新的轻量
@@ -645,15 +726,19 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         return false;  // 404 fallback; no slot was taken
     }
 
-    if (limitInFlight && !staticInFlightAllowed()) {
-        openFile.close();
-        if (isCoreEntry) {
-            // 浏览器主文档被限流：返回自动重试页，避免 503 JSON 白屏
-            sendStaticBusyRetryPage(request);
+    StaticInFlightLease staticLease = {0, STATIC_MAX_INFLIGHT};
+    if (limitInFlight) {
+        staticLease = acquireStaticInFlightLease();
+        if (!staticLease.valid()) {
+            openFile.close();
+            if (isCoreEntry) {
+                // 浏览器主文档被限流：返回自动重试页，避免 503 JSON 白屏
+                sendStaticBusyRetryPage(request);
+                return true;
+            }
+            sendStaticBusyResponse(request, contentType);
             return true;
         }
-        sendStaticBusyResponse(request, contentType);
-        return true;
     }
 
     AsyncWebServerResponse *response = new AsyncFileResponse(openFile, path, contentType, false);
@@ -674,7 +759,7 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     }
     response->addHeader("Connection", "close");
 
-    if (limitInFlight) registerStaticInFlightRelease(request);
+    if (limitInFlight) registerStaticInFlightRelease(request, staticLease);
     request->send(response);
     return true;
 }

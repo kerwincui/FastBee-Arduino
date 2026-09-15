@@ -7,6 +7,7 @@
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_MQTT
 #include "MQTTClient.h"
+#include <freertos/queue.h>
 #endif
 #if FASTBEE_ENABLE_MODBUS
 #include "ModbusHandler.h"
@@ -209,6 +210,16 @@ private:
 #if FASTBEE_ENABLE_MQTT
     volatile bool mqttRestartPending = false;  // MQTT 热重建标志，由 handle() 在 loopTask 中消费
     bool mqttDisabledByConfig = false;         // 配置 mqtt.enabled=false，由统一守卫置位，调试打印区分“禁用”与“启动失败”
+
+    struct FastBeeOtaReplyEvent {
+        int32_t taskId;
+        uint8_t status;
+        uint8_t progress;
+        char version[32];
+        char error[96];
+    };
+    QueueHandle_t fastBeeOtaReplyQueue = nullptr;
+    unsigned long fastBeeOtaLastPublishAttemptMs = 0;
 #endif
     
     // 网络类型追踪：用于在 handle() 中检测网络类型变更并立即重启 MQTT
@@ -219,6 +230,12 @@ private:
     // 初始化具体协议
 #if FASTBEE_ENABLE_MQTT
     bool initMQTT(void* config);
+    void handleMqttMessage(const String& topic, const String& message, MqttTopicType topicType);
+    void handleFastBeeOtaCommand(const String& message, MqttTopicType topicType);
+    void queueFastBeeOtaReply(int32_t taskId, const String& version,
+                              uint8_t status, uint8_t progress,
+                              const String& error = "");
+    void processFastBeeOtaReplies();
 #endif
 #if FASTBEE_ENABLE_MODBUS
     bool initModbus(void* config);

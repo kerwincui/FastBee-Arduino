@@ -175,6 +175,7 @@ public:
     bool isInitialized() const { return _initialized; }
     uint8_t getCols() const { return _cols; }
     uint8_t getRows() const { return _rows; }
+    bool isBacklightOn() const { return _backlightOn; }
     
 private:
     LCD1602Driver() = default;

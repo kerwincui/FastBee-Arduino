@@ -60,6 +60,11 @@
                 this._renderAllDevices();
                 return;
             }
+            var modal = AppState.ensureModal('modbus-device-ctrl-modal');
+            if (!modal) {
+                console.error('[protocol] Modal element "modbus-device-ctrl-modal" not found in DOM');
+                return;
+            }
             if (this._coilAutoRefreshTimer) {
                 clearTimeout(this._coilAutoRefreshTimer);
                 this._coilAutoRefreshTimer = null;
@@ -134,11 +139,6 @@
                     this._renderCoilGrid();
                     if (!deviceOffline) this.refreshCoilStatus();
                 }
-            }
-            var modal = document.getElementById('modbus-device-ctrl-modal');
-            if (!modal) {
-                console.error('[protocol] Modal element "modbus-device-ctrl-modal" not found in DOM');
-                return;
             }
             AppState.showModal(modal);
             if (deviceOffline) {

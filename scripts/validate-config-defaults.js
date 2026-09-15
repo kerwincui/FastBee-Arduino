@@ -154,6 +154,18 @@ function validateFeatureDefaults(issues) {
     }
 }
 
+function validateProtocolDefaults(issues) {
+    const protocolDoc = readJson(path.join(DATA_CONFIG_DIR, 'protocol.json'));
+    const mqtt = protocolDoc && protocolDoc.mqtt;
+    if (!mqtt || mqtt.enabled !== true) {
+        issues.push('data/config/protocol.json: MQTT must default to enabled=true');
+        return;
+    }
+    if (mqtt.scheme !== 'mqtt' || mqtt.server !== 'iot.fastbee.cn' || Number(mqtt.port) !== 1883) {
+        issues.push('data/config/protocol.json: MQTT must default to mqtt://iot.fastbee.cn:1883');
+    }
+}
+
 function readArgValue(prefix) {
     const direct = process.argv.find((arg) => arg.startsWith(`${prefix}=`));
     if (direct) return direct.slice(prefix.length + 1);
@@ -345,6 +357,7 @@ function main() {
     validateDefaultApPassword(issues);
     validateDefaultAdmin(issues);
     validateFeatureDefaults(issues);
+    validateProtocolDefaults(issues);
     const stageRootArg = null; // staging validation disabled - only single version now
     const latestOnly = false;
 

@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { constrainedDevicePolicy } from './constrained-device-policy';
 
 /**
  * FastBee-Arduino 快速浏览器测试配置
@@ -24,10 +25,8 @@ const interTestDelay = parseInt(process.env.INTER_TEST_DELAY_MS || '500', 10);
 export default defineConfig({
   testDir: './suites',
   outputDir: './test-results/quick',
-  fullyParallel: false,
+  ...constrainedDevicePolicy,
   forbidOnly: !!process.env.CI,
-  retries: 1,         // 偶发导航/登录超时套件内自愈（真实回归会连续失败2次仍暴露）
-  workers: 1,
   timeout: 60_000,    // 45s下beforeEach/fixture偶发超限（设备清理恢复期负载），放宽到60s
   globalSetup: require.resolve('./stability-global-setup'),
   reporter: [

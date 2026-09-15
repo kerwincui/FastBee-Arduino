@@ -15,8 +15,23 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { buildAdminBundle, SOURCE_FILES: ADMIN_SOURCE_FILES } = require('./build-admin-bundle');
-const { getWebProfile, isFullWebProfile, hasDeviceControl } = require('./web-profile');
+const {
+    buildAdminBundle,
+    getSourceFiles: getAdminSourceFiles
+} = require('./build-admin-bundle');
+const {
+    MENU_CAPABILITY_REQUIREMENTS,
+    MODAL_CAPABILITY_REQUIREMENTS,
+    PAGE_ROOT_CAPABILITY_REQUIREMENTS,
+    PROTOCOL_TAB_CAPABILITY_REQUIREMENTS,
+    capabilityRuleSatisfied,
+    getWebProfile,
+    hasDeviceControl,
+    resolveWebBuildContext,
+    shouldIncludeAsset,
+    shouldIncludeMenu,
+    writeWebResourceManifest
+} = require('./web-profile');
 const {
     buildAppBundle,
     BUNDLE_SOURCES: APP_BUNDLE_SOURCES,
@@ -42,12 +57,17 @@ const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
 const RUNTIME_SOURCE_DIR = path.join(WEB_SRC_DIR, 'modules', 'runtime');
 const I18N_SOURCE_DIR = path.join(WEB_SRC_DIR, 'i18n');
 const PUBLISH_MODULE_DIR = path.join(WWW_DIR, 'js', 'modules');
-const DIRECT_RUNTIME_MODULES = [
+const BUILD_CONTEXT = resolveWebBuildContext();
+const ALL_DIRECT_RUNTIME_MODULES = [
     'protocol.js',
     'periph-exec.js',
     'periph-exec-form.js',
+    'periph-exec-sensor.js',
+    'periph-exec-effects.js',
     'periph-exec-modbus.js',
     'peripherals.js',
+    'peripheral-save.js',
+    'peripheral-io.js',
     'ir-remote.js',
     'rf-remote.js',
     'dashboard.js',
@@ -55,8 +75,13 @@ const DIRECT_RUNTIME_MODULES = [
     'device-config.js',
     'device-ota.js',
     'network.js',
-    'feature-config.js'
-].concat(hasDeviceControl() ? ['device-control.js'] : []);
+    'feature-config.js',
+    'device-control.js'
+];
+const DIRECT_RUNTIME_MODULES = ALL_DIRECT_RUNTIME_MODULES.filter((fileName) => {
+    if (fileName === 'device-control.js' && !hasDeviceControl(BUILD_CONTEXT)) return false;
+    return shouldIncludeAsset(`js/modules/${fileName}`, BUILD_CONTEXT);
+});
 const I18N_MODULES = [];  // i18n support removed - all translations are now hardcoded in HTML/JS
 const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
@@ -85,6 +110,7 @@ function readUtf8(filePath) {
 }
 
 function writeUtf8(filePath, content) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, content, 'utf8');
 }
 
@@ -104,9 +130,34 @@ function removeGeneratedFile(filePath) {
     });
 }
 
+function cleanGeneratedPublishTree() {
+    const removed = [];
+    const generatedExtensions = new Set(['.html', '.js', '.css']);
+    const walk = (directory) => {
+        if (!fs.existsSync(directory)) return;
+        fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const filePath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                walk(filePath);
+                if (filePath !== WWW_DIR && fs.existsSync(filePath) && fs.readdirSync(filePath).length === 0) {
+                    fs.rmdirSync(filePath);
+                }
+                return;
+            }
+            const logicalName = entry.name.endsWith('.gz') ? entry.name.slice(0, -3) : entry.name;
+            const generated = generatedExtensions.has(path.extname(logicalName).toLowerCase()) ||
+                entry.name === 'web-resource-manifest.json';
+            if (!generated) return;
+            fs.rmSync(filePath, { force: true });
+            removed.push(path.relative(WWW_DIR, filePath).replace(/\\/g, '/'));
+        });
+    };
+    walk(WWW_DIR);
+    return removed.sort();
+}
+
 function shouldSkipStaticAsset(relPath) {
-    // 统一架构：不跳过任何静态资源
-    return false;
+    return !shouldIncludeAsset(relPath, BUILD_CONTEXT);
 }
 
 function stripSection(content, startMarker, endMarker) {
@@ -119,12 +170,83 @@ function stripSection(content, startMarker, endMarker) {
     return content.slice(0, start) + content.slice(end);
 }
 
-function stripMenuItemByPage(content, pageName) {
-    const escaped = pageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return content.replace(
-        new RegExp(`\\s*<a\\s+href="#"\\s+class="menu-item"\\s+data-page="${escaped}"[\\s\\S]*?<\\/a>`, 'g'),
-        ''
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findElementByAttribute(content, attribute, value, fromIndex = 0) {
+    const attr = escapeRegExp(attribute);
+    const val = escapeRegExp(value);
+    const openingPattern = new RegExp(
+        `<([A-Za-z][\\w:-]*)\\b[^>]*\\b${attr}\\s*=\\s*(?:"${val}"|'${val}')[^>]*>`,
+        'gi'
     );
+    openingPattern.lastIndex = fromIndex;
+    const opening = openingPattern.exec(content);
+    if (!opening) return null;
+
+    const tagName = opening[1];
+    const openStart = opening.index;
+    const openEnd = openingPattern.lastIndex;
+    if (/\/\s*>$/.test(opening[0])) {
+        return { start: openStart, end: openEnd, openStart, openEnd, tagName };
+    }
+
+    const tokenPattern = new RegExp(`<!--[\\s\\S]*?-->|<\\/?${escapeRegExp(tagName)}\\b[^>]*>`, 'gi');
+    tokenPattern.lastIndex = openEnd;
+    let depth = 1;
+    let token;
+    while ((token = tokenPattern.exec(content))) {
+        if (token[0].startsWith('<!--')) continue;
+        if (new RegExp(`^<\\/${escapeRegExp(tagName)}\\b`, 'i').test(token[0])) {
+            depth -= 1;
+            if (depth === 0) {
+                return {
+                    start: openStart,
+                    end: tokenPattern.lastIndex,
+                    openStart,
+                    openEnd,
+                    tagName
+                };
+            }
+        } else if (!/\/\s*>$/.test(token[0])) {
+            depth += 1;
+        }
+    }
+    throw new Error(`Unclosed <${tagName}> with ${attribute}="${value}"`);
+}
+
+function removeElementsByAttribute(content, attribute, value) {
+    let result = content;
+    let match = findElementByAttribute(result, attribute, value);
+    while (match) {
+        result = result.slice(0, match.start) + result.slice(match.end);
+        match = findElementByAttribute(result, attribute, value, match.start);
+    }
+    return result;
+}
+
+function setElementActive(content, attribute, value, active) {
+    const match = findElementByAttribute(content, attribute, value);
+    if (!match) return content;
+    const opening = content.slice(match.openStart, match.openEnd);
+    let updated;
+    if (/\bclass\s*=\s*(?:"[^"]*"|'[^']*')/i.test(opening)) {
+        updated = opening.replace(/\bclass\s*=\s*("([^"]*)"|'([^']*)')/i, (whole, quoted, doubleValue, singleValue) => {
+            const quote = quoted[0];
+            const classes = String(doubleValue === undefined ? singleValue : doubleValue)
+                .split(/\s+/)
+                .filter(Boolean)
+                .filter((name) => name !== 'active');
+            if (active) classes.push('active');
+            return `class=${quote}${classes.join(' ')}${quote}`;
+        });
+    } else if (active) {
+        updated = opening.replace(/>$/, ' class="active">');
+    } else {
+        updated = opening;
+    }
+    return content.slice(0, match.openStart) + updated + content.slice(match.openEnd);
 }
 
 function stripSelectById(content, id) {
@@ -172,12 +294,131 @@ function stripProdOnlyCssRules(content) {
 }
 
 function transformStaticAssetContent(relPath, content) {
-    // 统一架构：不转换静态资源内容
-    return content;
+    const normalized = normalizePath(relPath);
+    let transformed = content;
+
+    if (normalized === 'index.html') {
+        Object.keys(MENU_CAPABILITY_REQUIREMENTS).forEach((pageName) => {
+            if (!shouldIncludeMenu(pageName, BUILD_CONTEXT)) {
+                transformed = removeElementsByAttribute(transformed, 'data-page', pageName);
+            }
+        });
+    }
+
+    if (normalized === 'pages/peripheral.html') {
+        Object.entries(PAGE_ROOT_CAPABILITY_REQUIREMENTS).forEach(([rootId, rule]) => {
+            if (!capabilityRuleSatisfied(rule, BUILD_CONTEXT)) {
+                transformed = removeElementsByAttribute(transformed, 'id', rootId);
+            }
+        });
+    }
+
+    if (normalized === 'pages/modals.html') {
+        Object.entries(MODAL_CAPABILITY_REQUIREMENTS).forEach(([modalId, rule]) => {
+            if (!capabilityRuleSatisfied(rule, BUILD_CONTEXT)) {
+                transformed = removeElementsByAttribute(transformed, 'id', modalId);
+            }
+        });
+    }
+
+    if (normalized === 'pages/device.html' && !BUILD_CONTEXT.compiledCapabilities.ota) {
+        transformed = removeElementsByAttribute(transformed, 'data-tab', 'dev-ota');
+        transformed = removeElementsByAttribute(transformed, 'id', 'dev-ota');
+    }
+
+    if (normalized === 'pages/protocol.html') {
+        const enabledTabs = Object.entries(PROTOCOL_TAB_CAPABILITY_REQUIREMENTS)
+            .filter(([, rule]) => capabilityRuleSatisfied(rule, BUILD_CONTEXT))
+            .map(([tabId]) => tabId);
+        Object.entries(PROTOCOL_TAB_CAPABILITY_REQUIREMENTS).forEach(([tabId, rule]) => {
+            if (capabilityRuleSatisfied(rule, BUILD_CONTEXT)) return;
+            transformed = removeElementsByAttribute(transformed, 'data-tab', tabId);
+            transformed = removeElementsByAttribute(transformed, 'id', tabId);
+        });
+        enabledTabs.forEach((tabId, index) => {
+            transformed = setElementActive(transformed, 'data-tab', tabId, index === 0);
+            transformed = setElementActive(transformed, 'id', tabId, index === 0);
+        });
+    }
+
+    return transformed;
 }
 
 function normalizePath(relPath) {
     return relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function compiledModuleSequences(context = BUILD_CONTEXT) {
+    const capabilities = context.compiledCapabilities;
+    const sequences = {};
+    if (capabilities.mqtt || capabilities.modbus) {
+        sequences.protocol = ['protocol'];
+    }
+    if (capabilities.modbus) {
+        sequences['protocol-full-config'] = ['protocol-full-config'];
+        sequences['protocol-modbus-rtu'] = ['protocol-full-config', 'protocol-modbus-rtu'];
+        sequences['protocol-modbus-control'] = ['protocol-modbus-control'];
+    }
+    if (capabilities.deviceControl) {
+        sequences['device-control'] = ['device-control'];
+        sequences['device-control-runtime'] = ['device-control-view'];
+        if (capabilities.modbus) sequences['device-control-runtime'].push('device-control-modbus');
+    }
+    if (capabilities.periphExec) {
+        sequences['periph-exec'] = ['periph-exec'];
+        sequences['periph-exec-editor'] = ['periph-exec'];
+        if (capabilities.modbus) sequences['periph-exec-editor'].push('periph-exec-modbus');
+        sequences['periph-exec-editor'].push('periph-exec-form');
+    }
+    return sequences;
+}
+
+function replaceRequiredBlock(content, startMarker, endMarker, replacement, label) {
+    const start = content.indexOf(startMarker);
+    const end = start < 0 ? -1 : content.indexOf(endMarker, start + startMarker.length);
+    if (start < 0 || end < 0) {
+        throw new Error(`Unable to apply ${label} build transform`);
+    }
+    return content.slice(0, start) + replacement + content.slice(end);
+}
+
+function transformAppSourceContent(fileName, content) {
+    if (fileName === 'module-loader.js') {
+        const sequenceMap = JSON.stringify(compiledModuleSequences(BUILD_CONTEXT), null, 4)
+            .split('\n')
+            .map((line, index) => index === 0 ? line : `    ${line}`)
+            .join('\n');
+        return replaceRequiredBlock(
+            content,
+            '    _sequenceMap: {',
+            '\n\n    _resolveAssetUrl(path) {',
+            `    _sequenceMap: ${sequenceMap},`,
+            'ModuleLoader sequence map'
+        );
+    }
+
+    if (fileName === 'state-session.js') {
+        const preloadPages = ['device-page', 'network-page', 'peripheral-page'];
+        if (BUILD_CONTEXT.compiledCapabilities.mqtt || BUILD_CONTEXT.compiledCapabilities.modbus) {
+            preloadPages.push('protocol-page');
+        }
+        const replacement = `PageLoader.preloadPages(${JSON.stringify(preloadPages)}, self._pageMapping, { delayMs: 1200 })`;
+        const pattern = /PageLoader\.preloadPages\(\[[\s\S]*?\], self\._pageMapping, \{ delayMs: 1200 \}\)/;
+        if (!pattern.test(content)) throw new Error('Unable to apply page preload build transform');
+        return content.replace(pattern, replacement);
+    }
+
+    if (fileName === 'state.js' &&
+        !BUILD_CONTEXT.compiledCapabilities.mqtt &&
+        BUILD_CONTEXT.compiledCapabilities.modbus) {
+        const mqttDefault = "this.loadProtocolConfig('mqtt');";
+        if (!content.includes(mqttDefault)) {
+            throw new Error('Unable to select the Modbus-only protocol default tab');
+        }
+        return content.replace(mqttDefault, "this.loadProtocolConfig('modbus-rtu');");
+    }
+
+    return content;
 }
 
 // Sub-directories under runtime/ that contain split sub-modules
@@ -413,7 +654,9 @@ function syncStaticAssets() {
 
 // Quality gate: ensure every .js file in data/www/js/modules/ traces back to web-src/
 function validateSourceCoverage() {
-    if (!fs.existsSync(PUBLISH_MODULE_DIR)) return;
+    if (!fs.existsSync(PUBLISH_MODULE_DIR)) {
+        throw new Error(`Publish module directory is missing: ${PUBLISH_MODULE_DIR}`);
+    }
 
     // Build the set of expected output files
     const expectedFiles = new Set();
@@ -425,50 +668,40 @@ function validateSourceCoverage() {
     });
     I18N_MODULES.forEach(({ file }) => expectedFiles.add(file));
     expectedFiles.add('admin-bundle.js');
-    ADMIN_SOURCE_FILES.forEach((f) => expectedFiles.add(f)); // admin stubs
+    getAdminSourceFiles(BUILD_CONTEXT).forEach((f) => expectedFiles.add(f));
 
-    // Add sub-directory files to expected set
-    RUNTIME_SUB_DIRS.forEach((subDir) => {
-        const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
-        if (!fs.existsSync(srcDir)) return;
-        fs.readdirSync(srcDir).forEach((file) => {
-            if (file.endsWith('.js')) expectedFiles.add(subDir + '/' + file);
+    // Entry points and sub-modules merged into an active bundle are represented
+    // by that bundle's output, not by separate publish files.
+    BUNDLED_ENTRY_FILES.forEach((fileName) => expectedFiles.delete(fileName));
+    BUNDLED_SIBLING_FILES.forEach((fileName) => expectedFiles.delete(fileName));
+    activeSubdirBundles().forEach((bundle) => expectedFiles.add(bundle.outName));
+
+    const actualFiles = [];
+    const collect = (directory, prefix = '') => {
+        fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+            const fullPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                collect(fullPath, relPath);
+            } else if (entry.isFile() && entry.name.endsWith('.js') && !entry.name.endsWith('.gz')) {
+                actualFiles.push(relPath);
+            }
         });
-    });
+    };
+    collect(PUBLISH_MODULE_DIR);
+    actualFiles.sort();
 
-    const actualFiles = fs.readdirSync(PUBLISH_MODULE_DIR)
-        .filter((f) => f.endsWith('.js') && !f.endsWith('.gz'));
-
-    // Also check sub-directories
-    RUNTIME_SUB_DIRS.forEach((subDir) => {
-        const pubSubDir = path.join(PUBLISH_MODULE_DIR, subDir);
-        if (fs.existsSync(pubSubDir)) {
-            fs.readdirSync(pubSubDir)
-                .filter((f) => f.endsWith('.js') && !f.endsWith('.gz'))
-                .forEach((f) => actualFiles.push(subDir + '/' + f));
-        }
-    });
-
-    const ignoredProdOrphans = [];
-    const orphaned = actualFiles.filter((f) => {
-        if (f === 'i18n-engine.js' || expectedFiles.has(f)) return false;
-        // 统一架构：不再忽略任何孤儿文件
-        if (false && PROD_IGNORED_ORPHAN_MODULES.has(f)) {
-            ignoredProdOrphans.push(f);
-            return false;
-        }
-        return true;
-    });
-    if (orphaned.length > 0) {
-        console.log(`\n  WARNING: ${orphaned.length} orphaned file(s) in data/www/js/modules/:`);
-        orphaned.forEach((f) => console.log(`    - ${f} (not traced to web-src/)`));
-        console.log('  These files should be moved to web-src/ or removed.\n');
-    } else {
-        console.log(`  Source coverage: all ${actualFiles.length} output modules traced to web-src/`);
-        if (ignoredProdOrphans.length > 0) {
-            console.log(`  Lite ignored stale module(s): ${ignoredProdOrphans.length}`);
-        }
+    const missing = Array.from(expectedFiles).filter((fileName) => !actualFiles.includes(fileName)).sort();
+    const orphaned = actualFiles.filter((fileName) => !expectedFiles.has(fileName));
+    if (missing.length > 0 || orphaned.length > 0) {
+        const details = [];
+        if (missing.length > 0) details.push(`missing: ${missing.join(', ')}`);
+        if (orphaned.length > 0) details.push(`unexpected: ${orphaned.join(', ')}`);
+        throw new Error(`Web module source coverage failed (${details.join('; ')})`);
     }
+
+    console.log(`  Source coverage: ${actualFiles.length} capability-selected module(s) traced to web-src/`);
+    return { expectedFiles: Array.from(expectedFiles).sort(), actualFiles };
 }
 
 // Sub-directory bundles: 把入口 + 子模块合并为单文件 bundle，避免 ESP32 多次 HTTP 连接。
@@ -479,7 +712,11 @@ const SUBDIR_BUNDLES = [
         outName: 'protocol.js',
         entry: 'protocol.js',
         subDir: 'protocol',
-        order: ['common.js', 'mqtt-config.js', 'protocol-lite-config.js']
+        order: [
+            'common.js',
+            { file: 'mqtt-config.js', requirements: ['mqtt'] },
+            'protocol-lite-config.js'
+        ]
     },
     {
         outName: 'protocol-full-config.js',
@@ -533,12 +770,9 @@ const SUBDIR_BUNDLES = [
 ];
 
 function activeSubdirBundles() {
-    const profile = getWebProfile();
-    const hasDC = hasDeviceControl();
     return SUBDIR_BUNDLES.filter((bundle) => {
-        if ((bundle.skipProfiles || []).includes(profile)) return false;
-        if (bundle.skipWithoutDC && !hasDC) return false;
-        return true;
+        if (bundle.skipWithoutDC && !hasDeviceControl(BUILD_CONTEXT)) return false;
+        return shouldIncludeAsset(`js/modules/${bundle.outName}`, BUILD_CONTEXT);
     });
 }
 
@@ -561,7 +795,10 @@ function buildSubdirBundles() {
             if (!fs.existsSync(srcDir)) {
                 throw new Error(`Missing subdir for bundle ${bundle.outName}: ${srcDir}`);
             }
-            bundle.order.forEach((f) => {
+            bundle.order.forEach((source) => {
+                const f = typeof source === 'string' ? source : source.file;
+                const requirements = typeof source === 'string' ? [] : source.requirements;
+                if (!capabilityRuleSatisfied(requirements, BUILD_CONTEXT)) return;
                 const fp = path.join(srcDir, f);
                 if (!fs.existsSync(fp)) {
                     throw new Error(`Missing sub-module ${bundle.subDir}/${f} for bundle ${bundle.outName}`);
@@ -714,20 +951,26 @@ function cleanProdObsoleteModules() {
 }
 
 function buildWebModules() {
-    console.log(`Web profile: ${getWebProfile()}`);
+    console.log(`Web profile: ${getWebProfile(BUILD_CONTEXT)}`);
+    console.log(`Compiled capability source: ${BUILD_CONTEXT.source}`);
+    const removedGeneratedAssets = cleanGeneratedPublishTree();
+    fs.mkdirSync(PUBLISH_MODULE_DIR, { recursive: true });
     const staticAssets = syncStaticAssets();
     const syncedModules = syncDirectRuntimeModules();
     const i18nModules = syncI18nModules();
-    const adminBundle = buildAdminBundle();
-    const appBundle = buildAppBundle();
+    const adminBundle = buildAdminBundle(BUILD_CONTEXT);
+    const appBundle = buildAppBundle({ transformSource: transformAppSourceContent });
     const subdirBundles = buildSubdirBundles();
     const bundledCleanup = cleanBundledArtifacts();
     const removedRootJs = cleanObsoleteRootJs();
     const removedProdModules = cleanProdObsoleteModules();
 
     validateSourceCoverage();
+    const resourceManifest = writeWebResourceManifest(WWW_DIR, BUILD_CONTEXT);
 
     return {
+        context: BUILD_CONTEXT,
+        removedGeneratedAssets,
         staticAssets,
         syncedModules,
         i18nModules,
@@ -736,7 +979,8 @@ function buildWebModules() {
         subdirBundles,
         bundledCleanup,
         removedRootJs,
-        removedProdModules
+        removedProdModules,
+        resourceManifest
     };
 }
 
@@ -782,11 +1026,15 @@ if (require.main === module) {
 
 module.exports = {
     buildWebModules,
+    compiledModuleSequences,
     syncStaticAssets,
     syncDirectRuntimeModules,
     syncI18nModules,
     validateSourceCoverage,
     minifyCSS,
+    transformAppSourceContent,
+    transformStaticAssetContent,
+    ALL_DIRECT_RUNTIME_MODULES,
     DIRECT_RUNTIME_MODULES,
     RUNTIME_SUB_DIRS,
     I18N_MODULES,

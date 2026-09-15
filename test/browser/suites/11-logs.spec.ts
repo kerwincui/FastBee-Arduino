@@ -85,9 +85,25 @@ test.describe('Suite-11: 设备日志', () => {
   });
 
   test('LOG-012: 页面工具栏完整性', async ({ authPage }) => {
+    await expect(authPage.locator('#logs-page .fb-data-toolbar-leading')).toBeVisible();
+    await expect(authPage.locator('#logs-page .fb-card-header-actions')).toBeVisible();
     await expect(authPage.locator('#log-file-select')).toBeVisible();
+    await expect(authPage.locator('#log-meta')).toContainText(/个文件/);
     await expect(authPage.locator('#log-refresh-list-btn')).toBeVisible();
     await expect(authPage.locator('#refresh-logs-btn')).toBeVisible();
     await expect(authPage.locator('#clear-logs-btn')).toBeVisible();
+  });
+
+  test('LOG-013: 移动端工具栏无溢出', async ({ authPage }) => {
+    await authPage.setViewportSize({ width: 390, height: 844 });
+    const layout = await authPage.locator('#logs-page .fb-data-toolbar').evaluate((toolbar) => {
+      const parent = toolbar.getBoundingClientRect();
+      const children = Array.from(toolbar.children).map((child) => child.getBoundingClientRect());
+      return {
+        viewportOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        childrenInside: children.every((child) => child.left >= parent.left - 1 && child.right <= parent.right + 1),
+      };
+    });
+    expect(layout).toEqual({ viewportOverflow: false, childrenInside: true });
   });
 });

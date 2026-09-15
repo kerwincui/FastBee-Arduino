@@ -47,6 +47,7 @@
     Object.assign(AppState, {
         _controlData: null,
         _modbusStatus: null,
+        _modbusConfiguredDevices: [],
         _modbusDevices: [],
         _dcCoilStates: {},
         _dcCoilPending: {},
@@ -58,9 +59,13 @@
         _sseConnection: null,
         _deviceName: 'FastBee Device',
         _eventsBound: false,
+        _dcFullscreenEventsBound: false,
+        _dcKeyboardEventsBound: false,
         _periphExecRunPromptState: null,
         _dcPageLoadPromise: null,
         _dcRuntimeLoadPromise: null,
+        _dcLifecycleGeneration: 0,
+        _dcPendingDelays: [],
 
         _dcZoomLevel: 1,
         _dcMinZoom: 0.5,
@@ -74,6 +79,114 @@
                 typeof this._dcInitFreeLayout === 'function' &&
                 typeof this._setupSSE === 'function' &&
                 typeof this._dcRefreshCoilStatus === 'function';
+        },
+
+        _isDeviceControlFeatureActive: function() {
+            return !!this._featureActive && this._featureActive.deviceControl === true;
+        },
+
+        _dcIsLifecycleActive: function(generation, content) {
+            if (generation !== this._dcLifecycleGeneration ||
+                this.currentPage !== 'device-control' ||
+                !this._isDeviceControlFeatureActive()) {
+                return false;
+            }
+            var page = document.getElementById('device-control-page');
+            if (!page || !page.classList.contains('active')) return false;
+            return !content || (content.isConnected && document.getElementById('dc-content') === content);
+        },
+
+        _dcClearRuntimeState: function() {
+            this._controlData = null;
+            this._modbusStatus = null;
+            this._modbusConfiguredDevices = [];
+            this._modbusDevices = [];
+            this._dcCoilStates = {};
+            this._dcCoilPending = {};
+            this._dcBatchPending = false;
+            this._dcPwmStates = {};
+            this._dcPidValues = {};
+            this._dcDeviceOnline = {};
+            this._dcDragEl = null;
+            this._dcDragOffset = null;
+            this._dcResizeEl = null;
+            this._dcResizeStart = null;
+            this._sseConnection = null;
+            this._deviceName = 'FastBee Device';
+            delete this._tempControlsRes;
+            delete this._tempModbusRes;
+        },
+
+        _dcApplyProtocolDevices: function(protoRes) {
+            this._modbusConfiguredDevices = [];
+            this._modbusDevices = [];
+            if (!protoRes || !protoRes.success || !protoRes.data) return false;
+            var rtu = protoRes.data.modbusRtu;
+            if (!rtu || !rtu.enabled || !rtu.master || !Array.isArray(rtu.master.devices)) return true;
+            this._modbusConfiguredDevices = rtu.master.devices.map(function(device, configIndex) {
+                return Object.assign({}, device || {}, { _configIndex: configIndex });
+            });
+            this._modbusDevices = this._modbusConfiguredDevices.filter(function(device) {
+                return device.enabled !== false;
+            });
+            return true;
+        },
+
+        _dcCancelPendingDelays: function() {
+            var pending = this._dcPendingDelays || [];
+            this._dcPendingDelays = [];
+            for (var i = 0; i < pending.length; i++) {
+                if (pending[i].timer) clearTimeout(pending[i].timer);
+                if (typeof pending[i].resolve === 'function') pending[i].resolve(false);
+            }
+        },
+
+        _dcDelay: function(delayMs, generation) {
+            var self = this;
+            if (!this._dcIsLifecycleActive(generation)) return Promise.resolve(false);
+            return new Promise(function(resolve) {
+                var entry = { timer: null, resolve: resolve };
+                entry.timer = setTimeout(function() {
+                    var index = self._dcPendingDelays.indexOf(entry);
+                    if (index !== -1) self._dcPendingDelays.splice(index, 1);
+                    entry.timer = null;
+                    entry.resolve = null;
+                    resolve(self._dcIsLifecycleActive(generation));
+                }, delayMs);
+                self._dcPendingDelays.push(entry);
+            });
+        },
+
+        destroyDeviceControlPage: function(options) {
+            options = options || {};
+            this._dcLifecycleGeneration++;
+            this._dcCancelPendingDelays();
+            this._dcCancelInit(options.abortRequests !== false);
+            this._dcModbusInitRunning = false;
+            this._dcInitCancelled = false;
+            this._dcStopAllAutoRefresh();
+            if (this._dcFullscreenLaunchTimer) {
+                clearTimeout(this._dcFullscreenLaunchTimer);
+                this._dcFullscreenLaunchTimer = null;
+            }
+            if (typeof this._dcCancelLayoutInteraction === 'function') this._dcCancelLayoutInteraction();
+            if (this._periphExecRunPromptState) this._resolvePeriphExecRunValuePrompt(null);
+
+            var content = document.getElementById('dc-content');
+            if (content && options.preserveContent !== true) content.innerHTML = '';
+            this._setDeviceControlRefreshLoading(false);
+            this._dcPageLoadPromise = null;
+            this._eventsBound = false;
+            this._dcClearRuntimeState();
+
+            var app = document.getElementById('app-container');
+            if (app) app.classList.remove('fullscreen-mode');
+            var fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+            if (fullscreenElement && app &&
+                (fullscreenElement === app || app.contains(fullscreenElement))) {
+                var exit = document.exitFullscreen || document.webkitExitFullscreen;
+                if (exit) exit.call(document).catch(function() {});
+            }
         },
 
         _ensureDeviceControlRuntime: function() {
@@ -115,9 +228,13 @@
         setupDeviceControlEvents: function() {
             var self = this;
 
-            // 全屏状态变更监听
-            document.addEventListener('fullscreenchange', function() { self._dcOnFullscreenChange(); });
-            document.addEventListener('webkitfullscreenchange', function() { self._dcOnFullscreenChange(); });
+            // 页面 DOM 会按需销毁和重建，但 document 生命周期不变。
+            // 全屏监听只注册一次，避免反复切页后同一状态变更被重复处理。
+            if (!this._dcFullscreenEventsBound) {
+                document.addEventListener('fullscreenchange', function() { self._dcOnFullscreenChange(); });
+                document.addEventListener('webkitfullscreenchange', function() { self._dcOnFullscreenChange(); });
+                this._dcFullscreenEventsBound = true;
+            }
 
             var content = document.getElementById('dc-content');
             if (content && !this._eventsBound) {
@@ -234,27 +351,31 @@
 
             this._eventsBound = true;
 
-            // 键盘快捷键（仅设备大屏页面激活时触发）
-            document.addEventListener('keydown', function(e) {
-                var page = document.getElementById('device-control-page');
-                if (!page || !page.classList.contains('active')) return;
-                if (e.ctrlKey && e.key === 'f') {
-                    e.preventDefault();
-                    self._dcToggleFullscreen();
-                }
-                if (e.ctrlKey && (e.key === '+' || e.key === '=')) {
-                    e.preventDefault();
-                    self._dcZoomIn();
-                }
-                if (e.ctrlKey && e.key === '-') {
-                    e.preventDefault();
-                    self._dcZoomOut();
-                }
-                if (e.ctrlKey && e.key === '0') {
-                    e.preventDefault();
-                    self._dcZoomReset();
-                }
-            });
+            // document 生命周期长于页面 DOM，只注册一次，避免重复进入大屏
+            // 后同一快捷键被多个旧闭包同时处理。
+            if (!this._dcKeyboardEventsBound) {
+                document.addEventListener('keydown', function(e) {
+                    var page = document.getElementById('device-control-page');
+                    if (!page || !page.classList.contains('active')) return;
+                    if (e.ctrlKey && e.key === 'f') {
+                        e.preventDefault();
+                        self._dcToggleFullscreen();
+                    }
+                    if (e.ctrlKey && (e.key === '+' || e.key === '=')) {
+                        e.preventDefault();
+                        self._dcZoomIn();
+                    }
+                    if (e.ctrlKey && e.key === '-') {
+                        e.preventDefault();
+                        self._dcZoomOut();
+                    }
+                    if (e.ctrlKey && e.key === '0') {
+                        e.preventDefault();
+                        self._dcZoomReset();
+                    }
+                });
+                this._dcKeyboardEventsBound = true;
+            }
         },
 
         // ============ Periph-exec 运行值弹窗 ============
@@ -375,42 +496,58 @@
         loadDeviceControlPage: function(options) {
             options = options || {};
             if (this._dcPageLoadPromise) return this._dcPageLoadPromise;
-            this._modbusDevices = [];
-            this._dcDeviceOnline = {};
             if (!this._eventsBound) this.setupDeviceControlEvents();
             var content = document.getElementById('dc-content');
-            if (!content) { console.error('[device-control] Content element "dc-content" not found!'); return; }
+            if (!content) {
+                console.error('[device-control] Content element "dc-content" not found!');
+                return Promise.resolve(false);
+            }
+            if (!this._isDeviceControlFeatureActive()) {
+                this.destroyDeviceControlPage({ preserveContent: true });
+                this._setContentState(content, 'error', '设备大屏功能未启用，请在功能配置中启用后重试');
+                return Promise.resolve(false);
+            }
+
+            this._dcCancelPendingDelays();
+            this._dcCancelInit(false);
+            this._dcStopAllAutoRefresh();
+            this._dcClearRuntimeState();
+            var loadGeneration = ++this._dcLifecycleGeneration;
             this._setContentState(content, 'loading');
             var self = this;
+            var controlsRes = null;
+            var modbusRes = null;
+            var protocolConfigLoaded = false;
+            var ensureActive = function() {
+                if (self._dcIsLifecycleActive(loadGeneration, content)) return;
+                var cancelled = new Error('Device control page load cancelled');
+                cancelled._dcPageAborted = true;
+                throw cancelled;
+            };
             var controlsGetter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var silentGetter = (options.noCache === true && typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : apiGetSilent;
             var runtimeReady = this._ensureDeviceControlRuntime();
             this._setDeviceControlRefreshLoading(true);
-            this._dcStopAllAutoRefresh();
-            this._dcPageLoadPromise = this._fetchDeviceInfo(options).then(function() {
+            var loadPromise = this._fetchDeviceInfo(options, loadGeneration).then(function() {
+                ensureActive();
                 return controlsGetter('/api/periph-exec/controls');
-            }).then(function(controlsRes) {
-                self._tempControlsRes = controlsRes;
+            }).then(function(response) {
+                ensureActive();
+                controlsRes = response;
                 return silentGetter('/api/modbus/status?compact=1').catch(function() { return null; });
-            }).then(function(modbusRes) {
-                self._tempModbusRes = modbusRes;
+            }).then(function(response) {
+                ensureActive();
+                modbusRes = response;
                 return silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).catch(function() { return null; });
             }).then(function(protoRes) {
+                ensureActive();
                 return runtimeReady.then(function() { return protoRes; });
             }).then(function(protoRes) {
-                var res = self._tempControlsRes;
-                var modbusRes = self._tempModbusRes;
-                delete self._tempControlsRes;
-                delete self._tempModbusRes;
+                ensureActive();
+                var res = controlsRes;
                 if (modbusRes && modbusRes.success && modbusRes.data) self._modbusStatus = modbusRes.data;
                 else self._modbusStatus = null;
-                self._modbusDevices = [];
-                if (protoRes && protoRes.success && protoRes.data) {
-                    var rtu = protoRes.data.modbusRtu;
-                    if (rtu && rtu.enabled && rtu.master && rtu.master.devices) {
-                        self._modbusDevices = rtu.master.devices.filter(function(d) { return d.enabled !== false; });
-                    }
-                }
+                protocolConfigLoaded = self._dcApplyProtocolDevices(protoRes);
                 if (!res) { self._setContentState(content, 'empty'); return; }
                 if (res.success === false) { self._setContentState(content, 'error', res.error || res.message || '请求失败'); return; }
                 var data = res.data || res;
@@ -423,19 +560,16 @@
                     self._dcApplyLayout();
                     self._dcInitFreeLayout();
                     self._dcInitModbusDeviceStates();
-                    if (self.currentPage === 'device-control') self._setupSSE();
-                    if (self._modbusDevices.length === 0) {
-                        setTimeout(function() {
-                            if (self.currentPage !== 'device-control') return;
+                    if (self._dcIsLifecycleActive(loadGeneration, content)) self._setupSSE();
+                    if (!protocolConfigLoaded) {
+                        self._dcAutoRefreshTimers.protocolRetry = setTimeout(function() {
+                            delete self._dcAutoRefreshTimers.protocolRetry;
+                            if (!self._dcIsLifecycleActive(loadGeneration, content)) return;
                             silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).then(function(retryRes) {
+                                if (!self._dcIsLifecycleActive(loadGeneration, content)) return;
                                 if (!retryRes || !retryRes.success || !retryRes.data) return;
-                                var rtu = retryRes.data.modbusRtu;
-                                if (rtu && rtu.enabled && rtu.master && rtu.master.devices) {
-                                    var newDevices = rtu.master.devices.filter(function(d) { return d.enabled !== false; });
-                                    if (newDevices.length > 0) {
-                                        self._modbusDevices = newDevices;
-                                        self.loadDeviceControlPage(options.noCache === true ? { noCache: true } : undefined);
-                                    }
+                                if (self._dcApplyProtocolDevices(retryRes)) {
+                                    self.loadDeviceControlPage(options.noCache === true ? { noCache: true } : undefined);
                                 }
                             }).catch(function() {});
                         }, 2000);
@@ -445,32 +579,49 @@
                     self._setContentState(content, 'error', renderErr.message || renderErr);
                 }
             }).catch(function(err) {
+                if (!self._dcIsLifecycleActive(loadGeneration, content) ||
+                    (err && err._dcPageAborted) ||
+                    (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err))) {
+                    return false;
+                }
                 var errMsg = '请求失败';
                 if (err && err.data && err.data.error) errMsg = err.data.error;
                 else if (err && err.message) errMsg = err.message;
                 self._setContentState(content, 'error', errMsg);
+                return false;
             }).finally(function() {
-                self._dcPageLoadPromise = null;
-                self._setDeviceControlRefreshLoading(false);
+                controlsRes = null;
+                modbusRes = null;
+                if (self._dcPageLoadPromise === loadPromise) self._dcPageLoadPromise = null;
+                if (self._dcIsLifecycleActive(loadGeneration, content)) {
+                    self._setDeviceControlRefreshLoading(false);
+                }
             });
-            return this._dcPageLoadPromise;
+            this._dcPageLoadPromise = loadPromise;
+            return loadPromise;
         },
 
-        _fetchDeviceInfo: function(options) {
+        _fetchDeviceInfo: function(options, generation) {
             var self = this;
             var getter = (options && options.noCache === true && typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : apiGetSilent;
             return getter('/api/device/config').then(function(res) {
-                if (res && res.success && res.data) self._deviceName = res.data.deviceName || res.data.name || 'FastBee Device';
-            }).catch(function() { self._deviceName = 'FastBee Device'; });
+                if (self._dcIsLifecycleActive(generation) && res && res.success && res.data) {
+                    self._deviceName = res.data.deviceName || res.data.name || 'FastBee Device';
+                }
+            }).catch(function() {
+                if (self._dcIsLifecycleActive(generation)) self._deviceName = 'FastBee Device';
+            });
         },
 
         // ============ 执行规则 ============
         _executeRule: function(ruleId, btn) {
             if (!ruleId) return;
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             var hasSetMode = btn && btn.getAttribute('data-has-set-mode') === 'true';
             var ruleName = btn ? (btn.getAttribute('data-name') || btn.textContent || '') : '';
             var doRun = function(value) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 var originalText = btn.textContent;
                 btn.textContent = '执行中...';
                 btn.disabled = true;
@@ -478,19 +629,23 @@
                 var payload = { id: ruleId };
                 if (value !== undefined && value !== '') payload.value = value;
                 apiPost('/api/periph-exec/run', payload).then(function(res) {
+                    if (!self._dcIsLifecycleActive(generation)) return;
                     if (res && res.success) Notification.success('执行成功');
                     else Notification.error((res && (res.error || res.message)) || '执行失败');
                 }).catch(function() {
+                    if (!self._dcIsLifecycleActive(generation)) return;
                     Notification.error('执行失败');
                 }).then(function() {
-                    btn.textContent = originalText;
-                    btn.disabled = false;
-                    btn.classList.remove('dc-loading');
+                    if (self._dcIsLifecycleActive(generation) && btn && btn.isConnected) {
+                        btn.textContent = originalText;
+                        btn.disabled = false;
+                        btn.classList.remove('dc-loading');
+                    }
                 });
             };
             if (hasSetMode) {
                 this.promptPeriphExecRunValue({ ruleName: ruleName || '' }).then(function(inputValue) {
-                    if (inputValue === null) return;
+                    if (inputValue === null || !self._dcIsLifecycleActive(generation)) return;
                     doRun(inputValue);
                 });
             } else {
@@ -501,38 +656,44 @@
         // ============ Modbus 设备初始化 ============
         _dcModbusInitRunning: false,
         _dcInitCancelled: false,
+        _dcModbusInitGeneration: 0,
 
-        _dcCancelInit: function() {
-            if (this._dcModbusInitRunning) {
-                this._dcInitCancelled = true;
-            }
-            if (typeof window.apiAbortPageRequests === 'function') {
+        _dcCancelInit: function(abortRequests) {
+            this._dcModbusInitGeneration++;
+            this._dcInitCancelled = true;
+            if (abortRequests !== false && typeof window.apiAbortPageRequests === 'function') {
                 window.apiAbortPageRequests();
             }
         },
 
         _dcInitModbusDeviceStates: async function() {
-            if (this._dcModbusInitRunning) return;
+            if (this._dcModbusInitRunning && !this._dcInitCancelled) return;
+            var initGeneration = ++this._dcModbusInitGeneration;
+            var lifecycleGeneration = this._dcLifecycleGeneration;
             this._dcModbusInitRunning = true;
             this._dcInitCancelled = false;
             var devices = this._modbusDevices || [];
             try {
                 // 等待页面主请求完成后再开始Modbus轮询，让 Governor 缓冲区排空
-                await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+                if (!await this._dcDelay(1500, lifecycleGeneration)) return;
                 for (var i = 0; i < devices.length; i++) {
-                    if (this.currentPage !== 'device-control') break;
-                    if (this._dcInitCancelled) break;
+                    if (!this._dcIsLifecycleActive(lifecycleGeneration) ||
+                        this._dcInitCancelled || initGeneration !== this._dcModbusInitGeneration) break;
                     var dt = devices[i].deviceType || 'relay';
                     if (dt === 'relay') await this._dcRefreshCoilStatus(i);
                     else if (dt === 'pwm') await this._dcRefreshPwmStatus(i);
                     else if (dt === 'pid') await this._dcRefreshPidStatus(i);
                     else if (dt === 'motor') await this._dcRefreshMotorStatus(i);
+                    if (!this._dcIsLifecycleActive(lifecycleGeneration) ||
+                        this._dcInitCancelled || initGeneration !== this._dcModbusInitGeneration) break;
                     // 每次请求间留足够间隔，避免触发 Request Governor overload
-                    if (i < devices.length - 1) await new Promise(function(resolve) { setTimeout(resolve, 600); });
+                    if (i < devices.length - 1 && !await this._dcDelay(600, lifecycleGeneration)) break;
                 }
             } finally {
-                this._dcModbusInitRunning = false;
-                this._dcInitCancelled = false;
+                if (initGeneration === this._dcModbusInitGeneration) {
+                    this._dcModbusInitRunning = false;
+                    this._dcInitCancelled = false;
+                }
             }
         },
 
@@ -691,6 +852,15 @@
             this._dcSetZoom(1);
         }
     });
+
+    if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('device-control', function() {
+            if (this.currentPage === 'device-control' || this._dcPageLoadPromise || this._controlData) {
+                // changePage 已先取消 Governor 请求；这里负责释放页面自身状态。
+                this.destroyDeviceControlPage({ abortRequests: false });
+            }
+        });
+    }
 
     // 事件绑定由入口文件 device-control.js 在所有子模块加载完成后统一调用
 })();

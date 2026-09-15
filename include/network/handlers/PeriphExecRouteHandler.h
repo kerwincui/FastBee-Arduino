@@ -38,6 +38,7 @@ private:
     // JSON body handlers（支持 triggers[]/actions[] 数组）
     void handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
     void handleUpdateRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
+    void handlePreflightRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
 
     // JSON → PeriphExecRule 解析辅助
     void parseRuleFromJson(JsonObject& obj, PeriphExecRule& rule);

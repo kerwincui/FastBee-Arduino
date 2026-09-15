@@ -75,8 +75,8 @@ public:
     // 写完后调用 commitAtomicWrite 原子替换目标文件，峰值内存不随整体配置体积增长。
     static File openAtomicWrite(const String& path);
 
-    // 提交流式原子写入：rename 原子替换目标文件（失败兜底 remove+rename），
-    // 全部失败时删除临时文件并保留原目标文件内容。
+    // 提交流式原子写入：rename 原子替换目标文件；失败时删除临时文件并
+    // 保留原目标文件内容，禁止 remove(path)+rename 或直接覆盖兜底。
     static bool commitAtomicWrite(const String& tmpPath, const String& path);
 
     // 文本文件操作

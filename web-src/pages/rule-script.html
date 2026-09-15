@@ -1,16 +1,18 @@
 <!-- 规则脚本页面 -->
 <div id="rule-script-page" class="page page-layout-flat">
     <div class="fb-card">
-        <div class="fb-card-header u-header-between-wrap">
-            <h2 class="fb-card-title">规则脚本</h2>
-            <div class="u-toolbar-sm">
-                                <button class="fb-btn fb-btn-refresh" id="rule-script-refresh-btn"><span>刷新</span></button>
+        <div class="fb-card-header fb-card-header-toolbar fb-data-toolbar">
+            <div class="fb-data-toolbar-leading">
+                <span id="rule-script-list-summary" class="fb-data-toolbar-summary" role="status" aria-live="polite">加载中...</span>
+            </div>
+            <div class="fb-card-header-actions">
+                <button class="fb-btn fb-btn-refresh" id="rule-script-refresh-btn"><span>刷新</span></button>
                 <button class="fb-btn fb-btn-primary" data-action="openRuleScriptModal">
                     <span>新增规则</span>
                 </button>
             </div>
         </div>
-        <div id="rule-script-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none;margin:0 16px;padding:8px 12px;">
+        <div id="rule-script-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none">
             <span>开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
         </div>
         <div class="fb-card-body">

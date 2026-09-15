@@ -8,7 +8,7 @@
  * - 用户配置完整持久化于 LittleFS /config/features.json
  * - 文件不存在 -> generateDefaults() 生成默认配置并写入
  * - 旧版稀疏配置 -> 保留已有值并补齐缺失项；缺少 mDNS 时等待网络兼容迁移后规范化
- * - JSON 损坏   -> 回退默认配置并记录警告
+ * - JSON 损坏   -> 回退默认配置、修复完整快照并记录警告
  * - 各驱动初始化入口通过 shouldEnable(key) 门控，未启用则跳过初始化（节省 RAM）
  */
 
@@ -44,7 +44,7 @@ public:
 
     // 启动时从 /config/features.json 加载用户配置
     // 文件不存在 -> 调用 generateDefaults() 生成默认配置并写入
-    // 文件损坏 (JSON 解析失败) -> 回退到默认配置并记录警告
+    // 文件损坏 (主文件和备份均无法解析) -> 回退默认配置并修复完整快照
     bool loadConfig();
 
     // 三层判断: compiled AND userEnabled AND budgetPassed

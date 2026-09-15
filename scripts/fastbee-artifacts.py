@@ -2,7 +2,7 @@
 PlatformIO hook for FastBee filesystem and release artifacts.
 
 Responsibilities:
-1. Build web fileystem images (all full, no profile distinction).
+1. Build capability-matched web filesystem images.
 2. Build a clean staging directory before buildfs/uploadfs.
 3. Copy the latest per-environment binaries into dist/firmware/<env>/.
 4. Generate merged factory images with esptool when the required pieces exist.
@@ -13,15 +13,13 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 
 from SCons.Script import COMMAND_LINE_TARGETS  # type: ignore
 
 Import("env")  # type: ignore[name-defined]
 
-
-# Unified web image: all devices use full profile (runtime feature gating)
-# Flash space is sufficient; memory pressure is managed via TCP queue optimization
 
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}
 
@@ -37,21 +35,56 @@ def pio_env_name():
 
 
 
-def get_build_flag_value(flag_name, default="0"):
-    """从当前 env 的 build_flags 中解析宏值（后出现的 -D 优先，与 GCC 语义一致）"""
-    prefix = "-D{}=".format(flag_name)
+def resolved_build_flags():
+    """Return the BUILD_FLAGS already resolved by the active PlatformIO env."""
     try:
         flags = env.get("BUILD_FLAGS") or []
     except Exception:
-        return default
+        return []
     if isinstance(flags, str):
         flags = flags.split()
-    value = default
-    for flag in flags:
-        flag = str(flag).strip()
-        if flag.startswith(prefix):
-            value = flag[len(prefix):]
-    return value
+
+    flattened = []
+    pending = list(flags)
+    while pending:
+        flag = pending.pop(0)
+        if isinstance(flag, (list, tuple)):
+            pending[0:0] = list(flag)
+            continue
+        text = str(flag).strip()
+        if text:
+            flattened.append(text)
+    return flattened
+
+
+def write_web_capability_input():
+    """Persist the active build capabilities for the Node asset pipeline."""
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        prefix="fastbee-web-capabilities-",
+        suffix=".json",
+        delete=False,
+    )
+    try:
+        with handle:
+            json.dump(
+                {
+                    "environment": pio_env_name(),
+                    "buildFlags": resolved_build_flags(),
+                },
+                handle,
+                indent=2,
+            )
+            handle.write("\n")
+    except Exception:
+        try:
+            os.remove(handle.name)
+        except OSError:
+            pass
+        raise
+    return handle.name
 
 
 def has_target(*names):
@@ -140,29 +173,33 @@ def prepare_filesystem_staging():
     if env.get("__FASTBEE_FS_STAGE_READY"):
         return
 
-    profile = "full"  # No longer distinguishes profiles
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     stage_dir = os.path.join(
         project_dir(),
         ".pio",
         "fs-staging",
-        "{}-{}-{}".format(profile, pio_env_name(), stamp),
+        "{}-{}".format(pio_env_name(), stamp),
     )
     script = os.path.join(project_dir(), "scripts", "gzip-www.js")
+    capability_input = write_web_capability_input()
     cmd = [
         "node",
         script,
         "--no-upload",
         "--no-monitor",
-        "--web-profile=full",  # Single unified profile now
+        "--env={}".format(pio_env_name()),
+        "--capability-input={}".format(capability_input),
         "--stage-dir={}".format(stage_dir),
     ]
-    # 设备大屏随 FASTBEE_ENABLE_DEVICE_CONTROL 编译开关门控（standard 默认不含）
-    if get_build_flag_value("FASTBEE_ENABLE_DEVICE_CONTROL", "0") == "1":
-        cmd.append("--device-control")
 
     print("[FastBee] Preparing filesystem staging for {}...".format(pio_env_name()))
-    subprocess.check_call(cmd, cwd=project_dir())
+    try:
+        subprocess.check_call(cmd, cwd=project_dir())
+    finally:
+        try:
+            os.remove(capability_input)
+        except OSError:
+            pass
     env.Replace(PROJECT_DATA_DIR=stage_dir)
     env.Replace(__FASTBEE_FS_STAGE_READY=True)
     print("[FastBee] PROJECT_DATA_DIR -> {}".format(stage_dir))

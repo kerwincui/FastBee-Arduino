@@ -19,7 +19,8 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
-const { getWebProfile, isFullWebProfile } = require('./web-profile');
+const { getWebProfile } = require('./web-profile');
+const { runWebQualityGate } = require('./web-quality-gate');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const WWW_DIR = path.join(DATA_DIR, 'www');
@@ -350,7 +351,7 @@ function stagePublishArtifacts(buildResult) {
     console.log(`  Staged files: ${stageState.fileCount}`);
     console.log(`  Staged size: ${stageState.totalBytes} bytes`);
     if (stageState.transformed.length > 0) {
-        console.log(`  ${getWebProfile()} transformed config(s): ${stageState.transformed.length}`);
+        console.log(`  ${getWebProfile(buildResult.context)} transformed config(s): ${stageState.transformed.length}`);
         stageState.transformed.forEach((item) => console.log(`    - ${item}`));
     }
     if (stageState.missing.length > 0) {
@@ -551,23 +552,11 @@ async function main() {
         throw new Error('--upload and --no-upload cannot be used together');
     }
     
-    // 支持 --env 参数指定目标环境
-    let targetEnv = null;
-    for (const arg of args) {
-        if (arg.startsWith('--env=')) {
-            targetEnv = arg.slice(6);
-            break;
-        }
-    }
-
     console.log('========================================');
     console.log('  ESP32 Web Asset Gzip Tool');
     console.log('========================================');
     console.log(`Target directory: ${WWW_DIR}`);
     console.log(`Staging directory: ${STAGING_WWW_DIR}`);
-
-    // ALWAYS enable device-control bundle
-    process.env.FASTBEE_ENABLE_DEVICE_CONTROL = '1';
 
     console.log('\n[Step 0] Building web modules...');
     const buildResult = buildWebModules();
@@ -595,6 +584,7 @@ async function main() {
         throw new Error(`Failed to create ${stats.failedCompress} gzip publish artifact(s)`);
     }
     deleteOriginals();
+    runWebQualityGate({ context: buildResult.context });
     const stageResult = stagePublishArtifacts(buildResult);
 
     console.log('\n========================================');
@@ -607,7 +597,7 @@ async function main() {
         return;
     }
 
-    const envName = getActiveEnvFromPlatformioIni(targetEnv);
+    const envName = getActiveEnvFromPlatformioIni(buildResult.context.environment);
     console.log(`\n[Step 5] Uploading filesystem from staging dir (env: ${envName})...`);
     try {
         await runPioCommand(

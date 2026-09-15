@@ -54,7 +54,9 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'def test_browser_network_error_is_translated'
             ],
             'test/browser/suites/25-mqtt-status-feedback.spec.ts': [
-                'MQTT-003A: 连接失败原因明确显示且不修改配置 @quick'
+                'MQTT-003B: 首次状态返回前显示中性检测态 @quick',
+                'MQTT-003A: 连接失败原因明确显示且不修改配置 @quick',
+                'MQTT-003D: 旧状态响应不得覆盖新页面结果 @quick'
             ]
         }
     },
@@ -139,11 +141,47 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'def test_installed_312_copies_are_patched_when_available'
             ],
             'test/test_static_concurrency.cpp': [
-                'void test_page_loader_response_integrity_locked()'
+                'void test_page_loader_response_integrity_locked()',
+                'void test_limiter_no_psram_adaptive_behavior()',
+                'void test_static_transfer_active_reaps_expired_leases()',
+                'void test_limiter_millis_wraparound_safe()',
+                'void test_limiter_staggered_expiry_isolated()',
+                'void test_limiter_stale_disconnect_generation_safe()'
             ],
             'test/browser/suites/24-web-smooth-access.spec.ts': [
                 'WEB-001: 首页启动和关键静态资源完整加载 @quick',
-                'WEB-002: 连续刷新后页面仍可用 @quick'
+                'WEB-002: 连续刷新后页面仍可用 @quick',
+                'WEB-004: HTTP 失败诊断保留原因并脱敏 @quick',
+                "durationLimitFromEnv('WEB_ROOT_LOAD_MAX_MS', 10_000)",
+                "durationLimitFromEnv('WEB_REFRESH_LOAD_MAX_MS', 10_000)",
+                "durationLimitFromEnv('WEB_ROOT_P95_MAX_MS', 8_000)"
+            ]
+        }
+    },
+    {
+        name: 'web interaction quality',
+        files: {
+            'test/browser/suites/03-network.spec.ts': [
+                'NET-003A: 状态请求返回前保持中性检测态 @quick'
+            ],
+            'test/browser/suites/15-ui-regression.spec.ts': [
+                'UI-005A: 360/390/430 管理表格无横向溢出',
+                'UI-005C: OTA 和配置导入复用统一文件选择控件',
+                'UI-005D: 窄屏 CRUD 表格与操作菜单不产生横向溢出',
+                'UI-005E: 所有可见菜单页在 360/390/430 下无页面溢出且 DOM 有界',
+                'UI-007A: 模态框连续开关 20 次关闭即销毁且 DOM 不增长',
+                'UI-007B: Modbus 分片弹窗按需挂载并在关闭后销毁',
+                'UI-007C: 模态模板未预取时首次点击会续接且并发只请求一次',
+                'UI-007D: 360px 长动态内容模态框无横向溢出 @quick',
+                'UI-007E: 模态模板延迟返回时切页不得挂载旧页面弹窗 @quick',
+                'UI-025A: 重复切页不累积隐藏 DOM 且回访按钮可用',
+                'UI-025B: 重复进入设备大屏不累积 document 监听器 @quick'
+            ],
+            'test/browser/suites/22-feature-config.spec.ts': [
+                'FCFG-004A: 功能状态资源依赖和开关同一行直接显示 @quick'
+            ],
+            'test/browser/suites/25-mqtt-status-feedback.spec.ts': [
+                'MQTT-003C: 连续状态请求失败退出骨架并显示失败 @quick'
             ]
         }
     },
@@ -153,7 +191,8 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             'test/unit/test_auth_session_contract.py': [
                 'def test_invalid_session_copies_username_before_erasing_map_entry',
                 'def test_browser_health_checks_do_not_bypass_cached_session_restore',
-                'def test_browser_login_retries_follow_server_retry_after'
+                'def test_browser_login_retries_follow_server_retry_after',
+                'def test_browser_login_failure_diagnostics_are_attached_and_redacted'
             ]
         }
     },
@@ -182,6 +221,19 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'the same device must be merged across passes and MAC casing',
                 'the latest pass must replace stale device data',
                 'MAC prefix filtering must ignore case and separator style'
+            ]
+        }
+    },
+    {
+        name: 'peripheral configuration workspace scope',
+        files: {
+            'test/unit/test_p1_peripheral_web_contract.py': [
+                'def test_workspace_only_exposes_peripheral_configuration',
+                'self.assertNotIn("peripheral-board", WEB)',
+                'self.assertNotIn("peripheral-experiments", STATE)'
+            ],
+            'test/browser/suites/15-ui-regression.spec.ts': [
+                'UI-026A: 外设配置只展示外设配置'
             ]
         }
     }
@@ -444,7 +496,9 @@ function validateFirmwareMatrix(issues) {
         issues.push('.github/workflows/ci.yml: firmware matrix must validate each current build artifact set');
     }
     [
-        'node scripts/gzip-www.js --no-upload --no-monitor --stage-dir=.pio/ci-fs-stage',
+        'node scripts/test-web-profile.js',
+        'node scripts/test-web-capability-build.js',
+        'node scripts/gzip-www.js --no-upload --no-monitor --env=esp32s3-F16R8 --stage-dir=.pio/ci-fs-stage',
         'test -f data/www/index.html.gz',
         'test -f data/www/js/chunk-1-core.js.gz',
         'test -f data/www/js/chunk-2-app.js.gz',
@@ -453,6 +507,7 @@ function validateFirmwareMatrix(issues) {
         'test -f .pio/ci-fs-stage/www/index.html.gz',
         'find data/www -type f',
         'find .pio/ci-fs-stage/www -type f',
+        'node scripts/test-web-quality-gate.js',
         'node scripts/web-smoke-test.js',
         'node scripts/test-gzip-www-contract.js --stage-dir=.pio/ci-fs-stage'
     ].forEach((command) => {

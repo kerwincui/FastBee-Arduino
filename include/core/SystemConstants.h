@@ -83,10 +83,6 @@ namespace NetConst {
     constexpr uint16_t FB_MQTT_KEEPALIVE = 60;       // 秒（避免与 PubSubClient::MQTT_KEEPALIVE 宏冲突）
     constexpr uint16_t FB_MQTT_SOCKET_TIMEOUT = 15;  // 秒
 
-    // TCP服务器默认配置
-    constexpr uint16_t TCP_SERVER_PORT = 8080;
-    constexpr uint16_t TCP_MAX_CLIENTS = 5;
-
     // HTTP客户端默认配置
     constexpr uint16_t HTTP_RETRY_COUNT = 3;
 
@@ -193,7 +189,6 @@ namespace Logging {
     constexpr const char* MODULE_OTA = "OTA";
     constexpr const char* MODULE_MQTT = "MQTT";
     constexpr const char* MODULE_MODBUS = "MODBUS";
-    constexpr const char* MODULE_TCP = "TCP";
     constexpr const char* MODULE_HTTP = "HTTP";
     constexpr const char* MODULE_COAP = "COAP";
     constexpr const char* MODULE_SECURITY = "SECURITY";

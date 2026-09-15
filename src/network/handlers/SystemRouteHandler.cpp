@@ -83,6 +83,18 @@ bool isIgnoredConfigImportFileName(const String& name) {
     return false;
 }
 
+bool isManagedRuntimeConfigFileName(const String& name) {
+    return name == "peripherals.json" ||
+           name == "periph_exec.json" ||
+           name == "rule_scripts.json";
+}
+
+bool isManagedRuntimeConfigPath(const String& path) {
+    return path == "/config/peripherals.json" ||
+           path == "/config/periph_exec.json" ||
+           path == "/config/rule_scripts.json";
+}
+
 // 配置导入白名单：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
 static const char* const kAllowedImportConfigFiles[] = {
     "device.json",
@@ -566,6 +578,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         String name = request->getParam("name", true)->value();
         const String& content = request->getParam("content", true)->value();
         if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法（只允许字母、数字、下划线、短横线和 .json 后缀）"); return; }
+        if (isManagedRuntimeConfigFileName(name)) {
+            ctx->sendError(request, 409, "该运行配置必须通过专用 API 导入，以保证校验、事务提交和运行态一致");
+            return;
+        }
         if (isIgnoredConfigImportFileName(name)) {
             JsonDocument skipped;
             skipped["name"] = name;
@@ -648,6 +664,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         int total = request->getParam("total", true)->value().toInt();
 
         if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法"); return; }
+        if (isManagedRuntimeConfigFileName(name)) {
+            ctx->sendError(request, 409, "该运行配置必须通过专用 API 导入，以保证校验、事务提交和运行态一致");
+            return;
+        }
         if (isIgnoredConfigImportFileName(name)) {
             JsonDocument skipped;
             skipped["name"] = name;
@@ -936,6 +956,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         String path = request->getParam("path", true)->value();
         if (!path.startsWith("/")) path = "/" + path;
         if (path.indexOf("..") >= 0) { ctx->sendError(request, 403, "Invalid path"); return; }
+        if (isManagedRuntimeConfigPath(path)) {
+            ctx->sendError(request, 409, "该运行配置不能通过文件编辑器直接覆盖，请使用对应配置页面");
+            return;
+        }
         if (!(path.endsWith(".json") || path.endsWith(".txt") || path.endsWith(".log") ||
               path.endsWith(".html") || path.endsWith(".js") || path.endsWith(".css"))) {
             ctx->sendError(request, 403, "File type not allowed for editing"); return;
@@ -1050,10 +1074,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"minPasswordLength\":6,\"requireStrongPasswords\":false}}";
         writeDefault("/config/users.json", DEFAULT_USERS);
 
-        // protocol.json - 所有协议禁用，用户需重新配置
+        // protocol.json - MQTT 默认启用；未配置设备身份时连接层保持等待配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
             "{\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
-            "\"mqtt\":{\"enabled\":false,\"scheme\":\"mqtt\",\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
+            "\"mqtt\":{\"enabled\":true,\"scheme\":\"mqtt\",\"server\":\"iot.fastbee.cn\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
             "\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"mqttSecret\":\"\",\"authCode\":\"\","
             "\"willTopic\":\"\",\"willPayload\":\"\",\"willQos\":0,\"willRetain\":false,"
             "\"longitude\":0,\"latitude\":0,\"iccid\":\"\",\"cardPlatformId\":0,"
@@ -1076,10 +1100,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60,"
             "\"retry\":3,\"authType\":\"none\",\"authUser\":\"\",\"authToken\":\"\",\"contentType\":\"application/json\"},"
             "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683,\"method\":\"POST\","
-            "\"path\":\"sensors/temperature\",\"msgType\":\"CON\",\"retransmit\":3,\"timeout\":5000},"
-            "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000,"
-            "\"keepAlive\":60,\"maxRetry\":5,\"reconnectInterval\":10,\"mode\":\"client\","
-            "\"heartbeatMsg\":\"\\\\n\",\"maxClients\":5,\"idleTimeout\":120,\"localPort\":8080}}";
+            "\"path\":\"sensors/temperature\",\"msgType\":\"CON\",\"retransmit\":3,\"timeout\":5000}}}";
         writeDefault("/config/protocol.json", DEFAULT_PROTOCOL);
 
         // peripherals.json - 清空外设配置（用户按需添加）
@@ -1112,7 +1133,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
         // ── 运行时可选配置文件：直接删除（各模块已处理文件不存在的情况）────
         const char* optionalFiles[] = {
-            "/config/auth.json", "/config/system.json",
+            "/config/auth.json", "/config/system.json", "/config/ai.json",
             "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
             "/config/modbus.json", "/config/coap.json", "/config/mqtt-backup.json",
             "/config/provision.json", "/config/ble_provision.json",
@@ -1974,8 +1995,6 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["periphExec"]  = (bool)FASTBEE_ENABLE_PERIPH_EXEC;
     doc["data"]["ruleScript"]  = (bool)FASTBEE_ENABLE_RULE_SCRIPT;
     doc["data"]["lcd"]        = (bool)FASTBEE_ENABLE_LCD;
-    doc["data"]["ledScreen"]  = (bool)FASTBEE_ENABLE_LED_SCREEN;
-
     doc["data"]["ethernet"]     = (bool)FASTBEE_ENABLE_ETHERNET;
     doc["data"]["cellular"]     = (bool)FASTBEE_ENABLE_CELLULAR;
     doc["data"]["ota"]           = (bool)FASTBEE_ENABLE_OTA;

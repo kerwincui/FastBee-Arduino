@@ -80,6 +80,7 @@ struct MQTTConfig {
     String username;
     String password;
     String topicPrefix;
+    String otaBaseUrl;          // FastBee relative firmware URL base (HTTPS)
     String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
     bool autoReconnect;        // 自动重连
@@ -129,6 +130,7 @@ public:
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool publishOtaReply(const String& payload);   // 发布 FastBee HTTPS OTA 状态（不经过规则脚本）
     bool publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData); // 发布设备事件到 topicType=DEVICE_EVENT 主题（格式同 DATA_REPORT）
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本

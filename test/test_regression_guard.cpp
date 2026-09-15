@@ -1883,13 +1883,13 @@ static void test_regression_mqtt_no_hardcoded_defaults() {
 }
 
 /**
- * @brief MQTT 未启用时必须直接显示“未连接”而非“检测中”
- * 回归：旧代码 MQTT 未启用时仍进行状态检测，显示“检测中...”
+ * @brief MQTT 未启用时先保持中性态，再由一次状态响应展示最终原因。
+ * 配置值不能冒充运行状态，否则会短暂误报“未连接”并掩盖内存降级原因。
  */
-static void test_regression_mqtt_disabled_shows_offline() {
-    TestLog::testStart("Regression: MQTT Disabled Shows Offline");
+static void test_regression_mqtt_disabled_waits_for_runtime_status() {
+    TestLog::testStart("Regression: MQTT Disabled Waits For Runtime Status");
 
-    // 1. protocol-config.js 中 mqtt.enabled=false 时应停止轮询并显示未连接
+    // 1. protocol-config.js 中 mqtt.enabled=false 时停止轮询，保持中性态并只查一次状态。
     std::string config = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
     TEST_ASSERT_FALSE_MESSAGE(config.empty(), "Cannot read protocol-config.js");
 
@@ -1898,12 +1898,16 @@ static void test_regression_mqtt_disabled_shows_offline() {
     TEST_ASSERT_TRUE_MESSAGE(enabledPos != std::string::npos,
         "mqtt.enabled check not found");
 
-    std::string block = config.substr(enabledPos, 500);
+    std::string block = config.substr(enabledPos, 1200);
     TEST_ASSERT_TRUE_MESSAGE(block.find("_stopMqttStatusPolling") != std::string::npos,
         "When mqtt.enabled=false, must call _stopMqttStatusPolling()");
-    TEST_ASSERT_TRUE_MESSAGE(block.find("mqtt-status-offline") != std::string::npos,
-        "When mqtt.enabled=false, must set badge to offline");
-    TestLog::step("protocol-config.js: mqtt disabled -> stop polling + show offline");
+    TEST_ASSERT_TRUE_MESSAGE(block.find("_setMqttStatusLoading") != std::string::npos,
+        "Disabled MQTT must remain neutral until the runtime status arrives");
+    TEST_ASSERT_TRUE_MESSAGE(block.find("_loadMqttStatus") != std::string::npos,
+        "Disabled MQTT must query runtime status once for the final reason");
+    TEST_ASSERT_TRUE_MESSAGE(block.find("mqtt-status-offline") == std::string::npos,
+        "Config loading must not publish an unverified offline state");
+    TestLog::step("protocol-config.js: mqtt disabled -> stop polling + neutral status probe");
 
     // 2. mqtt-config.js _updateMqttStatusUI 中 !d.enabled 必须在 d.connected 之前
     std::string mqtt = readRegressionSrcFile("web-src/modules/runtime/protocol/mqtt-config.js");
@@ -1942,8 +1946,8 @@ static void test_regression_mqtt_disabled_shows_offline() {
         "refreshMqttStatus must check mqtt-enabled checkbox before API call");
     TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_stopMqttStatusPolling") != std::string::npos,
         "refreshMqttStatus must stop polling when MQTT is disabled");
-    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("mqtt-status-offline") != std::string::npos,
-        "refreshMqttStatus must set badge to offline when disabled");
+    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_setMqttStatusLoading") != std::string::npos,
+        "Disabled refresh must show a neutral state until the status response arrives");
     size_t disabledRefreshPos = refreshBlock.find("if (enabledCheckbox && !enabledCheckbox.checked)");
     TEST_ASSERT_TRUE_MESSAGE(disabledRefreshPos != std::string::npos,
         "refreshMqttStatus disabled branch not found");
@@ -1967,6 +1971,8 @@ static void test_regression_mqtt_disabled_shows_offline() {
         "Disabled refresh must query backend status once to expose memory-protection diagnostics");
     TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("_startMqttStatusPolling") == std::string::npos,
         "Disabled refresh must not start periodic MQTT status polling");
+    TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("mqtt-status-offline") == std::string::npos,
+        "Disabled refresh must not publish an unverified offline state");
     TEST_ASSERT_TRUE_MESSAGE(disabledRefreshBlock.find("return;") != std::string::npos,
         "Disabled refresh must return before entering the enabled polling path");
     TestLog::step("mqtt-config.js: disabled refresh performs one status query without polling");
@@ -3797,49 +3803,45 @@ void test_regression_rule_script_gated_in_firmware() {
 }
 
 /**
- * @brief 源码回归：统一 Web 镜像（full 档）始终包含 rule-script 前端资源。
- * Unified Architecture v2.0：web-profile 固定为 full，已移除 lite/standard/cpact 等
- * profile 分支判定；admin bundle 使用 UNIFIED_SOURCE_FILES 全量构建，保证
- * 所有设备的菜单/页面一致。
+ * @brief 源码回归：规则脚本 Web 资源必须由已编译能力决定。
+ * 规则脚本编进固件时发布对应模块和页面；未编进时发布流程必须自动裁剪，
+ * 不能退回到固定 full Web 镜像或运行时 features.json 裁剪。
  */
 void test_regression_unified_web_bundles_rule_script() {
-    TestLog::testStart("Source: unified web image bundles rule-script resources");
+    TestLog::testStart("Source: rule-script web resources follow compiled capability");
 
-    // web-profile.js: WEB_PROFILE 固定 'full'，已移除 isCompact/isLite/isStandard 废弃函数
     std::string webProfile = readRegressionSrcFile("scripts/web-profile.js");
     TEST_ASSERT_FALSE_MESSAGE(webProfile.empty(), "cannot read web-profile.js");
     TEST_ASSERT_TRUE_MESSAGE(
-        webProfile.find("const WEB_PROFILE = 'full'") != std::string::npos,
-        "web-profile.js must pin WEB_PROFILE to 'full'");
+        webProfile.find("ruleScript: 'FASTBEE_ENABLE_RULE_SCRIPT'") != std::string::npos,
+        "web-profile.js must derive ruleScript from FASTBEE_ENABLE_RULE_SCRIPT");
     TEST_ASSERT_TRUE_MESSAGE(
-        webProfile.find("function isLiteWebProfile()") == std::string::npos &&
-        webProfile.find("function isCompactWebProfile()") == std::string::npos &&
-        webProfile.find("function isStandardWebProfile()") == std::string::npos,
-        "deprecated profile guard functions must be removed");
-    TestLog::step("web-profile pinned to full and guards removed");
+        webProfile.find("'js/modules/rule-script.js': ['ruleScript']") != std::string::npos &&
+        webProfile.find("'pages/rule-script.html': ['ruleScript']") != std::string::npos,
+        "rule-script module and page must both declare the ruleScript capability");
+    TestLog::step("rule-script assets are declared against the compiled capability");
 
-    // build-web-modules.js: rule-script menu stripping 已从 isLiteWebProfile() 分支下移除
     std::string webMod = readRegressionSrcFile("scripts/build-web-modules.js");
     TEST_ASSERT_FALSE_MESSAGE(webMod.empty(), "cannot read build-web-modules.js");
-    size_t liteGuard = webMod.find("isLiteWebProfile()");
-    TEST_ASSERT_TRUE_MESSAGE(liteGuard == std::string::npos,
-        "build-web-modules.js must not use isLiteWebProfile() anymore");
-    TestLog::step("rule-script stripping code fully removed from build-web-modules");
+    TEST_ASSERT_TRUE_MESSAGE(
+        webMod.find("resolveWebBuildContext()") != std::string::npos &&
+        webMod.find("shouldIncludeAsset(relPath, BUILD_CONTEXT)") != std::string::npos &&
+        webMod.find("writeWebResourceManifest(WWW_DIR, BUILD_CONTEXT)") != std::string::npos,
+        "web build must filter resources and emit a manifest from one compiled context");
 
-    // build-admin-bundle.js: UNIFIED_SOURCE_FILES 全量构建（含 rule-script.js），
-    // 旧的分档列表不得复活。
     std::string adminB = readRegressionSrcFile("scripts/build-admin-bundle.js");
     TEST_ASSERT_FALSE_MESSAGE(adminB.empty(), "cannot read build-admin-bundle.js");
     TEST_ASSERT_TRUE_MESSAGE(
-        adminB.find("UNIFIED_SOURCE_FILES") != std::string::npos &&
-        adminB.find("'rule-script.js'") != std::string::npos,
-        "UNIFIED_SOURCE_FILES must include rule-script.js");
-    TestLog::step("UNIFIED_SOURCE_FILES includes rule-script.js");
+        adminB.find("'rule-script.js'") != std::string::npos &&
+        adminB.find("getSourceFiles(context") != std::string::npos &&
+        adminB.find("shouldIncludeAsset(`js/modules/${fileName}`, context)") != std::string::npos,
+        "admin bundle must retain rule-script when its compiled capability is available");
+
+    std::string pio = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "cannot read platformio.ini");
     TEST_ASSERT_TRUE_MESSAGE(
-        adminB.find("PROD_SOURCE_FILES") == std::string::npos &&
-        adminB.find("STANDARD_SOURCE_FILES") == std::string::npos,
-        "per-profile source file lists were removed by unified web image");
-    TestLog::step("legacy per-profile source lists stay removed");
+        pio.find("-DFASTBEE_ENABLE_RULE_SCRIPT=1") != std::string::npos,
+        "supported firmware environments must keep the rule-script capability available");
 
     TestLog::testEnd(true);
 }
@@ -4080,7 +4082,7 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_wifi_security_default_wpa2);
     RUN_TEST(test_regression_mqtt_no_hardcoded_defaults);
     // MQTT 禁用状态全链路回归保护
-    RUN_TEST(test_regression_mqtt_disabled_shows_offline);
+    RUN_TEST(test_regression_mqtt_disabled_waits_for_runtime_status);
     RUN_TEST(test_regression_mqtt_disabled_stops_backend_client);
     RUN_TEST(test_regression_mqtt_disabled_rejects_reconnect);
     RUN_TEST(test_regression_modbus_deferred_restart_before_heap_guard);

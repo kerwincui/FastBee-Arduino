@@ -110,7 +110,7 @@ compiled（编译进固件）
 
 建议使用 Web 的配置导出/导入功能备份，不要把真实密码和令牌提交到代码仓库。
 
-五台测试设备的可提交样例、配置格式和部署方法统一维护在 [`docs/README.md`](docs/README.md)。样例已脱敏且不能跨设备互换；被 Git 忽略的私有备份不得发布。
+五台测试设备的可提交样例、配置格式、串口映射和部署方法统一维护在 [`docs/README.md`](docs/README.md)。每台设备使用独立配置，不能跨设备互换。公开样例必须清空设备身份、WiFi STA、MQTT 和认证凭据；被 Git 忽略的 `.device-config-backups/` 只用于本机临时恢复，不得发布，长期备份应移到加密存储。
 
 `data/config/` 只用于无设备身份、无 STA/MQTT 凭据且默认不启动外设和规则的工厂模板，不能用作真机配置备份。`npm test` 会检查这一边界。
 
@@ -151,6 +151,7 @@ test/              native、设备 API 和浏览器测试
 
 ## 文档与开发
 
+- [仓库内五设备配置样例与部署说明](docs/README.md)
 - [设备端文档首页](https://fastbee.cn/doc/device/)
 - [快速开始](https://fastbee.cn/doc/device/getting-started/quick-start.html)
 - [用户操作手册](https://fastbee.cn/doc/device/getting-started/user-manual.html)

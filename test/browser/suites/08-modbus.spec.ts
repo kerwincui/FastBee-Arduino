@@ -11,15 +11,26 @@ import type { Page } from '@playwright/test';
  * @returns true=分片已加载; false=Tab 不存在或分片加载失败
  */
 async function switchToModbusTab(page: Page): Promise<boolean> {
-  // 1. 等待 protocol 模块加载完成(loadProtocolConfig 可用)
+  // 1. 等待 protocol 模块和运行时功能门控都完成。静态 Tab 会在
+  // 功能状态到达前短暂存在，不能把这一瞬间当成 Modbus 已启用。
   await page.waitForFunction(
     () => {
-      const g = globalThis as unknown as { AppState?: { loadProtocolConfig?: unknown } };
-      return !!g.AppState && typeof g.AppState.loadProtocolConfig === 'function';
+      const g = globalThis as unknown as {
+        AppState?: { loadProtocolConfig?: unknown; _featureActive?: Record<string, boolean> | null };
+      };
+      return !!g.AppState
+        && typeof g.AppState.loadProtocolConfig === 'function'
+        && g.AppState._featureActive !== null;
     },
     null,
     { timeout: 30_000 }
   ).catch(() => {});
+
+  const runtimeEnabled = await page.evaluate(() => {
+    const state = (globalThis as any).AppState;
+    return state?._featureActive?.modbus === true;
+  });
+  if (!runtimeEnabled) return false;
 
   const modbusTab = page.locator('.config-tab[data-tab="modbus-rtu"]');
   if (!(await modbusTab.isVisible().catch(() => false))) return false;

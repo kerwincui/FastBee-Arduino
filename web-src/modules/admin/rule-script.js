@@ -6,6 +6,22 @@
     AppState.registerModule('rule-script', {
         _ruleScriptEventsBound: false,
 
+        _updateRuleScriptSummary(rules, errorText) {
+            const summary = document.getElementById('rule-script-list-summary');
+            if (!summary) return;
+            summary.classList.toggle('is-warning', !!errorText);
+            if (errorText) {
+                summary.textContent = errorText;
+                return;
+            }
+            if (!Array.isArray(rules)) {
+                summary.textContent = '加载中...';
+                return;
+            }
+            const enabled = rules.filter(rule => rule && rule.enabled === true).length;
+            summary.textContent = '共 ' + rules.length + ' 条规则 · ' + enabled + ' 条已启用';
+        },
+
         // ============ 事件绑定 ============
         setupRuleScriptEvents() {
             if (this._ruleScriptEventsBound) return;
@@ -139,13 +155,16 @@
 
             const tbody = document.getElementById('rule-script-table-body');
             if (!tbody) return;
+            this._updateRuleScriptSummary(null);
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             getter('/api/rule-script').then(res => {
-                if (!res || !res.success || !res.data) {
+                if (!res || !res.success || !Array.isArray(res.data)) {
+                    this._updateRuleScriptSummary(null, '规则列表加载失败');
                     this.renderEmptyTableRow(tbody, 7, '暂无规则脚本');
                     return;
                 }
                 const rules = res.data;
+                this._updateRuleScriptSummary(rules);
                 if (rules.length === 0) {
                     this.renderEmptyTableRow(tbody, 7, '暂无规则脚本');
                     return;
@@ -158,14 +177,16 @@
                 });
                 tbody.innerHTML = html;
                 this.applyDeveloperModeState(tbody);
-            }).catch(() => {
-                this.renderEmptyTableRow(tbody, 6, '暂无规则脚本');
+            }).catch((err) => {
+                if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                this._updateRuleScriptSummary(null, '规则列表加载失败');
+                this.renderEmptyTableRow(tbody, 7, '暂无规则脚本');
             });
         },
 
-        openRuleScriptModal(editId) {
+        async openRuleScriptModal(editId) {
             if (!this.guardDeveloperModeAction()) return;
-            const modal = document.getElementById('rule-script-modal');
+            const modal = await this._ensureModalForAction('rule-script-modal');
             if (!modal) return;
             const titleEl = document.getElementById('rule-script-modal-title');
             document.getElementById('rule-script-original-id').value = editId || '';

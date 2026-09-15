@@ -1,7 +1,7 @@
 /**
  * 外设执行管理模块 - 核心入口
  * 页面初始化、CRUD API 调用、列表渲染、分页、事件绑定
- * 子模块: periph-exec-modbus.js (Modbus专用), periph-exec-form.js (表单)
+ * 子模块: periph-exec-modbus.js、periph-exec-form.js，以及按需加载的传感器/灯效扩展
  */
 (function() {
     AppState.registerModule('periph-exec', {
@@ -61,6 +61,97 @@
             });
         },
 
+        _buildPeriphExecInlineActionPanel(actionType, actionValue) {
+            if (actionType === 15) {
+                return '<textarea class="pe-action-value-script pe-script-textarea" rows="7" maxlength="1024" placeholder="每行一条命令">' + escapeHtml(actionValue || '') + '</textarea>' +
+                    '<small class="pe-help-text">可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作</small>';
+            }
+            if (actionType === 21) {
+                return '<select class="pe-trigger-event-select"><option value="">-- 选择事件 --</option>' +
+                    '<optgroup label="WiFi"><option value="wifi_connected">WiFi连接成功</option><option value="wifi_disconnected">WiFi断开连接</option><option value="wifi_conn_failed">WiFi连接失败</option></optgroup>' +
+                    '<optgroup label="MQTT"><option value="mqtt_connected">MQTT连接成功</option><option value="mqtt_disconnected">MQTT断开连接</option><option value="mqtt_conn_failed">MQTT连接失败</option><option value="mqtt_enabled">MQTT协议启用</option></optgroup>' +
+                    '<optgroup label="系统"><option value="system_boot">系统启动</option><option value="system_ready">系统就绪</option><option value="system_error">系统错误</option><option value="factory_reset">恢复出厂设置</option><option value="ntp_synced">NTP同步完成</option><option value="ota_start">OTA升级开始</option><option value="ota_success">OTA升级成功</option><option value="ota_failed">OTA升级失败</option><option value="break_down">设备故障</option><option value="restart">设备重启</option><option value="device_alarm">设备告警</option><option value="low_power">低电量预警</option></optgroup>' +
+                    '<optgroup label="按键"><option value="button_click">按键单击</option><option value="button_double_click">按键双击</option><option value="button_long_press_2s">按键长按2秒</option><option value="button_long_press_5s">按键长按5秒</option><option value="button_long_press_10s">按键长按10秒</option><option value="button_press">按键按下</option><option value="button_release">按键释放</option></optgroup>' +
+                    '<optgroup label="数据"><option value="data_receive">数据接收</option><option value="data_report">数据上报</option></optgroup>' +
+                    '<optgroup label="外设执行"><option value="periph_exec_completed">外设执行完成</option></optgroup>' +
+                    '<optgroup label="RFID/红外/RF"><option value="rfid_card_detected">RFID卡片检测</option><option value="rfid_card_removed">RFID卡片移开</option><option value="ir_code_received">红外编码接收</option><option value="rf_code_received">RF编码接收</option></optgroup></select>' +
+                    '<small class="pe-trigger-event-help">选择要模拟触发的设备事件</small>';
+            }
+            return '';
+        },
+
+
+        _snapshotPeriphExecLazyPanel(host) {
+            if (!host) return [];
+            return Array.from(host.querySelectorAll('input, select, textarea')).map(function(control) {
+                return {
+                    value: control.value,
+                    checked: control.type === 'checkbox' ? !!control.checked : null
+                };
+            });
+        },
+
+        _restorePeriphExecLazyPanel(host, snapshot) {
+            if (!host || !Array.isArray(snapshot)) return;
+            var controls = host.querySelectorAll('input, select, textarea');
+            snapshot.forEach(function(state, index) {
+                var control = controls[index];
+                if (!control) return;
+                if (state.checked !== null && control.type === 'checkbox') control.checked = state.checked;
+                if (state.value !== undefined) control.value = state.value;
+            });
+        },
+
+        _getPeriphExecLazyActionModule(actionType, targetId) {
+            if (actionType === 19) return 'periph-exec-sensor';
+            if (actionType === 27 || actionType === 11 ||
+                (actionType === 10 && this._isNeoPixelTarget(targetId))) {
+                return 'periph-exec-effects';
+            }
+            return '';
+        },
+
+        _loadPeriphExecLazyActionModule(moduleName, block, actionType, data) {
+            var host = block.querySelector('.pe-action-lazy-host');
+            var self = this;
+            var token = (block._peLazyLoadToken || 0) + 1;
+            block._peLazyLoadToken = token;
+            host.innerHTML = '<small class="pe-help-text">正在加载配置...</small>';
+            if (typeof ModuleLoader === 'undefined' || !ModuleLoader ||
+                typeof ModuleLoader.loadModule !== 'function') {
+                host.innerHTML = '<small class="pe-help-text">配置模块加载失败，请刷新页面重试</small>';
+                block.dataset.peLazyModuleError = moduleName;
+                return;
+            }
+            ModuleLoader.loadModule(moduleName, function() {
+                if (!block.isConnected || block._peLazyLoadToken !== token) return;
+                delete block.dataset.peLazyModuleError;
+                self._mountPeriphExecLazyActionPanel(block, actionType, data, true);
+            });
+        },
+
+        _isNeoPixelTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(periph) {
+                return periph.id === periphId && periph.type === 45;
+            });
+        },
+
+        _isSetPwmTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(periph) {
+                return periph.id === periphId &&
+                    (periph.type === 17 || (periph.type === 12 && periph.passive === true));
+            });
+        },
+
+        _isRfModuleTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(periph) {
+                return periph.id === periphId && periph.type === 48;
+            });
+        },
+
         // ============ 事件绑定 ============
         setupPeriphExecEvents() {
             if (this._peEventsBound) return;
@@ -117,7 +208,7 @@
 
         // ============ 模态框 ============
 
-        openPeriphExecModal(editId) {
+        async openPeriphExecModal(editId) {
             if (!this.guardDeveloperModeAction()) return;
             if (!editId && this._isPeriphExecCapacityFull()) {
                 Notification.warning('当前资源档位执行规则数量已达上限', '外设执行');
@@ -134,7 +225,7 @@
                         }
                     });
             }
-            const modal = document.getElementById('periph-exec-modal');
+            const modal = await this._ensureModalForAction('periph-exec-modal');
             if (!modal) return;
             const titleEl = document.getElementById('periph-exec-modal-title');
             var safeId = (editId && editId !== 'null' && editId !== 'undefined') ? editId : '';
@@ -157,34 +248,60 @@
             this._peDataSources = [];
             this._peSensorSources = [];
             this._peExecRules = [];
-            // 优化：并行请求三个 API，减少模态框打开等待时间
-            Promise.all([
-                apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }),
-                apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }),
-                apiGet('/api/periph-exec', { pageSize: 100 })
-            ]).then(([periphRes, protoRes, rulesRes]) => {
-                if (periphRes && periphRes.success && periphRes.data) this._pePeripherals = periphRes.data;
-                if (protoRes && protoRes.success && protoRes.data) {
-                    const protoData = protoRes.data;
-                    this._peDataSources = this._extractDataSources(protoData);
-                    if (protoData.modbusRtu && protoData.modbusRtu.master) {
-                        this._masterTasks = protoData.modbusRtu.master.tasks || [];
-                        this._modbusDevices = protoData.modbusRtu.master.devices || [];
+            const loadSeq = ++this._peEditLoadSeq;
+            const pageGeneration = this._getPeriphExecPageGeneration();
+            const ensureCreateActive = () => {
+                if (!this._isPeriphExecEditLoadActive(loadSeq, pageGeneration)) {
+                    const err = new Error('Request cancelled by page navigation');
+                    err._pageAborted = true;
+                    throw err;
+                }
+            };
+            // Keep the create editor to one in-flight request. Three parallel
+            // responses can exhaust the classic ESP32 TCP/heap reserve.
+            const createResults = {};
+            Promise.resolve()
+                .then(() => {
+                    ensureCreateActive();
+                    return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 });
+                })
+                .then((periphRes) => {
+                    ensureCreateActive();
+                    createResults.periphRes = periphRes;
+                    return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' });
+                })
+                .then((protoRes) => {
+                    ensureCreateActive();
+                    createResults.protoRes = protoRes;
+                    return apiGet('/api/periph-exec', { pageSize: 100 });
+                })
+                .then((rulesRes) => {
+                    ensureCreateActive();
+                    const periphRes = createResults.periphRes;
+                    const protoRes = createResults.protoRes;
+                    if (periphRes && periphRes.success && periphRes.data) this._pePeripherals = periphRes.data;
+                    if (protoRes && protoRes.success && protoRes.data) {
+                        const protoData = protoRes.data;
+                        this._peDataSources = this._extractDataSources(protoData);
+                        if (protoData.modbusRtu && protoData.modbusRtu.master) {
+                            this._masterTasks = protoData.modbusRtu.master.tasks || [];
+                            this._modbusDevices = protoData.modbusRtu.master.devices || [];
+                        }
                     }
-                }
-                if (rulesRes && rulesRes.success && Array.isArray(rulesRes.data)) {
-                    this._peExecRules = rulesRes.data;
-                }
-                this._peSensorSources = (rulesRes && Array.isArray(rulesRes.sensorSources)) ? rulesRes.sensorSources : [];
-                this._createPeriphExecTriggerElement({}, 0);
-                this._createPeriphExecActionElement({}, 0);
-                this._refreshPeriphExecRiskNotice({ allowFetch: true });
-            }).catch(err => {
-                console.error('Failed to load periph exec data:', err);
-                this._createPeriphExecTriggerElement({}, 0);
-                this._createPeriphExecActionElement({}, 0);
-                this._refreshPeriphExecRiskNotice({ allowFetch: true });
-            });
+                    if (rulesRes && rulesRes.success && Array.isArray(rulesRes.data)) {
+                        this._peExecRules = rulesRes.data;
+                    }
+                    this._peSensorSources = (rulesRes && Array.isArray(rulesRes.sensorSources)) ? rulesRes.sensorSources : [];
+                    this._createPeriphExecTriggerElement({}, 0);
+                    this._createPeriphExecActionElement({}, 0);
+                    this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                }).catch(err => {
+                    if (err && err._pageAborted) return;
+                    console.error('Failed to load periph exec data:', err);
+                    this._createPeriphExecTriggerElement({}, 0);
+                    this._createPeriphExecActionElement({}, 0);
+                    this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                });
             this.showModal(modal);
         },
 
@@ -246,9 +363,9 @@
             var summary = '共' + ' ' + total + ' ' + '项';
             var profile = this._peProfile;
             if (profile && profile.max !== undefined) {
-                summary += ' (' + (profile.used || 0) + '/' + profile.max + ')';
+                summary += ' · 建议容量 ' + (profile.used || 0) + ' / ' + profile.max;
                 if ((profile.used || 0) > profile.max) {
-                    summary += ' ⚠️ ' + '已超出推荐上限';
+                    summary += ' · 已超出推荐上限';
                 }
             }
             return summary;
@@ -1059,16 +1176,31 @@
                 })
                 .catch(() => {
                     this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
+                    this._renderPeriphExecPagination(0, 1, 10);
                 });
         },
 
         _renderPeriphExecPagination(total, page, pageSize) {
+            const summaryText = this._formatPeriphExecCapacitySummary(total);
+            const summary = document.getElementById('periph-exec-list-summary');
+            if (summary) {
+                summary.textContent = summaryText;
+                summary.classList.toggle('is-warning', !!(this._peProfile && (this._peProfile.used || 0) > this._peProfile.max));
+            }
+
+            const pagination = document.getElementById('periph-exec-pagination');
+            const hasMultiplePages = Math.ceil(Math.max(0, Number(total) || 0) / Math.max(1, Number(pageSize) || 10)) > 1;
+            if (pagination) {
+                pagination.hidden = !hasMultiplePages;
+                if (!hasMultiplePages) pagination.innerHTML = '';
+            }
+            if (!hasMultiplePages) return;
+
             this.renderPagination('periph-exec-pagination', {
                 total,
                 page,
                 pageSize,
                 maxVisiblePages: 3,
-                summaryText: this._formatPeriphExecCapacitySummary(total),
                 onPageChange: (nextPage) => {
                     this._peCurrentPage = nextPage;
                     this.loadPeriphExecPage();

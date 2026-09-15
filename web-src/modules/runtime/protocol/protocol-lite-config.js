@@ -156,6 +156,11 @@
             this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
             // 重置自动重连标志，确保切换页面后首次状态检测能正确触发
             this._mqttAutoReconnectTriggered = false;
+            // 配置值不能代表运行状态。状态接口返回前保持中性加载态，
+            // 避免慢设备先短暂显示“未连接”或掩盖内存保护原因。
+            if (typeof this._setMqttStatusLoading === 'function') {
+                this._setMqttStatusLoading();
+            }
             // MQTT 启用时做有限次状态轮询（不用SSE持久连接，避免耗尽ESP32 socket池）
             // 使用递归setTimeout而非定时器，轮询10次后自动停止
             // 覆盖窗口：3s起始 + 9*5s = 48s，充分覆盖MQTT 30-40s连接时间
@@ -192,28 +197,19 @@
                 }
                 self._mqttLitePollStopped = false;
                 self._mqttLitePollTimer = setTimeout(mqttPollOnce, 3000);
-            } else if (mqtt.enabled === false) {
-                // MQTT 未启用时，直接显示"未连接"，不进行状态检测
+            } else if (mqtt.enabled === false && typeof this._loadMqttStatus === 'function') {
+                // 禁用时不轮询、不自动重连，但仍延迟读取一次后端状态，
+                // 由状态响应区分用户禁用与内存保护自动降级。
                 if (typeof this._stopMqttStatusPolling === 'function') {
                     this._stopMqttStatusPolling();
                 }
-                var badge = document.getElementById('mqtt-status-badge');
-                if (badge) {
-                    badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    badge.textContent = '未连接';
-                }
-                // The lite page can render before mqtt-config.js performs its
-                // first status poll. Keep the reason field consistent with
-                // the backend contract so an automatic memory disable is not
-                // mistaken for an ordinary user choice.
-                if (typeof this._setMqttStatusReason === 'function') {
-                    var disabledReason = mqtt.disabledByMemory === true ||
-                        mqtt.disable_mqtt_by_memory === true ||
-                        mqtt.disabled_by_memory === true
-                        ? '设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用'
-                        : (mqtt.statusReason || mqtt.lastErrorMessage || 'MQTT 已禁用');
-                    this._setMqttStatusReason(disabledReason);
-                }
+                var disabledSelf = this;
+                disabledSelf._mqttLitePollStopped = false;
+                disabledSelf._mqttLitePollTimer = setTimeout(function() {
+                    disabledSelf._mqttLitePollTimer = null;
+                    if (disabledSelf._mqttLitePollStopped) return;
+                    disabledSelf._loadMqttStatus();
+                }, 3000);
             }
         },
 

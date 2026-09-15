@@ -9,7 +9,11 @@ async function openLogin(page: Page) {
       // The device can return the lightweight 503 retry page while static
       // resources drain. DOMContentLoaded lets the helper retry promptly.
       await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
-      await page.waitForFunction(() => (window as any).__fastbeeBootReady === true, { timeout: 10_000 }).catch(() => {});
+      await page.waitForFunction(
+        () => (window as any).__fastbeeBootReady === true,
+        undefined,
+        { timeout: 10_000 }
+      ).catch(() => {});
       await page.locator('#login-page').waitFor({ state: 'visible', timeout: 5_000 });
       return;
     } catch (error) {

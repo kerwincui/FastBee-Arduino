@@ -445,6 +445,7 @@ void test_factory_reset_writes_defaults() {
     g_mockFiles["/config/rule_scripts.json"] = "{\"rules\":[{\"id\":\"custom_rule\"}]}";
     g_mockFiles["/config/auth.json"] = "{\"sessions\":[]}";
     g_mockFiles["/config/mqtt.json"] = "{\"enabled\":true}";
+    g_mockFiles["/config/tcp.json"] = "{\"enabled\":true,\"server\":\"legacy.example\"}";
 
     // Simulate factory reset: write defaults to core files
     auto writeDefault = [](const char* path, const char* content) -> bool {
@@ -470,7 +471,7 @@ void test_factory_reset_writes_defaults() {
     if (writeDefault("/config/users.json", DEFAULT_USERS)) resetCount++;
 
     // Write default protocol.json (no version, includes MQTT topics)
-    const char* DEFAULT_PROTOCOL = "{\"mqtt\":{\"enabled\":false,\"publishTopics\":[],\"subscribeTopics\":[]},\"modbusRtu\":{\"enabled\":false}}";
+    const char* DEFAULT_PROTOCOL = "{\"mqtt\":{\"enabled\":true,\"server\":\"iot.fastbee.cn\",\"port\":1883,\"publishTopics\":[],\"subscribeTopics\":[]},\"modbusRtu\":{\"enabled\":false}}";
     if (writeDefault("/config/protocol.json", DEFAULT_PROTOCOL)) resetCount++;
 
     // Write default peripherals.json
@@ -492,6 +493,7 @@ void test_factory_reset_writes_defaults() {
     // Delete optional files
     LittleFS.remove("/config/auth.json");
     LittleFS.remove("/config/mqtt.json");
+    LittleFS.remove("/config/tcp.json");
 
     // Verify: all 8 core files written successfully
     TEST_ASSERT_EQUAL(8, resetCount);
@@ -511,6 +513,7 @@ void test_factory_reset_writes_defaults() {
     // Verify: optional files deleted
     TEST_ASSERT_FALSE(LittleFS.exists("/config/auth.json"));
     TEST_ASSERT_FALSE(LittleFS.exists("/config/mqtt.json"));
+    TEST_ASSERT_FALSE(LittleFS.exists("/config/tcp.json"));
     TestLog::step("Optional config files removed");
 
     // Verify: device.json has empty deviceId and FastBee NTP server
@@ -542,7 +545,10 @@ void test_factory_reset_writes_defaults() {
 
     // Verify: protocol.json has no version field and MQTT topics
     String protocolContent = g_mockFiles["/config/protocol.json"];
-    TEST_ASSERT_TRUE(protocolContent.indexOf("\"enabled\":false") >= 0);
+    TEST_ASSERT_TRUE(protocolContent.indexOf("\"mqtt\":{\"enabled\":true") >= 0);
+    TEST_ASSERT_TRUE(protocolContent.indexOf("\"server\":\"iot.fastbee.cn\"") >= 0);
+    TEST_ASSERT_TRUE(protocolContent.indexOf("\"port\":1883") >= 0);
+    TEST_ASSERT_FALSE(protocolContent.indexOf("\"tcp\":") >= 0);
     TEST_ASSERT_FALSE(protocolContent.indexOf("my.mqtt.com") >= 0);
     TEST_ASSERT_FALSE(protocolContent.indexOf("\"version\"") >= 0);
     TEST_ASSERT_TRUE(protocolContent.indexOf("publishTopics") >= 0);

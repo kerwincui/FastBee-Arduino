@@ -326,18 +326,6 @@
 #endif
 
 /**
- * @brief LED 灯珠支持（WS2812B/NeoPixel）
- * 默认：按环境配置
- * 占用：约 10KB Flash（轻量 RMT 发送器）
- * RAM：发送时临时分配 24 × 灯珠数 × rmt_item32_t，默认限制 64 颗
- * 需要：ESP32 RMT 外设，无第三方 NeoPixel 库依赖
- * 说明：使用 ESP32 RMT 硬件外设发送 GRB 时序
- */
-#ifndef FASTBEE_ENABLE_LED_SCREEN
-#define FASTBEE_ENABLE_LED_SCREEN 0
-#endif
-
-/**
  * @brief 设备大屏可视化控制面板
  * 默认：禁用（需要 PSRAM 支持，解压需 ~106KB DRAM）
  * 占用：Web JS 21.5KB gz + CSS ~5.7KB gz

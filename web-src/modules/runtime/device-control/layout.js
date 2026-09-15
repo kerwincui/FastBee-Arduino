@@ -12,11 +12,72 @@
         _dcDragOffset: null,
         _dcResizeEl: null,
         _dcResizeStart: null,
+        _dcLayoutDocumentEventsBound: false,
+
+        _dcCancelLayoutInteraction: function() {
+            if (this._dcDragEl) {
+                this._dcDragEl.classList.remove('dc-dragging');
+                this._dcDragEl.style.zIndex = '';
+            }
+            if (this._dcResizeEl) this._dcResizeEl.classList.remove('dc-resizing');
+            this._dcDragEl = null;
+            this._dcDragOffset = null;
+            this._dcResizeEl = null;
+            this._dcResizeStart = null;
+        },
+
+        _dcBindLayoutDocumentEvents: function() {
+            if (this._dcLayoutDocumentEventsBound) return;
+            var self = this;
+            document.addEventListener('mousemove', function(e) {
+                var flow = document.querySelector('.dc-control-flow');
+                if (!flow) {
+                    self._dcCancelLayoutInteraction();
+                    return;
+                }
+                if (self._dcResizeEl && self._dcResizeStart) {
+                    var scale = self._dcZoomLevel || 1;
+                    var dx = (e.clientX - self._dcResizeStart.x) / scale;
+                    var dy = (e.clientY - self._dcResizeStart.y) / scale;
+                    var newW = Math.max(200, Math.min(self._dcResizeStart.w + dx, flow.clientWidth));
+                    var newH = Math.max(100, self._dcResizeStart.h + dy);
+                    self._dcResizeEl.style.width = newW + 'px';
+                    self._dcResizeEl.style.height = newH + 'px';
+                    return;
+                }
+                if (!self._dcDragEl || !self._dcDragOffset) return;
+                var flowRect = flow.getBoundingClientRect();
+                var dragScale = self._dcZoomLevel || 1;
+                var x = (e.clientX - flowRect.left - self._dcDragOffset.x) / dragScale;
+                var y = (e.clientY - flowRect.top - self._dcDragOffset.y) / dragScale;
+                x = Math.max(0, Math.min(x, flow.clientWidth - self._dcDragEl.offsetWidth));
+                y = Math.max(0, y);
+                self._dcDragEl.style.left = x + 'px';
+                self._dcDragEl.style.top = y + 'px';
+            });
+            document.addEventListener('mouseup', function() {
+                if (self._dcResizeEl) {
+                    self._dcResizeEl.classList.remove('dc-resizing');
+                    self._dcSaveLayout();
+                    self._dcResizeEl = null;
+                    self._dcResizeStart = null;
+                    return;
+                }
+                if (!self._dcDragEl) return;
+                self._dcDragEl.classList.remove('dc-dragging');
+                self._dcDragEl.style.zIndex = '';
+                self._dcDragEl = null;
+                self._dcDragOffset = null;
+                self._dcSaveLayout();
+            });
+            this._dcLayoutDocumentEventsBound = true;
+        },
 
         _dcInitFreeLayout: function() {
             var flow = document.querySelector('.dc-control-flow');
             if (!flow || flow._dcLayoutBound) return;
             var self = this;
+            this._dcBindLayoutDocumentEvents();
 
             flow.addEventListener('mousedown', function(e) {
                 var card = e.target.closest('[data-dc-sort-key]');
@@ -46,50 +107,6 @@
                 self._dcDragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
                 card.classList.add('dc-dragging');
                 card.style.zIndex = '100';
-            });
-
-            document.addEventListener('mousemove', function(e) {
-                // 处理 resize
-                if (self._dcResizeEl) {
-                    var scale = self._dcZoomLevel || 1;
-                    var dx = (e.clientX - self._dcResizeStart.x) / scale;
-                    var dy = (e.clientY - self._dcResizeStart.y) / scale;
-                    var newW = Math.max(200, Math.min(self._dcResizeStart.w + dx, flow.clientWidth));
-                    var newH = Math.max(100, self._dcResizeStart.h + dy);
-                    self._dcResizeEl.style.width = newW + 'px';
-                    self._dcResizeEl.style.height = newH + 'px';
-                    return;
-                }
-
-                // 处理 drag
-                if (!self._dcDragEl) return;
-                var flowRect = flow.getBoundingClientRect();
-                if (!flowRect) return;
-                var scale = self._dcZoomLevel || 1;
-                var x = (e.clientX - flowRect.left - self._dcDragOffset.x) / scale;
-                var y = (e.clientY - flowRect.top - self._dcDragOffset.y) / scale;
-                x = Math.max(0, Math.min(x, flow.clientWidth - self._dcDragEl.offsetWidth));
-                y = Math.max(0, y);
-                self._dcDragEl.style.left = x + 'px';
-                self._dcDragEl.style.top = y + 'px';
-            });
-
-            document.addEventListener('mouseup', function() {
-                // 处理 resize 完成
-                if (self._dcResizeEl) {
-                    self._dcResizeEl.classList.remove('dc-resizing');
-                    self._dcSaveLayout();
-                    self._dcResizeEl = null;
-                    self._dcResizeStart = null;
-                    return;
-                }
-
-                // 处理 drag 完成
-                if (!self._dcDragEl) return;
-                self._dcDragEl.classList.remove('dc-dragging');
-                self._dcDragEl.style.zIndex = '';
-                self._dcDragEl = null;
-                self._dcSaveLayout();
             });
 
             flow._dcLayoutBound = true;
@@ -203,4 +220,10 @@
             this._dcSaveLayout();
         }
     });
+
+    if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('device-control-layout', function() {
+            this._dcCancelLayoutInteraction();
+        });
+    }
 })();

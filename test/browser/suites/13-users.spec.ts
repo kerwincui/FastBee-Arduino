@@ -11,7 +11,10 @@ test.describe('Suite-13: 用户管理', () => {
 
   test('USER-001: 进入用户管理页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#users-page')).toBeVisible();
-    await expect(authPage.locator('#users-title')).toContainText(/用户管理|User/);
+    await expect(authPage.locator('#page-title')).toContainText(/用户管理|User/);
+    await expect(authPage.locator('#users-page .fb-card-title')).toHaveCount(0);
+    await expect(authPage.locator('#users-page .fb-data-toolbar-leading')).toBeVisible();
+    await expect(authPage.locator('#users-list-summary')).toContainText(/共 \d+ 个用户/);
   });
 
   test('USER-002: 用户列表展示', async ({ authPage }) => {
@@ -237,5 +240,18 @@ test.describe('Suite-13: 用户管理', () => {
     await expect(body).toBeVisible();
     const table = authPage.locator('#users-page .fb-table');
     await expect(table).toBeVisible();
+  });
+
+  test('USER-019: 移动端工具栏无溢出', async ({ authPage }) => {
+    await authPage.setViewportSize({ width: 390, height: 844 });
+    const layout = await authPage.locator('#users-page .fb-data-toolbar').evaluate((toolbar) => {
+      const parent = toolbar.getBoundingClientRect();
+      const children = Array.from(toolbar.children).map((child) => child.getBoundingClientRect());
+      return {
+        viewportOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        childrenInside: children.every((child) => child.left >= parent.left - 1 && child.right <= parent.right + 1),
+      };
+    });
+    expect(layout).toEqual({ viewportOverflow: false, childrenInside: true });
   });
 });

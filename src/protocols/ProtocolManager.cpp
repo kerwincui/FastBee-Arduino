@@ -16,6 +16,10 @@
 #include "core/RuntimeFeatureManager.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
+#include "protocols/FastBeeOTAProtocol.h"
+#if FASTBEE_ENABLE_OTA
+#include "network/OTAManager.h"
+#endif
 #include "systems/SystemRebooter.h"
 #include "utils/StringUtils.h"
 #include <ArduinoJson.h>
@@ -103,10 +107,22 @@ ProtocolManager::ProtocolManager()
     , modbusRestartPending(false)
 #endif
 {
+#if FASTBEE_ENABLE_MQTT
+    fastBeeOtaReplyQueue = xQueueCreate(8, sizeof(FastBeeOtaReplyEvent));
+    if (!fastBeeOtaReplyQueue) {
+        LOG_WARNING("Protocol Manager: Failed to allocate FastBee OTA reply queue");
+    }
+#endif
 }
 
 ProtocolManager::~ProtocolManager() {
     stopAll();
+#if FASTBEE_ENABLE_MQTT
+    if (fastBeeOtaReplyQueue) {
+        vQueueDelete(fastBeeOtaReplyQueue);
+        fastBeeOtaReplyQueue = nullptr;
+    }
+#endif
 }
 
 bool ProtocolManager::initialize() {
@@ -535,7 +551,7 @@ bool ProtocolManager::restartMQTT() {
     }
     mqttClient.reset(freshClient);
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
-        handleMessage(ProtocolType::MQTT, topic, message);
+        handleMqttMessage(topic, message, tType);
     });
     if (!configureMqttTransport(mqttClient.get())) {
         LOG_WARNING("Protocol Manager: MQTT restart aborted, no usable transport");
@@ -699,7 +715,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     }
     mqttClient.reset(freshClient);
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
-        handleMessage(ProtocolType::MQTT, topic, message);
+        handleMqttMessage(topic, message, tType);
     });
     if (!configureMqttTransport(mqttClient.get())) {
         LOG_WARNING("Protocol Manager: MQTT deferred restart aborted, no usable transport");
@@ -1362,7 +1378,7 @@ bool ProtocolManager::initMQTT(void* config) {
 
     // 设置回调
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
-        handleMessage(ProtocolType::MQTT, topic, message);
+        handleMqttMessage(topic, message, tType);
     });
 
     if (!configureMqttTransport(mqttClient.get())) {

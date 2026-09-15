@@ -39,7 +39,7 @@
 #define FASTBEE_ENABLE_FILE_LOGGING 1
 #define FASTBEE_ENABLE_OTA 1
 #define FASTBEE_ENABLE_OTA_FS 1
-// 刻意不定义: LED_SCREEN / BLE
+// 刻意不定义 BLE
 // —— 用于验证"未编译功能"路径
 // 注: MODBUS_SLAVE 特性已从注册表彻底移除（不再是"未编译功能"），
 //     由 test_rfm_modbus_slave_removed 专门验证其不存在
@@ -343,16 +343,32 @@ void test_rfm_bundle_status_is_single_user_feature() {
     }
 }
 
-// Test 4: JSON 损坏回退到默认配置（计划 7.1 Test 3）
+// Test 4: JSON 损坏后回退默认配置，并修复为与状态 API 一致的完整快照。
 void test_rfm_corrupted_json_fallback() {
     resetMockFs();
     g_mockFiles["/config/features.json"] = "{corrupted: json data!!!";
+    g_mockFiles["/config/features.json.bak"] = "";
     auto& mgr = RuntimeFeatureManager::instance();
     // 返回 false 表示使用了回退
     TEST_ASSERT_FALSE(mgr.loadConfig());
-    // 回退后仍正常工作，统一镜像默认关闭重型外设
+    // 回退后管理入口默认启用，重型外设默认关闭。
+    TEST_ASSERT_TRUE(mgr.shouldEnable("webServer"));
+    TEST_ASSERT_TRUE(mgr.shouldEnable("mdns"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("lcd"));
     TEST_ASSERT_FALSE(mgr.shouldEnable("irRemote"));
+
+    // 空/损坏文件必须自修复；否则功能页状态会与设备配置导出的文件不一致。
+    JsonDocument repaired;
+    TEST_ASSERT_FALSE(deserializeJson(repaired, g_mockFiles["/config/features.json"]));
+    TEST_ASSERT_EQUAL_UINT8(1, repaired["version"].as<uint8_t>());
+    JsonObject repairedFeatures = repaired["features"];
+    TEST_ASSERT_EQUAL(mgr.featureCount(), repairedFeatures.size());
+    TEST_ASSERT_TRUE(repairedFeatures["webServer"]["enabled"].as<bool>());
+    TEST_ASSERT_TRUE(repairedFeatures["mdns"]["enabled"].as<bool>());
+    TEST_ASSERT_FALSE(repairedFeatures["lcd"]["enabled"].as<bool>());
+    TEST_ASSERT_FALSE(LittleFS.exists("/config/features.json.bak"));
+    TEST_ASSERT_TRUE(mgr.hasExplicitSetting("webServer"));
+    TEST_ASSERT_TRUE(mgr.hasExplicitSetting("mdns"));
 }
 
 // Test 5: 资源估算正确性（计划 7.1 Test 4）
@@ -385,7 +401,7 @@ void test_rfm_uncompiled_cannot_enable() {
     TEST_ASSERT_TRUE(mgr.loadConfig());
     mgr.setNetworkReady(true);
 
-    // ble / ledScreen 在当前宏下未编译
+    // ble 在当前宏下未编译
     TEST_ASSERT_FALSE(mgr.shouldEnable("ble"));
 
     JsonDocument doc;
@@ -415,12 +431,22 @@ void test_rfm_status_json() {
 
     // 未编译功能应带 locked 标记
     bool foundLockedBle = false;
+    bool foundLedScreen = false;
+    bool foundUserAdmin = false;
     for (JsonObject f : features) {
         if (strcmp(f["key"], "ble") == 0) {
             foundLockedBle = f["locked"] == true;
         }
+        if (strcmp(f["key"], "ledScreen") == 0) foundLedScreen = true;
+        if (strcmp(f["key"], "userAdmin") == 0) {
+            foundUserAdmin = true;
+            TEST_ASSERT_EQUAL_STRING("多用户管理", f["name"]);
+            TEST_ASSERT_FALSE(f["userEnabled"].as<bool>());
+        }
     }
     TEST_ASSERT_TRUE(foundLockedBle);
+    TEST_ASSERT_FALSE(foundLedScreen);
+    TEST_ASSERT_TRUE(foundUserAdmin);
 
     JsonObject summary = doc["summary"];
     TEST_ASSERT_TRUE(summary["totalFlashKB"].as<uint32_t>() > 0);

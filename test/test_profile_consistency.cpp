@@ -136,27 +136,34 @@ void test_legacy_profile_sections_removed() {
     TestLog::testEnd(true);
 }
 
-// ========== 3. 统一 Web 镜像守卫 ==========
+// ========== 3. 编译能力驱动的 Web 镜像守卫 ==========
 
 void test_unified_web_image_full_profile() {
-    TestLog::testStart("Unified: factory web image is full profile for all envs");
+    TestLog::testStart("Web image follows resolved PlatformIO capabilities");
 
     std::string py = readProjectFile("scripts/fastbee-artifacts.py");
     TEST_ASSERT_FALSE_MESSAGE(py.empty(), "scripts/fastbee-artifacts.py must be readable");
 
-    // 出厂镜像统一 full 档（运行时功能门控），不再按环境区分 profile
     TEST_ASSERT_TRUE_MESSAGE(
-        py.find("--web-profile=full") != std::string::npos,
-        "fastbee-artifacts.py must build web image with --web-profile=full");
+        py.find("def resolved_build_flags()") != std::string::npos &&
+        py.find("def write_web_capability_input()") != std::string::npos &&
+        py.find("\"environment\": pio_env_name()") != std::string::npos &&
+        py.find("\"buildFlags\": resolved_build_flags()") != std::string::npos,
+        "fastbee-artifacts.py must serialize the active PIOENV and resolved BUILD_FLAGS");
     TEST_ASSERT_TRUE_MESSAGE(
-        py.find("ENV_TO_PROFILE") == std::string::npos,
-        "ENV_TO_PROFILE mapping must stay removed (unified web image)");
+        py.find("\"--env={}\".format(pio_env_name())") != std::string::npos &&
+        py.find("\"--capability-input={}\".format(capability_input)") != std::string::npos &&
+        py.find("--web-profile") == std::string::npos,
+        "filesystem staging must pass the capability input and must not force a fixed Web profile");
 
-    std::string gz = readProjectFile("scripts/gzip-www.js");
-    TEST_ASSERT_FALSE_MESSAGE(gz.empty(), "scripts/gzip-www.js must be readable");
+    std::string profile = readProjectFile("scripts/web-profile.js");
+    TEST_ASSERT_FALSE_MESSAGE(profile.empty(), "scripts/web-profile.js must be readable");
     TEST_ASSERT_TRUE_MESSAGE(
-        gz.find("'esp32-F4R0'") != std::string::npos,
-        "gzip-www.js fallback environment must be esp32-F4R0 (default_envs)");
+        profile.find("readCapabilityInput") != std::string::npos &&
+        profile.find("capabilitiesFromBuildFlags") != std::string::npos &&
+        profile.find("compiledCapabilities") != std::string::npos &&
+        profile.find("writeWebResourceManifest") != std::string::npos,
+        "Web resource selection must resolve the serialized build flags into a manifest");
 
     TestLog::testEnd(true);
 }
@@ -336,28 +343,87 @@ void test_ota_policy_follows_hardware() {
 // ========== 6. Web 构建设备大屏门控守卫 ==========
 
 void test_web_build_device_control_gate() {
-    TestLog::testStart("Profile: web build hasDeviceControl() gate");
+    TestLog::testStart("Profile: device-control assets follow compiled capability");
 
     std::string profileJs = readProjectFile("scripts/web-profile.js");
     TEST_ASSERT_FALSE_MESSAGE(profileJs.empty(), "scripts/web-profile.js must be readable");
     TEST_ASSERT_TRUE_MESSAGE(
-        profileJs.find("hasDeviceControl") != std::string::npos,
-        "web-profile.js must export hasDeviceControl()");
+        profileJs.find("deviceControl: 'FASTBEE_ENABLE_DEVICE_CONTROL'") != std::string::npos &&
+        profileJs.find("'js/modules/device-control.js': ['deviceControl']") != std::string::npos &&
+        profileJs.find("'pages/fullscreen.html': ['deviceControl']") != std::string::npos,
+        "device-control resources must declare FASTBEE_ENABLE_DEVICE_CONTROL requirements");
 
     std::string buildJs = readProjectFile("scripts/build-web-modules.js");
     TEST_ASSERT_FALSE_MESSAGE(buildJs.empty(), "scripts/build-web-modules.js must be readable");
     TEST_ASSERT_TRUE_MESSAGE(
-        buildJs.find("hasDeviceControl()") != std::string::npos,
-        "build-web-modules.js must gate device-control via hasDeviceControl()");
+        buildJs.find("resolveWebBuildContext()") != std::string::npos &&
+        buildJs.find("shouldIncludeAsset(`js/modules/${fileName}`, BUILD_CONTEXT)") != std::string::npos &&
+        buildJs.find("shouldIncludeAsset(relPath, BUILD_CONTEXT)") != std::string::npos,
+        "module and static-asset publishing must use the resolved compiled context");
     TEST_ASSERT_TRUE_MESSAGE(
-        buildJs.find("skipWithoutDC") != std::string::npos,
-        "device-control bundles must carry skipWithoutDC marker");
+        buildJs.find("writeWebResourceManifest(WWW_DIR, BUILD_CONTEXT)") != std::string::npos,
+        "published resource manifest must use the same compiled context as the asset build");
 
-    std::string artifactsPy = readProjectFile("scripts/fastbee-artifacts.py");
-    TEST_ASSERT_FALSE_MESSAGE(artifactsPy.empty(), "scripts/fastbee-artifacts.py must be readable");
+    std::string framework = readProjectFile("src/core/FastBeeFramework.cpp");
+    std::string runtimeFeatures = readProjectFile("src/core/RuntimeFeatureManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(framework.empty() || runtimeFeatures.empty(),
+                              "device-control feature sources must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(framework.find("{\"deviceControl\", 110}") == std::string::npos,
+                             "browser-side bundle expansion must not gate firmware startup DRAM");
     TEST_ASSERT_TRUE_MESSAGE(
-        artifactsPy.find("FASTBEE_ENABLE_DEVICE_CONTROL") != std::string::npos,
-        "fastbee-artifacts.py must forward FASTBEE_ENABLE_DEVICE_CONTROL");
+        runtimeFeatures.find("{\"deviceControl\", \"设备控制面板\", \"system\", 27, 0") != std::string::npos &&
+        runtimeFeatures.find("No resident device RAM; browser assets streamed; API heap is transient/on-demand") != std::string::npos &&
+        runtimeFeatures.find("nullptr, 0});") != std::string::npos,
+        "device-control metadata must describe device-side on-demand API allocation");
+    TEST_ASSERT_TRUE_MESSAGE(runtimeFeatures.find("PSRAM required") == std::string::npos &&
+                             runtimeFeatures.find("Web JS ~106KB") == std::string::npos,
+                             "device-control metadata must not count browser memory as ESP32 RAM");
+
+    TestLog::testEnd(true);
+}
+
+// ========== 7. 已删除的产品占位能力不得重新暴露 ==========
+
+void test_removed_product_placeholders_stay_removed() {
+    TestLog::testStart("Profile: removed LED screen and generic TCP placeholders stay absent");
+
+    std::string flags = readProjectFile("include/core/FeatureFlags.h");
+    std::string constants = readProjectFile("include/core/SystemConstants.h");
+    std::string runtimeFeatures = readProjectFile("src/core/RuntimeFeatureManager.cpp");
+    std::string systemRoutes = readProjectFile("src/network/handlers/SystemRouteHandler.cpp");
+    std::string webProfile = readProjectFile("scripts/web-profile.js");
+    std::string factoryFeatures = readProjectFile("data/config/features.json");
+    std::string factoryProtocol = readProjectFile("data/config/protocol.json");
+
+    TEST_ASSERT_FALSE_MESSAGE(flags.empty() || constants.empty() || runtimeFeatures.empty() ||
+                              systemRoutes.empty() || webProfile.empty() ||
+                              factoryFeatures.empty() || factoryProtocol.empty(),
+                              "feature and factory configuration sources must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(flags.find("FASTBEE_ENABLE_LED_SCREEN") == std::string::npos,
+                             "removed RMT LED screen must not have a compile flag");
+    TEST_ASSERT_TRUE_MESSAGE(runtimeFeatures.find("\"ledScreen\"") == std::string::npos &&
+                             webProfile.find("ledScreen:") == std::string::npos &&
+                             factoryFeatures.find("\"ledScreen\"") == std::string::npos &&
+                             systemRoutes.find("[\"ledScreen\"]") == std::string::npos,
+                             "removed RMT LED screen must not appear in runtime or Web metadata");
+
+    TEST_ASSERT_TRUE_MESSAGE(constants.find("TCP_SERVER_PORT") == std::string::npos &&
+                             constants.find("TCP_MAX_CLIENTS") == std::string::npos &&
+                             constants.find("MODULE_TCP") == std::string::npos,
+                             "unused generic TCP constants must stay removed");
+    TEST_ASSERT_TRUE_MESSAGE(systemRoutes.find("\\\"tcp\\\":") == std::string::npos,
+                             "factory protocol document must not advertise generic TCP");
+    TEST_ASSERT_TRUE_MESSAGE(systemRoutes.find("/config/tcp.json") != std::string::npos,
+                             "factory reset must keep deleting legacy tcp.json generations");
+
+    TEST_ASSERT_TRUE_MESSAGE(factoryProtocol.find("\"enabled\": true") != std::string::npos &&
+                             factoryProtocol.find("\"server\": \"iot.fastbee.cn\"") != std::string::npos &&
+                             factoryProtocol.find("\"port\": 1883") != std::string::npos,
+                             "factory MQTT seed must default to the FastBee broker on port 1883");
+    TEST_ASSERT_TRUE_MESSAGE(systemRoutes.find("\\\"mqtt\\\":{\\\"enabled\\\":true") != std::string::npos &&
+                             systemRoutes.find("\\\"server\\\":\\\"iot.fastbee.cn\\\"") != std::string::npos,
+                             "factory-reset MQTT document must match the enabled factory seed");
 
     TestLog::testEnd(true);
 }
@@ -371,5 +437,6 @@ void test_profile_consistency_group() {
     RUN_TEST(test_network_adapter_compile_matrix);
     RUN_TEST(test_ota_policy_follows_hardware);
     RUN_TEST(test_web_build_device_control_gate);
+    RUN_TEST(test_removed_product_placeholders_stay_removed);
     TestLog::groupEnd();
 }

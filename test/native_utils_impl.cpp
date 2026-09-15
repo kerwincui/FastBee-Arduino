@@ -146,12 +146,16 @@ bool FileUtils::atomicWriteFile(const String& path, const String& content) {
         LittleFS.remove(tmpPath);
         return false;
     }
-    LittleFS.remove(path);
-    return LittleFS.rename(tmpPath, path);
+    if (LittleFS.rename(tmpPath, path)) return true;
+    LittleFS.remove(tmpPath);
+    return false;
 }
 
 bool FileUtils::atomicWriteJsonFile(const String& path, JsonDocument& doc) {
     if (!fsInitialized) {
+        return false;
+    }
+    if (doc.overflowed()) {
         return false;
     }
     // 与真机实现对等：先以 measureJson 为预期长度，写完后校验是否被截断，
@@ -187,12 +191,7 @@ bool FileUtils::commitAtomicWrite(const String& tmpPath, const String& path) {
     if (!LittleFS.exists(tmpPath)) {
         return false;
     }
-    // rename 原子替换，失败兜底 remove+rename，
-    // 全部失败时清理 tmp 保留原文件
-    if (LittleFS.rename(tmpPath, path)) {
-        return true;
-    }
-    LittleFS.remove(path);
+    // rename 原子替换；失败时清理 tmp 并保留原文件。
     if (LittleFS.rename(tmpPath, path)) {
         return true;
     }

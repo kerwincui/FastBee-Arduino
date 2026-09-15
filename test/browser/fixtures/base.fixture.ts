@@ -1,9 +1,16 @@
 import { test as base, expect, Page } from '@playwright/test';
 import { execSync } from 'child_process';
 
+const deviceIp = process.env.DEVICE_IP || '192.168.1.1';
+const devicePort = process.env.DEVICE_PORT || '80';
+const deviceBaseURL = (process.env.DEVICE_BASE_URL ||
+  `http://${deviceIp}${devicePort === '80' ? '' : `:${devicePort}`}`).replace(/\/$/, '');
+
 /** 测试环境配置（从环境变量读取） */
 export const env = {
-  deviceIp: process.env.DEVICE_IP || '192.168.1.1',
+  deviceIp,
+  devicePort,
+  baseURL: deviceBaseURL,
   wifi: {
     ssid: process.env.WIFI_SSID || '',
     password: process.env.WIFI_PASSWORD || '',
@@ -24,11 +31,172 @@ export const env = {
   serialPort: process.env.DEVICE_SERIAL || '',
 };
 
+export type SafeHttpFailureDiagnostic = {
+  label: string;
+  method: string;
+  path: string;
+  status: number;
+  statusText: string;
+  retryAfter: string;
+  serverReason: string;
+  responseBody: string;
+};
+
+type HttpFailureDiagnosticInput = Omit<SafeHttpFailureDiagnostic, 'serverReason' | 'responseBody'> & {
+  reasonHeader?: string;
+  responseBody?: string;
+};
+
+const SENSITIVE_DIAGNOSTIC_KEY =
+  /(password|passwd|passphrase|token|secret|authorization|cookie|session.?id|api.?key|credential)/i;
+const MAX_DIAGNOSTIC_BODY_CHARS = 4096;
+
+function redactKnownSecretValues(value: string): string {
+  let redacted = value;
+  const configuredSecrets = new Set([
+    env.auth.password,
+    env.wifi.password,
+    env.mqtt.password,
+    ...Object.entries(process.env)
+      .filter(([key, secret]) => SENSITIVE_DIAGNOSTIC_KEY.test(key) && Boolean(secret) && secret!.length >= 4)
+      .map(([, secret]) => secret!),
+  ].filter(Boolean));
+
+  for (const secret of configuredSecrets) {
+    redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted;
+}
+
+function redactSensitiveDiagnosticText(value: string): string {
+  return redactKnownSecretValues(value)
+    .replace(
+      /((?:password|passwd|passphrase|token|secret|authorization|cookie|session.?id|api.?key|credential)\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&<]+)/gi,
+      '$1[REDACTED]'
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]');
+}
+
+function redactDiagnosticValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactDiagnosticValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+      key,
+      SENSITIVE_DIAGNOSTIC_KEY.test(key) ? '[REDACTED]' : redactDiagnosticValue(child),
+    ]));
+  }
+  return typeof value === 'string' ? redactSensitiveDiagnosticText(value) : value;
+}
+
+/**
+ * Keep failure bodies useful while guaranteeing that browser-test artifacts
+ * never persist configured credentials or common password/token fields.
+ */
+export function sanitizeHttpDiagnosticBody(rawBody: string): string {
+  const source = rawBody || '';
+  let sanitized: string;
+  try {
+    sanitized = JSON.stringify(redactDiagnosticValue(JSON.parse(source)));
+  } catch {
+    sanitized = redactSensitiveDiagnosticText(source);
+  }
+  if (sanitized.length <= MAX_DIAGNOSTIC_BODY_CHARS) return sanitized;
+  return `${sanitized.slice(0, MAX_DIAGNOSTIC_BODY_CHARS)}...[truncated]`;
+}
+
+function extractStableServerReason(rawBody: string): string {
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    const candidates = [parsed.message, parsed.error, parsed.reason, parsed.detail];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate;
+      if (candidate && typeof candidate === 'object') {
+        const nested = candidate as Record<string, unknown>;
+        if (typeof nested.message === 'string' && nested.message.trim()) return nested.message;
+      }
+    }
+  } catch {
+    // Non-JSON 503 pages still provide a useful, markup-free fallback reason.
+  }
+  return rawBody
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function buildSafeHttpFailureDiagnostic(
+  input: HttpFailureDiagnosticInput
+): SafeHttpFailureDiagnostic {
+  const rawBody = input.responseBody || '';
+  const responseBody = sanitizeHttpDiagnosticBody(rawBody);
+  const serverReason = redactSensitiveDiagnosticText(
+    input.reasonHeader || extractStableServerReason(rawBody) || input.statusText || `HTTP ${input.status}`
+  ).replace(/\s+/g, ' ').trim().slice(0, 240);
+  return {
+    label: input.label,
+    method: input.method,
+    path: input.path,
+    status: input.status,
+    statusText: input.statusText,
+    retryAfter: input.retryAfter,
+    serverReason,
+    responseBody,
+  };
+}
+
+/** Capture only response-side metadata. Request bodies and auth headers are intentionally excluded. */
+export async function captureHttpFailureDiagnostic(
+  response: import('@playwright/test').Response,
+  testInfo: import('@playwright/test').TestInfo,
+  label: string
+): Promise<SafeHttpFailureDiagnostic> {
+  const headers = response.headers();
+  const rawBody = await response.text().catch((error) =>
+    `[response body unavailable: ${redactKnownSecretValues(String(error))}]`
+  );
+  let path = '/';
+  try {
+    path = new URL(response.url()).pathname;
+  } catch {
+    // Do not fall back to the full URL because its query may contain secrets.
+  }
+  const diagnostic = buildSafeHttpFailureDiagnostic({
+    label,
+    method: response.request().method(),
+    path,
+    status: response.status(),
+    statusText: response.statusText(),
+    retryAfter: redactSensitiveDiagnosticText(headers['retry-after'] || ''),
+    reasonHeader: headers['x-fastbee-reason'] || '',
+    responseBody: rawBody,
+  });
+  const summary = [
+    `${diagnostic.method} ${diagnostic.path}`,
+    `HTTP ${diagnostic.status}`,
+    `Retry-After=${diagnostic.retryAfter || 'not-provided'}`,
+    `reason=${diagnostic.serverReason || 'not-provided'}`,
+  ].join('; ');
+  console.error(`[HTTP FAILURE] ${label}: ${summary}`);
+  await testInfo.attach(`${label.replace(/[^a-zA-Z0-9_-]+/g, '-')}-http-${diagnostic.status}`, {
+    body: JSON.stringify(diagnostic, null, 2),
+    contentType: 'application/json',
+  }).catch((error) => {
+    console.error(`[HTTP FAILURE] ${label}: diagnostic attachment failed: ${redactSensitiveDiagnosticText(String(error))}`);
+  });
+  return diagnostic;
+}
+
 /** 测试间隔延迟（防止设备过载，默认 800ms，可通过 TEST_DELAY_MS 覆盖） */
 const INTER_TEST_DELAY_MS = parseInt(process.env.TEST_DELAY_MS || '800', 10);
 
 /** 快速模式开关（环境变量 FAST_MODE=1 启用，减少等待和重试） */
 export const FAST_MODE = process.env.FAST_MODE === '1';
+
+/** 受限设备验收：失败即停，登录请求不在 fixture 内重试。 */
+export const CONSTRAINED_DEVICE_MODE = process.env.FASTBEE_CONSTRAINED_DEVICE === '1';
+const AUTH_LOGIN_ATTEMPT_LIMIT = CONSTRAINED_DEVICE_MODE ? 1 : 2;
 
 /** 崩溃自动复位开关（默认关闭，设置 DEVICE_AUTO_RESET=1 启用） */
 const AUTO_RESET_ENABLED = process.env.DEVICE_AUTO_RESET === '1';
@@ -141,6 +309,7 @@ export async function waitForDeviceReady(page: Page, maxMs = 5000): Promise<void
   try {
     await page.waitForFunction(
       () => fetch('/api/health').then(r => r.ok).catch(() => false),
+      undefined,
       { timeout: maxMs }
     );
   } catch {
@@ -202,13 +371,11 @@ export async function waitForDevice(page: Page, ms = 2000) {
 export interface DeviceFeatureFlags {
   mqtt: boolean;
   modbus: boolean;
-  tcp: boolean;
   http: boolean;
   coap: boolean;
   periphExec: boolean;
   ruleScript: boolean;
   lcd: boolean;
-  ledScreen: boolean;
   ethernet: boolean;
   cellular: boolean;
   ota: boolean;
@@ -235,7 +402,7 @@ let cachedCapabilities: { menuPages: string[]; hasFullscreen: boolean } | null =
 export async function fetchDeviceFeatureFlags(): Promise<DeviceFeatureFlags> {
   if (cachedFeatureFlags) return cachedFeatureFlags;
   try {
-    const resp = await fetch(`http://${env.deviceIp}/api/system/capabilities`, {
+    const resp = await fetch(`${env.baseURL}/api/system/capabilities`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -331,16 +498,24 @@ let lastFullHealthCheck = 0;
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
 class RetryableLoginError extends Error {
+  readonly status: number;
   readonly retryAfterMs: number;
+  readonly serverReason: string;
 
-  constructor(status: number, retryAfterHeader: string | undefined) {
-    const retryAfterSeconds = Number.parseFloat(retryAfterHeader || '');
+  constructor(diagnostic: SafeHttpFailureDiagnostic) {
+    const retryAfterSeconds = Number.parseFloat(diagnostic.retryAfter || '');
     const retryAfterMs = Number.isFinite(retryAfterSeconds)
       ? Math.min(Math.max(retryAfterSeconds * 1000, 1000), 15_000)
       : 3000;
-    super(`Login request failed with HTTP ${status}; retry after ${retryAfterMs}ms`);
+    super(
+      `Login request failed with HTTP ${diagnostic.status}; ` +
+      `Retry-After=${diagnostic.retryAfter || 'not-provided'}; retry delay ${retryAfterMs}ms` +
+      (diagnostic.serverReason ? `; server reason: ${diagnostic.serverReason}` : '')
+    );
     this.name = 'RetryableLoginError';
+    this.status = diagnostic.status;
     this.retryAfterMs = retryAfterMs;
+    this.serverReason = diagnostic.serverReason;
   }
 }
 
@@ -348,8 +523,12 @@ class RetryableLoginError extends Error {
  * 执行完整登录流程（首次调用时）并缓存 storageState
  * 后续测试通过注入缓存状态跳过登录
  */
-async function performLoginAndCapture(page: Page): Promise<void> {
-  const baseURL = `http://${env.deviceIp}`;
+async function performLoginAndCapture(
+  page: Page,
+  testInfo: import('@playwright/test').TestInfo,
+  loginAttempt: number
+): Promise<void> {
+  const baseURL = env.baseURL;
 
   // 完整健康检查 + 崩溃恢复
   await detectCrashAndReset(baseURL);
@@ -383,6 +562,7 @@ async function performLoginAndCapture(page: Page): Promise<void> {
   }
   await page.waitForFunction(
     () => (window as unknown as { __fastbeeBootReady?: boolean }).__fastbeeBootReady === true,
+    undefined,
     { timeout: 30_000 }
   );
   // A valid cached cookie can complete auto-login between restoreAuthState's
@@ -413,7 +593,7 @@ async function performLoginAndCapture(page: Page): Promise<void> {
   await page.waitForTimeout(300);
 
   // 点击登录并确认服务端已处理请求，避免把尚未绑定事件的点击误判为
-  // 设备登录超时。响应正文可能包含诊断信息，但测试只暴露 HTTP 状态。
+  // 设备登录超时。失败正文仅以脱敏附件保存，不采集请求体或认证头。
   const loginResponsePromise = page.waitForResponse(
     (response) => new URL(response.url()).pathname === '/api/auth/login'
       && response.request().method() === 'POST',
@@ -422,20 +602,18 @@ async function performLoginAndCapture(page: Page): Promise<void> {
   await page.click('#login-button');
   const loginResponse = await loginResponsePromise;
   if (!loginResponse.ok()) {
-    throw new RetryableLoginError(
-      loginResponse.status(),
-      loginResponse.headers()['retry-after']
+    const diagnostic = await captureHttpFailureDiagnostic(
+      loginResponse,
+      testInfo,
+      `login-attempt-${loginAttempt}`
     );
+    throw new RetryableLoginError(diagnostic);
   }
   await page.waitForSelector('#app-container', { state: 'visible', timeout: 40_000 });
   await expect(page.locator('#login-page')).toBeHidden();
 
-  // 自适应等待：设备处理完毕 + modals 片段加载
+  // 等待设备处理完毕。模态模板只缓存、不挂载；首次动作负责按需续接加载。
   await waitForDeviceReady(page, 5000);
-  await page.waitForFunction(
-    () => document.querySelector('.modal') !== null,
-    { timeout: 15_000 }
-  ).catch(() => {});
 
   // 缓存 storageState（cookies + localStorage）
   cachedAuthState = await page.context().storageState();
@@ -450,7 +628,7 @@ async function restoreAuthState(page: Page): Promise<boolean> {
 
   // 快速探针：检测设备是否可达（5s 超时，不做完整健康检查）
   try {
-    const resp = await fetch(`http://${env.deviceIp}/api/health`, { signal: AbortSignal.timeout(5_000) });
+    const resp = await fetch(`${env.baseURL}/api/health`, { signal: AbortSignal.timeout(5_000) });
     if (!resp.ok) {
       // 设备可能崩溃，需要完整健康检查
       return false;
@@ -494,6 +672,7 @@ async function restoreAuthState(page: Page): Promise<boolean> {
         const loginVisible = visible('#login-page');
         return appVisible && !loginVisible;
       },
+      undefined,
       { timeout: 8_000 }
     );
 
@@ -501,12 +680,6 @@ async function restoreAuthState(page: Page): Promise<boolean> {
     page.on('dialog', async (dialog) => {
       await dialog.accept().catch(() => {});
     });
-
-    // 自适应等待 modals 片段加载
-    await page.waitForFunction(
-      () => document.querySelector('.modal') !== null,
-      { timeout: 10_000 }
-    ).catch(() => {});
 
     return true;
   } catch {
@@ -525,7 +698,7 @@ export const test = base.extend<TestFixtures>({
    * - 健康检查节流：30s 内跳过完整检查，仅做 5s 快速探针
    * - 降级保障：缓存状态失效时自动回退到完整登录
    */
-  authPage: async ({ page }, use) => {
+  authPage: async ({ page }, use, testInfo) => {
     // 断路器：连续设备不可达时跳过后续测试
     if (consecutiveDeviceFailures >= CIRCUIT_BREAKER_THRESHOLD) {
       console.log(`[CIRCUIT BREAKER] ${consecutiveDeviceFailures} consecutive failures, skipping`);
@@ -541,7 +714,7 @@ export const test = base.extend<TestFixtures>({
       // 最终把设备内部 DRAM 最大连续块切碎。
       authenticated = await restoreAuthState(page);
       if (authenticated && Date.now() - lastFullHealthCheck > HEALTH_CHECK_INTERVAL_MS) {
-        const healthy = await waitForHealth(`http://${env.deviceIp}`, 10_000);
+        const healthy = await waitForHealth(env.baseURL, 10_000);
         if (healthy) {
           lastFullHealthCheck = Date.now();
         } else {
@@ -550,12 +723,13 @@ export const test = base.extend<TestFixtures>({
       }
     }
 
-    // 缓存未命中或失效：执行完整登录（瞬时失败先重试一次再计入断路器）
+    // 缓存未命中或失效：普通模式允许一次有限重试；受限设备模式
+    // 立即暴露 503/认证失败，由 fail-fast 配置阻止新 worker 继续施压。
     if (!authenticated) {
       let loginError: unknown = null;
-      for (let loginAttempt = 0; loginAttempt < 2; loginAttempt++) {
+      for (let loginAttempt = 0; loginAttempt < AUTH_LOGIN_ATTEMPT_LIMIT; loginAttempt++) {
         try {
-          await performLoginAndCapture(page);
+          await performLoginAndCapture(page, testInfo, loginAttempt + 1);
           lastFullHealthCheck = Date.now();
           consecutiveDeviceFailures = 0; // 登录成功，重置计数器
           loginError = null;
@@ -563,7 +737,7 @@ export const test = base.extend<TestFixtures>({
         } catch (e) {
           loginError = e;
           // 页面/上下文已关闭（fixture 超时被杀）无法重试，直接报错
-          if (page.isClosed() || loginAttempt >= 1) break;
+          if (page.isClosed() || loginAttempt + 1 >= AUTH_LOGIN_ATTEMPT_LIMIT) break;
           console.log(`[AUTH RETRY] Login attempt ${loginAttempt + 1} failed, retrying: ${e}`);
           const retryDelay = e instanceof RetryableLoginError ? e.retryAfterMs : 3000;
           await new Promise((r) => setTimeout(r, retryDelay));

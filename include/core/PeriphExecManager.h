@@ -55,14 +55,19 @@ public:
     // ========== CRUD ==========
     bool addRule(const PeriphExecRule& rule);
     bool addRule(const PeriphExecRule& rule, String& errorMsg);
+    bool addRuleAndSave(const PeriphExecRule& rule, String& errorMsg);
     bool updateRule(const String& id, const PeriphExecRule& rule);
     bool updateRule(const String& id, const PeriphExecRule& rule, String& errorMsg);
+    bool updateRuleAndSave(const String& id, const PeriphExecRule& rule, String& errorMsg);
     bool removeRule(const String& id);
+    bool removeRuleAndSave(const String& id, String& errorMsg);
     PeriphExecRule* getRule(const String& id);
     bool getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const;
     std::vector<PeriphExecRule> getAllRules() const;
     bool enableRule(const String& id);
     bool disableRule(const String& id);
+    bool enableRuleAndSave(const String& id, String& errorMsg);
+    bool disableRuleAndSave(const String& id, String& errorMsg);
     size_t getRuleCount() const;
 
     // ========== 持久化 ==========
@@ -295,6 +300,35 @@ public:
 
 private:
     PeriphExecManager() = default;
+
+    enum class RuleMutationType : uint8_t {
+        ADD,
+        UPDATE,
+        REMOVE,
+        ENABLE,
+        DISABLE
+    };
+
+    struct RuleMutationSnapshot {
+        String id;
+        bool existed = false;
+        PeriphExecRule rule;
+    };
+
+    bool addRuleLocked(const PeriphExecRule& rule, String& errorMsg,
+                       String* storedId = nullptr);
+    bool updateRuleLocked(const String& id, const PeriphExecRule& rule,
+                          String& errorMsg);
+    bool removeRuleLocked(const String& id, String& errorMsg);
+    bool setRuleEnabledLocked(const String& id, bool enabled, String& errorMsg);
+    bool applyRuleMutationTransactional(RuleMutationType operation,
+                                        const String& id,
+                                        const PeriphExecRule* rule,
+                                        String& errorMsg);
+    bool restoreRuleMutationLocked(const RuleMutationSnapshot& snapshot,
+                                   const String& resultId);
+    void refreshRuleRuntimeIndexesLocked(bool validateScheduler = true);
+    bool saveConfigurationLocked();
 
     // ========== 子模块 ==========
     bool ruleNeedsModbus(const PeriphExecRule& rule) const;

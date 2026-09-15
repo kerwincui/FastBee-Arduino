@@ -146,7 +146,7 @@ struct PeripheralConfig {
         struct {
             uint32_t baudRate;
             uint8_t dataBits;     // 5, 6, 7, 8
-            uint8_t stopBits;     // 1, 1.5, 2
+            uint8_t stopBits;     // 1 or 2
             uint8_t parity;       // 0=None, 1=Odd, 2=Even
         } uart;
         
@@ -221,6 +221,21 @@ struct PeripheralConfig {
             uint16_t minPulse;        // 最小脉宽 (微秒)
             uint16_t maxPulse;        // 最大脉宽 (微秒)
         } pwm;
+
+        // 舵机参数。舵机与通用 GPIO PWM 的语义不同，必须保持独立，
+        // 避免 union 中读取未初始化的 gpio.pwm* 字段。
+        struct {
+            uint32_t frequency;       // PWM 频率，常用 50Hz
+            uint16_t minPulse;        // 最小角对应脉宽 (us)
+            uint16_t maxPulse;        // 最大角对应脉宽 (us)
+            int16_t minAngle;         // 最小逻辑角度
+            int16_t maxAngle;         // 最大逻辑角度
+            int16_t initialAngle;     // 启用后的安全启动角度
+            uint8_t pwmChannel;       // LEDC 通道
+            uint8_t pwmResolution;    // LEDC 分辨率
+            bool inverted;            // 反向映射角度
+            bool releaseAfterMove;    // 到位后停止输出保持脉冲
+        } servo;
         
         // 步进电机参数
         struct {
@@ -231,7 +246,7 @@ struct PeripheralConfig {
         // 编码器参数
         struct {
             uint16_t resolution;      // 每转脉冲数
-            bool useInterrupt;        // 是否使用中断
+            bool useInterrupt;        // 当前实现必须为 true（GPIO ISR）
         } encoder;
         
         // SD卡参数
@@ -239,6 +254,25 @@ struct PeripheralConfig {
             uint8_t interface;        // 0=SDMMC, 1=SPI模式
             uint32_t frequency;       // 通信频率 (默认 20MHz)
         } sdcard;
+
+        // DS1302 RTC 参数（当前日期时间不持久化，仅保存运行模式）。
+        struct {
+            bool use24Hour;
+            uint8_t trickleCharge;    // DS1302TrickleCharge 原始寄存器值，默认 0
+        } ds1302;
+
+        // LCD1602 + PCF8574 参数。
+        struct {
+            uint8_t cols;             // 16 或 20
+            uint8_t rows;             // 2 或 4
+            uint8_t address;          // 0=自动检测，或 0x20-0x27/0x38-0x3F
+            bool backlight;
+        } lcd1602;
+
+        // MFRC522 当前没有可安全持久化的密钥参数。总线和复位引脚保存在 pins。
+        struct {
+            uint32_t frequency;       // 预留并持久化 SPI 频率，默认 4MHz
+        } rfid;
         
         // LCD参数
         struct {
@@ -252,6 +286,10 @@ struct PeripheralConfig {
         struct {
             uint8_t sensorType;       // 传感器类型ID
             uint32_t sampleInterval;  // 采样间隔(ms)
+            char driver[16];          // 注册驱动名，如 BMP280/MPU6050
+            uint8_t address;          // I2C 地址
+            uint8_t mode;             // 0=默认/加速度，1=陀螺仪
+            uint32_t frequency;       // I2C 频率，默认 100kHz
         } sensor;
 
         // 数码管参数（TM1637 等）
@@ -360,6 +398,151 @@ struct PeripheralConfig {
     }
 };
 
+constexpr uint32_t UART_DEFAULT_BAUD_RATE = 115200;
+constexpr uint8_t UART_DEFAULT_DATA_BITS = 8;
+constexpr uint8_t UART_DEFAULT_STOP_BITS = 1;
+constexpr uint8_t UART_DEFAULT_PARITY = 0;
+
+inline void initializeUartDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.uart.baudRate = UART_DEFAULT_BAUD_RATE;
+    config.params.uart.dataBits = UART_DEFAULT_DATA_BITS;
+    config.params.uart.stopBits = UART_DEFAULT_STOP_BITS;
+    config.params.uart.parity = UART_DEFAULT_PARITY;
+}
+
+inline char uartParityCode(uint8_t parity) {
+    return parity == 1 ? 'O' : (parity == 2 ? 'E' : 'N');
+}
+
+inline String uartFramingName(const PeripheralConfig& config) {
+    char framing[4] = {
+        static_cast<char>('0' + config.params.uart.dataBits),
+        uartParityCode(config.params.uart.parity),
+        static_cast<char>('0' + config.params.uart.stopBits),
+        '\0'
+    };
+    return String(framing);
+}
+
+constexpr uint16_t ENCODER_DEFAULT_RESOLUTION = 20;
+
+inline void initializeEncoderDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.encoder.resolution = ENCODER_DEFAULT_RESOLUTION;
+    config.params.encoder.useInterrupt = true;
+}
+
+constexpr uint8_t SDCARD_INTERFACE_SPI = 1;
+constexpr uint32_t SDCARD_DEFAULT_FREQUENCY = 20000000UL;
+constexpr uint32_t RFID_DEFAULT_FREQUENCY = 4000000UL;
+constexpr uint8_t LCD1602_DEFAULT_COLS = 16;
+constexpr uint8_t LCD1602_DEFAULT_ROWS = 2;
+constexpr uint8_t LCD1602_DEFAULT_ADDRESS = 0x27;
+
+inline void initializeSdCardDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.sdcard.interface = SDCARD_INTERFACE_SPI;
+    config.params.sdcard.frequency = SDCARD_DEFAULT_FREQUENCY;
+}
+
+inline void initializeDs1302Defaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.ds1302.use24Hour = true;
+    config.params.ds1302.trickleCharge = 0;
+}
+
+inline void initializeLcd1602Defaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.lcd1602.cols = LCD1602_DEFAULT_COLS;
+    config.params.lcd1602.rows = LCD1602_DEFAULT_ROWS;
+    config.params.lcd1602.address = LCD1602_DEFAULT_ADDRESS;
+    config.params.lcd1602.backlight = true;
+}
+
+inline void initializeRfidDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.rfid.frequency = RFID_DEFAULT_FREQUENCY;
+}
+
+inline void initializeSensorDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.sensor.sampleInterval = 1000;
+    config.params.sensor.frequency = 100000;
+}
+
+struct EncoderReading {
+    int64_t count = 0;
+    int64_t delta = 0;
+    int8_t direction = 0;
+    float frequencyHz = 0.0f;
+    float rpm = 0.0f;
+};
+
+constexpr uint32_t SERVO_DEFAULT_FREQUENCY_HZ = 50;
+constexpr uint16_t SERVO_DEFAULT_MIN_PULSE_US = 500;
+constexpr uint16_t SERVO_DEFAULT_MAX_PULSE_US = 2500;
+constexpr int16_t SERVO_DEFAULT_MIN_ANGLE = 0;
+constexpr int16_t SERVO_DEFAULT_MAX_ANGLE = 180;
+constexpr int16_t SERVO_DEFAULT_INITIAL_ANGLE = 90;
+constexpr uint8_t SERVO_DEFAULT_PWM_CHANNEL = 0;
+constexpr uint8_t SERVO_DEFAULT_PWM_RESOLUTION = 16;
+
+inline void initializeServoDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    config.params.servo.frequency = SERVO_DEFAULT_FREQUENCY_HZ;
+    config.params.servo.minPulse = SERVO_DEFAULT_MIN_PULSE_US;
+    config.params.servo.maxPulse = SERVO_DEFAULT_MAX_PULSE_US;
+    config.params.servo.minAngle = SERVO_DEFAULT_MIN_ANGLE;
+    config.params.servo.maxAngle = SERVO_DEFAULT_MAX_ANGLE;
+    config.params.servo.initialAngle = SERVO_DEFAULT_INITIAL_ANGLE;
+    config.params.servo.pwmChannel = SERVO_DEFAULT_PWM_CHANNEL;
+    config.params.servo.pwmResolution = SERVO_DEFAULT_PWM_RESOLUTION;
+    config.params.servo.inverted = false;
+    config.params.servo.releaseAfterMove = false;
+}
+
+inline bool isServoConfigValid(const PeripheralConfig& config) {
+    const auto& servo = config.params.servo;
+    if (servo.frequency < 40 || servo.frequency > 400 ||
+        servo.minPulse < 100 || servo.maxPulse > 5000 ||
+        servo.minPulse >= servo.maxPulse ||
+        servo.minAngle < 0 || servo.maxAngle > 360 ||
+        servo.minAngle >= servo.maxAngle ||
+        servo.initialAngle < servo.minAngle || servo.initialAngle > servo.maxAngle ||
+        servo.pwmResolution < 1 || servo.pwmResolution > 16) {
+        return false;
+    }
+    const uint32_t periodUs = 1000000UL / servo.frequency;
+    return servo.maxPulse < periodUs;
+}
+
+inline uint16_t servoAngleToPulseUs(int angle, int minAngle, int maxAngle,
+                                    uint16_t minPulse, uint16_t maxPulse,
+                                    bool inverted) {
+    if (maxAngle <= minAngle || maxPulse <= minPulse) return minPulse;
+    if (angle < minAngle) angle = minAngle;
+    if (angle > maxAngle) angle = maxAngle;
+
+    int32_t offset = static_cast<int32_t>(angle) - minAngle;
+    const int32_t angleSpan = static_cast<int32_t>(maxAngle) - minAngle;
+    if (inverted) offset = angleSpan - offset;
+    const uint32_t pulseSpan = static_cast<uint32_t>(maxPulse - minPulse);
+    return static_cast<uint16_t>(minPulse +
+        (pulseSpan * static_cast<uint32_t>(offset) + static_cast<uint32_t>(angleSpan / 2)) /
+            static_cast<uint32_t>(angleSpan));
+}
+
+inline uint32_t servoPulseUsToDuty(uint16_t pulseUs, uint32_t frequency,
+                                   uint8_t resolution) {
+    if (frequency == 0) frequency = SERVO_DEFAULT_FREQUENCY_HZ;
+    if (resolution < 1 || resolution > 16) resolution = SERVO_DEFAULT_PWM_RESOLUTION;
+    const uint32_t maxDuty = (1UL << resolution) - 1UL;
+    const uint64_t scaled = static_cast<uint64_t>(pulseUs) * frequency * maxDuty;
+    const uint64_t rounded = (scaled + 500000ULL) / 1000000ULL;
+    return static_cast<uint32_t>(rounded > maxDuty ? maxDuty : rounded);
+}
+
 inline float positiveAnalogConfigValue(float value, float fallback) {
     return (!isnan(value) && !isinf(value) && value > 0.0f) ? value : fallback;
 }
@@ -464,6 +647,8 @@ struct PeripheralRuntimeState {
             uint32_t bytesSent;
             uint32_t bytesReceived;
             bool isConnected;
+            uint8_t port;
+            uint16_t rxAvailable;
         } comm;
         
         struct {
@@ -476,6 +661,20 @@ struct PeripheralRuntimeState {
             uint16_t lastValue;
             uint32_t sampleCount;
         } analog;
+
+        struct {
+            int16_t currentAngle;
+            uint16_t currentPulseUs;
+            bool signalAttached;
+        } servo;
+
+        struct {
+            int64_t count;
+            int64_t delta;
+            int8_t direction;
+            float frequencyHz;
+            float rpm;
+        } encoder;
     } state;
     
     PeripheralRuntimeState()

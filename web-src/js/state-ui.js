@@ -54,9 +54,26 @@
 
     // ============ 模态框 ============
     AppState.showModal = function(ref) {
+        if (typeof ref === 'string' && typeof this.ensureModal === 'function') {
+            var modalId = ref;
+            ref = this.ensureModal(modalId);
+            if (!ref && typeof this.ensureModalAsync === 'function') {
+                var self = this;
+                return this.ensureModalAsync(modalId)
+                    .then(function(modal) { return self.showModal(modal); })
+                    .catch(function(error) {
+                        console.error('[Modal] Failed to open #' + modalId + ':', error);
+                        if (typeof Notification !== 'undefined' && Notification.error) {
+                            Notification.error('弹窗加载失败，请稍后重试', '页面加载');
+                        }
+                        return null;
+                    });
+            }
+        }
         var el = this.showElement(ref, 'flex');
         if (el) {
             var self = this;
+            if (el._modalOverlayHandler) el.removeEventListener('click', el._modalOverlayHandler);
             // 点击遮罩层关闭
             el._modalOverlayHandler = function(e) {
                 if (e.target === el) {
@@ -68,6 +85,7 @@
             // 绑定关闭按钮
             var closeBtn = el.querySelector('.modal-close, .modal-close-btn');
             if (closeBtn) {
+                if (closeBtn._modalCloseHandler) closeBtn.removeEventListener('click', closeBtn._modalCloseHandler);
                 closeBtn._modalCloseHandler = function() {
                     self.hideModal(ref);
                 };
@@ -93,6 +111,15 @@
         }
         el.classList.add('is-hidden');
         el.style.display = 'none';
+        var modalId = el.id || (typeof ref === 'string' ? ref : '');
+        if (typeof PageLoader !== 'undefined' && typeof PageLoader.unmountModal === 'function') {
+            PageLoader.unmountModal(el);
+        } else {
+            el.remove();
+        }
+        if (modalId && typeof this._resetModalBindingState === 'function') {
+            this._resetModalBindingState(modalId);
+        }
         return el;
     };
 

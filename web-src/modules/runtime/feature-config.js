@@ -35,7 +35,6 @@
 
         loadFeatureStatus() {
             var list = document.getElementById('features-list');
-            var summary = document.getElementById('features-summary');
             if (list) list.innerHTML = '<div class="u-fs-13 u-text-secondary">加载中...</div>';
             var self = this;
             return apiGet('/api/features/status')
@@ -44,13 +43,12 @@
                     self._featureState = res.data.features || [];
                     self._featureDirty = false;
                     self.renderFeatureList();
-                    self.updateFeatureSummary(res.data.summary);
+                    self.updateRamMonitor(res.data.summary);
                     var saveBtn = document.getElementById('features-save-btn');
                     if (saveBtn) saveBtn.disabled = true;
                 })
                 .catch(function() {
                     if (list) list.innerHTML = '<div class="message message-error">功能状态加载失败，请刷新重试</div>';
-                    if (summary) summary.textContent = '';
                 });
         },
 
@@ -60,6 +58,9 @@
             var self = this;
 
             list.innerHTML = this.renderGroupTables(this._featureState);
+            if (window.FB && window.FB.ui && typeof window.FB.ui.enhanceResponsiveTables === 'function') {
+                window.FB.ui.enhanceResponsiveTables(list);
+            }
 
             list.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
                 input.addEventListener('change', function() {
@@ -82,9 +83,9 @@
             });
             var html = '';
             Object.keys(groups).sort().forEach(function(g) {
-                html += '<h3 class="u-fs-14" style="margin:12px 0 6px;">' + (GROUP_NAMES[g] || g) + '</h3>';
-                html += '<table class="fb-table fb-table-bordered"><thead><tr>'
-                    + '<th>功能</th><th>Flash</th><th>RAM</th><th>依赖</th><th style="width:70px;">启用</th>'
+                html += '<h3 class="feature-group-title">' + (GROUP_NAMES[g] || g) + '</h3>';
+                html += '<table class="fb-table fb-table-bordered fb-table-mobile"><thead><tr>'
+                    + '<th>功能</th><th>状态</th><th>Flash</th><th>RAM</th><th>依赖</th><th>启用</th>'
                     + '</tr></thead><tbody>';
                 groups[g].forEach(function(f) {
                     html += self.buildFeatureRow(f);
@@ -102,7 +103,7 @@
             var locked = !!f.locked || !f.compiled || !bundleCompiled;
             var disabledAttr = locked ? ' disabled' : '';
             var checked = f.userEnabled && bundleEnabled ? ' checked' : '';
-            var rowStyle = locked ? ' style="opacity:0.5";' : '';
+            var rowClass = locked ? ' class="feature-row-locked"' : '';
             var lockLabel = (!f.lockReason || f.lockReason === 'Not compiled into firmware')
                 ? '未编译入固件'
                 : '未编译入固件 · ' + f.lockReason;
@@ -116,13 +117,31 @@
             if (f.hwDep) dep += f.hwDep;
             if (f.dependsOn) dep += (dep ? ' / ' : '') + '依赖 ' + f.dependsOn;
 
-            return '<tr' + rowStyle + ' data-feature-key="' + escapeHtml(f.key) + '">' +
-                '<td>' + escapeHtml(f.name) +
-                '<div class="u-fs-12 u-text-secondary">' + escapeHtml(f.key)
-                + (locked ? ' · ' + escapeHtml(lockLabel) : '') + '</div></td>'
-                + '<td>' + (f.flashKB || 0) + 'KB</td>'
-                + '<td>' + formatRam(f.ramB) + '</td>'
-                + '<td class="u-fs-12">' + (dep || '-') + '</td>'
+            var selected = f.userEnabled && bundleEnabled;
+            var statusText = '已停用';
+            var statusClass = 'status-badge status-badge-neutral';
+            if (locked) {
+                statusText = '未编译';
+                statusClass = 'status-badge status-badge-warning';
+            } else if (selected && f.active !== false) {
+                statusText = '运行中';
+                statusClass = 'status-badge status-badge-success';
+            } else if (selected) {
+                statusText = '重启后启用';
+                statusClass = 'status-badge status-badge-warning';
+            } else if (f.active) {
+                statusText = '重启后停用';
+                statusClass = 'status-badge status-badge-warning';
+            }
+
+            var statusTitle = locked ? ' title="' + escapeHtml(lockLabel) + '"' : '';
+
+            return '<tr' + rowClass + ' data-feature-key="' + escapeHtml(f.key) + '">' +
+                '<td>' + escapeHtml(f.name) + '</td>'
+                + '<td class="feature-state"><span class="' + statusClass + '"' + statusTitle + '>' + statusText + '</span></td>'
+                + '<td class="feature-resource" data-feature-resource="flash">' + (f.flashKB || 0) + 'KB</td>'
+                + '<td class="feature-resource" data-feature-resource="ram">' + formatRam(f.ramB) + '</td>'
+                + '<td class="feature-dependency" data-feature-resource="dependency">' + escapeHtml(dep || '-') + '</td>'
                 + '<td><label class="toggle-switch">'
                 + '<input type="checkbox" data-feature-toggle="' + escapeHtml(f.key) + '"' + checked + disabledAttr + '>'
                 + '<span class="toggle-slider"></span></label></td>'
@@ -137,8 +156,7 @@
                 child.userEnabled = enabled;
             });
             this._featureDirty = true;
-            this.applyDependencyPreview();
-            this.updateLocalEstimate();
+            this.renderFeatureList();
             var saveBtn = document.getElementById('features-save-btn');
             if (saveBtn) saveBtn.disabled = false;
         },
@@ -182,37 +200,12 @@
                 // 子功能自身未编译：仍灰显并显示服务端提供的具体原因
                 var selfLocked = !f.compiled;
                 input.disabled = parentInactive || selfLocked;
-                if (row && !parentInactive) row.style.opacity = selfLocked ? '0.5' : '';
+                if (row && !parentInactive) row.classList.toggle('feature-row-locked', selfLocked);
             });
         },
 
-        updateLocalEstimate() {
-            var flashKB = 0, ramB = 0;
-            (this._featureState || []).forEach(function(f) {
-                if (f.compiled && f.userEnabled) {
-                    flashKB += f.flashKB || 0;
-                    ramB += f.ramB || 0;
-                }
-            });
-            var summary = document.getElementById('features-summary');
-            if (summary) {
-                summary.textContent = '预估启用资源: Flash' + ' ' + flashKB + 'KB | RAM ' + formatRam(ramB)
-                    + (this._baselineSummary || '');
-            }
-        },
-
-        updateFeatureSummary(summary) {
+        updateRamMonitor(summary) {
             if (!summary) return;
-            var text = '已启用: Flash' + ' ' + (summary.activeFlashKB || 0) + 'KB | RAM '
-                + formatRam(summary.activeRamB);
-            if (typeof summary.free8KB === 'number') {
-                text += '    ' + '可用 DRAM:' + ' ' + summary.free8KB + ' KB free /' + '\n'
-                    + (summary.largest8KB || 0) + ' KB 最大块';
-            }
-            this._baselineSummary = '    (当前' + text + ')';
-            var el = document.getElementById('features-summary');
-            if (el) el.textContent = text;
-            // 填充 RAM 监控卡片
             var free8El = document.getElementById('ram-free8');
             var largest8El = document.getElementById('ram-largest8');
             var activeEl = document.getElementById('ram-active');
@@ -305,7 +298,7 @@
             
             // 显示/隐藏开发模式提示条
             var devHint = document.getElementById('feature-dev-mode-hint');
-            if (devHint) devHint.style.display = disabled ? 'block' : 'none';
+            if (devHint) devHint.classList.toggle('fb-hidden', !disabled);
         }
     });
 })();

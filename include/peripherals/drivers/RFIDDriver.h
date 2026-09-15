@@ -22,7 +22,7 @@
  *   - MISO:   GPIO19
  *   - RST:    可配置（默认 GPIO27）
  * 
- * 编译条件：FASTBEE_ENABLE_RFID=1（仅 esp32s3-full）
+ * 编译条件：FASTBEE_ENABLE_RFID=1
  */
 class RFIDDriver {
 public:
@@ -35,6 +35,8 @@ public:
      * @return 初始化是否成功
      */
     bool begin(uint8_t ssPin = 5, uint8_t rstPin = 27);
+    bool begin(uint8_t ssPin, uint8_t rstPin, uint8_t sckPin,
+               uint8_t mosiPin, uint8_t misoPin);
 
     /**
      * @brief 轮询检测卡片（由调度器定期调用）
@@ -47,11 +49,19 @@ public:
      * @return UID 字符串（如 "A1B2C3D4"），无卡时返回空串
      */
     String getLastUID() const { return _lastUID; }
+    String getLastCardType() const { return _lastCardType; }
+    String getLastError() const { return _lastError; }
 
     /**
      * @brief 卡片是否当前在感应范围内
      */
     bool isCardPresent() const { return _cardPresent; }
+
+    bool scanNow(String& uid, String& cardType, String& errorMsg);
+    bool readBlock(uint8_t block, const uint8_t key[6], uint8_t data[16],
+                   String& errorMsg);
+    bool writeBlockVerified(uint8_t block, const uint8_t key[6],
+                            const uint8_t data[16], String& errorMsg);
 
     /**
      * @brief 停止 RFID 驱动
@@ -70,11 +80,21 @@ private:
     bool _initialized = false;
     bool _cardPresent = false;
     String _lastUID;
+    String _lastCardType;
+    String _lastError;
+    uint8_t _sckPin = 255;
+    uint8_t _mosiPin = 255;
+    uint8_t _misoPin = 255;
     unsigned long _lastCheckTime = 0;
     unsigned long _cardDetectedTime = 0;
 
     static constexpr unsigned long CHECK_INTERVAL_MS = 200;        // 轮询间隔
     static constexpr unsigned long CARD_TIMEOUT_MS = 1000;         // 卡片超时（认为移除）
+
+    bool selectCard(String& errorMsg);
+    bool authenticateBlock(uint8_t block, const uint8_t key[6], String& errorMsg);
+    void finishCardOperation();
+    static bool isWritableDataBlock(uint8_t block);
 };
 
 #endif // FASTBEE_ENABLE_RFID

@@ -1,19 +1,20 @@
 <div id="logs-page" class="page page-layout-flat">
     <div class="fb-card">
-        <div class="fb-card-header u-header-between">
-            <h2 class="fb-card-title">设备日志</h2>
-            <div class="u-toolbar-sm">
+        <div class="fb-card-header fb-card-header-toolbar fb-data-toolbar">
+            <div class="fb-data-toolbar-leading">
                 <select id="log-file-select" class="fb-select fb-w-auto">
                     <option value="system.log">system.log</option>
                 </select>
+                <span id="log-meta" class="fb-data-toolbar-summary" role="status" aria-live="polite">加载中...</span>
+            </div>
+            <div class="fb-card-header-actions">
                 <button class="fb-btn fb-btn-refresh" id="log-refresh-list-btn">刷新</button>
                 <button class="fb-btn fb-btn-primary" id="refresh-logs-btn">刷新日志</button>
                 <button class="fb-btn fb-btn-danger" id="clear-logs-btn">清空</button>
             </div>
         </div>
-        <div class="fb-card-body" style="position: relative; height: calc(100vh - 280px); overflow: hidden;">
-            <div id="log-meta" class="u-text-secondary u-mb-12">-</div>
-            <pre id="log-content" class="log-content" style="width: 100%; height: calc(100% - 90px); overflow: auto; font-size: 15px; background: #f5f5f5; padding: 12px; border-radius: 4px; white-space: pre-wrap; word-break: break-all;">日志加载中...</pre>
+        <div class="fb-card-body log-viewer-body">
+            <pre id="log-content" class="log-content">日志加载中...</pre>
         </div>
     </div>
 </div>

@@ -8,6 +8,7 @@
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"  // guessSensorDataField（数据源字段推断与执行器同规则）
 #include "core/PeripheralManager.h"
+#include "core/ChipConfig.h"
 #include "core/ResourceProfile.h"
 #include "core/RuntimeFeatureManager.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
@@ -18,8 +19,281 @@
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <algorithm>
+#include <cstring>
+#include <cstdlib>
+#include <map>
+#include <memory>
+#include <utility>
+#include <vector>
 
 namespace {
+constexpr uint8_t CONTROL_GROUP_COUNT = 6;
+constexpr size_t CONTROL_ITEM_MAX_BYTES = 6144;
+
+const char* const CONTROL_GROUP_HEADERS[CONTROL_GROUP_COUNT] = {
+    "\"gpio\":[",
+    "\"modbus\":[",
+    "\"system\":[",
+    "\"script\":[",
+    "\"sensor\":[",
+    "\"other\":["
+};
+
+enum class ControlGroup : uint8_t {
+    GPIO = 0,
+    MODBUS,
+    SYSTEM,
+    SCRIPT,
+    SENSOR,
+    OTHER
+};
+
+ControlGroup controlGroupForAction(int actionType) {
+    if ((actionType >= 0 && actionType <= 5) || actionType == 13 || actionType == 14) {
+        return ControlGroup::GPIO;
+    }
+    if (actionType >= 16 && actionType <= 18) return ControlGroup::MODBUS;
+    if (actionType >= 6 && actionType <= 12) return ControlGroup::SYSTEM;
+    if (actionType == 15) return ControlGroup::SCRIPT;
+    if (actionType == 19) return ControlGroup::SENSOR;
+    return ControlGroup::OTHER;
+}
+
+// A controls item is intentionally bounded below the endpoint's 8 KB largest-
+// block admission threshold. concat() reports allocation failure, so a partial
+// JSON item is never sent when memory becomes fragmented during construction.
+class ControlJsonWriter {
+public:
+    explicit ControlJsonWriter(size_t initialCapacity) {
+        if (initialCapacity > CONTROL_ITEM_MAX_BYTES) {
+            initialCapacity = CONTROL_ITEM_MAX_BYTES;
+        }
+        ok_ = value_.reserve(static_cast<unsigned int>(initialCapacity));
+    }
+
+    void append(const char* value) {
+        if (!ok_ || !value) {
+            ok_ = false;
+            return;
+        }
+        const size_t length = strlen(value);
+        if (!hasRoom(length) || !value_.concat(value, static_cast<unsigned int>(length))) {
+            ok_ = false;
+        }
+    }
+
+    void append(char value) {
+        if (!ok_ || !hasRoom(1) || !value_.concat(value)) ok_ = false;
+    }
+
+    void append(int value) {
+        char buffer[16];
+        const int written = snprintf(buffer, sizeof(buffer), "%d", value);
+        if (written <= 0 || static_cast<size_t>(written) >= sizeof(buffer)) {
+            ok_ = false;
+            return;
+        }
+        append(buffer);
+    }
+
+    void append(bool value) {
+        append(value ? "true" : "false");
+    }
+
+    void appendQuoted(const String& value) {
+        if (!ok_) return;
+
+        size_t encodedLength = 2;  // surrounding quotes
+        for (size_t i = 0; i < value.length(); ++i) {
+            const uint8_t c = static_cast<uint8_t>(value[i]);
+            const bool shortEscape = c == '"' || c == '\\' || c == '\b' || c == '\f' ||
+                                     c == '\n' || c == '\r' || c == '\t';
+            const size_t increment = shortEscape ? 2 : (c < 0x20 ? 6 : 1);
+            if (encodedLength > CONTROL_ITEM_MAX_BYTES - increment) {
+                ok_ = false;
+                return;
+            }
+            encodedLength += increment;
+        }
+        if (!hasRoom(encodedLength)) {
+            ok_ = false;
+            return;
+        }
+
+        append('"');
+        for (size_t i = 0; ok_ && i < value.length(); ++i) {
+            const uint8_t c = static_cast<uint8_t>(value[i]);
+            switch (c) {
+                case '"': append("\\\""); break;
+                case '\\': append("\\\\"); break;
+                case '\b': append("\\b"); break;
+                case '\f': append("\\f"); break;
+                case '\n': append("\\n"); break;
+                case '\r': append("\\r"); break;
+                case '\t': append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        char escaped[7];
+                        snprintf(escaped, sizeof(escaped), "\\u%04x", c);
+                        append(escaped);
+                    } else {
+                        append(static_cast<char>(c));
+                    }
+                    break;
+            }
+        }
+        append('"');
+    }
+
+    bool ok() const { return ok_; }
+    String take() { return std::move(value_); }
+
+private:
+    bool hasRoom(size_t additional) const {
+        return additional <= CONTROL_ITEM_MAX_BYTES - value_.length();
+    }
+
+    String value_;
+    bool ok_ = true;
+};
+
+struct GroupedControlItem {
+    uint8_t group = 0;
+    String json;
+};
+
+bool sendControlsChunked(AsyncWebServerRequest* request,
+                         std::vector<GroupedControlItem>&& items) {
+    struct State {
+        enum Phase : uint8_t {
+            PREFIX,
+            GROUP_HEADER,
+            ITEM_SEPARATOR,
+            ITEM_BODY,
+            GROUP_FOOTER,
+            SUFFIX,
+            DONE
+        };
+
+        std::vector<GroupedControlItem> items;
+        size_t itemIndex = 0;
+        size_t itemPosition = 0;
+        size_t tokenPosition = 0;
+        uint8_t group = 0;
+        Phase phase = PREFIX;
+        bool firstInGroup = true;
+    };
+
+    auto state = std::make_shared<State>();
+    state->items = std::move(items);
+
+    AsyncWebServerResponse* response = request->beginChunkedResponse(
+        "application/json",
+        [state](uint8_t* buffer, size_t maxLen, size_t /*index*/) -> size_t {
+            if (!buffer || maxLen == 0) return RESPONSE_TRY_AGAIN;
+            size_t written = 0;
+
+            auto copyToken = [&](const char* token, size_t length) -> bool {
+                const size_t remaining = length - state->tokenPosition;
+                const size_t available = maxLen - written;
+                const size_t count = remaining < available ? remaining : available;
+                if (count > 0) {
+                    memcpy(buffer + written, token + state->tokenPosition, count);
+                    state->tokenPosition += count;
+                    written += count;
+                }
+                return state->tokenPosition >= length;
+            };
+
+            while (written < maxLen && state->phase != State::DONE) {
+                if (state->phase == State::PREFIX) {
+                    static const char prefix[] = "{\"success\":true,\"data\":{";
+                    if (copyToken(prefix, sizeof(prefix) - 1)) {
+                        state->tokenPosition = 0;
+                        state->phase = State::GROUP_HEADER;
+                    }
+                    continue;
+                }
+
+                if (state->phase == State::GROUP_HEADER) {
+                    const char* header = CONTROL_GROUP_HEADERS[state->group];
+                    if (copyToken(header, strlen(header))) {
+                        state->tokenPosition = 0;
+                        state->firstInGroup = true;
+                        state->phase = State::ITEM_SEPARATOR;
+                    }
+                    continue;
+                }
+
+                if (state->phase == State::ITEM_SEPARATOR) {
+                    if (state->itemIndex >= state->items.size() ||
+                        state->items[state->itemIndex].group != state->group) {
+                        state->phase = State::GROUP_FOOTER;
+                        state->tokenPosition = 0;
+                        continue;
+                    }
+                    if (state->firstInGroup) {
+                        state->phase = State::ITEM_BODY;
+                        continue;
+                    }
+                    static const char comma[] = ",";
+                    if (copyToken(comma, 1)) {
+                        state->tokenPosition = 0;
+                        state->phase = State::ITEM_BODY;
+                    }
+                    continue;
+                }
+
+                if (state->phase == State::ITEM_BODY) {
+                    String& item = state->items[state->itemIndex].json;
+                    const size_t remaining = item.length() - state->itemPosition;
+                    const size_t available = maxLen - written;
+                    const size_t count = remaining < available ? remaining : available;
+                    if (count > 0) {
+                        memcpy(buffer + written, item.c_str() + state->itemPosition, count);
+                        state->itemPosition += count;
+                        written += count;
+                    }
+                    if (state->itemPosition >= item.length()) {
+                        item = String();
+                        ++state->itemIndex;
+                        state->itemPosition = 0;
+                        state->firstInGroup = false;
+                        state->phase = State::ITEM_SEPARATOR;
+                    }
+                    continue;
+                }
+
+                if (state->phase == State::GROUP_FOOTER) {
+                    const char* footer = state->group + 1 < CONTROL_GROUP_COUNT ? "]," : "]";
+                    const size_t footerLength = state->group + 1 < CONTROL_GROUP_COUNT ? 2 : 1;
+                    if (copyToken(footer, footerLength)) {
+                        state->tokenPosition = 0;
+                        ++state->group;
+                        state->phase = state->group < CONTROL_GROUP_COUNT
+                            ? State::GROUP_HEADER : State::SUFFIX;
+                    }
+                    continue;
+                }
+
+                if (state->phase == State::SUFFIX) {
+                    static const char suffix[] = "}}";
+                    if (copyToken(suffix, sizeof(suffix) - 1)) {
+                        state->items.clear();
+                        state->items.shrink_to_fit();
+                        state->phase = State::DONE;
+                    }
+                }
+            }
+            return written;
+        });
+    if (!response) return false;
+    response->addHeader("Cache-Control", "no-store");
+    response->addHeader("Connection", "close");
+    request->send(response);
+    return true;
+}
+
 String escapePeriphExecJsonString(const String& value) {
     String out;
     out.reserve(value.length() + 8);
@@ -48,7 +322,8 @@ String escapePeriphExecJsonString(const String& value) {
 }
 
 bool shouldDegradeControlsResponse() {
-    return FastBee::MemoryBudget::dramFree() < 16384 || FastBee::MemoryBudget::dramLargest() < 8192;
+    return FastBee::MemoryBudget::dram8Free() < 16384 ||
+           FastBee::MemoryBudget::dram8Largest() < 8192;
 }
 
 // 生成 Flash 保存失败的详细错误消息（包含文件系统与堆状态，便于定位内存不足/碎片问题）
@@ -67,10 +342,150 @@ String buildFlashSaveErrorMessage(const char* operation) {
     return String(buf);
 }
 
+bool isRulePersistenceFailure(const String& errorMsg) {
+    return errorMsg.startsWith("PERSISTENCE_ROLLBACK_OK") ||
+           errorMsg.startsWith("ROLLBACK_FAILED");
+}
+
+int ruleMutationErrorStatus(const String& errorMsg, int fallbackStatus) {
+    if (isRulePersistenceFailure(errorMsg)) return 500;
+    if (errorMsg.startsWith("RULE_SERVICE_BUSY")) return 503;
+    if (errorMsg == "Rule not found") return 404;
+    return fallbackStatus;
+}
+
+String ruleMutationErrorMessage(const String& errorMsg,
+                                const char* fallbackMessage) {
+    String message = errorMsg.isEmpty() ? String(fallbackMessage) : errorMsg;
+    if (isRulePersistenceFailure(errorMsg)) {
+        message += "; ";
+        message += buildFlashSaveErrorMessage("Rule persistence");
+    }
+    return message;
+}
+
 void sendDegradedControlsResponse(AsyncWebServerRequest* request) {
-    request->send(200, "application/json",
+    AsyncWebServerResponse* response = request->beginResponse(
+        200, "application/json",
         F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - controls temporarily reduced\","
           "\"data\":{\"gpio\":[],\"modbus\":[],\"system\":[],\"script\":[],\"sensor\":[],\"other\":[]}}"));
+    HandlerUtils::sendWithClose(request, response);
+}
+
+bool buildControlItemJson(
+    const PeriphExecRule& rule,
+    PeripheralManager& peripheralManager,
+    const std::map<String, PeriphExecManager::SensorReadCache>& sensorCache,
+    String& itemJson) {
+    if (rule.actions.empty()) return false;
+
+    const ExecAction& firstAction = rule.actions[0];
+    const int actionType = firstAction.actionType;
+    String peripheralName;
+    if (!firstAction.targetPeriphId.isEmpty()) {
+        PeripheralConfig peripheral;
+        if (peripheralManager.getPeripheralSnapshot(firstAction.targetPeriphId, peripheral)) {
+            peripheralName = peripheral.name;
+        }
+    }
+
+    size_t initialCapacity = 192 + rule.id.length() + rule.name.length() +
+                             firstAction.targetPeriphId.length() + peripheralName.length();
+    if (actionType == static_cast<int>(ExecActionType::ACTION_SENSOR_READ)) {
+        initialCapacity += rule.actions.size() * 96;
+    }
+    ControlJsonWriter writer(initialCapacity);
+    writer.append("{\"id\":");
+    writer.appendQuoted(rule.id);
+    writer.append(",\"name\":");
+    writer.appendQuoted(rule.name);
+    writer.append(",\"actionType\":");
+    writer.append(actionType);
+
+    bool hasSetMode = false;
+    for (const auto& trigger : rule.triggers) {
+        if (trigger.triggerType == 0 && trigger.operatorType == 1) {
+            hasSetMode = true;
+            break;
+        }
+    }
+    writer.append(",\"hasSetMode\":");
+    writer.append(hasSetMode);
+
+    if (!firstAction.targetPeriphId.isEmpty()) {
+        writer.append(",\"targetPeriphId\":");
+        writer.appendQuoted(firstAction.targetPeriphId);
+        if (!peripheralName.isEmpty()) {
+            writer.append(",\"targetPeriphName\":");
+            writer.appendQuoted(peripheralName);
+        }
+    }
+
+    if (actionType == static_cast<int>(ExecActionType::ACTION_MODBUS_POLL) &&
+        !firstAction.actionValue.isEmpty()) {
+        JsonDocument pollDocument;
+        const DeserializationError error = deserializeJson(pollDocument, firstAction.actionValue);
+        if (!error && pollDocument["poll"].is<JsonArray>()) {
+            writer.append(",\"pollTaskIndex\":[");
+            bool firstPoll = true;
+            for (JsonVariant value : pollDocument["poll"].as<JsonArray>()) {
+                if (!firstPoll) writer.append(',');
+                firstPoll = false;
+                writer.append(value.as<int>());
+            }
+            writer.append(']');
+        }
+    }
+
+    if (actionType == static_cast<int>(ExecActionType::ACTION_SENSOR_READ)) {
+        writer.append(",\"sensors\":[");
+        bool firstSensor = true;
+        for (const auto& action : rule.actions) {
+            if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
+                action.actionValue.isEmpty()) {
+                continue;
+            }
+
+            JsonDocument sensorDocument;
+            if (deserializeJson(sensorDocument, action.actionValue)) continue;
+
+            String sensorPeriphId = sensorDocument["periphId"] | "";
+            if (sensorPeriphId.isEmpty()) sensorPeriphId = action.targetPeriphId;
+            const String reportField = sensorDocument["dataField"] | "";
+            const String channelField = sensorDocument["channelField"] | "";
+            const String cacheField = channelField.isEmpty()
+                ? PeriphExecExecutor::resolveChannelField(
+                      sensorDocument["sensorCategory"] | "analog",
+                      sensorPeriphId,
+                      reportField)
+                : channelField;
+            const String label = sensorDocument["sensorLabel"] | "";
+            const String unit = sensorDocument["unit"] | "";
+            String cacheKey = sensorPeriphId + "_" + cacheField;
+
+            if (!firstSensor) writer.append(',');
+            firstSensor = false;
+            writer.append("{\"key\":");
+            writer.appendQuoted(cacheKey);
+            writer.append(",\"label\":");
+            writer.appendQuoted(label);
+            writer.append(",\"unit\":");
+            writer.appendQuoted(unit);
+
+            const auto cached = sensorCache.find(cacheKey);
+            if (cached != sensorCache.end()) {
+                writer.append(",\"value\":");
+                writer.appendQuoted(cached->second.value);
+            }
+            writer.append('}');
+        }
+        writer.append(']');
+    }
+
+    writer.append('}');
+    if (!writer.ok()) return false;
+    itemJson = writer.take();
+    return !itemJson.isEmpty();
 }
 }
 
@@ -107,6 +522,14 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     // JSON body handlers for add/update（支持 triggers[]/actions[] 数组）
     // 注意: update 必须先于 add 注册，因为 AsyncCallbackJsonWebHandler 使用前缀匹配
+    auto* preflightJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec/preflight",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            handlePreflightRuleJson(request, json);
+        });
+    preflightJsonHandler->setMethod(HTTP_POST);
+    preflightJsonHandler->setMaxContentLength(12288);
+    server->addHandler(preflightJsonHandler);
+
     auto* updateJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec/update",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handleUpdateRuleJson(request, json);
@@ -500,19 +923,17 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.actions.push_back(a);
 
     if (rule.name.isEmpty()) {
+        ctx->sendError(request, 400, "Rule name is required");
         return;
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String errorMsg;
-    if (mgr.addRule(rule, errorMsg)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule added");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    if (mgr.addRuleAndSave(rule, errorMsg)) {
+        ctx->sendSuccess(request, "Rule added");
     } else {
-        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 400),
+                       ruleMutationErrorMessage(errorMsg, "Failed to add rule"));
     }
 }
 
@@ -575,14 +996,11 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.actions.push_back(a);
 
     String errorMsg;
-    if (mgr.updateRule(id, rule, errorMsg)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule updated");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    if (mgr.updateRuleAndSave(id, rule, errorMsg)) {
+        ctx->sendSuccess(request, "Rule updated");
     } else {
-        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 400),
+                       ruleMutationErrorMessage(errorMsg, "Failed to update rule"));
     }
 }
 
@@ -599,14 +1017,12 @@ void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    if (mgr.removeRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule deleted");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    String errorMsg;
+    if (mgr.removeRuleAndSave(id, errorMsg)) {
+        ctx->sendSuccess(request, "Rule deleted");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 404),
+                       ruleMutationErrorMessage(errorMsg, "Rule not found"));
     }
 }
 
@@ -623,14 +1039,12 @@ void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    if (mgr.enableRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule enabled");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    String errorMsg;
+    if (mgr.enableRuleAndSave(id, errorMsg)) {
+        ctx->sendSuccess(request, "Rule enabled");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 404),
+                       ruleMutationErrorMessage(errorMsg, "Rule not found"));
     }
 }
 
@@ -647,14 +1061,12 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    if (mgr.disableRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule disabled");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    String errorMsg;
+    if (mgr.disableRuleAndSave(id, errorMsg)) {
+        ctx->sendSuccess(request, "Rule disabled");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 404),
+                       ruleMutationErrorMessage(errorMsg, "Rule not found"));
     }
 }
 
@@ -866,6 +1278,423 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
     }
 }
 
+namespace {
+bool parseStrictLong(const String& text, long& value) {
+    if (text.isEmpty()) return false;
+    char* end = nullptr;
+    value = strtol(text.c_str(), &end, 10);
+    return end && end != text.c_str() && *end == '\0';
+}
+
+bool parseClockTime(const String& value) {
+    if (value.length() != 5 || value[2] != ':') return false;
+    if (!isDigit(value[0]) || !isDigit(value[1]) ||
+        !isDigit(value[3]) || !isDigit(value[4])) return false;
+    const int hour = value.substring(0, 2).toInt();
+    const int minute = value.substring(3).toInt();
+    return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+}
+
+bool isOutputPeripheral(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+           type == PeripheralType::GPIO_PWM_OUTPUT ||
+           type == PeripheralType::GPIO_ANALOG_OUTPUT;
+}
+
+bool isSensorPeripheral(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_INPUT ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
+           type == PeripheralType::GPIO_ANALOG_INPUT ||
+           type == PeripheralType::ADC ||
+           type == PeripheralType::SENSOR_GENERIC ||
+           type == PeripheralType::ONE_WIRE ||
+           type == PeripheralType::RADAR_SENSOR ||
+           type == PeripheralType::RF_MODULE;
+}
+
+bool actionNeedsPeripheral(uint8_t actionType) {
+    return !(actionType == 6 || actionType == 7 || actionType == 8 ||
+             actionType == 9 || actionType == 15 || actionType == 18 ||
+             actionType == 21 || actionType == 22 || actionType == 23 ||
+             actionType == 31 || actionType == 32);
+}
+
+bool actionTargetMatches(uint8_t actionType, const PeripheralConfig& config) {
+    if (actionType <= 3 || actionType == 13 || actionType == 14 ||
+        actionType == 30) return isOutputPeripheral(config.type);
+    if (actionType == 4) {
+        return config.type == PeripheralType::GPIO_PWM_OUTPUT ||
+               config.type == PeripheralType::GPIO_DIGITAL_OUTPUT;
+    }
+    if (actionType == 5) {
+        return config.type == PeripheralType::DAC ||
+               config.type == PeripheralType::GPIO_ANALOG_OUTPUT;
+    }
+    if (actionType == 11) return config.type == PeripheralType::NEO_PIXEL;
+    if (actionType == 12) return config.type == PeripheralType::STEPPER_MOTOR;
+    if (actionType == 16 || actionType == 17) return config.isModbusPeripheral();
+    if (actionType == 19) return isSensorPeripheral(config.type);
+    if (actionType >= 24 && actionType <= 26) {
+        return config.type == PeripheralType::SEVEN_SEGMENT_TM1637;
+    }
+    if (actionType == 27) return config.type == PeripheralType::LCD;
+    if (actionType == 28) return config.type == PeripheralType::RF_MODULE;
+    if (actionType == 29) return config.type == PeripheralType::UART;
+    return true;
+}
+
+void writeRuleCandidate(JsonObject target, const PeriphExecRule& rule) {
+    target["id"] = rule.id;
+    target["name"] = rule.name;
+    target["enabled"] = rule.enabled;
+    target["execMode"] = rule.execMode;
+    target["protocolType"] = rule.protocolType;
+    target["scriptContent"] = rule.scriptContent;
+    target["reportAfterExec"] = rule.reportAfterExec;
+
+    JsonArray triggers = target["triggers"].to<JsonArray>();
+    for (const ExecTrigger& trigger : rule.triggers) {
+        JsonObject item = triggers.add<JsonObject>();
+        item["triggerType"] = trigger.triggerType;
+        item["triggerPeriphId"] = trigger.triggerPeriphId;
+        item["operatorType"] = trigger.operatorType;
+        item["compareValue"] = trigger.compareValue;
+        item["timerMode"] = trigger.timerMode;
+        item["intervalSec"] = trigger.intervalSec;
+        item["timePoint"] = trigger.timePoint;
+        item["eventId"] = trigger.eventId;
+        item["pollResponseTimeout"] = trigger.pollResponseTimeout;
+        item["pollMaxRetries"] = trigger.pollMaxRetries;
+        item["pollInterPollDelay"] = trigger.pollInterPollDelay;
+    }
+
+    JsonArray actions = target["actions"].to<JsonArray>();
+    for (const ExecAction& action : rule.actions) {
+        JsonObject item = actions.add<JsonObject>();
+        item["targetPeriphId"] = action.targetPeriphId;
+        item["actionType"] = action.actionType;
+        item["actionValue"] = action.actionValue;
+        item["useReceivedValue"] = action.useReceivedValue;
+        item["syncDelayMs"] = action.syncDelayMs;
+        item["execMode"] = action.execMode;
+    }
+}
+}  // namespace
+
+void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* request,
+                                                     JsonVariant& json) {
+    if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
+
+    JsonObject payload = json.as<JsonObject>();
+    if (payload.isNull()) {
+        ctx->sendBadRequest(request, "Rule preflight body must be a JSON object");
+        return;
+    }
+
+    String operation = payload["operation"] | "add";
+    operation.toLowerCase();
+    if (operation != "add" && operation != "update") {
+        ctx->sendBadRequest(request, "Invalid operation; expected add or update");
+        return;
+    }
+
+    JsonObject ruleObject = payload["rule"].is<JsonObject>()
+        ? payload["rule"].as<JsonObject>() : payload;
+    PeriphExecManager& manager = PeriphExecManager::getInstance();
+    PeriphExecRule current;
+    PeriphExecRule candidate;
+    String id = ruleObject["id"] | "";
+
+    if (operation == "update") {
+        if (id.isEmpty()) {
+            ctx->sendBadRequest(request, "Rule ID is required for update preflight");
+            return;
+        }
+        if (!manager.getRuleSnapshot(id, current)) {
+            ctx->sendError(request, 404, "Rule not found");
+            return;
+        }
+        candidate = current;
+    } else if (!id.isEmpty() && manager.getRuleSnapshot(id, current)) {
+        ctx->sendError(request, 409, "Rule ID already exists");
+        return;
+    }
+
+    parseRuleFromJson(ruleObject, candidate);
+    if (!id.isEmpty()) candidate.id = id;
+
+    JsonDocument response;
+    response["success"] = true;
+    JsonObject data = response["data"].to<JsonObject>();
+    data["operation"] = operation;
+    JsonArray issues = data["issues"].to<JsonArray>();
+    size_t errorCount = 0;
+    size_t warningCount = 0;
+    uint8_t risk = 0;  // 0=low, 1=medium, 2=high
+    auto addIssue = [&](const char* code, const char* severity,
+                        const String& path, const String& message,
+                        uint8_t issueRisk = 0) {
+        JsonObject issue = issues.add<JsonObject>();
+        issue["code"] = code;
+        issue["severity"] = severity;
+        issue["path"] = path;
+        issue["message"] = message;
+        if (strcmp(severity, "error") == 0) ++errorCount;
+        else ++warningCount;
+        if (issueRisk > risk) risk = issueRisk;
+    };
+
+    if (operation == "add" &&
+        manager.getRuleCount() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
+        addIssue("RULE_LIMIT_REACHED", "error", "rule",
+                 String("Rule limit reached for ") + FastBee::ResourceProfile::NAME);
+    }
+    if (candidate.id.length() > FastBee::ResourceProfile::MAX_RULE_ID_LEN) {
+        addIssue("RULE_ID_TOO_LONG", "error", "rule.id", "Rule ID exceeds profile limit");
+    }
+    if (candidate.name.isEmpty()) {
+        addIssue("RULE_NAME_REQUIRED", "error", "rule.name", "Rule name is required");
+    } else if (candidate.name.length() > FastBee::ResourceProfile::MAX_RULE_NAME_LEN) {
+        addIssue("RULE_NAME_TOO_LONG", "error", "rule.name", "Rule name exceeds profile limit");
+    }
+    if (candidate.execMode > 1) {
+        addIssue("INVALID_EXEC_MODE", "error", "rule.execMode", "execMode must be 0 or 1");
+    }
+    if (candidate.protocolType != 0 && candidate.protocolType != 1 &&
+        candidate.protocolType != 3 && candidate.protocolType != 4 &&
+        candidate.protocolType != 5) {
+        addIssue("INVALID_PROTOCOL_TYPE", "error", "rule.protocolType",
+                 "Unsupported protocolType");
+    }
+    if (candidate.scriptContent.length() > FastBee::ResourceProfile::MAX_SCRIPT_CONTENT_LEN) {
+        addIssue("SCRIPT_TOO_LONG", "error", "rule.scriptContent",
+                 "Rule scriptContent exceeds profile limit");
+    }
+
+    if (candidate.triggers.empty()) {
+        addIssue("TRIGGER_REQUIRED", "error", "rule.triggers",
+                 "At least one trigger is required");
+    } else if (candidate.triggers.size() > MAX_TRIGGERS_PER_RULE) {
+        addIssue("TOO_MANY_TRIGGERS", "error", "rule.triggers",
+                 String("Maximum triggers per rule: ") + MAX_TRIGGERS_PER_RULE);
+    }
+
+    PeripheralManager& peripherals = PeripheralManager::getInstance();
+    for (size_t index = 0; index < candidate.triggers.size(); ++index) {
+        const ExecTrigger& trigger = candidate.triggers[index];
+        const String path = String("rule.triggers[") + index + "]";
+        const bool supportedType = trigger.triggerType == 0 || trigger.triggerType == 1 ||
+                                   trigger.triggerType == 4 || trigger.triggerType == 5;
+        if (!supportedType) {
+            addIssue("INVALID_TRIGGER_TYPE", "error", path + ".triggerType",
+                     trigger.triggerType == 6
+                         ? "Rule-chain trigger type 6 is not implemented by the runtime"
+                         : "Supported trigger types are 0, 1, 4 and 5");
+            continue;
+        }
+        if ((trigger.triggerType == 0 || trigger.triggerType == 5) &&
+            trigger.operatorType > static_cast<uint8_t>(ExecOperator::NOT_CONTAIN)) {
+            addIssue("INVALID_OPERATOR", "error", path + ".operatorType",
+                     "operatorType must be between 0 and 9");
+        }
+        if (trigger.triggerType == 0 && trigger.triggerPeriphId.isEmpty()) {
+            addIssue("TRIGGER_SOURCE_REQUIRED", "error", path + ".triggerPeriphId",
+                     "Platform trigger requires a source identifier");
+        }
+        if (trigger.triggerType == 1) {
+            if (trigger.timerMode > 1) {
+                addIssue("INVALID_TIMER_MODE", "error", path + ".timerMode",
+                         "timerMode must be interval(0) or daily(1)");
+            } else if (trigger.timerMode == 0 &&
+                       (trigger.intervalSec < 1 || trigger.intervalSec > 86400UL)) {
+                addIssue("INVALID_TIMER_INTERVAL", "error", path + ".intervalSec",
+                         "Timer interval must be between 1 and 86400 seconds");
+            } else if (trigger.timerMode == 1 && !parseClockTime(trigger.timePoint)) {
+                addIssue("INVALID_DAILY_TIME", "error", path + ".timePoint",
+                         "Daily time must use HH:MM (00:00-23:59)");
+            }
+        }
+        if (trigger.triggerType == 4) {
+            if (trigger.eventId.isEmpty()) {
+                addIssue("EVENT_ID_REQUIRED", "error", path + ".eventId",
+                         "Event trigger requires eventId");
+            } else if (!findStaticEvent(trigger.eventId.c_str())) {
+                PeripheralConfig eventSource;
+                if (!peripherals.getPeripheralSnapshot(trigger.eventId, eventSource) ||
+                    eventSource.type != PeripheralType::DEVICE_EVENT) {
+                    addIssue("UNVERIFIED_EVENT_ID", "warning", path + ".eventId",
+                             "Event is not a built-in or configured DEVICE_EVENT source", 1);
+                }
+            }
+        }
+        if (trigger.triggerType == 5) {
+            if (trigger.pollResponseTimeout < 100 || trigger.pollResponseTimeout > 5000) {
+                addIssue("INVALID_POLL_TIMEOUT", "error", path + ".pollResponseTimeout",
+                         "Poll timeout must be between 100 and 5000 ms");
+            }
+            if (trigger.pollMaxRetries > 3) {
+                addIssue("INVALID_POLL_RETRIES", "error", path + ".pollMaxRetries",
+                         "Poll retries must be between 0 and 3");
+            }
+            if (trigger.pollInterPollDelay < 20 || trigger.pollInterPollDelay > 1000) {
+                addIssue("INVALID_POLL_DELAY", "error", path + ".pollInterPollDelay",
+                         "Inter-poll delay must be between 20 and 1000 ms");
+            }
+        }
+    }
+
+    if (candidate.actions.empty()) {
+        addIssue("ACTION_REQUIRED", "error", "rule.actions",
+                 "At least one action is required");
+    } else if (candidate.actions.size() > MAX_ACTIONS_PER_RULE) {
+        addIssue("TOO_MANY_ACTIONS", "error", "rule.actions",
+                 String("Maximum actions per rule: ") + MAX_ACTIONS_PER_RULE);
+    }
+
+    for (size_t index = 0; index < candidate.actions.size(); ++index) {
+        const ExecAction& action = candidate.actions[index];
+        const String path = String("rule.actions[") + index + "]";
+        if (action.actionType > 32 || action.actionType == 20) {
+            addIssue("INVALID_ACTION_TYPE", "error", path + ".actionType",
+                     "actionType must be 0-32 and cannot use reserved slot 20");
+            continue;
+        }
+        if (action.execMode > 1) {
+            addIssue("INVALID_ACTION_EXEC_MODE", "error", path + ".execMode",
+                     "Action execMode must be 0 or 1");
+        }
+        if (action.syncDelayMs > 10000) {
+            addIssue("ACTION_DELAY_TOO_LONG", "error", path + ".syncDelayMs",
+                     "Action delay cannot exceed 10000 ms");
+        }
+        if (action.actionValue.length() > FastBee::ResourceProfile::MAX_ACTION_VALUE_LEN) {
+            addIssue("ACTION_VALUE_TOO_LONG", "error", path + ".actionValue",
+                     "Action value exceeds profile limit");
+        }
+
+        if (action.actionType == 6 || action.actionType == 7 || action.actionType == 9) {
+            addIssue("DANGEROUS_SYSTEM_ACTION", "warning", path,
+                     action.actionType == 7 ? "Factory reset requires explicit confirmation"
+                                            : "Restart or OTA requires explicit confirmation",
+                     2);
+        }
+#if !FASTBEE_ENABLE_OTA
+        if (action.actionType == 9) {
+            addIssue("OTA_NOT_COMPILED", "error", path + ".actionType",
+                     "OTA action is not compiled into this firmware");
+        }
+#endif
+        if (action.actionType == 15 &&
+            !FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript")) {
+            addIssue("SCRIPT_FEATURE_DISABLED", "error", path + ".actionType",
+                     "Command script feature is disabled");
+        }
+        if ((action.actionType == 16 || action.actionType == 17 || action.actionType == 18) &&
+            !FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
+            addIssue("MODBUS_FEATURE_DISABLED", "error", path + ".actionType",
+                     "Modbus feature is disabled");
+        }
+
+        if (actionNeedsPeripheral(action.actionType)) {
+            if (action.targetPeriphId.isEmpty()) {
+                addIssue("ACTION_TARGET_REQUIRED", "error", path + ".targetPeriphId",
+                         "This action requires a target peripheral");
+            } else {
+                PeripheralConfig target;
+                if (!peripherals.getPeripheralSnapshot(action.targetPeriphId, target)) {
+                    addIssue("ACTION_TARGET_NOT_FOUND", "error", path + ".targetPeriphId",
+                             "Target peripheral does not exist");
+                } else {
+                    if (!actionTargetMatches(action.actionType, target)) {
+                        addIssue("ACTION_TARGET_TYPE_MISMATCH", "error", path + ".targetPeriphId",
+                                 String("Action is incompatible with ") + getPeripheralTypeName(target.type));
+                    }
+                    if (!target.enabled) {
+                        addIssue("ACTION_TARGET_DISABLED", "warning", path + ".targetPeriphId",
+                                 "Target peripheral is currently disabled", 1);
+                    }
+                }
+            }
+        }
+
+        if ((action.actionType == 22 || action.actionType == 23)) {
+            PeriphExecRule targetRule;
+            if (action.targetPeriphId.isEmpty() ||
+                !manager.getRuleSnapshot(action.targetPeriphId, targetRule)) {
+                addIssue("TARGET_RULE_NOT_FOUND", "error", path + ".targetPeriphId",
+                         "Rule-control action requires an existing target rule");
+            }
+        }
+        if (action.actionType == 21 && action.targetPeriphId.isEmpty()) {
+            addIssue("EVENT_TARGET_REQUIRED", "error", path + ".targetPeriphId",
+                     "Trigger-event action requires an event ID");
+        }
+        if (action.actionType == 31 || action.actionType == 32) {
+            if (action.actionValue != "webServer" && action.actionValue != "mdns") {
+                addIssue("FEATURE_NOT_ALLOWED", "error", path + ".actionValue",
+                         "Feature actions may only target webServer or mdns");
+            }
+            if (risk < 1) risk = 1;
+        }
+
+        long numeric = 0;
+        if (!action.useReceivedValue && (action.actionType == 2 || action.actionType == 3)) {
+            if (!parseStrictLong(action.actionValue, numeric) || numeric < 50 || numeric > 60000) {
+                addIssue("INVALID_EFFECT_INTERVAL", "error", path + ".actionValue",
+                         "Blink/breathe interval must be 50-60000 ms");
+            }
+        }
+        if (!action.useReceivedValue && action.actionType == 4) {
+            if (!parseStrictLong(action.actionValue, numeric) || numeric < 0 || numeric > 65535) {
+                addIssue("INVALID_PWM_VALUE", "error", path + ".actionValue",
+                         "PWM value must be between 0 and 65535");
+            }
+        }
+        if (!action.useReceivedValue && action.actionType == 5) {
+            if (!parseStrictLong(action.actionValue, numeric) || numeric < 0 || numeric > 255) {
+                addIssue("INVALID_DAC_VALUE", "error", path + ".actionValue",
+                         "DAC value must be between 0 and 255");
+            }
+        }
+        if (action.actionType == 15 && action.actionValue.isEmpty()) {
+            addIssue("SCRIPT_ACTION_EMPTY", "error", path + ".actionValue",
+                     "Script action requires command content");
+        }
+        if (action.actionType == 18) {
+            JsonDocument poll;
+            if (action.actionValue.isEmpty() || deserializeJson(poll, action.actionValue) ||
+                (!poll["poll"].is<JsonArray>() && !poll["ctrl"].is<JsonArray>())) {
+                addIssue("INVALID_MODBUS_POLL", "error", path + ".actionValue",
+                         "Modbus poll value must be JSON with poll or ctrl array");
+            }
+        }
+        if (action.actionType == 19) {
+            JsonDocument sensor;
+            if (action.actionValue.isEmpty() || deserializeJson(sensor, action.actionValue)) {
+                addIssue("INVALID_SENSOR_CONFIG", "error", path + ".actionValue",
+                         "Sensor read actionValue must be valid JSON");
+            }
+        }
+    }
+
+    const bool allowed = errorCount == 0;
+    data["allowed"] = allowed;
+    data["requiresConfirmation"] = allowed && (warningCount > 0 || risk > 0);
+    data["riskLevel"] = risk == 2 ? "high" : (risk == 1 ? "medium" : "low");
+    data["errorCount"] = errorCount;
+    data["warningCount"] = warningCount;
+    JsonObject limits = data["limits"].to<JsonObject>();
+    limits["maxRules"] = FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES;
+    limits["maxTriggersPerRule"] = MAX_TRIGGERS_PER_RULE;
+    limits["maxActionsPerRule"] = MAX_ACTIONS_PER_RULE;
+    if (operation == "update") writeRuleCandidate(data["current"].to<JsonObject>(), current);
+    writeRuleCandidate(data["candidate"].to<JsonObject>(), candidate);
+    response["allowed"] = allowed;
+    HandlerUtils::sendJsonStream(request, response);
+}
+
 // ========== JSON body: 新增规则 ==========
 
 void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json) {
@@ -886,14 +1715,11 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String errorMsg;
-    if (mgr.addRule(rule, errorMsg)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule added");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    if (mgr.addRuleAndSave(rule, errorMsg)) {
+        ctx->sendSuccess(request, "Rule added");
     } else {
-        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 400),
+                       ruleMutationErrorMessage(errorMsg, "Failed to add rule"));
     }
 }
 
@@ -901,6 +1727,14 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
 
 void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+
+    // This is the device-control dashboard's aggregate read model. Keep the
+    // execution-rule CRUD and run endpoints available when the optional page
+    // is disabled, but do not spend RAM building its dedicated payload.
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("deviceControl")) {
+        ctx->sendError(request, 503, "Device control disabled by runtime feature config");
+        return;
+    }
 
     if (shouldDegradeControlsResponse()) {
         sendDegradedControlsResponse(request);
@@ -910,165 +1744,93 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    // 持锁上下文：避免全量拷贝 vector，直接迭代 RuleMap 引用
-    MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(50));
-    if (!lock.isLocked()) {
-        sendDegradedControlsResponse(request);
-        return;
-    }
-    auto& ruleMap = mgr.getRules();
-
-    // 分组缓冲：记录每个分组是否已写入第一条
-    bool firstGpio = true, firstModbus = true, firstSystem = true;
-    bool firstScript = true, firstSensor = true, firstOther = true;
-
-    // 临时缓冲各分组的内容
-    String gpioItems, modbusItems, systemItems, scriptItems, sensorItems, otherItems;
-
-    for (const auto& pair : ruleMap) {
-        const auto& rule = pair.second;
-        if (!rule.enabled) continue;
-        if (rule.actions.empty()) continue;
-
-        const ExecAction& firstAction = rule.actions[0];
-        int at = firstAction.actionType;
-#if !FASTBEE_ENABLE_OTA
-        if (at == static_cast<int>(ExecActionType::ACTION_SYS_OTA)) continue;
-#endif
-        if (at == static_cast<int>(ExecActionType::ACTION_SCRIPT) &&
-            !FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript")) {
-            continue;
+    // Avoid copying the sensor cache when the current rules cannot produce a
+    // sensor control. A rule mutation between this probe and the response can
+    // only omit a transient cached value; the control definition stays valid.
+    bool needsSensorCache = false;
+    {
+        MutexGuard probeLock(mgr.getRulesMutex(), pdMS_TO_TICKS(50));
+        if (!probeLock.isLocked()) {
+            sendDegradedControlsResponse(request);
+            return;
         }
-
-        // 确定分组
-        String* targetBuf = nullptr;
-        bool* firstFlag = nullptr;
-        if ((at >= 0 && at <= 5) || at == 13 || at == 14) {
-            targetBuf = &gpioItems; firstFlag = &firstGpio;
-        } else if (at >= 16 && at <= 18) {
-            targetBuf = &modbusItems; firstFlag = &firstModbus;
-        } else if (at >= 6 && at <= 12) {
-            targetBuf = &systemItems; firstFlag = &firstSystem;
-        } else if (at == 15) {
-            targetBuf = &scriptItems; firstFlag = &firstScript;
-        } else if (at == 19) {
-            targetBuf = &sensorItems; firstFlag = &firstSensor;
-        } else {
-            targetBuf = &otherItems; firstFlag = &firstOther;
-        }
-
-        if (!*firstFlag) {
-            *targetBuf += ",";
-        }
-        *firstFlag = false;
-
-        // 获取目标外设名称
-        String periphName;
-        if (!firstAction.targetPeriphId.isEmpty()) {
-            PeripheralConfig periph;
-            if (pm.getPeripheralSnapshot(firstAction.targetPeriphId, periph)) periphName = periph.name;
-        }
-
-        // 构建单条记录
-        // 转义 name 和 periphName 中的双引号
-        String safeName = rule.name;
-        safeName.replace("\"", "\\\"");
-        String safePeriphName = periphName;
-        safePeriphName.replace("\"", "\\\"");
-        bool hasSetMode = false;
-        for (const auto& trigger : rule.triggers) {
-            if (trigger.triggerType == 0 && trigger.operatorType == 1) {
-                hasSetMode = true;
+        for (const auto& pair : mgr.getRules()) {
+            const auto& rule = pair.second;
+            if (rule.enabled && !rule.actions.empty() &&
+                rule.actions[0].actionType ==
+                    static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+                needsSensorCache = true;
                 break;
             }
         }
-
-        String item = "{\"id\":\"" + rule.id + "\",\"name\":\"" + safeName + "\",\"actionType\":" + String(at);
-        item += ",\"hasSetMode\":";
-        item += hasSetMode ? "true" : "false";
-
-        // 附加目标外设信息（gpio/modbus/sensor 有目标外设）
-        if (!firstAction.targetPeriphId.isEmpty()) {
-            item += ",\"targetPeriphId\":\"" + firstAction.targetPeriphId + "\"";
-            if (periphName.length() > 0) {
-                item += ",\"targetPeriphName\":\"" + safePeriphName + "\"";
-            }
-        }
-
-        // Modbus 轮询：尝试解析 pollTaskIndex
-        if (at == 18 && firstAction.actionValue.length() > 0) {
-            // 解析 actionValue JSON 中的 "poll" 字段
-            JsonDocument pollDoc;
-            DeserializationError err = deserializeJson(pollDoc, firstAction.actionValue);
-            if (!err && pollDoc["poll"].is<JsonArray>()) {
-                JsonArray pollArr = pollDoc["poll"].as<JsonArray>();
-                item += ",\"pollTaskIndex\":[";
-                bool firstPoll = true;
-                for (JsonVariant v : pollArr) {
-                    if (!firstPoll) item += ",";
-                    firstPoll = false;
-                    item += String(v.as<int>());
-                }
-                item += "]";
-            }
-        }
-
-        // 传感器读取：附加最近读取值、标签、单位
-        if (at == 19) {
-            const auto sensorCache = mgr.getSensorReadCacheCopy();
-            // 遍历该规则所有 action，收集传感器缓存数据
-            item += ",\"sensors\":[";
-            bool firstSensorItem = true;
-            for (const auto& action : rule.actions) {
-                if (action.actionType != 19) continue;
-                if (action.actionValue.isEmpty()) continue;
-                JsonDocument sDoc;
-                DeserializationError sErr = deserializeJson(sDoc, action.actionValue);
-                if (sErr) continue;
-                String sensorPeriphId = sDoc["periphId"] | "";
-                if (sensorPeriphId.isEmpty()) sensorPeriphId = action.targetPeriphId;
-                String explicitReportField = sDoc["dataField"] | "";
-                String explicitChannelField = sDoc["channelField"] | "";
-                String cacheField = explicitChannelField.isEmpty()
-                    ? PeriphExecExecutor::resolveChannelField(
-                          sDoc["sensorCategory"] | "analog",
-                          sensorPeriphId,
-                          explicitReportField)
-                    : explicitChannelField;
-                const char* sLabel = sDoc["sensorLabel"] | "";
-                const char* sUnit = sDoc["unit"] | "";
-                String cacheKey = sensorPeriphId + "_" + cacheField;
-                if (!firstSensorItem) item += ",";
-                firstSensorItem = false;
-                item += "{\"key\":\"" + cacheKey + "\"";
-                item += ",\"label\":\"" + String(sLabel) + "\"";
-                item += ",\"unit\":\"" + String(sUnit) + "\"";
-                auto cacheIt = sensorCache.find(cacheKey);
-                if (cacheIt != sensorCache.end()) {
-                    item += ",\"value\":\"" + cacheIt->second.value + "\"";
-                }
-                item += "}";
-            }
-            item += "]";
-        }
-
-        item += "}";
-        *targetBuf += item;
     }
 
-    // 输出完整 JSON（直接拼接 String，避免 AsyncResponseStream）
-    String json;
-    json.reserve(128 + gpioItems.length() + modbusItems.length() + systemItems.length()
-                + scriptItems.length() + sensorItems.length() + otherItems.length());
-    json += F("{\"success\":true,\"data\":{");
-    json += F("\"gpio\":["); json += gpioItems; json += F("],");
-    json += F("\"modbus\":["); json += modbusItems; json += F("],");
-    json += F("\"system\":["); json += systemItems; json += F("],");
-    json += F("\"script\":["); json += scriptItems; json += F("],");
-    json += F("\"sensor\":["); json += sensorItems; json += F("],");
-    json += F("\"other\":["); json += otherItems; json += ']';
-    json += F("}}");
-    request->send(200, "application/json", json);
+    std::map<String, PeriphExecManager::SensorReadCache> sensorCache;
+    if (needsSensorCache) {
+        sensorCache = mgr.getSensorReadCacheCopy();
+        if (shouldDegradeControlsResponse()) {
+            sendDegradedControlsResponse(request);
+            return;
+        }
+    }
+
+    std::vector<GroupedControlItem> items;
+    bool buildFailed = false;
+    const bool commandScriptEnabled =
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript");
+    {
+        MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(50));
+        if (!lock.isLocked()) {
+            sendDegradedControlsResponse(request);
+            return;
+        }
+        auto& ruleMap = mgr.getRules();
+        items.reserve(ruleMap.size());
+
+        // Iterating by group preserves the existing response order without
+        // accumulating six group Strings and then copying all six into a
+        // seventh, contiguous response buffer.
+        for (uint8_t group = 0; group < CONTROL_GROUP_COUNT && !buildFailed; ++group) {
+            for (const auto& pair : ruleMap) {
+                const auto& rule = pair.second;
+                if (!rule.enabled || rule.actions.empty()) continue;
+
+                const int actionType = rule.actions[0].actionType;
+#if !FASTBEE_ENABLE_OTA
+                if (actionType == static_cast<int>(ExecActionType::ACTION_SYS_OTA)) continue;
+#endif
+                if (actionType == static_cast<int>(ExecActionType::ACTION_SCRIPT) &&
+                    !commandScriptEnabled) {
+                    continue;
+                }
+                if (static_cast<uint8_t>(controlGroupForAction(actionType)) != group) continue;
+
+                GroupedControlItem item;
+                item.group = group;
+                if (!buildControlItemJson(rule, pm, sensorCache, item.json)) {
+                    buildFailed = true;
+                    break;
+                }
+                items.emplace_back(std::move(item));
+
+                if (shouldDegradeControlsResponse()) {
+                    buildFailed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (buildFailed) {
+        items.clear();
+        items.shrink_to_fit();
+        sendDegradedControlsResponse(request);
+        return;
+    }
+    if (!sendControlsChunked(request, std::move(items))) {
+        HandlerUtils::sendJsonError(
+            request, 503, "Device controls temporarily unavailable (stream allocation failed)", 5);
+    }
 }
 
 // ========== JSON body: 更新规则 ==========
@@ -1099,14 +1861,11 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
     rule.id = id;
 
     String errorMsg;
-    if (mgr.updateRule(id, rule, errorMsg)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule updated");
-        } else {
-            ctx->sendError(request, 500, buildFlashSaveErrorMessage("Save rule"));
-        }
+    if (mgr.updateRuleAndSave(id, rule, errorMsg)) {
+        ctx->sendSuccess(request, "Rule updated");
     } else {
-        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
+        ctx->sendError(request, ruleMutationErrorStatus(errorMsg, 400),
+                       ruleMutationErrorMessage(errorMsg, "Failed to update rule"));
     }
 }
 

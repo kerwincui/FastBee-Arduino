@@ -29,7 +29,16 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $BrowserTestDir = Join-Path $ProjectRoot "test\browser"
 
-$writesNetwork = [string]::IsNullOrWhiteSpace($Project) -or $Project -in @("core", "regression")
+# An explicit grep can select a read-only case from a broad project (for
+# example a UI regression). Do not require credentials unless the selected
+# subset can execute a Wi-Fi/network write; an unrestricted project remains
+# conservative.
+$hasExplicitSubset = -not [string]::IsNullOrWhiteSpace($Grep)
+$writesNetwork = if ($hasExplicitSubset) {
+    $Grep -match '(?i)(NET-|WIFI-|network|wifi)'
+} else {
+    [string]::IsNullOrWhiteSpace($Project) -or $Project -in @("core", "regression")
+}
 if ($writesNetwork -and ([string]::IsNullOrWhiteSpace($WiFiSSID) -or [string]::IsNullOrWhiteSpace($WiFiPassword))) {
     throw "Network-writing browser tests require -WiFiSSID/-WiFiPassword or FASTBEE_STA_SSID/FASTBEE_STA_PASSWORD."
 }
@@ -143,6 +152,10 @@ try {
     # example `MEM-|WEB-`) as a shell pipeline when npx forwards arguments.
     # Calling the JS entrypoint directly preserves the argument as data.
     $playwrightArgs = @("test")
+    if ($Project -eq "smoke") {
+        $playwrightArgs += "--config=playwright.device.config.ts"
+        Write-Host "  受限设备策略: 单 worker、零重试、首次失败停止" -ForegroundColor Yellow
+    }
     if ($Project) {
         $playwrightArgs += "--project=$Project"
         Write-Host "  测试项目: $Project" -ForegroundColor Yellow

@@ -53,7 +53,7 @@ jobs:
         run: ./scripts/validate-powershell-syntax.ps1
 
   browser-test-collection:
-    name: Collect Browser Tests
+    name: Browser Tests
     runs-on: ubuntu-latest
     needs: validate-coverage
     steps:
@@ -65,6 +65,10 @@ jobs:
         run: npm ci --prefix test/browser
       - name: Parse all Playwright tests without contacting a device
         run: npm run test:e2e:collect
+      - name: Install Chromium for offline UI regression
+        run: npx --prefix test/browser playwright install --with-deps chromium
+      - name: Run deterministic offline UI regression
+        run: npm run test:e2e:offline
 
   firmware-build:
     name: Firmware Build (${{ matrix.environment }})
@@ -132,8 +136,12 @@ jobs:
         with:
           path: node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+      - name: Verify compile-capability Web selection
+        run: |
+          node scripts/test-web-profile.js
+          node scripts/test-web-capability-build.js
       - name: Build gzip-only Web and LittleFS staging assets
-        run: node scripts/gzip-www.js --no-upload --no-monitor --stage-dir=.pio/ci-fs-stage
+        run: node scripts/gzip-www.js --no-upload --no-monitor --env=esp32s3-F16R8 --stage-dir=.pio/ci-fs-stage
       - name: Verify gzip-only LittleFS staging
         run: |
           test -f data/www/index.html.gz
@@ -144,6 +152,7 @@ jobs:
           test -f .pio/ci-fs-stage/www/index.html.gz
           test "$(find data/www -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) | wc -l)" -eq 0
           test "$(find .pio/ci-fs-stage/www -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) | wc -l)" -eq 0
+          node scripts/test-web-quality-gate.js
           node scripts/web-smoke-test.js
           node scripts/test-gzip-www-contract.js --stage-dir=.pio/ci-fs-stage
 

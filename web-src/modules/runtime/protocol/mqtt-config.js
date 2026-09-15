@@ -237,14 +237,9 @@
             var enabledCheckbox = document.getElementById('mqtt-enabled');
             if (enabledCheckbox && !enabledCheckbox.checked) {
                 if (btn) { btn.disabled = false; btn.textContent = '刷新状态'; }
-                if (resultEl) { resultEl.textContent = 'MQTT已禁用'; resultEl.style.color = '#909399'; }
+                if (resultEl) { resultEl.textContent = '正在刷新状态...'; resultEl.style.color = '#909399'; }
                 this._stopMqttStatusPolling();
-                var badge = document.getElementById('mqtt-status-badge');
-                if (badge) {
-                    badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    badge.textContent = '未连接';
-                }
-                this._setMqttStatusReason('MQTT 已禁用');
+                this._setMqttStatusLoading();
                 this._loadMqttStatus();
                 setTimeout(() => {
                     if (!resultEl) return;
@@ -263,9 +258,11 @@
             if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
             if (resultEl) { resultEl.textContent = '正在刷新状态...'; resultEl.style.color = '#909399'; }
             this._stopMqttStatusPolling();
-            this._loadMqttStatus();
+            this._setMqttStatusLoading();
             // 启动轮询，确保状态及时更新
             this._startMqttStatusPolling({ initialDelayMs: 1500 });
+            // _startMqttStatusPolling 会先使旧请求失效；立即查询必须放在其后。
+            this._loadMqttStatus();
             setTimeout(() => {
                 if (btn) { btn.disabled = false; btn.textContent = '刷新状态'; }
                 if (resultEl) {
@@ -333,6 +330,8 @@
         _setMqttStatusReason(reason) {
             const el = document.getElementById('mqtt-status-reason');
             if (!el) return;
+            if (el.classList) el.classList.remove('fb-skeleton-text');
+            if (el.removeAttribute) el.removeAttribute('aria-label');
             const text = reason === undefined || reason === null || String(reason).trim() === ''
                 ? '--' : String(reason);
             el.textContent = text;
@@ -349,6 +348,30 @@
                 badge.textContent = badgeText || '连接失败';
                 badge.title = text;
             }
+            ['mqtt-status-server', 'mqtt-status-clientid', 'mqtt-status-reconnects'].forEach(function(id) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (el.classList) el.classList.remove('fb-skeleton-text');
+                if (el.removeAttribute) el.removeAttribute('aria-label');
+                if (!el.textContent) el.textContent = id === 'mqtt-status-reconnects' ? '0' : '--';
+            });
+        },
+
+        _setMqttStatusLoading() {
+            const badge = document.getElementById('mqtt-status-badge');
+            if (badge) {
+                badge.className = 'mqtt-status-badge mqtt-status-detecting';
+                badge.textContent = '检测中';
+                badge.removeAttribute('title');
+            }
+            ['mqtt-status-server', 'mqtt-status-clientid', 'mqtt-status-reconnects', 'mqtt-status-reason'].forEach(function(id) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = '';
+                if (el.classList) el.classList.add('fb-skeleton-text');
+                if (el.setAttribute) el.setAttribute('aria-label', '检测中');
+                if (el.removeAttribute) el.removeAttribute('title');
+            });
         },
 
         _getMqttStatusFailureReason(data) {
@@ -487,7 +510,6 @@
             // 纯 REST 轮询模式：不再创建 SSE 持久连接
             // SSE 会永久占用 1 个 TCP 槽位，在 ESP32 classic（MAX_CONNECTIONS=6）上
             // 导致其他页面请求无法建立连接。MQTT 状态变化不频繁，5s 轮询即可。
-            this._ensureBadgeNotStuck();
             var delayMs = options.initialDelayMs || 1500;
             this._mqttStatusTimer = setTimeout(function() {
                 self._mqttStatusTimer = null;
@@ -500,6 +522,10 @@
         },
 
         _stopMqttStatusPolling() {
+            // Timer cancellation cannot stop an already received Promise from
+            // resolving. Advance the generation so stale callbacks cannot
+            // overwrite a newly mounted page or a newer manual refresh.
+            this._mqttStatusRequestSeq = (this._mqttStatusRequestSeq || 0) + 1;
             // 清理 lite 路径的递归轮询定时器
             this._mqttLitePollStopped = true;
             if (this._mqttLitePollTimer) {
@@ -528,13 +554,19 @@
 
         _loadMqttStatus() {
             this._mqttApiFailCount = this._mqttApiFailCount || 0;
+            if (this._mqttRetryTimer) {
+                clearTimeout(this._mqttRetryTimer);
+                this._mqttRetryTimer = null;
+            }
+            this._mqttStatusRequestSeq = (this._mqttStatusRequestSeq || 0) + 1;
+            var requestSeq = this._mqttStatusRequestSeq;
             var self = this;
             apiGetSilent('/api/mqtt/status')
                 .then(function(res) {
+                    if (requestSeq !== self._mqttStatusRequestSeq) return;
                     if (!res || !res.success) {
                         self._mqttApiFailCount++;
-                        self._setMqttStatusReason(self._getMqttStatusFailureReason(res) || '状态接口返回失败');
-                        self._handleMqttApiFail();
+                        self._handleMqttApiFail(self._getMqttStatusFailureReason(res) || '状态接口返回失败');
                         // 快速重试：首次失败后3秒再试一次（避免与其他请求叠加）
                         if (self._mqttApiFailCount === 1) {
                             self._mqttRetryTimer = setTimeout(function() {
@@ -544,10 +576,15 @@
                         }
                         return;
                     }
+                    if (self._mqttRetryTimer) {
+                        clearTimeout(self._mqttRetryTimer);
+                        self._mqttRetryTimer = null;
+                    }
                     self._mqttApiFailCount = 0;
                     self._updateMqttStatusUI(res.data || {});
                 })
                 .catch(function(err) {
+                    if (requestSeq !== self._mqttStatusRequestSeq) return;
                     // Navigation/unmount cancellation is expected and must not
                     // turn the MQTT badge into a false connection failure.
                     if (err && (
@@ -557,7 +594,6 @@
                     // Preserve diagnostics from request-governor handled HTTP
                     // failures, but do not replace them with a generic message.
                     const diagnostic = self._getMqttStatusFailureReason(err);
-                    if (diagnostic) self._setMqttStatusReason(diagnostic);
                     if (err && err._handled) {
                         // A handled 401/403 can still leave the old green
                         // badge visible when another page request triggered
@@ -575,8 +611,7 @@
                         return;
                     }
                     self._mqttApiFailCount++;
-                    self._setMqttStatusReason(diagnostic || '状态接口不可用，请检查设备连接');
-                    self._handleMqttApiFail();
+                    self._handleMqttApiFail(diagnostic || '状态接口不可用，请检查设备连接');
                     // 快速重试：首次失败后3秒再试一次
                     if (self._mqttApiFailCount === 1) {
                         self._mqttRetryTimer = setTimeout(function() {
@@ -587,37 +622,13 @@
                 });
         },
 
-        /**
-         * 处理 MQTT 状态 API 调用失败
-         * 连续失败超过阈值时更新 badge 为“连接超时”
-         */
-        _handleMqttApiFail() {
+        /** 两次连续状态请求失败后才从中性检测态切换为错误。 */
+        _handleMqttApiFail(reason) {
             const badge = document.getElementById('mqtt-status-badge');
             if (!badge) return;
-            // 初始“检测中...”状态立即转为“连接中”
-            if (badge.classList.contains('mqtt-status-detecting')) {
-                badge.className = 'mqtt-status-badge mqtt-status-connecting';
-                badge.textContent = '连接中';
-                return;
-            }
-            // 连续4次失败后，将"连接中"更新为"连接超时"
-            // 阈值从2提升到4，避免设备启动初期API短暂不可用时过早显示超时
-            if (this._mqttApiFailCount >= 4 && badge.classList.contains('mqtt-status-connecting')) {
-                badge.className = 'mqtt-status-badge mqtt-status-offline';
-                badge.textContent = '连接超时';
-            }
-        },
-
-        /**
-         * 确保 badge 不停留在初始的“检测中...”状态
-         */
-        _ensureBadgeNotStuck() {
-            const badge = document.getElementById('mqtt-status-badge');
-            if (!badge) return;
-            if (badge.classList.contains('mqtt-status-detecting')) {
-                badge.className = 'mqtt-status-badge mqtt-status-connecting';
-                badge.textContent = '连接中';
-            }
+            // 首次瞬时失败仍保持中性检测态；快速重试再次失败后才展示错误。
+            if (this._mqttApiFailCount < 2) return;
+            this._setMqttFailureStatus(reason || 'MQTT 状态接口不可用', '状态获取失败');
         },
 
         _updateMqttStatusUI: function(data) {
@@ -627,6 +638,11 @@
             const clientEl = document.getElementById('mqtt-status-clientid');
             const reconnEl = document.getElementById('mqtt-status-reconnects');
             const reasonEl = document.getElementById('mqtt-status-reason');
+            [serverEl, clientEl, reconnEl, reasonEl].forEach(function(el) {
+                if (!el) return;
+                if (el.classList) el.classList.remove('fb-skeleton-text');
+                if (el.removeAttribute) el.removeAttribute('aria-label');
+            });
             if (reasonEl) {
                 const reason = this._getMqttStatusFailureReason(d);
                 reasonEl.textContent = reason || '--';

@@ -38,6 +38,7 @@ constexpr unsigned long PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
 constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
+constexpr uint32_t PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS = 2000;
 constexpr size_t PERIPH_EXEC_CONFIG_MAX_BYTES = 96 * 1024;
 constexpr unsigned long SENSOR_CACHE_LOCK_WARN_INTERVAL_MS = 5000;
 
@@ -170,6 +171,58 @@ static bool executeDirectOutputCommand(PeripheralManager& pm,
     }
 
     return false;
+}
+
+static bool triggersMatch(const ExecTrigger& actual, const ExecTrigger& expected) {
+    return actual.triggerType == expected.triggerType &&
+           actual.triggerPeriphId == expected.triggerPeriphId &&
+           actual.operatorType == expected.operatorType &&
+           actual.compareValue == expected.compareValue &&
+           actual.timerMode == expected.timerMode &&
+           actual.intervalSec == expected.intervalSec &&
+           actual.timePoint == expected.timePoint &&
+           actual.eventId == expected.eventId &&
+           actual.pollResponseTimeout == expected.pollResponseTimeout &&
+           actual.pollMaxRetries == expected.pollMaxRetries &&
+           actual.pollInterPollDelay == expected.pollInterPollDelay &&
+           actual.lastTriggerTime == expected.lastTriggerTime &&
+           actual.triggerCount == expected.triggerCount &&
+           actual._cachedHour == expected._cachedHour &&
+           actual._cachedMinute == expected._cachedMinute;
+}
+
+static bool actionsMatch(const ExecAction& actual, const ExecAction& expected) {
+    return actual.targetPeriphId == expected.targetPeriphId &&
+           actual.actionType == expected.actionType &&
+           actual.actionValue == expected.actionValue &&
+           actual.useReceivedValue == expected.useReceivedValue &&
+           actual.syncDelayMs == expected.syncDelayMs &&
+           actual.execMode == expected.execMode;
+}
+
+static bool rulesMatch(const PeriphExecRule& actual,
+                       const PeriphExecRule& expected) {
+    if (actual.id != expected.id ||
+        actual.name != expected.name ||
+        actual.enabled != expected.enabled ||
+        actual.execMode != expected.execMode ||
+        actual.protocolType != expected.protocolType ||
+        actual.scriptContent != expected.scriptContent ||
+        actual.reportAfterExec != expected.reportAfterExec ||
+        actual._cachedNeedsModbus != expected._cachedNeedsModbus ||
+        actual._cachedHasPollCollectionAction != expected._cachedHasPollCollectionAction ||
+        actual.triggers.size() != expected.triggers.size() ||
+        actual.actions.size() != expected.actions.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < actual.triggers.size(); ++i) {
+        if (!triggersMatch(actual.triggers[i], expected.triggers[i])) return false;
+    }
+    for (size_t i = 0; i < actual.actions.size(); ++i) {
+        if (!actionsMatch(actual.actions[i], expected.actions[i])) return false;
+    }
+    return true;
 }
 
 }
@@ -537,6 +590,14 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
         return false;
     }
 
+    const bool added = addRuleLocked(rule, errorMsg);
+    if (added) refreshRuleRuntimeIndexesLocked();
+    return added;
+}
+
+bool PeriphExecManager::addRuleLocked(const PeriphExecRule& rule,
+                                      String& errorMsg,
+                                      String* storedId) {
     PeriphExecRule newRule = rule;
     if (newRule.id.isEmpty()) {
         newRule.id = generateUniqueId();
@@ -580,9 +641,7 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
         t.triggerCount = 0;
     }
     rules[newRule.id] = newRule;
-    rebuildButtonEventCache();
-    rebuildDataSourceCache();
-    if (_scheduler) _scheduler->validateLoadedConfig();
+    if (storedId) *storedId = newRule.id;
     LOGGER.infof("[PeriphExec] Added rule: %s (%s)", newRule.id.c_str(), newRule.name.c_str());
     return true;
 }
@@ -600,6 +659,14 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule,
         return false;
     }
 
+    const bool updated = updateRuleLocked(id, rule, errorMsg);
+    if (updated) refreshRuleRuntimeIndexesLocked();
+    return updated;
+}
+
+bool PeriphExecManager::updateRuleLocked(const String& id,
+                                         const PeriphExecRule& rule,
+                                         String& errorMsg) {
     auto it = rules.find(id);
     if (it == rules.end()) {
         LOGGER.warningf("[PeriphExec] Rule not found for update: %s", id.c_str());
@@ -657,9 +724,6 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule,
         }
     }
     rules[id] = updated;
-    rebuildButtonEventCache();
-    rebuildDataSourceCache();
-    if (_scheduler) _scheduler->validateLoadedConfig();
     LOGGER.infof("[PeriphExec] Updated rule: %s", id.c_str());
     return true;
 }
@@ -668,14 +732,19 @@ bool PeriphExecManager::removeRule(const String& id) {
     MutexGuard lock(_rulesMutex);
     if (!lock.isLocked()) return false;
 
+    String errorMsg;
+    const bool removed = removeRuleLocked(id, errorMsg);
+    if (removed) refreshRuleRuntimeIndexesLocked();
+    return removed;
+}
+
+bool PeriphExecManager::removeRuleLocked(const String& id, String& errorMsg) {
     auto it = rules.find(id);
     if (it == rules.end()) {
+        errorMsg = "Rule not found";
         return false;
     }
     rules.erase(it);
-    rebuildButtonEventCache();
-    rebuildDataSourceCache();
-    if (_scheduler) _scheduler->validateLoadedConfig();
     LOGGER.infof("[PeriphExec] Removed rule: %s", id.c_str());
     return true;
 }
@@ -714,25 +783,170 @@ size_t PeriphExecManager::getRuleCount() const {
 bool PeriphExecManager::enableRule(const String& id) {
     MutexGuard lock(_rulesMutex);
     if (!lock.isLocked()) return false;
-    auto it = rules.find(id);
-    if (it == rules.end()) return false;
-    it->second.enabled = true;
-    rebuildButtonEventCache();
-    rebuildDataSourceCache();
-    if (_scheduler) _scheduler->validateLoadedConfig();
-    return true;
+    String errorMsg;
+    const bool enabled = setRuleEnabledLocked(id, true, errorMsg);
+    if (enabled) refreshRuleRuntimeIndexesLocked();
+    return enabled;
 }
 
 bool PeriphExecManager::disableRule(const String& id) {
     MutexGuard lock(_rulesMutex);
     if (!lock.isLocked()) return false;
+    String errorMsg;
+    const bool disabled = setRuleEnabledLocked(id, false, errorMsg);
+    if (disabled) refreshRuleRuntimeIndexesLocked();
+    return disabled;
+}
+
+bool PeriphExecManager::setRuleEnabledLocked(const String& id, bool enabled,
+                                             String& errorMsg) {
     auto it = rules.find(id);
-    if (it == rules.end()) return false;
-    it->second.enabled = false;
+    if (it == rules.end()) {
+        errorMsg = "Rule not found";
+        return false;
+    }
+    it->second.enabled = enabled;
+    return true;
+}
+
+void PeriphExecManager::refreshRuleRuntimeIndexesLocked(bool validateScheduler) {
     rebuildButtonEventCache();
     rebuildDataSourceCache();
-    if (_scheduler) _scheduler->validateLoadedConfig();
-    return true;
+    if (validateScheduler && _scheduler) _scheduler->validateLoadedConfig();
+}
+
+bool PeriphExecManager::addRuleAndSave(const PeriphExecRule& rule,
+                                       String& errorMsg) {
+    return applyRuleMutationTransactional(RuleMutationType::ADD, rule.id,
+                                          &rule, errorMsg);
+}
+
+bool PeriphExecManager::updateRuleAndSave(const String& id,
+                                          const PeriphExecRule& rule,
+                                          String& errorMsg) {
+    return applyRuleMutationTransactional(RuleMutationType::UPDATE, id,
+                                          &rule, errorMsg);
+}
+
+bool PeriphExecManager::removeRuleAndSave(const String& id, String& errorMsg) {
+    return applyRuleMutationTransactional(RuleMutationType::REMOVE, id,
+                                          nullptr, errorMsg);
+}
+
+bool PeriphExecManager::enableRuleAndSave(const String& id, String& errorMsg) {
+    return applyRuleMutationTransactional(RuleMutationType::ENABLE, id,
+                                          nullptr, errorMsg);
+}
+
+bool PeriphExecManager::disableRuleAndSave(const String& id, String& errorMsg) {
+    return applyRuleMutationTransactional(RuleMutationType::DISABLE, id,
+                                          nullptr, errorMsg);
+}
+
+bool PeriphExecManager::applyRuleMutationTransactional(
+    RuleMutationType operation, const String& id,
+    const PeriphExecRule* rule, String& errorMsg) {
+    errorMsg = "";
+    MutexGuard lock(_rulesMutex,
+                    pdMS_TO_TICKS(PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS));
+    if (!lock.isLocked()) {
+        errorMsg = "RULE_SERVICE_BUSY: rule configuration is locked; retry in 2s";
+        return false;
+    }
+
+    RuleMutationSnapshot snapshot;
+    snapshot.id = id;
+    if (!id.isEmpty()) {
+        auto existing = rules.find(id);
+        if (existing != rules.end()) {
+            snapshot.existed = true;
+            snapshot.rule = existing->second;
+        }
+    }
+
+    String resultId = id;
+    bool mutated = false;
+    switch (operation) {
+        case RuleMutationType::ADD:
+            if (!rule) {
+                errorMsg = "INVALID_RULE_MUTATION: add requires a rule";
+                return false;
+            }
+            mutated = addRuleLocked(*rule, errorMsg, &resultId);
+            break;
+        case RuleMutationType::UPDATE:
+            if (!rule) {
+                errorMsg = "INVALID_RULE_MUTATION: update requires a rule";
+                return false;
+            }
+            mutated = updateRuleLocked(id, *rule, errorMsg);
+            break;
+        case RuleMutationType::REMOVE:
+            mutated = removeRuleLocked(id, errorMsg);
+            break;
+        case RuleMutationType::ENABLE:
+            mutated = setRuleEnabledLocked(id, true, errorMsg);
+            break;
+        case RuleMutationType::DISABLE:
+            mutated = setRuleEnabledLocked(id, false, errorMsg);
+            break;
+    }
+
+    if (!mutated) return false;
+
+    if (saveConfigurationLocked()) {
+        // Derived indexes are read without _rulesMutex. Publish the mutation
+        // only after the atomic file commit succeeds.
+        refreshRuleRuntimeIndexesLocked(false);
+        if (_scheduler) _scheduler->validateLoadedConfig();
+        return true;
+    }
+
+    const bool restored = restoreRuleMutationLocked(snapshot, resultId);
+    if (restored) {
+        errorMsg = "PERSISTENCE_ROLLBACK_OK: rule was not saved; "
+                   "in-memory rule and runtime indexes were restored";
+    } else {
+        errorMsg = "ROLLBACK_FAILED: rule was not saved and runtime state "
+                   "could not be restored completely";
+    }
+    return false;
+}
+
+bool PeriphExecManager::restoreRuleMutationLocked(
+    const RuleMutationSnapshot& snapshot, const String& resultId) {
+    if (snapshot.existed) {
+        // UPDATE/ENABLE/DISABLE keep the map node alive so rollback does not
+        // require a fresh allocation on an already memory-constrained device.
+        auto existing = rules.find(snapshot.id);
+        if (existing != rules.end()) {
+            existing->second = snapshot.rule;
+        } else {
+            rules[snapshot.id] = snapshot.rule;
+        }
+        if (!resultId.isEmpty() && resultId != snapshot.id) {
+            rules.erase(resultId);
+        }
+    } else {
+        if (!resultId.isEmpty()) rules.erase(resultId);
+        if (!snapshot.id.isEmpty() && snapshot.id != resultId) {
+            rules.erase(snapshot.id);
+        }
+    }
+
+    bool restored = false;
+    if (snapshot.existed) {
+        auto it = rules.find(snapshot.id);
+        restored = it != rules.end() && rulesMatch(it->second, snapshot.rule);
+    } else {
+        restored = (resultId.isEmpty() || rules.count(resultId) == 0) &&
+                   (snapshot.id.isEmpty() || rules.count(snapshot.id) == 0);
+    }
+
+    // The snapshot is the exact pre-mutation runtime state. Scheduler safety
+    // validation could modify it again, so rollback only rebuilds derived indexes.
+    refreshRuleRuntimeIndexesLocked(false);
+    return restored;
 }
 
 bool PeriphExecManager::hasButtonEventRule(const String& periphId, const String& eventId) {
@@ -888,7 +1102,14 @@ void PeriphExecManager::notifySensorDataSSE(const String& key, const String& lab
 
 bool PeriphExecManager::saveConfiguration() {
     MutexGuard lock(_rulesMutex);
+    if (!lock.isLocked()) {
+        LOGGER.warning("[PeriphExec] Save skipped: rule configuration is locked");
+        return false;
+    }
+    return saveConfigurationLocked();
+}
 
+bool PeriphExecManager::saveConfigurationLocked() {
     // 流式保存：逐规则构建小 JsonDocument（单条约 1~2KB）并直接序列化进临时文件，
     // 避免把整份配置表（20+KB）构建进单个 JsonDocument，在堆碎片化
     // （freeHeap~30KB / maxAlloc~27KB）下直接 overflow 失败。

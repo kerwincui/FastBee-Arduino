@@ -3,7 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { createWebAssetReport, formatBytes } = require('./web-asset-report');
+const { createWebAssetReport } = require('./web-asset-report');
+const {
+    DEFAULT_WEB_ASSET_BUDGETS,
+    evaluateWebAssetReport
+} = require('./web-quality-gate');
+const {
+    ASSET_CAPABILITY_REQUIREMENTS,
+    capabilityRuleSatisfied
+} = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
@@ -23,72 +31,31 @@ const REQUIRED_GZIP_ASSETS = [
     'js/modules/device-config.js.gz',
     'js/modules/periph-exec.js.gz',
     'js/modules/periph-exec-form.js.gz',
-    'js/modules/periph-exec-modbus.js.gz',
     'js/modules/network.js.gz',
     'js/modules/feature-config.js.gz',
     'js/modules/admin-bundle.js.gz',
     'js/modules/peripherals.js.gz',
+    'js/modules/peripheral-save.js.gz',
+    'js/modules/peripheral-io.js.gz',
     'pages/dashboard.html.gz',
     'pages/device.html.gz',
     'pages/network.html.gz',
     'pages/peripheral.html.gz',
     'pages/protocol.html.gz',
     'pages/features.html.gz',
-    'pages/modals.html.gz'
-];
-const STANDARD_GZIP_ASSETS = [
-    'sw.js.gz',
-    'js/modules/protocol-full-config.js.gz',
-    'js/modules/protocol-modbus-rtu.js.gz',
-    'js/modules/protocol-modbus-control.js.gz',
-    'js/modules/device-control.js.gz',
-    'js/modules/device-control-view.js.gz',
-    'js/modules/device-control-modbus.js.gz',
-    'js/modules/rule-script.js.gz',
-    'pages/fragments/protocol-mqtt.html.gz',
-    'pages/fragments/protocol-modbus-rtu.html.gz',
-    'pages/rule-script.html.gz'
-];
-const FULL_GZIP_ASSETS = [
-    'js/modules/dashboard-fullscreen.js.gz',
-    'js/modules/logs.js.gz',
-    'js/modules/rule-script.js.gz',
-    'js/modules/users.js.gz',
-    'pages/admin.html.gz',
-    'pages/logs.html.gz',
-    'pages/rule-script.html.gz',
-    'pages/fullscreen.html.gz',
-    'pages/fragments/device-ota.html.gz'
+    'pages/modals.html.gz',
+    'pages/fragments/peripheral-io.html.gz'
 ];
 const RETIRED_ASSETS = [
     'js/modules/files.js',
-    'js/modules/files.js.gz'
+    'js/modules/files.js.gz',
+    'js/modules/peripheral-board.js',
+    'js/modules/peripheral-board.js.gz',
+    'js/modules/peripheral-experiments.js',
+    'js/modules/peripheral-experiments.js.gz'
 ];
 
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js']);
-const WEB_ASSET_BUDGETS = {
-    lite: {
-        totalGzip: 200 * 1024,
-        bootGzip: 56 * 1024,
-        singleAssetGzip: 28 * 1024,
-        pageBundleGzip: 12 * 1024
-    },
-    standard: {
-        totalGzip: 240 * 1024,
-        bootGzip: 60 * 1024,
-        singleAssetGzip: 30 * 1024,
-        pageBundleGzip: 13 * 1024
-    },
-    full: {
-        // 285KB: 含运行时功能配置页 (feature-config.js + features.html, ~3KB gz)
-        // 296KB: 新增 OTA 升级模块 (device-ota.js + device-ota.html 分片 + i18n 键, ~8.5KB gz, 2026-08-15)
-        // 320KB: full 当前包含设备大屏、Modbus 控制、日志/用户管理和中英文完整 i18n。
-        totalGzip: 320 * 1024,
-        bootGzip: 64 * 1024,
-        singleAssetGzip: 32 * 1024,
-        pageBundleGzip: 14 * 1024
-    }
-};
 const failures = [];
 
 function normalizeRel(filePath) {
@@ -99,15 +66,16 @@ function assetExists(relPath) {
     return fs.existsSync(path.join(WWW_DIR, relPath));
 }
 
-function inferPublishedProfile() {
-    if (assetExists('pages/admin.html.gz')) {
-        return 'full';
+function readPublishedManifest() {
+    const manifestPath = path.join(WWW_DIR, 'web-resource-manifest.json');
+    assert(fs.existsSync(manifestPath), 'web-resource-manifest.json must be published');
+    if (!fs.existsSync(manifestPath)) return { resources: [], compiledCapabilities: {}, environment: 'unknown' };
+    try {
+        return JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+    } catch (error) {
+        fail(`cannot parse web-resource-manifest.json: ${error.message}`);
+        return { resources: [], compiledCapabilities: {}, environment: 'unknown' };
     }
-    if (assetExists('js/modules/device-control.js.gz') ||
-        assetExists('pages/fragments/protocol-modbus-rtu.html.gz')) {
-        return 'standard';
-    }
-    return 'lite';
 }
 
 function walkDir(dir, files) {
@@ -150,17 +118,18 @@ function readGzipText(relPath) {
     }
 }
 
-function checkRequiredAssets(profile) {
-    let required = REQUIRED_GZIP_ASSETS.slice();
-    if (profile === 'standard' || profile === 'full') {
-        required = required.concat(STANDARD_GZIP_ASSETS);
-    }
-    if (profile === 'full') {
-        required = required.concat(FULL_GZIP_ASSETS);
-    }
-
-    required.forEach((relPath) => {
+function checkRequiredAssets(manifest) {
+    REQUIRED_GZIP_ASSETS.forEach((relPath) => {
         assert(fs.existsSync(path.join(WWW_DIR, relPath)), `required asset not found: ${relPath}`);
+    });
+
+    const declared = new Set(Array.isArray(manifest.resources) ? manifest.resources : []);
+    const context = { compiledCapabilities: manifest.compiledCapabilities || {} };
+    Object.entries(ASSET_CAPABILITY_REQUIREMENTS).forEach(([relPath, requirements]) => {
+        const expected = capabilityRuleSatisfied(requirements, context);
+        const published = declared.has(relPath) && assetExists(`${relPath}.gz`);
+        assert(published === expected,
+            `${relPath} must be ${expected ? 'published' : 'omitted'} for compiled capabilities`);
     });
 }
 
@@ -195,7 +164,7 @@ function checkJavascriptSyntax(files) {
     });
 }
 
-function checkUiRegressionGuards(files) {
+function checkUiRegressionGuards(files, manifest) {
     const allJs = files
         .map(normalizeRel)
         .filter((relPath) => relPath.endsWith('.js.gz'))
@@ -216,14 +185,34 @@ function checkUiRegressionGuards(files) {
     const mainCss = readGzipText('css/main.css.gz');
 
     const deviceConfig = readGzipText('js/modules/device-config.js.gz');
+    const peripheralsCore = readGzipText('js/modules/peripherals.js.gz');
+    const peripheralSave = readGzipText('js/modules/peripheral-save.js.gz');
+    const peripheralIo = readGzipText('js/modules/peripheral-io.js.gz');
+    const capabilityContext = {
+        compiledCapabilities: manifest.compiledCapabilities || {}
+    };
+    const otaCompiled = capabilityRuleSatisfied(['ota'], capabilityContext);
+    const configTransferCompiled = capabilityRuleSatisfied(['configTransfer'], capabilityContext);
 
+    assert(!peripheralsCore.includes('/api/boards/profiles') && !peripheralsCore.includes('/api/peripherals/resources'),
+        'board/resource APIs must stay out of the peripherals core');
+    assert(peripheralsCore.includes("ModuleLoader.loadModule('peripheral-save',run)"),
+        'peripheral save/preflight module must be loaded on demand');
+    assert(peripheralsCore.includes("ModuleLoader.loadModule('peripheral-io',run)"),
+        'peripheral diagnostics module must be loaded on demand');
+    assert(peripheralSave.includes('/api/peripherals/preflight'),
+        'peripheral save module preflight API coverage missing');
+    assert(peripheralIo.includes("loadFragment('','peripheral-io')"),
+        'peripheral diagnostics fragment must be loaded on demand');
     // Config transfer multi-select modal logic
-    assert(deviceConfig.includes('_showConfigTransferModal'), 'config transfer modal show method missing');
-    assert(deviceConfig.includes('config-transfer-select-all'), 'config transfer select-all logic missing');
-    assert(deviceConfig.includes('config-transfer-list'), 'config transfer list rendering logic missing');
-    assert(deviceConfig.includes('config-transfer-confirm-btn'), 'config transfer confirm handler missing');
-    assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
-    assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
+    if (configTransferCompiled) {
+        assert(deviceConfig.includes('_showConfigTransferModal'), 'config transfer modal show method missing');
+        assert(deviceConfig.includes('config-transfer-select-all'), 'config transfer select-all logic missing');
+        assert(deviceConfig.includes('config-transfer-list'), 'config transfer list rendering logic missing');
+        assert(deviceConfig.includes('config-transfer-confirm-btn'), 'config transfer confirm handler missing');
+        assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
+        assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
+    }
 
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
     assert(allJs.includes('Request result ignored after page navigation'), 'page-navigation stale response guard missing');
@@ -241,18 +230,33 @@ function checkUiRegressionGuards(files) {
     assert(userIndex >= 0 && descIndex >= 0 && userIndex < descIndex, 'device basic field order should be user ID before description');
     assert(devicePage.includes('dev-basic-footer-field'), 'device basic footer layout class missing');
 
-    // Config transfer modal structure
-    assert(devicePage.includes('dev-config-import-file'), 'config transfer file input missing');
-    assert(devicePage.includes('dev-config-import-btn'), 'config transfer import button missing');
-    assert(devicePage.includes('dev-config-export-btn'), 'config transfer export button missing');
-    assert((devicePage.match(/class="file-input-wrapper u-mb-10"/g) || []).length === 2,
-        'device OTA and config transfer must share the file picker layout');
-    assert(!otaPage || otaPage.includes('class="file-input-wrapper file-input-wrapper-top"'),
-        'OTA fragment must share the file picker layout');
-    assert((devicePage + otaPage).match(/class="fb-btn fb-btn-secondary fb-btn-compact"/g).length >= (otaPage ? 3 : 2),
-        'published file picker triggers must share the same button variant');
-    assert(!/<label[^>]*for="(?:dev-ota-file|dev-config-import-file)"[^>]*style=/.test(devicePage),
-        'published file picker triggers must not depend on inline styles');
+    // Capability-selected file picker structure. Check every compiled picker,
+    // but do not require controls that the publish transform intentionally cut.
+    if (configTransferCompiled) {
+        const configPicker = snippetAround(devicePage, 'id="dev-config-import-file"', 300, 300);
+        assert(configPicker.includes('class="file-input-wrapper u-mb-10"'),
+            'config transfer must use the shared file picker layout');
+        assert(configPicker.includes('class="fb-btn fb-btn-secondary fb-btn-compact"'),
+            'config transfer picker must use the shared button variant');
+        assert(devicePage.includes('dev-config-import-btn'), 'config transfer import button missing');
+        assert(devicePage.includes('dev-config-export-btn'), 'config transfer export button missing');
+        assert(!/<label[^>]*for="dev-config-import-file"[^>]*style=/.test(devicePage),
+            'config transfer picker must not depend on inline styles');
+    }
+    if (otaCompiled) {
+        const inlineOtaPicker = snippetAround(devicePage, 'id="dev-ota-file"', 250, 300);
+        assert(inlineOtaPicker.includes('class="file-input-wrapper u-mb-10"'),
+            'device OTA fallback must use the shared file picker layout');
+        assert(inlineOtaPicker.includes('class="fb-btn fb-btn-secondary fb-btn-compact"'),
+            'device OTA fallback picker must use the shared button variant');
+        assert(!/<label[^>]*for="dev-ota-file"[^>]*style=/.test(devicePage),
+            'device OTA fallback picker must not depend on inline styles');
+        assert(otaPage.includes('id="ota-file"'), 'OTA fragment file input missing');
+        assert(otaPage.includes('class="file-input-wrapper file-input-wrapper-top"'),
+            'OTA fragment must use the shared file picker layout');
+        assert(otaPage.includes('class="fb-btn fb-btn-secondary fb-btn-compact"'),
+            'OTA fragment picker must use the shared button variant');
+    }
     const baseButtonRule = mainCss.match(/\.fb-btn\s*\{(?=[^}]*display:\s*inline-flex)([^}]*)\}/);
     assert(baseButtonRule,
         'published CSS must include the shared .fb-btn base style');
@@ -262,12 +266,14 @@ function checkUiRegressionGuards(files) {
         'published buttons must keep a visible shared border');
     assert(/\.file-input-wrapper\s*>\s*label\.fb-btn/.test(mainCss),
         'published CSS must include the shared file picker trigger style');
-    const modalsPage = readGzipText('pages/modals.html.gz');
-    assert(modalsPage.includes('config-transfer-modal'), 'config transfer modal container missing');
-    assert(modalsPage.includes('config-transfer-select-all'), 'config transfer select-all checkbox missing');
-    assert(modalsPage.includes('config-transfer-list'), 'config transfer list container missing');
-    assert(modalsPage.includes('config-transfer-confirm-btn'), 'config transfer confirm button missing');
-    assert(modalsPage.includes('config-transfer-cancel-btn'), 'config transfer cancel button missing');
+    if (configTransferCompiled) {
+        const modalsPage = readGzipText('pages/modals.html.gz');
+        assert(modalsPage.includes('config-transfer-modal'), 'config transfer modal container missing');
+        assert(modalsPage.includes('config-transfer-select-all'), 'config transfer select-all checkbox missing');
+        assert(modalsPage.includes('config-transfer-list'), 'config transfer list container missing');
+        assert(modalsPage.includes('config-transfer-confirm-btn'), 'config transfer confirm button missing');
+        assert(modalsPage.includes('config-transfer-cancel-btn'), 'config transfer cancel button missing');
+    }
 }
 
 function checkPaginationRegressionGuards(files) {
@@ -299,37 +305,12 @@ function checkPaginationRegressionGuards(files) {
     assert(allJs.includes('totalPages') || allJs.includes('Math.ceil'), 'pagination page calculation logic missing');
 }
 
-function checkAssetBudgets(profile) {
-    const budgets = WEB_ASSET_BUDGETS[profile] || WEB_ASSET_BUDGETS.full;
+function checkAssetBudgets() {
     const report = createWebAssetReport({ topN: 999 });
-
-    assert(
-        report.totals.gzip <= budgets.totalGzip,
-        `web total gzip ${formatBytes(report.totals.gzip)} exceeds ${profile} budget ${formatBytes(budgets.totalGzip)}`
-    );
-    assert(
-        report.boot.gzip <= budgets.bootGzip,
-        `boot gzip ${formatBytes(report.boot.gzip)} exceeds ${profile} budget ${formatBytes(budgets.bootGzip)}`
-    );
-
-    const oversizedAssets = report.largest.filter((item) => {
-        return (item.gzip || item.raw) > budgets.singleAssetGzip;
-    });
-    assert(
-        oversizedAssets.length === 0,
-        `oversized web assets: ${oversizedAssets.map((item) => `${item.path}=${formatBytes(item.gzip || item.raw)}`).join(', ')}`
-    );
-
-    const oversizedBundles = report.pageBundles.filter((item) => {
-        return item.gzip > budgets.pageBundleGzip;
-    });
-    assert(
-        oversizedBundles.length === 0,
-        `runtime bundle gzip exceeds ${profile} budget: ${oversizedBundles.map((item) => `${item.path}=${formatBytes(item.gzip)}`).join(', ')}`
-    );
+    evaluateWebAssetReport(report, DEFAULT_WEB_ASSET_BUDGETS).forEach((issue) => assert(false, issue));
 }
 
-function checkFirstPaintPath(profile) {
+function checkFirstPaintPath(manifest) {
     const html = readGzipText('index.html.gz');
     if (!html) return;
 
@@ -345,21 +326,23 @@ function checkFirstPaintPath(profile) {
     assert(html.includes('dashboard'), 'index.html must reference dashboard module for first page');
 
     // Service worker registration for offline caching
-    if (profile === 'standard' || profile === 'full') {
-        assert(assetExists('sw.js.gz'), `${profile} profile must include service worker for offline caching`);
-    }
+    assert(assetExists('sw.js.gz'), `${manifest.environment} must include service worker for offline caching`);
 
     // i18n language bundles (e.g. i18n-zh-CN.js) should not be loaded synchronously in index.html
     const i18nLangRefs = (html.match(/i18n-[a-z]{2,3}(-[A-Z]{2,4})?\.js/g) || []).length;
     assert(i18nLangRefs === 0, 'i18n language bundles should be loaded on demand, not in index.html');
 
-    const fullscreenHtml = readGzipText('pages/fullscreen.html.gz');
-    assert(fullscreenHtml.includes('../js/modules/dashboard-fullscreen.js'),
-        'fullscreen page must load its published runtime module');
-    assert(!fullscreenHtml.includes('../js/chunk-1-core.js'),
-        'fullscreen page must stay independent from the memory-heavy application core chunk');
-    assert(!fullscreenHtml.includes('../js/notification.js'),
-        'fullscreen page must not load the unused standalone notification module');
+    const fullscreenHtml = assetExists('pages/fullscreen.html.gz')
+        ? readGzipText('pages/fullscreen.html.gz')
+        : '';
+    if (fullscreenHtml) {
+        assert(fullscreenHtml.includes('../js/modules/dashboard-fullscreen.js'),
+            'fullscreen page must load its published runtime module');
+        assert(!fullscreenHtml.includes('../js/chunk-1-core.js'),
+            'fullscreen page must stay independent from the memory-heavy application core chunk');
+        assert(!fullscreenHtml.includes('../js/notification.js'),
+            'fullscreen page must not load the unused standalone notification module');
+    }
     [
         'chunk-1-core-a.js',
         'chunk-2-core-b.js',
@@ -407,6 +390,7 @@ function checkFeatureConfigJsonBodyGuard() {
 function checkFeatureListRenderingGuard() {
     const featureJs = read('web-src/modules/runtime/feature-config.js');
     const featureHtml = read('web-src/pages/features.html');
+    const mainCss = read('web-src/css/main.css');
     const featureSuite = read('test/browser/suites/22-feature-config.spec.ts');
 
     assert(featureJs.includes('this.renderGroupTables(this._featureState)'),
@@ -417,8 +401,22 @@ function checkFeatureListRenderingGuard() {
         'feature config must not inject a redundant footer hint');
     assert(!featureHtml.includes('灰显项表示功能未编译'),
         'features page must not contain the redundant footer explanation');
+    assert(!featureHtml.includes('features-summary') && !featureJs.includes('features-summary'),
+        'feature config must not render or update the redundant resource summary');
+    assert(!featureJs.includes('feature-name') && !mainCss.includes('.feature-name'),
+        'feature names must use plain table-cell text without a dedicated style');
+    assert(!mainCss.includes('.feature-summary'),
+        'removed feature summary must not leave an unused CSS rule');
     assert(featureSuite.includes('status.features.filter(f => !!f.name)'),
         'FCFG-003 must compare the DOM with named, displayable API features');
+
+    const featureHeaderIndex = featureHtml.indexOf('fb-card-header-toolbar');
+    const featureMonitorIndex = featureHtml.indexOf('id="features-ram-monitor"');
+    const featureActionsIndex = featureHtml.indexOf('class="fb-card-header-actions"');
+    const featureBodyIndex = featureHtml.indexOf('class="fb-card-body"');
+    assert(featureHeaderIndex >= 0 && featureHeaderIndex < featureMonitorIndex
+        && featureMonitorIndex < featureActionsIndex && featureActionsIndex < featureBodyIndex,
+        'feature RAM metrics and actions must share the card header toolbar');
 }
 
 function checkFeatureTransferRegressionGuards() {
@@ -452,11 +450,13 @@ function checkButtonColorRegressionGuards() {
 }
 
 function checkGovernorOverloadRegressionGuards() {
-    // 2025-06 修复: Modbus 初始化前应等待 1500ms cooldown，请求间隔 600ms
+    // Modbus 初始化前应等待 1500ms cooldown，请求间隔 600ms；
+    // 延时必须可在页面退出时取消，避免旧页面继续发请。
     const coreJs = read('web-src/modules/runtime/device-control/core.js');
-    assert(coreJs.includes('setTimeout(resolve, 1500)'), 'Modbus init should start with 1500ms initial cooldown');
-    assert(coreJs.includes('setTimeout(resolve, 600)'), 'Modbus inter-request delay should be 600ms');
-    assert(!/setTimeout\(resolve, (150|300|800)\)/.test(coreJs), 'Modbus timing must NOT use old values (150/300/800ms)');
+    assert(coreJs.includes('_dcDelay(1500, lifecycleGeneration)'), 'Modbus init should start with cancellable 1500ms cooldown');
+    assert(coreJs.includes('_dcDelay(600, lifecycleGeneration)'), 'Modbus inter-request delay should be cancellable and 600ms');
+    assert(coreJs.includes('_dcCancelPendingDelays()'), 'device-control teardown should cancel pending Modbus delays');
+    assert(!/_dcDelay\((150|300|800),/.test(coreJs), 'Modbus timing must NOT use old values (150/300/800ms)');
 
     // apiMqttTest 应通过 Governor.enqueue 调度，避免绕过请求调度器
     const govJs = read('web-src/js/request-governor.js');
@@ -536,31 +536,38 @@ function checkSharedStaticAssetQueue() {
 
 function checkPageLoaderResponseIntegrity() {
     const source = read('web-src/js/page-loader.js');
-    const loadStart = source.indexOf('async loadPage(pageId, pageMapping)');
+    const loadStart = source.indexOf('async loadPage(pageId, pageMapping, options)');
     const catchStart = source.indexOf('} catch(e) {', loadStart);
     const finallyStart = source.indexOf('} finally {', catchStart);
     const loadBlock = source.slice(loadStart, finallyStart);
     const catchBlock = source.slice(catchStart, finallyStart);
+    const cacheStart = source.indexOf('_cachePageTemplates(moduleName, html)');
+    const mountStart = source.indexOf('_mountPage(pageId)');
+    const mountEnd = source.indexOf('\n    mountPage(pageId)', mountStart);
+    const cacheBlock = source.slice(cacheStart, mountStart);
+    const mountBlock = source.slice(mountStart, mountEnd);
 
-    const rootCheck = loadBlock.indexOf("wrapper.querySelector('#' + rootId)");
-    const appendPage = loadBlock.indexOf('container.appendChild(wrapper.firstChild)');
-    const markLoaded = loadBlock.indexOf('this._loadedPages[moduleName] = true');
     assert(loadStart >= 0 && catchStart > loadStart && finallyStart > catchStart,
         'PageLoader loadPage try/catch structure must remain detectable');
-    assert(rootCheck >= 0 && appendPage > rootCheck && markLoaded > appendPage,
-        'PageLoader must validate the expected page root before DOM insertion and loaded caching');
+    assert(cacheBlock.includes("wrapper.querySelectorAll('.page[id]')") &&
+        cacheBlock.includes('this._pageTemplates[root.id] = root.outerHTML') &&
+        cacheBlock.includes('this._loadedPages[moduleName] = true'),
+        'PageLoader must validate and cache page roots before marking the module loaded');
     assert(loadBlock.includes('Page response missing expected root'),
         'PageLoader must reject a 200 response that lacks the expected page root');
-    assert(loadBlock.includes('var rootId = pageId;') &&
-        !loadBlock.includes("var rootId = moduleName + '-page';"),
+    assert(loadBlock.includes('this._pageTemplates[pageId]') &&
+        !loadBlock.includes("moduleName + '-page'"),
         'PageLoader must validate the mapped page ID, which may differ from the HTML module name');
-    assert(loadBlock.includes('root.remove()') && loadBlock.includes('wasActive'),
+    assert(mountBlock.includes("existing.querySelector('[data-page-fallback]')") &&
+        mountBlock.includes('existing.remove()'),
         'A successful retry must replace an existing fallback root');
+    assert(loadBlock.includes("options.mount === false ? null : this._mountPage(pageId)"),
+        'PageLoader must support cache-only loads so stale navigations cannot mount DOM');
     assert(catchBlock.includes('delete this._loadedPages[moduleName]'),
         'A failed page load must clear its loaded cache entry');
     assert(!catchBlock.includes('this._loadedPages[moduleName] = true'),
         'A fallback page must remain retryable instead of being cached as loaded');
-    assert(catchBlock.includes('this._renderUnavailablePage(pageId, e)'),
+    assert(catchBlock.includes("if (options.mount !== false) this._renderUnavailablePage(pageId, e)"),
         'A failed module load must render the fallback under the requested page ID');
     assert(source.includes('PAGE_FETCH_TIMEOUT_MS') && source.includes('new AbortController()'),
         'PageLoader fetches must use a bounded abort timeout so the shared asset queue cannot hang forever');
@@ -670,8 +677,7 @@ function checkRoleManagementRemoved() {
 }
 
 function checkDeveloperModeAndModalEventBinding() {
-    // 2025-06 修复: 模态窗事件必须在 _loadModals 后重新绑定，
-    // 否则新增外设/新增规则等按钮打开模态窗后无法保存/取消/关闭
+    // 模态窗按需挂载，关闭后销毁；重新创建的 DOM 必须重新绑定事件。
 
     // 1. state.js 必须包含模态窗事件重绑定机制
     const stateJs = read('web-src/js/state.js');
@@ -679,8 +685,17 @@ function checkDeveloperModeAndModalEventBinding() {
         'state.js must provide _registerModalBinder for modal event rebinding');
     assert(stateJs.includes('_rebindAllModalEvents'),
         'state.js must provide _rebindAllModalEvents to trigger all modal binders');
-    assert(stateJs.includes('self._rebindAllModalEvents()'),
-        '_loadModals must call _rebindAllModalEvents after modals DOM is ready');
+    assert(stateJs.includes('ensureModal(modalId)'),
+        'state.js must mount modal templates on demand');
+    assert(stateJs.includes('this._resetModalBindingState(modalId)'),
+        'state.js must reset binding guards for recreated modal DOM');
+    const pageLoaderJs = read('web-src/js/page-loader.js');
+    assert(pageLoaderJs.includes('_modalTemplates'),
+        'page-loader.js must cache individual modal templates');
+    assert(pageLoaderJs.includes('unmountModal(modalId)'),
+        'page-loader.js must support destroying closed modal roots');
+    assert(!pageLoaderJs.includes('document.body.appendChild(wrapper.firstChild)'),
+        'loadModals must not retain every modal root in body');
 
     // 2. peripherals.js 必须将模态窗事件分离并通过 binder 注册
     const peripheralsJs = read('web-src/modules/runtime/peripherals.js');
@@ -709,26 +724,61 @@ function checkDeveloperModeAndModalEventBinding() {
     assert(ruleScriptJs.includes("_registerModalBinder('rule-script'"),
         'rule-script.js must register modal binder via _registerModalBinder');
 
-    // 5. 外设配置页面必须有开发环境禁用提示条
+    // 5. 用户弹窗同样需要在每次按需挂载后重绑
+    const usersJs = read('web-src/modules/admin/users.js');
+    assert(usersJs.includes('_bindUserModalEvents'),
+        'users.js must separate modal event binding from page event binding');
+    assert(usersJs.includes("_registerModalBinder('users'"),
+        'users.js must register modal binder via _registerModalBinder');
+
+    // 6. 外设配置页面必须有开发环境禁用提示条
     const peripheralHtml = read('web-src/pages/peripheral.html');
     assert(peripheralHtml.includes('peripheral-dev-mode-hint'),
         'peripheral.html must have developer-mode-disabled hint bar');
+    ['peripheral-board-resources', 'peripheral-automation', 'peripheral-experiments'].forEach((removedId) => {
+        assert(!peripheralHtml.includes(removedId), `peripheral workspace must not expose #${removedId}`);
+    });
+    assert(!peripheralHtml.includes('class="config-tabs"'),
+        'peripheral configuration must open directly on the peripheral list');
+    const peripheralPageIndex = peripheralHtml.indexOf('id="peripheral-page"');
+    const periphExecPageIndex = peripheralHtml.indexOf('id="periph-exec-page"');
+    const deviceControlPageIndex = peripheralHtml.indexOf('id="device-control-page"');
+    const peripheralPageHtml = peripheralHtml.slice(peripheralPageIndex, periphExecPageIndex);
+    const periphExecPageHtml = peripheralHtml.slice(periphExecPageIndex, deviceControlPageIndex);
+    [
+        [peripheralPageHtml, 'peripheral-list-summary', 'peripheral'],
+        [periphExecPageHtml, 'periph-exec-list-summary', 'periph-exec']
+    ].forEach(([pageHtml, summaryId, pageName]) => {
+        const headerIndex = pageHtml.indexOf('fb-card-header-toolbar');
+        const summaryIndex = pageHtml.indexOf(`id="${summaryId}"`);
+        const actionsIndex = pageHtml.indexOf('class="fb-card-header-actions"');
+        const bodyIndex = pageHtml.indexOf('class="fb-card-body"');
+        assert(headerIndex >= 0 && headerIndex < summaryIndex
+            && summaryIndex < actionsIndex && actionsIndex < bodyIndex,
+            `${pageName} filter, summary, and actions must share the card header toolbar`);
+    });
+    assert(peripheralsJs.includes("getElementById('peripheral-list-summary')")
+        && peripheralsJs.includes('pagination.hidden = !hasMultiplePages'),
+        'peripheral list must update the header summary and hide single-page pagination');
+    assert(periphExecJs.includes("getElementById('periph-exec-list-summary')")
+        && periphExecJs.includes('pagination.hidden = !hasMultiplePages'),
+        'periph-exec list must update the header summary and hide single-page pagination');
     assert(peripheralsJs.includes('peripheral-dev-mode-hint'),
         'peripherals.js must show/hide developer mode hint bar');
 
-    // 6. 开发环境状态管理: applyDeveloperModeState 必须覆盖关键按钮
+    // 7. 开发环境状态管理: applyDeveloperModeState 必须覆盖关键按钮
     assert(stateJs.includes("'#add-peripheral-btn'"),
         'applyDeveloperModeState must target #add-peripheral-btn');
     assert(stateJs.includes("'#periph-exec-page-add-btn'"),
         'applyDeveloperModeState must target #periph-exec-page-add-btn');
 
-    // 7. 角色权限已移除，前端不应有任何权限检查
+    // 8. 角色权限已移除，前端不应有任何权限检查
     assert(!peripheralsJs.includes('hasPermission') && !peripheralsJs.includes('checkPermission'),
         'peripherals.js must NOT contain permission checks (roles removed)');
     assert(!periphExecJs.includes('hasPermission') && !periphExecJs.includes('checkPermission'),
         'periph-exec.js must NOT contain permission checks (roles removed)');
 
-    // 8. CSS 双态: dev-mode-locked 类必须存在
+    // 9. CSS 双态: dev-mode-locked 类必须存在
     const mainCss = read('web-src/css/main.css');
     assert(mainCss.includes('.dev-mode-locked'),
         'main.css must define .dev-mode-locked class for disabled-state styling');
@@ -756,6 +806,15 @@ function checkDeveloperModeAndModalEventBinding() {
         'rule-script.html must have developer-mode-disabled hint bar');
     assert(ruleScriptJs.includes('rule-script-dev-mode-hint'),
         'rule-script.js must show/hide developer mode hint bar');
+    const ruleHeaderIndex = ruleScriptHtml.indexOf('fb-card-header-toolbar');
+    const ruleSummaryIndex = ruleScriptHtml.indexOf('id="rule-script-list-summary"');
+    const ruleActionsIndex = ruleScriptHtml.indexOf('class="fb-card-header-actions"');
+    const ruleBodyIndex = ruleScriptHtml.indexOf('class="fb-card-body"');
+    assert(ruleHeaderIndex >= 0 && ruleHeaderIndex < ruleSummaryIndex
+        && ruleSummaryIndex < ruleActionsIndex && ruleActionsIndex < ruleBodyIndex,
+        'rule-script summary and actions must share the card header toolbar');
+    assert(ruleScriptJs.includes("getElementById('rule-script-list-summary')"),
+        'rule-script.js must update the header summary');
 
     // 11. 容量锁定函数存在于各自模块中（非 state.js）
     assert(peripheralsJs.includes('_setPeripheralCapacity'),
@@ -767,13 +826,13 @@ function checkDeveloperModeAndModalEventBinding() {
 function run() {
     const files = [];
     walkDir(WWW_DIR, files);
-    const profile = inferPublishedProfile();
+    const manifest = readPublishedManifest();
 
-    checkRequiredAssets(profile);
+    checkRequiredAssets(manifest);
     checkRetiredAssetsAreAbsent();
     checkCompressedOnly(files);
     checkJavascriptSyntax(files);
-    checkUiRegressionGuards(files);
+    checkUiRegressionGuards(files, manifest);
     checkPaginationRegressionGuards(files);
     checkRoleCaseRegressionGuards();
     checkMenuOrderRegressionGuards();
@@ -791,15 +850,15 @@ function run() {
     checkWifiSecurityRegressionGuards();
     checkRoleManagementRemoved();
     checkDeveloperModeAndModalEventBinding();
-    checkAssetBudgets(profile);
-    checkFirstPaintPath(profile);
+    checkAssetBudgets();
+    checkFirstPaintPath(manifest);
 
     if (failures.length > 0) {
         console.error(`\nWeb smoke test failed: ${failures.length} issue(s)`);
         process.exit(1);
     }
 
-    console.log(`Web smoke test passed: profile=${profile}, ${files.length} published file(s), ${files.filter((file) => file.endsWith('.gz')).length} gzip asset(s)`);
+    console.log(`Web smoke test passed: environment=${manifest.environment}, ${files.length} published file(s), ${files.filter((file) => file.endsWith('.gz')).length} gzip asset(s)`);
 }
 
 run();

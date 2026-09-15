@@ -132,7 +132,7 @@
 
         _openTaskEditModal(idx) {
             if (!this.guardDeveloperModeAction()) return;
-            var modal = document.getElementById('task-edit-modal');
+            var modal = AppState.ensureModal('task-edit-modal');
             if (!modal) return;
             this._editingTaskIdx = idx;
             var task;
@@ -210,6 +210,7 @@
         openMappingModal(taskIdx) {
             if (!this.guardDeveloperModeAction()) return;
             if (!this._masterTasks || !this._masterTasks[taskIdx]) return;
+            if (!AppState.ensureModal('mapping-modal')) return;
             this._currentMappingTaskIdx = taskIdx;
             this._currentMappings = JSON.parse(JSON.stringify(this._masterTasks[taskIdx].mappings || []));
             this._renderMappingTable();
@@ -466,7 +467,7 @@
             this._editingDeviceIdx = idx;
             var dev = (idx >= 0 && this._modbusDevices && this._modbusDevices[idx])
                 ? this._modbusDevices[idx] : null;
-            var modal = document.getElementById('modbus-device-edit-modal');
+            var modal = AppState.ensureModal('modbus-device-edit-modal');
             if (!modal) return;
             document.getElementById('mdev-edit-name').value = dev ? (dev.name || '') : ('设备' + ((this._modbusDevices ? this._modbusDevices.length : 0) + 1));
             document.getElementById('mdev-edit-sensorid').value = dev ? (dev.sensorId || '') : '';

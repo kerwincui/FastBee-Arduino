@@ -11,6 +11,9 @@ test.describe('Suite-10: 规则脚本', () => {
   test('RULE-001: 进入规则脚本页 @quick', async ({ authPage }) => {
     test.setTimeout(60_000); // 规则脚本页面加载较慢
     await expect(authPage.locator('#rule-script-page')).toBeVisible();
+    await expect(authPage.locator('#rule-script-page .fb-data-toolbar-leading')).toBeVisible();
+    await expect(authPage.locator('#rule-script-page .fb-card-header-actions')).toBeVisible();
+    await expect(authPage.locator('#rule-script-list-summary')).toContainText(/共 \d+ 条规则/);
     await expect(authPage.locator('button:has-text("新增规则")')).toBeVisible();
   });
 
@@ -169,5 +172,18 @@ test.describe('Suite-10: 规则脚本', () => {
     await authPage.click('#rule-script-refresh-btn');
     await authPage.waitForTimeout(2000);
     await expect(authPage.locator('#rule-script-page')).toBeVisible();
+  });
+
+  test('RULE-019: 移动端工具栏无溢出', async ({ authPage }) => {
+    await authPage.setViewportSize({ width: 390, height: 844 });
+    const layout = await authPage.locator('#rule-script-page .fb-data-toolbar').evaluate((toolbar) => {
+      const parent = toolbar.getBoundingClientRect();
+      const children = Array.from(toolbar.children).map((child) => child.getBoundingClientRect());
+      return {
+        viewportOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        childrenInside: children.every((child) => child.left >= parent.left - 1 && child.right <= parent.right + 1),
+      };
+    });
+    expect(layout).toEqual({ viewportOverflow: false, childrenInside: true });
   });
 });

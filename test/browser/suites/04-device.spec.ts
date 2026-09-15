@@ -349,7 +349,8 @@ test.describe('Suite-04: 设备配置', () => {
 
   test('DEV-059: 设备配置页面中文硬编码', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
-    await expect(authPage.locator('.fb-card-title').first()).toHaveText('设备配置');
+    await expect(authPage.locator('#page-title')).toHaveText('设备配置');
+    await expect(authPage.locator('#device-page > .fb-card > .fb-card-header')).toHaveCount(0);
     await expect(authPage.locator('.config-tab[data-tab="dev-ntp"]').first()).toHaveText('NTP时间');
     await authPage.click('.config-tab[data-tab="dev-ntp"]');
     await expect(authPage.locator('#dev-time-refresh-btn').first()).toContainText('刷新');

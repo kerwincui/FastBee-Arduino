@@ -138,9 +138,16 @@ test.describe('Suite-06: 外设执行', () => {
 
   test('EXEC-001: 进入外设执行页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-    await expect(authPage.locator('#periph-exec-page-add-btn')).toBeVisible();
-    await expect(authPage.locator('#periph-exec-refresh-btn')).toBeVisible();
-    await expect(authPage.locator('#periph-exec-filter-periph')).toBeVisible();
+    const toolbar = authPage.locator('#periph-exec-page > .fb-card > .fb-card-header');
+    await expect(toolbar).toHaveClass(/fb-data-toolbar/);
+    await expect(toolbar.locator('#periph-exec-page-add-btn')).toBeVisible();
+    await expect(toolbar.locator('#periph-exec-refresh-btn')).toBeVisible();
+    await expect(toolbar.locator('#periph-exec-filter-periph')).toBeVisible();
+    const summary = toolbar.locator('#periph-exec-list-summary');
+    await expect(summary).toHaveText(/共\s*\d+\s*项/);
+
+    const total = Number(((await summary.textContent()) || '').match(/共\s*(\d+)\s*项/)?.[1] || 0);
+    if (total <= 10) await expect(authPage.locator('#periph-exec-pagination')).toBeHidden();
   });
 
   test('EXEC-002: 列表表头完整性', async ({ authPage }) => {
@@ -1803,6 +1810,27 @@ test.describe('Suite-06: 外设执行', () => {
     await expect(block.locator('.pe-action-value-oled')).toBeVisible();
     await expect(block.locator('.pe-target-group')).toBeVisible();
     expect(await block.locator('.pe-target-group label').textContent()).toBe('执行外设');
+  });
+
+  test('EXEC-126: 懒加载动作面板切走再切回保留未保存草稿', async ({ authPage }) => {
+    await openExecModal(authPage);
+    const block = actionsContainer(authPage).locator('.periph-exec-config-item').first();
+    const actionType = block.locator('.pe-action-type');
+
+    await actionType.selectOption('27');
+    const oledDraft = '# 临时标题\n温度:${dht11.temperature}';
+    await block.locator('.pe-action-value-oled').fill(oledDraft);
+
+    await actionType.selectOption('21');
+    await block.locator('.pe-trigger-event-select').selectOption('wifi_connected');
+    await expect(block.locator('.pe-action-value-oled')).toHaveCount(0);
+
+    await actionType.selectOption('27');
+    await expect(block.locator('.pe-action-value-oled')).toHaveValue(oledDraft);
+    await expect(block.locator('.pe-trigger-event-select')).toHaveCount(0);
+
+    await actionType.selectOption('21');
+    await expect(block.locator('.pe-trigger-event-select')).toHaveValue('wifi_connected');
   });
 
   // ========== 场景: 触发类型切换保留动作数据 ==========

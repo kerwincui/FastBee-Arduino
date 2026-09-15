@@ -13,11 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { minifyJS } = require('./minify-js');
-/**
- * Build admin bundle for Unified Architecture v2.0 (full Web UI).
- * Note: Device control feature gate by FASTBEE_ENABLE_DEVICE_CONTROL env var.
- */
-const { isFullWebProfile } = require('./web-profile');
+const { resolveWebBuildContext, shouldIncludeAsset } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
@@ -30,9 +26,9 @@ const UNIFIED_SOURCE_FILES = [
     'rule-script.js'
 ];
 
-function getSourceFiles() {
-    // Unified full profile always returns all available source files
-    return UNIFIED_SOURCE_FILES;
+function getSourceFiles(context = resolveWebBuildContext()) {
+    return UNIFIED_SOURCE_FILES.filter((fileName) =>
+        shouldIncludeAsset(`js/modules/${fileName}`, context));
 }
 
 function readSourceFile(fileName) {
@@ -44,11 +40,12 @@ function readSourceFile(fileName) {
     return fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '').trim();
 }
 
-function buildAdminBundle() {
+function buildAdminBundle(context = resolveWebBuildContext()) {
     const noMinify = process.argv.includes('--no-minify');
     const modules = [];
+    fs.mkdirSync(PUBLISH_MODULE_DIR, { recursive: true });
 
-    const sourceFiles = getSourceFiles();
+    const sourceFiles = getSourceFiles(context);
     sourceFiles.forEach((fileName) => {
         const publishFile = path.join(PUBLISH_MODULE_DIR, fileName);
         const raw = readSourceFile(fileName);

@@ -14,7 +14,7 @@
  *
  * 实现分两部分：
  * - 源码常量锁定（readProjectFile 读取 WebHandlerContext.cpp / index.html）
- * - 限流器行为模拟（镜像 staticInFlightAllowed() 逻辑验证排队/看门狗/豁免）
+ * - 限流器行为模拟（镜像 lease 获取/释放逻辑验证排队/看门狗/豁免）
  *
  * 依据：FastBee-doc src/device/dev/tcp-connection-budget.md「静态文件并发限流」
  */
@@ -76,15 +76,20 @@ void test_static_limiter_constants_locked() {
     }
     TestLog::step("STATIC_MAX_INFLIGHT >= 3 verified");
 
-    // 2) 卡死看门狗 = 12s：计数器卡死时最坏阻塞不超过 12s（旧值 20s）
+    // 2) 卡死看门狗 = 12s：lease 卡死时最坏阻塞不超过 12s（旧值 20s）
     TEST_ASSERT_TRUE_MESSAGE(src.find("STATIC_INFLIGHT_WATCHDOG_MS = 12000UL") != std::string::npos,
         "STATIC_INFLIGHT_WATCHDOG_MS must be 12000UL — bounds worst-case block on stuck counter");
     TestLog::step("STATIC_INFLIGHT_WATCHDOG_MS = 12000UL verified");
 
-    // 3) 计数卡死后必须强制复位，避免永久 503
-    TEST_ASSERT_TRUE_MESSAGE(src.find("s_staticInFlight = 0") != std::string::npos,
-        "Watchdog must force-reset the stuck in-flight counter");
-    TestLog::step("Stuck counter force-reset found");
+    // 3) 看门狗必须逐 lease 回收，并保留代次；禁止清零共享计数后让旧回调
+    //    误减新请求槽位。
+    TEST_ASSERT_TRUE_MESSAGE(src.find("struct StaticInFlightLease") != std::string::npos &&
+                             src.find("struct StaticInFlightSlot") != std::string::npos &&
+                             src.find("slot.active = false;") != std::string::npos,
+        "Watchdog must reclaim fixed-table leases independently");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("s_staticInFlight = 0") == std::string::npos,
+        "Watchdog must not reset a shared counter that stale disconnects can decrement");
+    TestLog::step("Per-request static lease table found");
 
     // 3.5) 2026-08-10 慢速修复复盘：槽位满时必须立即拒绝（不得 delay 轮询等待）。
     // delay 等待运行在 AsyncTCP 服务任务上下文，会阻塞在途响应发送与
@@ -94,15 +99,26 @@ void test_static_limiter_constants_locked() {
     TEST_ASSERT_TRUE_MESSAGE(src.find("STATIC_SLOT_WAIT_MS") == std::string::npos,
         "Delay-based slot waiting was reverted: it blocks the AsyncTCP task and "
         "starves in-flight releases (measured 13s slow requests)");
-    TEST_ASSERT_TRUE_MESSAGE(src.find("if (s_staticInFlight < STATIC_MAX_INFLIGHT)") != std::string::npos,
+    TEST_ASSERT_TRUE_MESSAGE(src.find("if (activeCount < limit)") != std::string::npos,
         "Slot-full path must judge immediately (fast 503, front-end retries)");
     TestLog::step("Immediate-reject limiter (no blocking wait) verified");
 
     // 4) 计数器释放挂在 onDisconnect（Connection: close 保证完成/超时/abort 都会触发）
     TEST_ASSERT_TRUE_MESSAGE(src.find("registerStaticInFlightRelease") != std::string::npos &&
-                             src.find("request->onDisconnect") != std::string::npos,
-        "In-flight release must be registered on onDisconnect");
-    TestLog::step("Release hooked on onDisconnect");
+                             src.find("request->onDisconnect([lease]") != std::string::npos &&
+                             src.find("slot.generation == lease.generation") != std::string::npos,
+        "onDisconnect must release only its captured lease generation");
+    TestLog::step("Generation-safe release hooked on onDisconnect");
+
+    size_t activeStart = src.find("bool WebHandlerContext::isStaticTransferActive() const");
+    size_t activeEnd = src.find("// 浏览器导航请求", activeStart);
+    TEST_ASSERT_TRUE_MESSAGE(activeStart != std::string::npos && activeEnd != std::string::npos,
+        "isStaticTransferActive implementation must remain detectable");
+    std::string activeBlock = src.substr(activeStart, activeEnd - activeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        activeBlock.find("reapExpiredStaticInFlightLeasesLocked(now)") != std::string::npos,
+        "Web-busy queries must reclaim stale leases even without another static request");
+    TestLog::step("Static-transfer query shares watchdog reclamation");
 
     TestLog::testEnd(true);
 }
@@ -362,31 +378,36 @@ void test_page_loader_response_integrity_locked() {
     std::string loader = readStaticConcurrencyFile("web-src/js/page-loader.js");
     TEST_ASSERT_TRUE_MESSAGE(!loader.empty(), "Failed to read web-src/js/page-loader.js");
 
-    size_t loadStart = loader.find("async loadPage(pageId, pageMapping)");
+    size_t cacheStart = loader.find("_cachePageTemplates(moduleName, html)");
+    size_t cacheEnd = loader.find("_mountPage(pageId)", cacheStart);
+    size_t loadStart = loader.find("async loadPage(pageId, pageMapping");
     size_t catchStart = loader.find("} catch(e) {", loadStart);
     size_t finallyStart = loader.find("} finally {", catchStart);
-    TEST_ASSERT_TRUE_MESSAGE(loadStart != std::string::npos &&
+    TEST_ASSERT_TRUE_MESSAGE(cacheStart != std::string::npos && cacheEnd != std::string::npos &&
+                             loadStart != std::string::npos &&
                              catchStart != std::string::npos &&
                              finallyStart != std::string::npos,
-        "PageLoader loadPage try/catch structure must remain detectable");
-
+        "PageLoader template cache and loadPage try/catch structure must remain detectable");
+    std::string cacheBlock = loader.substr(cacheStart, cacheEnd - cacheStart);
     std::string loadBlock = loader.substr(loadStart, finallyStart - loadStart);
     std::string catchBlock = loader.substr(catchStart, finallyStart - catchStart);
-    size_t rootCheck = loadBlock.find("wrapper.querySelector('#' + rootId)");
-    size_t appendPage = loadBlock.find("container.appendChild(wrapper.firstChild)");
-    size_t markLoaded = loadBlock.find("this._loadedPages[moduleName] = true");
-    TEST_ASSERT_TRUE_MESSAGE(rootCheck != std::string::npos &&
-                             appendPage > rootCheck && markLoaded > appendPage,
-        "Expected page root must be verified before DOM insertion and loaded caching");
-    TEST_ASSERT_TRUE_MESSAGE(loadBlock.find("Page response missing expected root") != std::string::npos,
-        "A 200 response without the expected page root must fail");
-    TEST_ASSERT_TRUE_MESSAGE(loadBlock.find("root.remove()") != std::string::npos &&
-                             loadBlock.find("wasActive") != std::string::npos,
-        "Successful retry must replace a previous fallback root");
+    size_t noRoot = cacheBlock.find("if (roots.length === 0)");
+    size_t throwNoRoot = cacheBlock.find("Page response contains no page root", noRoot);
+    size_t storeTemplate = cacheBlock.find("this._pageTemplates[root.id] = root.outerHTML", throwNoRoot);
+    size_t markLoaded = cacheBlock.find("this._loadedPages[moduleName] = true", storeTemplate);
+    TEST_ASSERT_TRUE_MESSAGE(noRoot != std::string::npos && throwNoRoot > noRoot &&
+                             storeTemplate > throwNoRoot && markLoaded > storeTemplate,
+        "Only a complete response with page roots may populate the template and loaded caches");
+    size_t readBody = loadBlock.find("var html = await resp.text()");
+    size_t cacheTemplates = loadBlock.find("this._cachePageTemplates(moduleName, html)", readBody);
+    size_t expectedRoot = loadBlock.find("Page response missing expected root", cacheTemplates);
+    TEST_ASSERT_TRUE_MESSAGE(readBody != std::string::npos && cacheTemplates > readBody &&
+                             expectedRoot > cacheTemplates,
+        "loadPage must read the complete response, cache validated templates, then verify its requested root");
     TEST_ASSERT_TRUE_MESSAGE(catchBlock.find("delete this._loadedPages[moduleName]") != std::string::npos,
         "Failure must clear the loaded cache entry so a later click retries");
-    TEST_ASSERT_TRUE_MESSAGE(catchBlock.find("this._loadedPages[moduleName] = true") == std::string::npos,
-        "Fallback UI must not be cached as a successfully loaded page");
+    TEST_ASSERT_TRUE_MESSAGE(loader.substr(finallyStart).find("delete this._loadingPages[moduleName]") != std::string::npos,
+        "Failure or success must clear the in-flight entry after the attempt completes");
 
     TestLog::testEnd(true);
 }
@@ -398,24 +419,82 @@ void test_page_loader_response_integrity_locked() {
 // 镜像 WebHandlerContext.cpp 的限流器：常量必须与源码一致
 struct StaticLimiterSim {
     static constexpr uint8_t MAX_INFLIGHT = 3;              // == STATIC_MAX_INFLIGHT
-    static constexpr unsigned long WATCHDOG_MS = 12000UL;   // == STATIC_INFLIGHT_WATCHDOG_MS
+    static constexpr uint32_t WATCHDOG_MS = 12000U;         // == STATIC_INFLIGHT_WATCHDOG_MS
 
-    uint8_t inFlight = 0;
-    unsigned long touchMs = 0;
+    struct Lease {
+        uint32_t generation = 0;
+        uint8_t slot = MAX_INFLIGHT;
 
-    // 镜像 staticInFlightAllowed()：compressible=false 表示小图片等豁免资源
-    bool tryAcquire(unsigned long now, bool compressible) {
-        if (!compressible) return true;  // bypassInFlightCap
-        if (inFlight > 0 && (now - touchMs) > WATCHDOG_MS) {
-            inFlight = 0;  // watchdog force-reset
+        bool valid() const {
+            return generation != 0 && slot < MAX_INFLIGHT;
         }
-        if (inFlight >= MAX_INFLIGHT) return false;  // → 503 busy
-        inFlight++;
-        touchMs = now;
-        return true;
+    };
+
+    struct Slot {
+        uint32_t generation = 0;
+        uint32_t acquiredAtMs = 0;
+        bool active = false;
+    };
+
+    Slot slots[MAX_INFLIGHT];
+    bool memoryGuard = false;
+    uint32_t free8 = 65536;
+    uint32_t largest8 = 16384;
+
+    uint8_t effectiveLimit() const {
+        if (!memoryGuard) return MAX_INFLIGHT;
+        return (free8 < 32768U || largest8 < 8192U) ? 1 : 2;
     }
 
-    void release() { if (inFlight > 0) inFlight--; }  // onDisconnect
+    uint8_t inFlight() const {
+        uint8_t count = 0;
+        for (const Slot& slot : slots) {
+            if (slot.active) count++;
+        }
+        return count;
+    }
+
+    uint8_t reapExpired(uint32_t now) {
+        uint8_t reclaimed = 0;
+        for (Slot& slot : slots) {
+            if (slot.active && (now - slot.acquiredAtMs) > WATCHDOG_MS) {
+                slot.active = false;
+                slot.acquiredAtMs = 0;
+                reclaimed++;
+            }
+        }
+        return reclaimed;
+    }
+
+    bool isActive(uint32_t now) {
+        reapExpired(now);
+        return inFlight() > 0;
+    }
+
+    Lease acquire(uint32_t now) {
+        reapExpired(now);
+        if (inFlight() >= effectiveLimit()) return {};
+
+        for (uint8_t i = 0; i < MAX_INFLIGHT; ++i) {
+            Slot& slot = slots[i];
+            if (slot.active) continue;
+            slot.generation++;
+            if (slot.generation == 0) slot.generation = 1;
+            slot.acquiredAtMs = now;
+            slot.active = true;
+            return {slot.generation, i};
+        }
+        return {};
+    }
+
+    void release(const Lease& lease) {
+        if (!lease.valid()) return;
+        Slot& slot = slots[lease.slot];
+        if (slot.active && slot.generation == lease.generation) {
+            slot.active = false;
+            slot.acquiredAtMs = 0;
+        }
+    }
 };
 
 /**
@@ -427,57 +506,221 @@ void test_limiter_concurrency_behavior() {
     StaticLimiterSim sim;
 
     // 3 个 gz chunk 可并发
-    TEST_ASSERT_TRUE(sim.tryAcquire(0, true));
-    TEST_ASSERT_TRUE(sim.tryAcquire(10, true));
-    TEST_ASSERT_TRUE(sim.tryAcquire(20, true));
+    StaticLimiterSim::Lease first = sim.acquire(0);
+    StaticLimiterSim::Lease second = sim.acquire(10);
+    StaticLimiterSim::Lease third = sim.acquire(20);
+    TEST_ASSERT_TRUE(first.valid());
+    TEST_ASSERT_TRUE(second.valid());
+    TEST_ASSERT_TRUE(third.valid());
     TestLog::step("3 concurrent gz streams admitted");
 
     // 第 4 个被拒（修复前上限为 2，导致大部分请求被 503 → 串行重试）
-    TEST_ASSERT_FALSE(sim.tryAcquire(30, true));
+    TEST_ASSERT_FALSE(sim.acquire(30).valid());
     TestLog::step("4th gz stream rejected with 503 busy");
 
     // 图片类小资源始终豁免
-    TEST_ASSERT_TRUE(sim.tryAcquire(40, false));
-    TEST_ASSERT_TRUE(sim.tryAcquire(41, false));
-    TEST_ASSERT_EQUAL(3, sim.inFlight);  // 豁免资源不计数
+    const bool imageIsCompressible = false;
+    TEST_ASSERT_FALSE(imageIsCompressible);
+    TEST_ASSERT_EQUAL(3, sim.inFlight());  // 豁免资源不调用 acquire，不计数
     TestLog::step("Small uncompressed assets bypass the cap");
 
     // 释放后可重新进入
-    sim.release();
-    TEST_ASSERT_TRUE(sim.tryAcquire(50, true));
+    sim.release(first);
+    TEST_ASSERT_TRUE(sim.acquire(50).valid());
     TestLog::step("Slot reusable after release");
 
     TestLog::testEnd(true);
 }
 
 /**
- * @brief 卡死看门狗：计数器泄漏 12s 后强制复位，不再永久 503
- * 复现场景：onDisconnect 未触发导致计数卡死，旧值 20s 阻塞时间过长
+ * @brief 无 PSRAM 目标使用 2 路稳态/1 路压力态，而不是公开上限 3 路。
+ */
+void test_limiter_no_psram_adaptive_behavior() {
+    TestLog::testStart("Static Limiter: No-PSRAM Adaptive Behavior");
+
+    std::string src = readStaticConcurrencyFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!src.empty(), "WebHandlerContext.cpp must be readable");
+    size_t limitStart = src.find("static uint8_t staticInFlightLimit()");
+    size_t limitEnd = src.find("static StaticInFlightLease acquireStaticInFlightLease()", limitStart);
+    TEST_ASSERT_TRUE_MESSAGE(limitStart != std::string::npos && limitEnd != std::string::npos,
+        "DRAM-aware static limiter function must remain detectable");
+    std::string limitBlock = src.substr(limitStart, limitEnd - limitStart);
+    TEST_ASSERT_TRUE_MESSAGE(limitBlock.find("limit = 2;") != std::string::npos,
+        "No-PSRAM healthy limit must remain two compressed streams");
+    TEST_ASSERT_TRUE_MESSAGE(limitBlock.find("free8 < 32768U || blk8 < 8192U") != std::string::npos &&
+                             limitBlock.find("limit = 1;") != std::string::npos,
+        "No-PSRAM pressure limit must drop to one stream at the DRAM thresholds");
+    TestLog::step("Production source keeps the C3 2/1 adaptive policy");
+
+    StaticLimiterSim stable;
+    stable.memoryGuard = true;
+    stable.free8 = 48000;
+    stable.largest8 = 16000;
+    TEST_ASSERT_EQUAL(2, stable.effectiveLimit());
+    TEST_ASSERT_TRUE(stable.acquire(0).valid());
+    TEST_ASSERT_TRUE(stable.acquire(10).valid());
+    TEST_ASSERT_FALSE(stable.acquire(20).valid());
+    TestLog::step("Healthy no-PSRAM target admits two compressed streams");
+
+    StaticLimiterSim fragmented;
+    fragmented.memoryGuard = true;
+    fragmented.free8 = 46000;
+    fragmented.largest8 = 7000;
+    TEST_ASSERT_EQUAL(1, fragmented.effectiveLimit());
+    TEST_ASSERT_TRUE(fragmented.acquire(0).valid());
+    TEST_ASSERT_FALSE(fragmented.acquire(10).valid());
+    TEST_ASSERT_EQUAL(1, fragmented.inFlight());
+    TestLog::step("Fragmented no-PSRAM target drops to one stream; small assets still bypass");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 卡死看门狗：泄漏 lease 12s 后逐个回收，不再永久 503
+ * 复现场景：onDisconnect 未触发导致槽位卡死，旧值 20s 阻塞时间过长
  */
 void test_limiter_watchdog_recovery() {
     TestLog::testStart("Static Limiter: Watchdog Recovery");
 
     StaticLimiterSim sim;
 
-    TEST_ASSERT_TRUE(sim.tryAcquire(0, true));
-    TEST_ASSERT_TRUE(sim.tryAcquire(50, true));
-    TEST_ASSERT_TRUE(sim.tryAcquire(100, true));
+    TEST_ASSERT_TRUE(sim.acquire(100).valid());
+    TEST_ASSERT_TRUE(sim.acquire(100).valid());
+    TEST_ASSERT_TRUE(sim.acquire(100).valid());
     // 模拟泄漏：不调用 release()
 
-    // 12s 内仍然阻塞（看门狗是滑动窗口，以最后一次 touch 计时）
-    unsigned long blockedProbe = 100 + StaticLimiterSim::WATCHDOG_MS;  // touch=100
-    TEST_ASSERT_FALSE(sim.tryAcquire(blockedProbe, true));
+    // 每个 lease 在自己的 12s 边界内仍有效。
+    unsigned long blockedProbe = 100 + StaticLimiterSim::WATCHDOG_MS;
+    TEST_ASSERT_FALSE(sim.acquire(blockedProbe).valid());
     TestLog::step("Still blocked within watchdog window");
 
-    // 超过看门狗窗口后强制复位计数器，请求恢复
-    TEST_ASSERT_TRUE(sim.tryAcquire(blockedProbe + 1, true));
-    TEST_ASSERT_EQUAL(1, sim.inFlight);
-    TestLog::step("Watchdog reset stuck counter, requests recovered");
+    // 超过看门狗窗口后逐 lease 回收，请求恢复。
+    TEST_ASSERT_TRUE(sim.acquire(blockedProbe + 1).valid());
+    TEST_ASSERT_EQUAL(1, sim.inFlight());
+    TestLog::step("Watchdog reclaimed stuck leases, requests recovered");
 
     // 最坏阻塞时间约束：看门狗 <= 12s，且需覆盖单个文件的合法传输时长
     TEST_ASSERT_LESS_OR_EQUAL(12000, (int)StaticLimiterSim::WATCHDOG_MS);
     TEST_ASSERT_GREATER_THAN(5000, (int)StaticLimiterSim::WATCHDOG_MS);
     TestLog::step("Worst-case block bounded to 12s, still covers legit transfers");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief Web-busy 查询本身必须回收过期 lease，不能依赖下一次静态请求。
+ */
+void test_static_transfer_active_reaps_expired_leases() {
+    TestLog::testStart("Static Limiter: Active Query Reaps Expired Leases");
+
+    StaticLimiterSim sim;
+    sim.memoryGuard = true;
+    sim.free8 = 24000;
+    sim.largest8 = 7000;
+
+    TEST_ASSERT_TRUE(sim.acquire(100).valid());
+    TEST_ASSERT_TRUE(sim.isActive(100 + StaticLimiterSim::WATCHDOG_MS));
+    TEST_ASSERT_FALSE(sim.isActive(101 + StaticLimiterSim::WATCHDOG_MS));
+    TEST_ASSERT_EQUAL(0, sim.inFlight());
+    TestLog::step("Web-busy query clears a stale lease without a later admission");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 32-bit millis 回绕前后，lease 仍按真实经过时间到期。
+ */
+void test_limiter_millis_wraparound_safe() {
+    TestLog::testStart("Static Limiter: Millis Wraparound Safety");
+
+    std::string src = readStaticConcurrencyFile("src/network/WebHandlerContext.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("unsigned long acquiredAtMs") != std::string::npos &&
+                             src.find("now - slot.acquiredAtMs") != std::string::npos,
+        "Production watchdog must use unsigned elapsed-time subtraction");
+
+    StaticLimiterSim sim;
+    sim.memoryGuard = true;
+    sim.free8 = 24000;
+    sim.largest8 = 7000;
+
+    const uint32_t acquiredAt = 0xFFFFFFFFu - 6000u;
+    StaticLimiterSim::Lease lease = sim.acquire(acquiredAt);
+    TEST_ASSERT_TRUE(lease.valid());
+
+    const uint32_t expiryBoundary = acquiredAt + StaticLimiterSim::WATCHDOG_MS;
+    TEST_ASSERT_TRUE_MESSAGE(sim.isActive(expiryBoundary),
+        "Lease must remain active at the exact watchdog boundary across millis wrap");
+    TEST_ASSERT_FALSE_MESSAGE(sim.isActive(expiryBoundary + 1u),
+        "Lease must expire one millisecond after the boundary across millis wrap");
+    TEST_ASSERT_EQUAL(0, sim.inFlight());
+    TestLog::step("Unsigned elapsed-time check survives the 32-bit millis wrap");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 错峰 lease 必须逐槽过期，尚未到期的请求保持在途。
+ */
+void test_limiter_staggered_expiry_isolated() {
+    TestLog::testStart("Static Limiter: Staggered Lease Expiry Isolated");
+
+    StaticLimiterSim sim;
+    sim.memoryGuard = true;
+    sim.free8 = 48000;
+    sim.largest8 = 16000;  // C3 健康态两路
+
+    StaticLimiterSim::Lease expired = sim.acquire(0);
+    StaticLimiterSim::Lease live = sim.acquire(6000);
+    TEST_ASSERT_TRUE(expired.valid());
+    TEST_ASSERT_TRUE(live.valid());
+    TEST_ASSERT_FALSE(sim.acquire(6001).valid());
+
+    StaticLimiterSim::Lease replacement =
+        sim.acquire(StaticLimiterSim::WATCHDOG_MS + 1);
+    TEST_ASSERT_TRUE(replacement.valid());
+    TEST_ASSERT_EQUAL(expired.slot, replacement.slot);
+    TEST_ASSERT_NOT_EQUAL(expired.generation, replacement.generation);
+    TEST_ASSERT_EQUAL_MESSAGE(2, sim.inFlight(),
+        "Only the expired lease should be reclaimed; the staggered live lease must remain");
+
+    sim.release(expired);
+    TEST_ASSERT_EQUAL(2, sim.inFlight());
+    sim.release(live);
+    TEST_ASSERT_EQUAL(1, sim.inFlight());
+    sim.release(replacement);
+    TEST_ASSERT_EQUAL(0, sim.inFlight());
+    TestLog::step("Expired slot reused safely while the younger lease remained active");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief watchdog 回收并复用槽位后，旧请求的迟到断连不得释放新一代 lease。
+ */
+void test_limiter_stale_disconnect_generation_safe() {
+    TestLog::testStart("Static Limiter: Stale Disconnect Generation Safety");
+
+    StaticLimiterSim sim;
+    sim.memoryGuard = true;
+    sim.free8 = 24000;
+    sim.largest8 = 7000;  // 压力态固定为单路，确保复用同一槽位
+
+    StaticLimiterSim::Lease stale = sim.acquire(0);
+    TEST_ASSERT_TRUE(stale.valid());
+    TEST_ASSERT_FALSE(sim.acquire(StaticLimiterSim::WATCHDOG_MS).valid());
+
+    StaticLimiterSim::Lease current = sim.acquire(StaticLimiterSim::WATCHDOG_MS + 1);
+    TEST_ASSERT_TRUE(current.valid());
+    TEST_ASSERT_EQUAL(stale.slot, current.slot);
+    TEST_ASSERT_NOT_EQUAL(stale.generation, current.generation);
+    TEST_ASSERT_EQUAL(1, sim.inFlight());
+
+    sim.release(stale);  // 已超时旧连接现在才触发 onDisconnect
+    TEST_ASSERT_EQUAL_MESSAGE(1, sim.inFlight(),
+        "Stale disconnect must not release the newer lease in the reused slot");
+    sim.release(current);
+    TEST_ASSERT_EQUAL(0, sim.inFlight());
+    TestLog::step("Late disconnect ignored; current generation remains owned until its callback");
 
     TestLog::testEnd(true);
 }
@@ -518,7 +761,12 @@ void test_login_page_burst_completes() {
     unsigned long now = 0;
 
     // 在途请求：(资源索引, 完成时间)。Connection: close 保证完成后 onDisconnect 释放槽位
-    std::vector<std::pair<int, unsigned long>> inFlightList;
+    struct InFlightResource {
+        int index;
+        unsigned long doneAt;
+        StaticLimiterSim::Lease lease;
+    };
+    std::vector<InFlightResource> inFlightList;
     std::vector<int> pending;
     for (int i = 0; i < LOGIN_RESOURCE_COUNT; i++) pending.push_back(i);
 
@@ -544,8 +792,9 @@ void test_login_page_burst_completes() {
                 lastDone = doneAt;
                 continue;
             }
-            if (sim.tryAcquire(now, res.compressible)) {
-                inFlightList.push_back({idx, doneAt});
+            StaticLimiterSim::Lease lease = sim.acquire(now);
+            if (lease.valid()) {
+                inFlightList.push_back({idx, doneAt, lease});
             } else {
                 stillPending.push_back(idx);
             }
@@ -558,12 +807,13 @@ void test_login_page_burst_completes() {
             "Deadlock: pending resources but nothing in flight");
         size_t earliestIdx = 0;
         for (size_t k = 1; k < inFlightList.size(); k++) {
-            if (inFlightList[k].second < inFlightList[earliestIdx].second) earliestIdx = k;
+            if (inFlightList[k].doneAt < inFlightList[earliestIdx].doneAt) earliestIdx = k;
         }
-        now = inFlightList[earliestIdx].second;
+        now = inFlightList[earliestIdx].doneAt;
         lastDone = now;
+        StaticLimiterSim::Lease completedLease = inFlightList[earliestIdx].lease;
         inFlightList.erase(inFlightList.begin() + earliestIdx);
-        sim.release();
+        sim.release(completedLease);
         served++;  // 该在途请求完成
     }
 
@@ -633,7 +883,12 @@ void test_static_concurrency_group() {
 
     // 限流器行为模拟
     RUN_TEST(test_limiter_concurrency_behavior);
+    RUN_TEST(test_limiter_no_psram_adaptive_behavior);
     RUN_TEST(test_limiter_watchdog_recovery);
+    RUN_TEST(test_static_transfer_active_reaps_expired_leases);
+    RUN_TEST(test_limiter_millis_wraparound_safe);
+    RUN_TEST(test_limiter_staggered_expiry_isolated);
+    RUN_TEST(test_limiter_stale_disconnect_generation_safe);
     RUN_TEST(test_login_page_burst_completes);
     RUN_TEST(test_serial_chain_halved);
 

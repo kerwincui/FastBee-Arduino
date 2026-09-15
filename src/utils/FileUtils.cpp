@@ -233,32 +233,20 @@ bool FileUtils::atomicWriteFile(const String& path, const String& content) {
     if (LittleFS.rename(tmpPath, path)) {
         return true;
     }
-    // 兜底：个别分区状态下 rename 覆盖失败时退回 remove+rename
-    LittleFS.remove(path);
-    if (LittleFS.rename(tmpPath, path)) {
-        return true;
-    }
-    // 最终兜底：rename 始终失败时直接覆盖写入目标文件
-    LOG_WARNINGF("[FileUtils] atomicWrite: rename failed, falling back to direct write for %s", path.c_str());
+    // rename 失败时绝不能先删除或直接覆盖目标；旧版本必须保持可恢复。
     LittleFS.remove(tmpPath);
-    File directFile = LittleFS.open(path, "w");
-    if (!directFile) {
-        LOG_ERRORF("[FileUtils] atomicWrite failed: direct write open also failed for %s", path.c_str());
-        return false;
-    }
-    size_t directWritten = directFile.print(content);
-    directFile.close();
-    if (directWritten != content.length()) {
-        LOG_ERRORF("[FileUtils] atomicWrite failed: direct write mismatch for %s (written=%u, expected=%u)",
-                   path.c_str(), (unsigned)directWritten, (unsigned)content.length());
-        return false;
-    }
-    return true;
+    LOG_ERRORF("[FileUtils] atomicWrite failed: atomic rename failed for %s", path.c_str());
+    return false;
 }
 
 bool FileUtils::atomicWriteJsonFile(const String& path, JsonDocument& doc) {
     if (!fsInitialized) {
         LOG_ERRORF("[FileUtils] atomicWriteJson failed: fs not initialized (path=%s)", path.c_str());
+        return false;
+    }
+
+    if (doc.overflowed()) {
+        LOG_ERRORF("[FileUtils] atomicWriteJson failed: document overflowed (path=%s)", path.c_str());
         return false;
     }
 
@@ -352,12 +340,7 @@ bool FileUtils::commitAtomicWrite(const String& tmpPath, const String& path) {
     if (LittleFS.rename(tmpPath, path)) {
         return true;
     }
-    // 兜底：个别分区状态下 rename 覆盖失败时退回 remove+rename
-    LittleFS.remove(path);
-    if (LittleFS.rename(tmpPath, path)) {
-        return true;
-    }
-    // rename 反复失败：清理 tmp，保留原文件不动（宁可失败也不损坏配置）
+    // rename 失败：清理 tmp，保留原文件不动（宁可失败也不损坏配置）
     LittleFS.remove(tmpPath);
     LOG_ERRORF("[FileUtils] commitAtomicWrite failed: rename failed for %s", path.c_str());
     return false;

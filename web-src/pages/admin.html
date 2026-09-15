@@ -1,9 +1,11 @@
 <!-- 用户管理页面 -->
 <div id="users-page" class="page page-layout-flat">
     <div class="fb-card">
-        <div class="fb-card-header u-header-between">
-            <h2 class="fb-card-title" id="users-title">用户管理</h2>
-            <div class="u-toolbar-sm">
+        <div class="fb-card-header fb-card-header-toolbar fb-data-toolbar">
+            <div class="fb-data-toolbar-leading">
+                <span id="users-list-summary" class="fb-data-toolbar-summary" role="status" aria-live="polite">加载中...</span>
+            </div>
+            <div class="fb-card-header-actions">
                 <button class="fb-btn fb-btn-refresh" id="users-refresh-btn"><span>刷新</span></button>
                 <button class="fb-btn fb-btn-primary" id="add-user-btn">
                     添加用户

@@ -8,12 +8,15 @@
 
         // ============ SSE 连接管理 ============
         _setupSSE: function() {
+            this._closeSSE();
             // 使用全局 SSE 连接而非创建独立的 EventSource
             AppState.connectSSE();  // 确保全局连接已建立
 
             var self = this;
+            var generation = this._dcLifecycleGeneration;
             // 保存引用以便清理
             this._sseModbusHandler = function(e) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 try {
                     var data = JSON.parse(e.data);
                     self._handleSSEModbusData(data);
@@ -22,6 +25,7 @@
                 }
             };
             this._sseSensorHandler = function(e) {
+                if (!self._dcIsLifecycleActive(generation)) return;
                 try {
                     var data = JSON.parse(e.data);
                     self._handleSSESensorData(data);
@@ -55,6 +59,7 @@
          * data 格式: {key: "dht_01_temperature", label: "温度", value: "25.3", unit: "°C"}
          */
         _handleSSESensorData: function(data) {
+            if (!this._dcIsLifecycleActive(this._dcLifecycleGeneration)) return;
             if (!data || !data.key) return;
             // 查找对应的监测卡片并更新数值
             var card = document.querySelector('.dc-monitor-card[data-id="' + data.key + '"]');
@@ -286,6 +291,7 @@
 
         // ============ SSE Modbus 数据处理主入口 ============
         _handleSSEModbusData: function(data) {
+            if (!this._dcIsLifecycleActive(this._dcLifecycleGeneration)) return;
             var self = this;
             var tasks = this._modbusStatus && this._modbusStatus.tasks ? this._modbusStatus.tasks : [];
             var hasMonitorUpdate = false;

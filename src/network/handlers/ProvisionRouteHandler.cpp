@@ -4,6 +4,7 @@
 #include "./network/NetworkManager.h"
 #include "./systems/LoggerSystem.h"
 #include "./core/FeatureFlags.h"
+#include "./core/RuntimeFeatureManager.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "./core/PeriphExecManager.h"
 #endif
@@ -557,14 +558,24 @@ void ProvisionRouteHandler::handleBleProvisionStatus(AsyncWebServerRequest* requ
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
 
-    if (ctx->bleProvisioner) {
 #if FASTBEE_ENABLE_BLE
+    const bool enabled = FastBee::RuntimeFeatureManager::instance().shouldEnable("ble");
+    data["compiled"] = true;
+    data["enabled"] = enabled;
+    if (enabled && ctx->bleProvisioner) {
         ctx->bleProvisioner->fillStatusJson(data);
-#endif
     } else {
-        // 当前固件未编入 BLE 配网（FASTBEE_ENABLE_BLE=0），前端据此隐藏入口
         data["supported"] = false;
+        data["running"] = false;
+        data["state"] = enabled ? "unavailable" : "disabled";
     }
+#else
+    data["compiled"] = false;
+    data["enabled"] = false;
+    data["supported"] = false;
+    data["running"] = false;
+    data["state"] = "not-compiled";
+#endif
 
     String output;
     serializeJson(doc, output);
@@ -577,12 +588,16 @@ void ProvisionRouteHandler::handleBleProvisionStatus(AsyncWebServerRequest* requ
 void ProvisionRouteHandler::handleBleProvisionStart(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
+#if FASTBEE_ENABLE_BLE
+    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("ble")) {
+        ctx->sendError(request, 503, "BLE provisioning disabled by runtime feature config");
+        return;
+    }
     if (!ctx->bleProvisioner) {
-        ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
+        ctx->sendError(request, 503, "BLE provisioning service unavailable");
         return;
     }
 
-#if FASTBEE_ENABLE_BLE
     if (ctx->bleProvisioner->isRunning()) {
         ctx->sendSuccess(request, "BLE provisioning already running");
         return;
@@ -593,6 +608,8 @@ void ProvisionRouteHandler::handleBleProvisionStart(AsyncWebServerRequest* reque
     } else {
         ctx->sendError(request, 500, "Failed to start BLE provisioning");
     }
+#else
+    ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
 #endif
 }
 
@@ -602,14 +619,16 @@ void ProvisionRouteHandler::handleBleProvisionStart(AsyncWebServerRequest* reque
 void ProvisionRouteHandler::handleBleProvisionStop(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
+#if FASTBEE_ENABLE_BLE
     if (!ctx->bleProvisioner) {
-        ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
+        ctx->sendSuccess(request, "BLE provisioning already stopped");
         return;
     }
 
-#if FASTBEE_ENABLE_BLE
     ctx->bleProvisioner->stop();
     LOG_INFO("[Provision] BLE provisioning stopped");
     ctx->sendSuccess(request, "BLE provisioning stopped");
+#else
+    ctx->sendBadRequest(request, "BLE provisioning is not supported in this build");
 #endif
 }

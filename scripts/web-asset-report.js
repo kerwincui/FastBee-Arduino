@@ -24,11 +24,17 @@ const PAGE_BUNDLES = [
     'js/modules/protocol-modbus-rtu.js',
     'js/modules/protocol-modbus-control.js',
     'js/modules/periph-exec.js',
+    'js/modules/periph-exec-form.js',
+    'js/modules/periph-exec-sensor.js',
+    'js/modules/periph-exec-effects.js',
+    'js/modules/periph-exec-modbus.js',
     'js/modules/device-control.js',
     'js/modules/device-control-view.js',
     'js/modules/device-control-modbus.js',
     'js/modules/device-config.js',
     'js/modules/peripherals.js',
+    'js/modules/peripheral-save.js',
+    'js/modules/peripheral-io.js',
     'js/modules/network.js'
 ];
 const OBSOLETE_PREFIXES = [
@@ -137,6 +143,7 @@ function createWebAssetReport(options = {}) {
     return {
         generatedAt: new Date().toISOString(),
         wwwDir: WWW_DIR,
+        assets,
         totals,
         boot: {
             raw: bootRaw,
@@ -293,6 +300,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    PAGE_BUNDLES,
     createWebAssetReport,
     createSourceAssetReport,
     printWebAssetReport,

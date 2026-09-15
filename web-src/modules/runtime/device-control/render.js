@@ -236,18 +236,23 @@
             scriptItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             sensorReadItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             otherItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+            var configuredModbusDevices = this._modbusConfiguredDevices || [];
             var hasModbusDevices = this._modbusDevices && this._modbusDevices.length > 0;
             var modbusDeviceList = [];
             if (hasModbusDevices) {
                 var typeOrder = { relay: 0, pid: 1, pwm: 2, motor: 3 };
-                for (var mi = 0; mi < this._modbusDevices.length; mi++) modbusDeviceList.push({ idx: mi, dev: this._modbusDevices[mi] });
+                for (var mi = 0; mi < this._modbusDevices.length; mi++) {
+                    var activeDevice = this._modbusDevices[mi];
+                    if (Object.prototype.hasOwnProperty.call(typeOrder, activeDevice.deviceType || 'relay')) {
+                        modbusDeviceList.push({ idx: mi, dev: activeDevice });
+                    }
+                }
                 modbusDeviceList.sort(function(a, b) { return (typeOrder[a.dev.deviceType || 'relay'] || 0) - (typeOrder[b.dev.deviceType || 'relay'] || 0); });
             }
             var hasButtonControls = gpioItems.length > 0 || modbusCtrlItems.length > 0 || systemItems.length > 0 || scriptItems.length > 0 || sensorReadItems.length > 0 || otherItems.length > 0;
-            var hasAnyControls = hasButtonControls || modbusDeviceList.length > 0;
+            var hasAnyControls = hasButtonControls || modbusDeviceList.length > 0 || configuredModbusDevices.length > 0;
             if (hasAnyControls) {
-                html += '<div class="fb-card dc-header-card"><div class="fb-card-header fb-card-header-toolbar dc-header-card-inner">';
-                html += '<h2 class="fb-card-title dc-header-title">设备大屏</h2>';
+                html += '<div class="fb-card dc-header-card"><div class="fb-card-header fb-card-header-actions-only dc-header-card-inner">';
                 html += '<div class="dc-header-actions">';
                 var _sidChecked = localStorage.getItem('dc_show_sid') === '1';
                 html += '<label class="dc-sid-toggle"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + '>\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
@@ -260,6 +265,7 @@
                 html += '</div></div></div>';
                 html += '<div class="dc-zoom-wrapper"><div class="dc-control-flow">';
                 html += this._renderMonitorSection(data);
+                if (configuredModbusDevices.length > 0) html += this._renderModbusDeviceInventory(configuredModbusDevices);
                 if (gpioItems.length > 0) html += this._renderGpioGroup(gpioItems);
                 if (modbusCtrlItems.length > 0) html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
                 if (scriptItems.length > 0) html += this._renderControlGroup('Script', scriptItems, 'script', false);
@@ -310,6 +316,34 @@
             return html;
         },
 
+        _renderModbusDeviceInventory: function(devices) {
+            var list = devices || [];
+            var enabledCount = list.filter(function(device) { return device && device.enabled !== false; }).length;
+            var typeLabelMap = { relay: '继电器', pwm: 'PWM', pid: 'PID', motor: '电机', sensor: '采集', control: '控制' };
+            var html = '<div class="dc-modbus-device-inventory" data-dc-sort-key="modbus-devices">';
+            html += '<div class="dc-card-header"><span class="dc-card-badge dc-card-badge--modbus">MODBUS</span>';
+            html += '<span class="dc-card-title">Modbus 子设备</span>';
+            html += '<span class="dc-modbus-inventory-count">' + enabledCount + '/' + list.length + ' 启用</span></div>';
+            html += '<div class="dc-modbus-inventory-list" role="list">';
+            for (var i = 0; i < list.length; i++) {
+                var dev = list[i] || {};
+                var enabled = dev.enabled !== false;
+                var type = dev.deviceType || 'relay';
+                var name = dev.name || ('Modbus 设备 ' + (i + 1));
+                html += '<div class="dc-modbus-inventory-row" role="listitem" data-modbus-enabled="' + enabled + '">';
+                html += '<div class="dc-modbus-inventory-identity"><strong>' + escapeHtml(name) + '</strong>';
+                if (dev.sensorId) html += '<span>' + escapeHtml(dev.sensorId) + '</span>';
+                html += '</div><div class="dc-modbus-inventory-meta">';
+                html += '<span>' + escapeHtml(typeLabelMap[type] || type) + '</span>';
+                html += '<span>地址 ' + escapeHtml(dev.slaveAddress || 1) + '</span>';
+                html += '<span>' + escapeHtml(dev.channelCount || 1) + ' 通道</span></div>';
+                html += '<span class="dc-modbus-inventory-state ' + (enabled ? 'is-enabled' : 'is-disabled') + '">' + (enabled ? '已启用' : '未启用') + '</span>';
+                html += '</div>';
+            }
+            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
+            return html;
+        },
+
         _buildPlatformIds: function(dev) {
             var sid = dev.sensorId;
             if (!sid) return [];
@@ -337,7 +371,8 @@
             var ctrlLabelMap = { relay: '继电器控制', pwm: 'PWM 控制', pid: 'PID调速', motor: '电机控制' };
             var ctrlLabel = (dev.name || '') || (ctrlLabelMap[dt] || (typeLabel + ' 控制操作'));
             var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid', motor: 'dc-card-badge--motor'};
-            var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '" data-dc-sort-key="modbus-' + dt + '-' + devIdx + '">';
+            var configIndex = Number.isInteger(dev._configIndex) ? dev._configIndex : devIdx;
+            var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '" data-dc-sort-key="modbus-' + dt + '-' + configIndex + '">';
             var metaHtml = 'Addr: ' + (dev.slaveAddress || 1);
             if (dev.sensorId) metaHtml += ' | ID: ' + dev.sensorId;
             html += this._renderDcCardHeader(typeClassMap[dt] || 'dc-card-badge--system', typeLabel, ctrlLabel, 'dc-modbus-device-addr', metaHtml);
