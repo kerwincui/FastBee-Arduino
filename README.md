@@ -82,6 +82,81 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
 
 `features.json` 保存全部功能的用户期望状态；Web 服务和本地域名服务出厂默认启用，其他可选功能默认关闭。旧版稀疏配置会在首次加载时保留已有选择并自动补全一次。功能生效至少需要满足：
 
+<table>
+  <tr>
+    <td><img src="./images/device_01.png" alt="设备监控首页"/></td>
+    <td><img src="./images/device_07.png" alt="设备大屏"/></td>
+  </tr>
+  <tr>
+    <td><img src="./images/device_11.png" alt="中英文适配"/></td>
+    <td><img src="./images/device_12.png" alt="全屏显示"/></td>
+  </tr>
+</table>
+
+## 五、案例展示
+
+以下是 FastBee-Arduino 在不同芯片和硬件平台上的实际应用案例。
+
+<table>
+<tr>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><img src="./images/case-esp32c6.png" alt="ESP32-C6 Blink" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><b>ESP32-C6 控制全彩LED灯入门</b></a>
+<br/><sub>使用 ESP32-C6 开发板，5分钟内完成固件烧录和 LED 闪烁测试，体验零代码快速入门流程。</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><img src="./images/case-esp32c3.png" alt="ESP32-C3 温湿度" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><b>ESP32-C3 监测温湿并显示</b></a>
+<br/><sub>通过 DHT11 传感器采集环境温湿度，OLED 屏实时显示，超限自动触发报警规则。</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><img src="./images/device.png" alt="ESP32 Modbus" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><b>ESP32 实现 Modbus 监测和控制</b></a>
+<br/><sub>ESP32 物联网终端通过RS485接口采集 Modbus RTU 从站数据，实现工业传感器监测和控制。</sub>
+</td>
+</tr>
+<tr>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><img src="./images/case-ecm50a.png" alt="ECM50-A 联网" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><b>ECM50-A 以太网/4G/WiFi联网..</b></a>
+<br/><sub>基于 ESP32-S3 芯片的 ECM50-A 工业设备，支持 4G 蜂窝、以太网 W5500 和 WiFi 三种联网方式自动切换。</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><img src="./images/case-puzhong.png" alt="普中开发板" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><b>ESP32普中开发板各项功能测试</b></a>
+<br/><sub>使用普中 ESP32 开发板全面测试 GPIO、ADC、PWM、I2C、SPI、UART、显示屏等外设功能。</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><img src="./images/case-weixue.png" alt="WaveShare" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><b>ESP32-S3 微雪工业继电器</b></a>
+<br/><sub>WaveShare ESP32-S3 开发板适配，覆盖 WiFi、传感器采集、显示屏驱动和 MQTT 上报等。</sub>
+</td>
+</tr>
+</table>
+
+更多案例请查看 [示例教程](https://fastbee.cn/doc/device/examples/) 目录。
+
+## 六、预定义环境
+
+| PlatformIO 环境 | 版本 | 芯片 | Flash | PSRAM |
+| --- | --- | --- | --- | --- |
+| `esp32c3-F4R0` | Lite | ESP32-C3 | 4MB | 无 |
+| `esp32c6-F4R0` | Lite | ESP32-C6 | 4MB | 无 |
+| `esp32-F4R0` | Standard | ESP32 | 4MB | 无 |
+| `esp32s3-F8R0` | Standard | ESP32-S3 | 8MB | 无 |
+| `esp32-F8R4` | Full | ESP32 | 8MB | 4MB |
+| `esp32s3-F8R4` | Full | ESP32-S3 | 8MB | 4MB |
+| `esp32s3-F16R8` | Full | ESP32-S3 | 16MB | 8MB |
+
+> 版本选择的核心依据是 **Flash 容量**和**是否有 PSRAM**。
+1. Flash ≥8MB 的环境均支持 OTA 升级（4MB 环境受空间限制不支持）。
+2. 带 PSRAM 的模组（如 ESP32-WROVER、ESP32-S3-N8R2/N16R8）均可使用 Full 版。
+3. 预定义的环境不满足可以platformio中新增，配置合适flash、psram和需要支持的外设
+
+> 功能对比详表与分区表见 [版本对比](https://fastbee.cn/doc/device/getting-started/edition-comparison.html)。
+
+## 七、项目结构
+
 ```text
 compiled（编译进固件）
   AND userEnabled（用户已启用）
