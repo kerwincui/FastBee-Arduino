@@ -3,6 +3,8 @@
         _logFileCount: null,
         _logCurrentSize: null,
         _logCurrentTruncated: false,
+        _logListLoadSeq: 0,
+        _logContentLoadSeq: 0,
 
         _formatLogSize(bytes) {
             const value = Number(bytes || 0);
@@ -27,6 +29,19 @@
             const size = this._logCurrentSize === null ? '--' : this._formatLogSize(this._logCurrentSize);
             summary.textContent = fileCount + ' 个文件 · 当前 ' + size +
                 (this._logCurrentTruncated ? ' · 已截断' : '');
+        },
+
+        _setLogBusy(kind, busy) {
+            const buttonId = kind === 'list' ? 'log-refresh-list-btn' : 'refresh-logs-btn';
+            const button = document.getElementById(buttonId);
+            if (button) {
+                button.disabled = busy;
+                button.setAttribute('aria-busy', busy ? 'true' : 'false');
+            }
+            const content = document.getElementById('log-content');
+            if (kind === 'content' && content) {
+                content.setAttribute('aria-busy', busy ? 'true' : 'false');
+            }
         },
 
         setupLogsEvents() {
@@ -60,13 +75,19 @@
             this._logCurrentSize = null;
             this._logCurrentTruncated = false;
             this._updateLogToolbarSummary();
-            return this.loadLogFileList(options).then(() => this.loadLogs(options));
+            return this.loadLogFileList(options).then(() => {
+                if (this.currentPage === 'logs') return this.loadLogs(options);
+                return null;
+            });
         },
 
         loadLogFileList(options) {
             const getter = options && options.noCache && typeof window.apiGetFresh === 'function' ? window.apiGetFresh : apiGet;
+            const loadSeq = ++this._logListLoadSeq;
+            this._setLogBusy('list', true);
             return getter('/api/logs/list')
                 .then((res) => {
+                    if (loadSeq !== this._logListLoadSeq || this.currentPage !== 'logs') return;
                     const select = document.getElementById('log-file-select');
                     if (!select) return;
                     const current = select.value || 'system.log';
@@ -93,6 +114,7 @@
                     this._updateLogToolbarSummary();
                 })
                 .catch(err => {
+                    if (loadSeq !== this._logListLoadSeq) return;
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     if (typeof window.apiNotifyError === 'function') {
                         window.apiNotifyError(err, '日志文件列表加载失败', '日志管理');
@@ -100,6 +122,9 @@
                         Notification.warning('日志文件列表加载失败');
                     }
                     this._updateLogToolbarSummary('日志文件列表加载失败');
+                })
+                .finally(() => {
+                    if (loadSeq === this._logListLoadSeq) this._setLogBusy('list', false);
                 });
         },
 
@@ -109,10 +134,13 @@
             const select = document.getElementById('log-file-select');
             const file = select && select.value ? select.value : 'system.log';
             const getter = options && options.noCache && typeof window.apiGetFresh === 'function' ? window.apiGetFresh : apiGet;
+            const loadSeq = ++this._logContentLoadSeq;
+            this._setLogBusy('content', true);
             if (content) content.textContent = '日志加载中...';
 
             return getter('/api/logs', { file, tail: 180, limit: 4096 })
                 .then((res) => {
+                    if (loadSeq !== this._logContentLoadSeq || this.currentPage !== 'logs') return;
                     if (!res || !res.success) throw new Error(res && (res.error || res.message) || 'load failed');
                     const data = res.data || {};
                     if (content) content.textContent = data.content || '暂无日志';
@@ -121,12 +149,16 @@
                     this._updateLogToolbarSummary();
                 })
                 .catch((err) => {
+                    if (loadSeq !== this._logContentLoadSeq) return;
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     if (content) content.textContent = '日志加载失败：' + (err && err.message ? err.message : '');
                     if (meta) this._updateLogToolbarSummary('日志接口不可用或当前构建未启用日志查看');
                     if (typeof window.apiNotifyError === 'function') {
                         window.apiNotifyError(err, '日志加载失败', '日志管理');
                     }
+                })
+                .finally(() => {
+                    if (loadSeq === this._logContentLoadSeq) this._setLogBusy('content', false);
                 });
         },
 
@@ -156,5 +188,12 @@
 
     if (typeof AppState.setupLogsEvents === 'function') {
         AppState.setupLogsEvents();
+    }
+    if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('logs', function() {
+            if (this.currentPage !== 'logs') return;
+            this._logListLoadSeq++;
+            this._logContentLoadSeq++;
+        });
     }
 })();

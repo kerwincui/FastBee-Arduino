@@ -15,6 +15,9 @@
 #include "utils/NetworkUtils.h"
 #include "utils/StaticPoolAllocator.h"
 #include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_POINT_HISTORY
+#include "core/PointHistory.h"
+#endif
 #include "./network/WebConfigManager.h"
 #include "./network/handlers/SSERouteHandler.h"
 #include <ArduinoJson.h>
@@ -66,46 +69,62 @@ bool isSafeConfigFileName(const String& name) {
     return true;
 }
 
+// Browser config transfer is intentionally limited to documents that never
+// contain credentials.  Network, protocol and authentication state have
+// dedicated APIs and must never be streamed as raw files.
+static const char* const kAllowedTransferConfigFiles[] = {
+    "device.json",
+    "features.json",
+    "peripherals.json",
+    "periph_exec.json",
+    "rule_scripts.json",
+    "screen_panel.json",
+    "point_history.json",
+#if FASTBEE_ENABLE_IR_REMOTE
+    "ir_keys.json",
+#endif
+};
+
+constexpr int kAllowedTransferConfigFilesCount =
+    (int)(sizeof(kAllowedTransferConfigFiles) / sizeof(kAllowedTransferConfigFiles[0]));
+
 bool isAllowedConfigTransferFileName(const String& name) {
     if (!isSafeConfigFileName(name)) return false;
-    if (name == "roles.json") return false;
-#if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
-    if (name == "users.json") return false;
-#endif
-    return true;
+    for (int i = 0; i < kAllowedTransferConfigFilesCount; ++i) {
+        if (name == kAllowedTransferConfigFiles[i]) return true;
+    }
+    return false;
 }
 
 bool isIgnoredConfigImportFileName(const String& name) {
-    if (name == "roles.json") return true;
-#if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
-    if (name == "users.json") return true;
-#endif
-    return false;
+    return name == "roles.json";
 }
 
 bool isManagedRuntimeConfigFileName(const String& name) {
     return name == "peripherals.json" ||
            name == "periph_exec.json" ||
-           name == "rule_scripts.json";
+           name == "rule_scripts.json" ||
+           name == "screen_panel.json" ||
+           name == "point_history.json";
 }
 
 bool isManagedRuntimeConfigPath(const String& path) {
     return path == "/config/peripherals.json" ||
            path == "/config/periph_exec.json" ||
-           path == "/config/rule_scripts.json";
+           path == "/config/rule_scripts.json" ||
+           path == "/config/screen_panel.json" ||
+           path == "/config/point_history.json";
 }
 
 // 配置导入白名单：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
 static const char* const kAllowedImportConfigFiles[] = {
     "device.json",
     "features.json",
-    "network.json",
     "peripherals.json",
     "periph_exec.json",
-    "protocol.json",
-    "users.json",
-    "auth.json",
     "rule_scripts.json",
+    "screen_panel.json",
+    "point_history.json",
 #if FASTBEE_ENABLE_IR_REMOTE
     "ir_keys.json",
 #endif
@@ -118,6 +137,33 @@ bool isAllowedConfigImportFileName(const String& name) {
         if (name == kAllowedImportConfigFiles[i]) return true;
     }
     return false;
+}
+
+bool isKnownRuntimeConfigFileName(const String& name) {
+    if (isAllowedConfigImportFileName(name) || isIgnoredConfigImportFileName(name)) return true;
+    if (name == "network.json" || name == "protocol.json" ||
+        name == "auth.json" || name == "users.json") return true;
+    static const char* const generationSuffixes[] = {
+        ".factory.tmp", ".import.tmp", ".bak", ".tmp"
+    };
+    for (const char* suffix : generationSuffixes) {
+        if (name.endsWith(suffix)) {
+            return isKnownRuntimeConfigFileName(
+                name.substring(0, name.length() - strlen(suffix)));
+        }
+    }
+    return false;
+}
+
+bool isSensitiveRuntimeConfigPath(const String& path) {
+    return path == "/config/network.json" || path == "/config/protocol.json" ||
+           path == "/config/auth.json" || path == "/config/users.json";
+}
+
+bool isSafeFileApiPath(const String& path) {
+    return path.startsWith("/") && path.indexOf("..") < 0 &&
+           path.indexOf('\\') < 0 && path.indexOf("//") < 0 &&
+           path.indexOf("/./") < 0;
 }
 
 String configPathForName(const String& name) {
@@ -141,7 +187,7 @@ int cleanupStaleConfigFiles() {
     while (file) {
         if (!file.isDirectory()) {
             String name = basenameOfFile(file.name());
-            if (!isAllowedConfigImportFileName(name) && !isIgnoredConfigImportFileName(name)) {
+            if (!isKnownRuntimeConfigFileName(name)) {
                 String path = configPathForName(name);
                 file.close();  // 先关闭文件句柄再删除
                 if (LittleFS.remove(path)) {
@@ -156,17 +202,6 @@ int cleanupStaleConfigFiles() {
     }
     root.close();
     return removed;
-}
-
-// 验证 JSON 内容格式：必须是有效的 JSON 对象或数组
-bool isValidJsonContent(const String& content) {
-    if (content.isEmpty()) return false;
-    // 快速检查首尾字符，避免解析纯文本
-    char first = content.charAt(0);
-    if (first != '{' && first != '[') return false;
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, content.c_str());
-    return err == DeserializationError::Ok;
 }
 
 bool shouldUseCompactSystemInfo(bool explicitBrief) {
@@ -498,6 +533,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/config/transfer/list", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config list", MemoryGuardLevel::SEVERE, 8)) return;
         if (HandlerUtils::checkLowMemory(request, 8192)) return;
 
@@ -530,6 +566,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/config/transfer/export", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config export", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name")) { ctx->sendError(request, 400, "Missing name parameter"); return; }
         String name = request->getParam("name")->value();
@@ -570,6 +607,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/config/transfer/import", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("content", true)) {
             ctx->sendError(request, 400, "Missing name or content parameter");
@@ -592,7 +630,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 白名单检查：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
         if (!isAllowedConfigImportFileName(name)) {
             ctx->sendError(request, 403,
-                ("不允许导入配置文件：" + name + "。允许的文件：device.json, features.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+                ("不允许导入配置文件：" + name + "。网络、协议和认证配置必须通过各自的专用页面/API 修改").c_str());
             return;
         }
         if (content.isEmpty()) {
@@ -604,12 +642,14 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 ("配置文件过大（" + String(content.length()) + " 字节），单文件最大 " + String(kMaxConfigInlineImportBytes / 1024) + " KB，请使用分片导入").c_str());
             return;
         }
-        // JSON 内容格式验证
-        if (!isValidJsonContent(content)) {
-            ctx->sendError(request, 422, "配置文件内容不是有效的 JSON 格式，请检查文件内容");
+        if (HandlerUtils::checkLowMemory(request, 24576)) return;
+
+        JsonDocument importedConfig;
+        DeserializationError importError = deserializeJson(importedConfig, content);
+        if (importError || (!importedConfig.is<JsonObject>() && name != "ir_keys.json")) {
+            ctx->sendError(request, 422, "配置文件内容不是有效的 JSON 对象，请检查文件内容");
             return;
         }
-        if (HandlerUtils::checkLowMemory(request, 24576)) return;
 
         // Flash 空间检查：确保有足够空间写入，防止存储空间耗尽
         size_t _fsTotal, _fsUsed;
@@ -627,15 +667,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
 
         String path = configPathForName(name);
-        File out = LittleFS.open(path, "w");
-        if (!out) { ctx->sendError(request, 500, "Failed to open config file for writing"); return; }
-        size_t written = out.print(content);
-        out.close();
-        if (written != content.length()) {
-            LittleFS.remove(path);  // 写入不完整则删除损坏文件，防止残留
-            ctx->sendError(request, 500, "配置文件写入不完整，已回滚");
+        ConfigStorage& configStorage = ConfigStorage::getInstance();
+        if (!configStorage.saveJSONConfig(path, importedConfig)) {
+            ctx->sendError(request, 500, "配置文件原子提交失败，已保留原配置");
             return;
         }
+        const size_t written = measureJson(importedConfig);
 
         if (name == "device.json" || name == "protocol.json") {
             FastBeeFramework* fw = FastBeeFramework::getInstance();
@@ -651,6 +688,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/config/transfer/import-chunk", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
             || !request->hasParam("index", true) || !request->hasParam("total", true)) {
@@ -678,7 +716,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 白名单检查（与 inline import 一致）
         if (!isAllowedConfigImportFileName(name)) {
             ctx->sendError(request, 403,
-                ("不允许导入配置文件：" + name + "。允许的文件：device.json, features.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+                ("不允许导入配置文件：" + name + "。网络、协议和认证配置必须通过各自的专用页面/API 修改").c_str());
             return;
         }
         if (total <= 0 || total > kMaxConfigTransferChunks || index < 0 || index >= total) {
@@ -703,35 +741,65 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
 
         String path = configPathForName(name);
-        if (index > 0 && !LittleFS.exists(path)) {
+        String stagedPath = path + ".import.tmp";
+        if (index == 0 && LittleFS.exists(stagedPath)) {
+            LittleFS.remove(stagedPath);
+        }
+        if (index > 0 && !LittleFS.exists(stagedPath)) {
             ctx->sendError(request, 409, "Missing previous config chunk");
             return;
         }
 
-        File out = LittleFS.open(path, index == 0 ? "w" : "a");
-        if (!out) { ctx->sendError(request, 500, "Failed to open config file for chunk write"); return; }
+        File out = LittleFS.open(stagedPath, index == 0 ? "w" : "a");
+        if (!out) { ctx->sendError(request, 500, "Failed to open staged config for chunk write"); return; }
         size_t written = out.print(chunk);
+        out.flush();
         out.close();
 
         if (written != chunk.length()) {
-            if (index == 0) LittleFS.remove(path);  // 首分片写入失败则清理
+            LittleFS.remove(stagedPath);
             ctx->sendError(request, 500, "分片写入不完整");
             return;
         }
-        // 重新打开统计真实文件大小（"w"/"a" 句柄在 close 前 size() 可能返回 0）
+        // The active config is untouched until the complete staged document
+        // has parsed and ConfigStorage commits it atomically.
         size_t fileSize = written;
-        File chk = LittleFS.open(path, "r");
+        File chk = LittleFS.open(stagedPath, "r");
         if (chk) { fileSize = chk.size(); chk.close(); }
-        if (fileSize > kMaxConfigTransferBytes) {
-            LittleFS.remove(path);
+        if (fileSize > kMaxConfigInlineImportBytes) {
+            LittleFS.remove(stagedPath);
             ctx->sendError(request, 413,
-                ("配置文件过大（" + String(fileSize) + " 字节），最大 " + String(kMaxConfigTransferBytes / 1024) + " KB").c_str());
+                ("配置文件过大（" + String(fileSize) + " 字节），最大 " + String(kMaxConfigInlineImportBytes / 1024) + " KB").c_str());
             return;
         }
 
-        if (index == total - 1 && (name == "device.json" || name == "protocol.json")) {
-            FastBeeFramework* fw = FastBeeFramework::getInstance();
-            if (fw) fw->ensureDeviceIdentity();
+        if (index == total - 1) {
+            File staged = LittleFS.open(stagedPath, "r");
+            if (!staged) {
+                ctx->sendError(request, 500, "Failed to reopen staged config");
+                return;
+            }
+            JsonDocument importedConfig;
+            DeserializationError importError = deserializeJson(importedConfig, staged);
+            staged.close();
+            if (importError || (!importedConfig.is<JsonObject>() && name != "ir_keys.json")) {
+                LittleFS.remove(stagedPath);
+                ctx->sendError(request, 422, "完整配置不是有效的 JSON 对象，原配置未修改");
+                return;
+            }
+
+            ConfigStorage& configStorage = ConfigStorage::getInstance();
+            if (!configStorage.saveJSONConfig(path, importedConfig)) {
+                LittleFS.remove(stagedPath);
+                ctx->sendError(request, 500, "配置文件原子提交失败，已保留原配置");
+                return;
+            }
+            LittleFS.remove(stagedPath);
+
+            if (name == "device.json") {
+                FastBeeFramework* fw = FastBeeFramework::getInstance();
+                if (fw) fw->ensureDeviceIdentity();
+            }
         }
 
         // 最后一个分片写入完成后，清理 /config/ 目录中的残留文件
@@ -758,10 +826,18 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/files/content", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (!request->hasParam("path")) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path")->value();
         if (!path.startsWith("/")) path = "/" + path;
-        if (path.indexOf("..") >= 0) { ctx->sendError(request, 403, "Invalid path"); return; }
+        if (!isSafeFileApiPath(path)) { ctx->sendError(request, 403, "Invalid path"); return; }
+        if (path.startsWith("/config/")) {
+            String name = basenameOfFile(path.c_str());
+            if (!isAllowedConfigTransferFileName(name)) {
+                ctx->sendError(request, 403, "Sensitive or unmanaged configuration cannot be read through the file API");
+                return;
+            }
+        }
         if (!LittleFS.exists(path)) { ctx->sendError(request, 404, "File not found"); return; }
         File file = LittleFS.open(path, "r");
         if (!file) { ctx->sendError(request, 500, "Failed to open file"); return; }
@@ -952,12 +1028,21 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/files/save", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         if (!request->hasParam("path", true)) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path", true)->value();
         if (!path.startsWith("/")) path = "/" + path;
-        if (path.indexOf("..") >= 0) { ctx->sendError(request, 403, "Invalid path"); return; }
+        if (!isSafeFileApiPath(path)) { ctx->sendError(request, 403, "Invalid path"); return; }
         if (isManagedRuntimeConfigPath(path)) {
             ctx->sendError(request, 409, "该运行配置不能通过文件编辑器直接覆盖，请使用对应配置页面");
+            return;
+        }
+        if (isSensitiveRuntimeConfigPath(path)) {
+            ctx->sendError(request, 409, "敏感配置不能通过文件编辑器直接覆盖，请使用对应配置页面");
+            return;
+        }
+        if (path.startsWith("/config/")) {
+            ctx->sendError(request, 409, "配置文件不能通过文件编辑器直接覆盖，请使用对应配置页面或配置导入接口");
             return;
         }
         if (!(path.endsWith(".json") || path.endsWith(".txt") || path.endsWith(".log") ||
@@ -1015,7 +1100,24 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/system/factory-reset", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
-        LOGGER.info("Factory reset initiated by user");
+        const String confirmation = ctx->getParamValue(request, "confirm", "");
+        if (confirmation != "RESET") {
+            ctx->sendError(request, 400, "Factory reset requires explicit RESET confirmation");
+            return;
+        }
+        const String password = ctx->getParamValue(request, "password", "");
+        if (!ctx->verifyCurrentUserPassword(request, password)) {
+            ctx->sendError(request, 403, "Current password verification failed");
+            return;
+        }
+        LOGGER.warning("Factory reset authorized by current-user password verification");
+
+#if FASTBEE_ENABLE_POINT_HISTORY
+        if (!FastBee::PointHistory::instance().pauseWrites(2000)) {
+            ctx->sendError(request, 503, "Recent history storage is busy; retry factory reset");
+            return;
+        }
+#endif
 
         int resetCount = 0;
         int resetFailureCount = 0;
@@ -1043,7 +1145,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"deviceName\":\"FastBee\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
             "\"enableNTP\":true,\"ntpServer1\":\"http://iot.fastbee.cn/prod-api/iot/tool/ntp\",\"ntpServer2\":\"cn.pool.ntp.org\","
             "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
-            "\"developerModeEnabled\":true}";
+            "\"developerModeEnabled\":false}";
         writeDefault("/config/device.json", DEFAULT_DEVICE);
 
         // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
@@ -1077,7 +1179,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // protocol.json - MQTT 默认启用；未配置设备身份时连接层保持等待配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
             "{\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
-            "\"mqtt\":{\"enabled\":true,\"scheme\":\"mqtt\",\"server\":\"iot.fastbee.cn\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
+            "\"mqtt\":{\"enabled\":true,\"scheme\":\"mqtt\",\"server\":\"iot.fastbee.cn\",\"otaBaseUrl\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
             "\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"mqttSecret\":\"\",\"authCode\":\"\","
             "\"willTopic\":\"\",\"willPayload\":\"\",\"willQos\":0,\"willRetain\":false,"
             "\"longitude\":0,\"latitude\":0,\"iccid\":\"\",\"cardPlatformId\":0,"
@@ -1088,15 +1190,13 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "{\"topic\":\"/event/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":4},"
             "{\"topic\":\"/monitor/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":3},"
             "{\"topic\":\"/ntp/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":7},"
-            "{\"topic\":\"/http/upgrade/reply\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":5},"
-            "{\"topic\":\"/fetch/upgrade/reply\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":6}],"
+            "{\"topic\":\"/{deviceNum}/http/upgrade/reply\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":false,\"topicType\":5}],"
             "\"subscribeTopics\":["
             "{\"topic\":\"/function/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":1},"
             "{\"topic\":\"/info/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":2},"
             "{\"topic\":\"/monitor/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":3},"
             "{\"topic\":\"/ntp/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":7},"
-            "{\"topic\":\"/http/upgrade/set\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":5},"
-            "{\"topic\":\"/fetch/upgrade/set\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":6}],"
+            "{\"topic\":\"/{deviceNum}/http/upgrade/set\",\"qos\":0,\"enabled\":true,\"autoPrefix\":false,\"topicType\":5}],"
             "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60,"
             "\"retry\":3,\"authType\":\"none\",\"authUser\":\"\",\"authToken\":\"\",\"contentType\":\"application/json\"},"
             "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683,\"method\":\"POST\","
@@ -1137,11 +1237,22 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
             "/config/modbus.json", "/config/coap.json", "/config/mqtt-backup.json",
             "/config/provision.json", "/config/ble_provision.json",
-            "/config/ir_keys.json", "/config/rf_keys.json"
+            "/config/ir_keys.json", "/config/rf_keys.json",
+            "/config/screen_panel.json", "/config/point_history.json",
+            "/data/point_history.json"
         };
+        bool historyDeleted = true;
         for (const char* optFile : optionalFiles) {
-            if (!configStorage.deleteJSONConfigGenerations(optFile)) recordFailure(optFile);
+            if (!configStorage.deleteJSONConfigGenerations(optFile)) {
+                recordFailure(optFile);
+                if (strstr(optFile, "point_history.json")) historyDeleted = false;
+            }
         }
+#if FASTBEE_ENABLE_POINT_HISTORY
+        if (!FastBee::PointHistory::instance().resumeWrites(historyDeleted)) {
+            recordFailure("point_history runtime state");
+        }
+#endif
 
         if (!ctx->networkManager || !ctx->networkManager->clearPersistentFallback()) {
             recordFailure("NVS:net_cfg");
@@ -1209,6 +1320,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/config", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
         Preferences prefs;
         prefs.begin("webconfig", false);
         uint32_t webPort = ctx->getParamInt(request, "webPort", 0);
@@ -1395,7 +1507,11 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         return;
     }
 
-    auto doc = FastBee::makeJsonDocument();
+    // Build in the response envelope: copying a separate document into data
+    // doubled the JSON pool at exactly the point low-DRAM clients need status.
+    auto wrapper = FastBee::makeJsonDocument();
+    wrapper["success"] = true;
+    JsonObject doc = wrapper["data"].to<JsonObject>();
     doc["status"]    = "running";
     doc["timestamp"] = millis();
     doc["freeHeap"]  = ESP.getFreeHeap();
@@ -1413,7 +1529,8 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         for (size_t i = 0; i < rfm.featureCount(); ++i) {
             const auto* meta = rfm.getFeatureAt(i);
             if (!meta) break;
-            const char* state = !meta->compiled ? "disabled"
+            const bool userEnabled = rfm.isUserEnabled(meta->key);
+            const char* state = (!meta->compiled || !userEnabled) ? "disabled"
                 : (rfm.isRuntimeDisabled(meta->key) ? "no-memory"
                 : (budgetReg.isDenied(meta->key) ? "no-memory"
                 : (rfm.shouldEnable(meta->key) ? "active" : "disabled")));
@@ -1454,10 +1571,23 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         doc["internetAvailable"] = info.internetAvailable;
     }
 
-    auto wrapper = FastBee::makeJsonDocument();
-    wrapper["success"] = true;
-    wrapper["data"] = doc;
-    serializeJson(wrapper, _statusCache.json);
+    if (wrapper.overflowed()) {
+        wrapper.clear();
+        HandlerUtils::sendJsonError(request, 503, "System status temporarily unavailable");
+        return;
+    }
+    const size_t expectedSize = measureJson(wrapper);
+    const size_t written = serializeJson(wrapper, _statusCache.json);
+    // The cached String owns the serialized bytes; release the document before
+    // beginResponse copies that String and allocates the TCP response buffers.
+    wrapper.clear();
+    // ArduinoStringWriter can report attempted bytes even when concat/flush
+    // failed, so check the actual cached bytes as well as the write count.
+    if (written != expectedSize || _statusCache.json.length() != expectedSize) {
+        _statusCache.json = String();
+        HandlerUtils::sendJsonError(request, 503, "System status temporarily unavailable");
+        return;
+    }
     _statusCache.timestamp = millis();
     _statusCache.valid = true;
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", _statusCache.json);
@@ -1585,6 +1715,7 @@ void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request)
 #if FASTBEE_ENABLE_FILE_MANAGER
 void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     const bool psramBacked = FastBee::psramAvailableForJson(32768);
     if (!psramBacked) {
@@ -1603,6 +1734,10 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
     }
     if (!path.startsWith("/")) {
         path = "/" + path;
+    }
+    if (!isSafeFileApiPath(path)) {
+        ctx->sendError(request, 403, "Invalid path");
+        return;
     }
 
     auto doc = FastBee::makeJsonDocument();
@@ -1993,6 +2128,10 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["modbus"] = (bool)FASTBEE_ENABLE_MODBUS;
 
     doc["data"]["periphExec"]  = (bool)FASTBEE_ENABLE_PERIPH_EXEC;
+    doc["data"]["screenPanel"] = (bool)FASTBEE_ENABLE_SCREEN_PANEL;
+    doc["data"]["screenUi"] = (bool)FASTBEE_ENABLE_SCREEN_UI;
+    doc["data"]["pointHistory"] = (bool)FASTBEE_ENABLE_POINT_HISTORY;
+    doc["data"]["remoteResources"] = (bool)FASTBEE_ENABLE_REMOTE_RESOURCES;
     doc["data"]["ruleScript"]  = (bool)FASTBEE_ENABLE_RULE_SCRIPT;
     doc["data"]["lcd"]        = (bool)FASTBEE_ENABLE_LCD;
     doc["data"]["ethernet"]     = (bool)FASTBEE_ENABLE_ETHERNET;

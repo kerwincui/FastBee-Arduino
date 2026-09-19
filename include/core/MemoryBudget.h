@@ -259,6 +259,18 @@ struct MemoryBudget {
     // 保护力不受影响。响应构建硬保护另有入口临界闸门 blk8<1536 全丢弃。
     static constexpr uint32_t WEB_GUARD_MIN_DRAM_BLK8 = 4096U;       // 4KB 触发阈值（blk8 口径）
     static constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_BLK8 = 9216U;  // 4KB + 5KB 迟滞恢复阈值
+    // Bounded HTTP responses now stage at most one TCP MSS under low DRAM;
+    // large JSON is streamed instead of requiring a contiguous serialized body.
+    // Keep the 4KB response admission requirement plus 2KB block hysteresis.
+    // C3 post-load evidence: 28KB free / 7668B largest is usable but can never
+    // reach the legacy 9KB fast recovery threshold. The guard additionally
+    // requires this headroom to remain stable for five seconds before recovery.
+    static constexpr uint32_t WEB_STREAMING_RECOVERY_DRAM_BLK8 =
+        WEB_GUARD_MIN_DRAM_BLK8 + 2048U;
+    static constexpr bool hasWebStreamingHeadroom(uint32_t free8, uint32_t blk8) {
+        return free8 >= WEB_GUARD_RECOVERY_DRAM_FREE &&
+               blk8 >= WEB_STREAMING_RECOVERY_DRAM_BLK8;
+    }
 
     // DRAM 水位辅助（审计 P2-4）：堆闸门必须统一用内部 DRAM 口径，
     // 而非 ESP.getFreeHeap()/getMaxAllocHeap() 总堆（PSRAM 板型上

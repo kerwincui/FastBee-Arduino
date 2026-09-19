@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <regex>
+#include "network/WiFiRetryPolicy.h"
 
 // 辅助：读取项目源文件
 static std::string readSrcFile(const char* relativePath) {
@@ -230,6 +231,68 @@ void test_source_reconnect_uses_exponential_backoff() {
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("RECONNECT_MAX_INTERVAL_MS") != std::string::npos,
         "Backoff must be capped by RECONNECT_MAX_INTERVAL_MS");
+}
+
+void test_auth_failure_cooldown_policy() {
+    TestLog::testStart("Repeated auth failures retain one fast retry, then cool down with a cap");
+
+    const uint32_t expected[] = {
+        0UL, 0UL, 300000UL, 600000UL, 600000UL, 600000UL, 600000UL, 600000UL
+    };
+    for (uint8_t streak = 0; streak < sizeof(expected) / sizeof(expected[0]); ++streak) {
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+            expected[streak],
+            WiFiRetryPolicy::authFailureCooldownMs(streak),
+            "Unexpected bounded auth cooldown interval");
+    }
+
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(2));
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(4));
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(15));
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(202));
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(203));
+    TEST_ASSERT_TRUE(WiFiRetryPolicy::isAuthOrAssociationFailure(204));
+    TEST_ASSERT_FALSE(WiFiRetryPolicy::isAuthOrAssociationFailure(0));
+    TEST_ASSERT_FALSE(WiFiRetryPolicy::isAuthOrAssociationFailure(8));
+    TEST_ASSERT_FALSE(WiFiRetryPolicy::isAuthOrAssociationFailure(200));
+    TEST_ASSERT_FALSE(WiFiRetryPolicy::isAuthOrAssociationFailure(201));
+}
+
+void test_source_auth_failure_cooldown_is_nonblocking_and_resettable() {
+    TestLog::testStart("Source: repeated auth failures use a nonblocking radio-off cooldown");
+
+    const std::string network = readSrcFile("src/network/NetworkManager.cpp");
+    const std::string networkHeader = readSrcFile("include/network/NetworkManager.h");
+    const std::string wifi = readSrcFile("src/network/WiFiManager.cpp");
+    const std::string wifiHeader = readSrcFile("include/network/WiFiManager.h");
+    TEST_ASSERT_FALSE(network.empty());
+    TEST_ASSERT_FALSE(networkHeader.empty());
+    TEST_ASSERT_FALSE(wifi.empty());
+    TEST_ASSERT_FALSE(wifiHeader.empty());
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        networkHeader.find("AUTH_COOLDOWN") != std::string::npos &&
+        network.find("BootStaRetryScanState::AUTH_COOLDOWN") != std::string::npos &&
+        network.find("now - _bootStaRetryScanStartedAt < _authRetryCooldownMs") != std::string::npos,
+        "Auth cooldown must be an asynchronous retry state, not a blocking delay");
+    TEST_ASSERT_TRUE_MESSAGE(
+        network.find("backoffInterval = max(backoffInterval, _authRetryCooldownMs)") != std::string::npos,
+        "STA-only recovery must retain the bounded auth cooldown after boot retries");
+    TEST_ASSERT_TRUE_MESSAGE(
+        network.find("resetStaAuthBackoff();      // successful association clears auth cooldown") != std::string::npos,
+        "A successful connection must restore the normal fast retry policy");
+    TEST_ASSERT_TRUE_MESSAGE(
+        network.find("effectiveConfig.staPassword != wifiConfig.staPassword") != std::string::npos &&
+        network.find("effectiveConfig.staPassword != previousConfig.staPassword") != std::string::npos,
+        "Changing STA credentials must restart networking and clear the old auth cooldown");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wifiHeader.find("getLastDisconnectReason()") != std::string::npos &&
+        wifiHeader.find("clearLastDisconnectReason()") != std::string::npos &&
+        wifi.find("lastDisconnectReason = info.wifi_sta_disconnected.reason") != std::string::npos,
+        "The retry policy must consume the real ESP-IDF disconnect reason");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wifi.find("lastDisconnectReason = 0;\n    WiFi.begin") != std::string::npos,
+        "Each new attempt must clear stale disconnect reasons before WiFi.begin");
 }
 
 // ============================================================================
@@ -938,6 +1001,11 @@ void test_source_gateway_ping_failure_is_advisory() {
         probeBlock.find("_gwProbeEverSucceeded ? \"confirmed\" : \"unknown\"") != std::string::npos &&
         probeBlock.find("pending STA-only recovery") != std::string::npos,
         "Unanswered gateway probes must remain observable while bounded STA recovery is pending");
+    TEST_ASSERT_TRUE_MESSAGE(
+        probeBlock.find("isForegroundRequestActive()") != std::string::npos &&
+        probeBlock.find("deferGatewayProbeForWeb") != std::string::npos &&
+        probeBlock.find("_lastGwProbeTime = currentTime") != std::string::npos,
+        "Gateway ICMP must wait for a full quiet interval after foreground Web traffic");
 
     size_t zombieBlockStart = content.find("// WiFi 僵尸连接检测");
     size_t zombieBlockEnd = content.find("// 清理冲突缓存", zombieBlockStart);
@@ -1354,6 +1422,8 @@ void test_wifi_network_group() {
     RUN_TEST(test_reconnect_backoff_interval_calculation);
     RUN_TEST(test_reconnect_backoff_caps_at_max);
     RUN_TEST(test_source_reconnect_uses_exponential_backoff);
+    RUN_TEST(test_auth_failure_cooldown_policy);
+    RUN_TEST(test_source_auth_failure_cooldown_is_nonblocking_and_resettable);
 
     // 内存保护测试
     RUN_TEST(test_source_connect_blocking_has_dram_check);

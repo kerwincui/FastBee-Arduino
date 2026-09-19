@@ -14,17 +14,18 @@
                 { value: 3, label: '实时监测' },
                 { value: 4, label: '设备事件' },
                 { value: 5, label: 'OTA升级' },
-                { value: 6, label: 'OTA二进制' },
+                { value: 6, label: 'OTA二进制（暂不支持）', disabled: true },
                 { value: 7, label: 'NTP时间同步' }
             ];
             return types.map(t =>
-                `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${t.label}</option>`
+                `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''} ${t.disabled ? 'disabled' : ''}>${t.label}</option>`
             ).join('');
         },
 
         _loadMqttPublishTopics(topics) {
             const container = document.getElementById('mqtt-publish-topics');
             if (!container) return;
+            this._bindMqttBinaryOtaTopicGuard(container);
             container.innerHTML = '';
             if (!topics || topics.length === 0) {
                 topics = [{ topic: '', qos: 0, retain: false, enabled: true, autoPrefix: false, topicType: 0 }];
@@ -39,8 +40,9 @@
             const qos = topicData.qos ?? 0;
             const toggleHtml = options.toggles.map((toggle) => {
                 const checked = toggle.checked ? ' checked' : '';
+                const disabled = toggle.disabled ? ' disabled title="OTA二进制暂不支持"' : '';
                 return '<label class="fb-checkbox">' +
-                    '<input type="checkbox" class="' + toggle.inputClass + '"' + checked + '> ' + toggle.label +
+                    '<input type="checkbox" class="' + toggle.inputClass + '"' + checked + disabled + '> ' + toggle.label +
                     '</label>';
             }).join('');
 
@@ -79,6 +81,39 @@
             div.dataset.index = index;
             div.innerHTML = this._buildMqttTopicItemHtml(index, topicData, options);
             container.appendChild(div);
+            this._syncMqttBinaryOtaTopicState(div, options);
+        },
+
+        _bindMqttBinaryOtaTopicGuard(container) {
+            if (!container || container._mqttBinaryOtaGuardBound) return;
+            container.addEventListener('change', (event) => {
+                const target = event.target;
+                if (!target || (!target.classList.contains('mqtt-topic-type-input') &&
+                    !target.classList.contains('mqtt-sub-topic-type-input'))) return;
+                const item = target.closest('.mqtt-topic-item');
+                if (!item) return;
+                const options = target.classList.contains('mqtt-sub-topic-type-input')
+                    ? this._getMqttSubscribeTopicOptions({})
+                    : this._getMqttPublishTopicOptions({});
+                if (Number(target.value) === 5) {
+                    const topicInput = item.querySelector('.' + options.topicInputClass);
+                    const autoPrefixInput = item.querySelector('.' + options.autoPrefixInputClass);
+                    if (topicInput) topicInput.value = options.fastBeeOtaTopic;
+                    if (autoPrefixInput) autoPrefixInput.checked = false;
+                }
+                this._syncMqttBinaryOtaTopicState(item, options);
+            });
+            container._mqttBinaryOtaGuardBound = true;
+        },
+
+        _syncMqttBinaryOtaTopicState(item, options) {
+            const typeInput = item?.querySelector('.' + options.topicTypeInputClass);
+            const enabledInput = item?.querySelector('.' + options.enabledInputClass);
+            if (!typeInput || !enabledInput) return;
+            const unsupported = Number(typeInput.value) === 6;
+            if (unsupported) enabledInput.checked = false;
+            enabledInput.disabled = unsupported;
+            enabledInput.title = unsupported ? 'OTA二进制暂不支持' : '';
         },
 
         _reindexMqttTopicItems(container) {
@@ -106,7 +141,9 @@
                 const topic = {
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
-                    enabled: enabledInput?.checked !== false,
+                    enabled: Number(topicTypeInput?.value) === 6
+                        ? false
+                        : enabledInput?.checked !== false,
                     autoPrefix: autoPrefixInput?.checked || false,
                     topicType: parseInt(topicTypeInput?.value || String(options.defaultTopicType))
                 };
@@ -119,6 +156,7 @@
         },
 
         _getMqttPublishTopicOptions(topicData) {
+            const binaryOtaUnsupported = Number(topicData.topicType) === 6;
             return {
                 itemClass: 'mqtt-topic-item',
                 indexClass: 'mqtt-topic-index',
@@ -132,15 +170,17 @@
                 autoPrefixInputClass: 'mqtt-autoprefix-input',
                 retainInputClass: 'mqtt-retain-input',
                 defaultTopicType: 0,
+                fastBeeOtaTopic: '/{deviceNum}/http/upgrade/reply',
                 toggles: [
                     { inputClass: 'mqtt-retain-input', checked: topicData.retain === true, label: '保留消息' },
-                    { inputClass: 'mqtt-enabled-input', checked: topicData.enabled !== false, label: '启用' },
+                    { inputClass: 'mqtt-enabled-input', checked: !binaryOtaUnsupported && topicData.enabled !== false, disabled: binaryOtaUnsupported, label: '启用' },
                     { inputClass: 'mqtt-autoprefix-input', checked: topicData.autoPrefix === true, label: '自动前缀' }
                 ]
             };
         },
 
         _getMqttSubscribeTopicOptions(topicData) {
+            const binaryOtaUnsupported = Number(topicData.topicType) === 6;
             return {
                 itemClass: 'mqtt-topic-item mqtt-topic-item-sub',
                 indexClass: 'mqtt-topic-index mqtt-topic-index-sub',
@@ -153,8 +193,9 @@
                 enabledInputClass: 'mqtt-sub-enabled-input',
                 autoPrefixInputClass: 'mqtt-sub-autoprefix-input',
                 defaultTopicType: 1,
+                fastBeeOtaTopic: '/{deviceNum}/http/upgrade/set',
                 toggles: [
-                    { inputClass: 'mqtt-sub-enabled-input', checked: topicData.enabled !== false, label: '启用' },
+                    { inputClass: 'mqtt-sub-enabled-input', checked: !binaryOtaUnsupported && topicData.enabled !== false, disabled: binaryOtaUnsupported, label: '启用' },
                     { inputClass: 'mqtt-sub-autoprefix-input', checked: topicData.autoPrefix === true, label: '自动前缀' }
                 ]
             };
@@ -190,6 +231,7 @@
         _loadMqttSubscribeTopics(topics) {
             const container = document.getElementById('mqtt-subscribe-topics');
             if (!container) return;
+            this._bindMqttBinaryOtaTopicGuard(container);
             container.innerHTML = '';
             if (!topics || topics.length === 0) {
                 topics = [{ topic: '', qos: 0, enabled: true, autoPrefix: false, topicType: 1 }];

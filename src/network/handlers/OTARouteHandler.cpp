@@ -53,10 +53,10 @@ void OTARouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/ota/upload", HTTP_POST,
         [this](AsyncWebServerRequest* request) {
-            // multipart 分块解析完成后的收尾回调：实际响应已在 final 分块
-            // 处理时发送；仅对未发过响应的异常请求（如空 body）兜底，
-            // 重复 send 会被库的 isSent 标志安全忽略
-            if (!request->isSent()) {
+            // final 分块可以已排队成功/失败响应，但库要等 multipart
+            // 解析结束才真正发送，此时 isSent() 仍为 false。仅在连
+            // 排队响应也不存在时兜底，避免用 400 覆盖真实上传结果。
+            if (!request->isSent() && !request->getResponse()) {
                 ctx->sendError(request, 400, "OTA upload received no data");
             }
         },

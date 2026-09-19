@@ -19,6 +19,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         _periphTypeCatalogLoading: false,
         _periphPreflightFingerprint: '',
         _periphPreflightAcknowledgements: 0,
+        _periphFormSession: null,
         _periphIoId: '',
         _periphIoType: 0,
         _periphIoKind: '',
@@ -56,7 +57,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     if (typeof this._stopPeripheralIoPolling === 'function') this._stopPeripheralIoPolling();
                 });
             }
-            this._loadPeripheralHardwareCapabilities();
+            // The capability catalog is large on constrained targets and is
+            // only needed by the add/edit modal. Loading it here competes with
+            // the first-screen peripheral list and can push the next request
+            // into WebMemoryGuard. openPeripheralModal() loads it on demand.
             this._periphEventsBound = true;
         },
 
@@ -78,7 +82,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             var adcSignalMode = document.getElementById('adc-signal-mode');
             if (adcSignalMode) adcSignalMode.addEventListener('change', (e) => this._applyAnalogSignalDefaults(e.target.value));
             var pinsInput = document.getElementById('peripheral-pins-input');
-            if (pinsInput) pinsInput.addEventListener('blur', (e) => this._validatePinsInline());
+            if (pinsInput) pinsInput.addEventListener('blur', () => {
+                this._loadPeripheralSaveModule(function() { this._validatePinsInline(); });
+            });
             var peripheralForm = document.getElementById('peripheral-form');
             if (peripheralForm) {
                 peripheralForm.addEventListener('input', () => this._resetPeripheralPreflight());
@@ -86,8 +92,19 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             }
             var genericSensorDriver = document.getElementById('generic-sensor-driver');
             if (genericSensorDriver) genericSensorDriver.addEventListener('change', () => this._updateGenericSensorDriverFields(true));
+            ['generic-sensor-bus-id', 'io-expander-bus-id'].forEach((id) => {
+                document.getElementById(id)?.addEventListener('change', () => this._updatePeripheralPinRoleHint(document.getElementById('peripheral-type-input')?.value));
+            });
+            document.getElementById('io-expander-driver')?.addEventListener('change', () => this._updateIoExpanderFields(true));
+            ['gpio-io-source', 'gpio-provider-id'].forEach((id) => {
+                document.getElementById(id)?.addEventListener('change', () => this._updateGpioSourceFields());
+            });
             var sdcardInterface = document.getElementById('sdcard-interface');
             if (sdcardInterface) sdcardInterface.addEventListener('change', () => this._updateSdcardPinHints());
+            document.getElementById('display-touch-backend')?.addEventListener('change', () => this._updateDisplayFields());
+            document.getElementById('display-backend')?.addEventListener('change', () => this._updateDisplayFields());
+            document.getElementById('display-driver')?.addEventListener('change', () => this._updateDisplayFields());
+            document.getElementById('display-backlight')?.addEventListener('input', () => this._updateDisplayFields());
             // 兼容旧版 GPIO 模态框
             var closeGpioModal = document.getElementById('close-gpio-modal');
             if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closePeripheralModal());
@@ -344,13 +361,17 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             2: '已初始化', 3: '运行中',
                             4: '错误'
                         };
-                        const statusName = statusNames[periph.status] || '未知';
+                        const statusName = periph.featureActive === false ? '功能未启用' : (statusNames[periph.status] || '未知');
                         const statusBadgeClass = statusBadgeClasses[periph.status] || 'badge-info';
                         const safeId = escapeHtml(periph.id);
                         const safeName = escapeHtml(periph.name);
                         const safeType = escapeHtml(periph.typeName || periph.type || '--');
                         const typeTag = periph.implemented === false ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
-                        const pinsStr = escapeHtml(periph.pins ? periph.pins.join(', ') : '--');
+                        const ioParams = periph.params || periph;
+                        const logicalIo = ioParams.ioSource === 'expander' || Number(ioParams.ioSource) === 1;
+                        const pinsStr = escapeHtml(logicalIo
+                            ? (ioParams.providerId || '?') + ' / P' + ioParams.channel
+                            : (periph.pins && periph.pins.length ? periph.pins.join(', ') : (ioParams.busPeripheralId || '--')));
                         const diagnosticKind = this._getPeripheralDiagnosticKind(periph);
                         const diagnosticButton = this._canOpenPeripheralDiagnostics(periph)
                             ? this._renderPeripheralActionButton('diagnose', periph.id, this._diagnosticButtonLabel(diagnosticKind), 'fb-btn-secondary', false)
@@ -418,14 +439,20 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 Notification.warning(t('peri-capacity-full', '当前资源档位外设数量已达上限'), '外设配置');
                 return;
             }
+            const session = {};
+            this._periphFormSession = session;
             this._loadPeripheralSaveModule();
             const modal = await this._ensureModalForAction('peripheral-modal');
+            if (this._periphFormSession !== session) return;
             const title = document.getElementById('peripheral-modal-title');
             const form = document.getElementById('peripheral-form');
             if (!modal) {
                 return;
             }
             form?.reset();
+            this._periphFormConfig = null;
+            this._pendingSensorDriverParams = null;
+            this._loadPeripheralProviders();
             this.clearInlineError('peripheral-error');
             this._resetPeripheralPreflight();
             document.querySelectorAll('.peripheral-params-group').forEach(el => this.hideElement(el));
@@ -451,6 +478,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         },
 
         closePeripheralModal() {
+            this._periphFormSession = null;
             // 关闭时销毁红外管理面板（停止学习轮询）
             if (typeof this.teardownIrManage === 'function') this.teardownIrManage();
             // 关闭时销毁 RF 管理面板
@@ -515,6 +543,12 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 const genericSensorParams = document.getElementById('generic-sensor-params');
                 if (genericSensorParams) this.showElement(genericSensorParams);
                 this._updateGenericSensorDriverFields();
+            } else if (type === 55) {
+                this.showElement(document.getElementById('io-expander-params'));
+                this._updateIoExpanderFields(false);
+            } else if (type === 56) {
+                this.showElement(document.getElementById('display-params'));
+                this._updateDisplayFields();
             } else if (type === 27) {
                 const dacParams = document.getElementById('dac-params');
                 this.showElement(dacParams);
@@ -590,10 +624,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 const lcd1602Params = document.getElementById('lcd1602-params');
                 if (lcd1602Params) this.showElement(lcd1602Params);
             }
-            // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
+            // DISPLAY (56) 使用具名引脚字段；DEVICE_EVENT (60) 和 Modbus (51) 无通用引脚配置。
             const pinsGroup = document.getElementById('peripheral-pins-group');
             if (pinsGroup) {
-                (type === 60 || type === 51) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
+                (type === 60 || type === 51 || type === 56) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
             }
             
             // 设备事件提示信息显示/隐藏
@@ -619,15 +653,19 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             if (lcd1602Hint) {
                 (type === 52) ? this.showElement(lcd1602Hint) : this.hideElement(lcd1602Hint);
             }
+            this._updateGpioSourceFields();
             this._updatePeripheralPinRoleHint(type);
         },
 
         loadPeripheralForEdit(id) {
+            const session = this._periphFormSession;
             var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            getter('/api/peripherals/', { id: id })
+            return getter('/api/peripherals/', { id: id })
                 .then(res => {
+                    if (this._periphFormSession !== session) return;
                     if (res && res.success && res.data) {
                         const data = res.data;
+                        this._periphFormConfig = data;
                         const safeValue = (val, def = '') => (val !== undefined && val !== null) ? val : def;
                         document.getElementById('peripheral-original-id').value = safeValue(data.id);
                         document.getElementById('peripheral-id-input').value = safeValue(data.id);
@@ -701,10 +739,6 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 const address = data.params.i2cAddress ?? data.params.address;
                                 if (el && address !== undefined) el.value = this._formatI2cAddress(address);
                             }
-                            {
-                                const el = document.getElementById('generic-sensor-channel');
-                                if (el && data.params.channel !== undefined) el.value = String(data.params.channel);
-                            }
                             // AO 模拟量输出模式回显
                             { const el = document.getElementById('gpio-ao-mode'); if (el) el.checked = !!data.params.aoMode; }
                             { const el = document.getElementById('gpio-ao-min-pct'); if (el && data.params.aoMinPct !== undefined) el.value = data.params.aoMinPct; }
@@ -776,7 +810,19 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 { const el = document.getElementById('lcd1602-address'); if (el && data.params.address !== undefined) el.value = this._formatI2cAddress(data.params.address); }
                                 { const el = document.getElementById('lcd1602-backlight'); if (el && data.params.backlight !== undefined) el.checked = !!data.params.backlight; }
                             }
-                            this._updateGenericSensorDriverFields();
+                            if (Number(data.type) === 38) {
+                                this._updateGenericSensorDriverFields(false, data.params);
+                            } else if (Number(data.type) === 55) {
+                                this._updateIoExpanderFields(false, data.params);
+                            } else if (Number(data.type) === 56) {
+                                this._updateDisplayFields(data.params);
+                            }
+                            if ([11, 12, 13, 14, 18, 19, 20].indexOf(Number(data.type)) >= 0) {
+                                const params = data.params.gpio || data.params;
+                                document.getElementById('gpio-io-source').value = params.ioSource === 'expander' || Number(params.ioSource) === 1 ? 'expander' : 'gpio';
+                                this._setPeripheralReferenceOptions('gpio-provider-id', 55, params.providerId || '');
+                                this._updateGpioSourceFields(params.channel ?? 0);
+                            }
                             this._updateSdcardPinHints();
                         }
                     } else {
@@ -784,6 +830,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     }
                 })
                 .catch(err => {
+                    if (this._periphFormSession !== session) return;
                     console.error('Load peripheral for edit failed:', err);
                     Notification.error(t('peri-load-fail', '加载失败'), '外设配置');
                 });
@@ -823,7 +870,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const type = Number(typeValue);
             if (!Array.isArray(this._periphTypeCatalog) || !Number.isFinite(type)) return false;
             const item = this._periphTypeCatalog.find(entry => Number(entry && (entry.value ?? entry.type)) === type);
-            return !!item && item.implemented !== false;
+            return !!item && item.configurable !== false && item.implemented !== false;
         },
 
         _updatePeripheralTypeAvailability(typeValue) {
@@ -846,6 +893,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         _syncPeripheralTypeSelect(catalog) {
             const typeSelect = document.getElementById('peripheral-type-input');
             if (!typeSelect) return;
+            const selectedValue = typeSelect.value;
             const ready = Array.isArray(catalog) && catalog.length > 0;
             const byValue = Object.create(null);
             if (ready) {
@@ -854,9 +902,13 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     if (value !== undefined) byValue[String(value)] = item;
                 });
                 var dynamicGroup = typeSelect.querySelector('optgroup[data-descriptor-types="true"]');
+                if (dynamicGroup) {
+                    dynamicGroup.remove();
+                    dynamicGroup = null;
+                }
                 catalog.forEach(function(item) {
                     var value = item && (item.value ?? item.type);
-                    if (value === undefined || !Number.isFinite(Number(value))) return;
+                    if (value === undefined || !Number.isFinite(Number(value)) || item.configurable === false) return;
                     var existing = Array.from(typeSelect.options).find(function(option) {
                         return String(option.value) === String(value);
                     });
@@ -872,31 +924,43 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     option.dataset.dynamicDescriptor = 'true';
                     dynamicGroup.appendChild(option);
                 });
+                if (selectedValue && Array.from(typeSelect.options).some(function(option) {
+                    return option.value === selectedValue;
+                })) {
+                    typeSelect.value = selectedValue;
+                }
             }
             var localNames = {
                 50: 'DS1302 实时时钟',
                 52: 'LCD1602 字符液晶',
-                54: 'MFRC522 RFID'
+                54: 'MFRC522 RFID',
+                56: '彩色显示与触摸'
             };
             Array.from(typeSelect.options).forEach(function (option) {
                 const item = ready ? byValue[String(option.value)] : null;
-                const implemented = !!item && item.implemented !== false;
+                const configurable = !!item && item.configurable !== false;
+                const implemented = configurable && item.implemented !== false;
                 option.disabled = !implemented;
+                option.hidden = !!item && !configurable;
                 option.dataset.implemented = implemented ? 'true' : (item ? 'false' : 'unknown');
                 if (item && (option.dataset.dynamicDescriptor === 'true' || localNames[Number(option.value)])) {
                     option.textContent = item.displayName || item.label || localNames[Number(option.value)] || item.name || ('类型 ' + option.value);
                 }
-                option.title = item && !implemented ? '当前固件未实现该外设类型' : '';
+                option.title = item && !configurable
+                    ? '该类型由其他功能页面管理'
+                    : (item && !implemented ? '当前固件未实现该外设类型' : '');
             });
 
             const originalId = document.getElementById('peripheral-original-id')?.value || '';
             const selected = typeSelect.options[typeSelect.selectedIndex];
             if (ready && !originalId && (!selected || selected.disabled)) {
-                const firstAvailable = Array.from(typeSelect.options).find(option => !option.disabled);
+                const firstAvailable = Array.from(typeSelect.options).find(option => !option.disabled && !option.hidden);
                 if (firstAvailable) typeSelect.value = firstAvailable.value;
             }
             this._updatePeripheralTypeAvailability(typeSelect.value);
             if (Number(typeSelect.value) === 38) this._updateGenericSensorDriverFields(false);
+            if (Number(typeSelect.value) === 55) this._updateIoExpanderFields(false);
+            if (Number(typeSelect.value) === 56) this._updateDisplayFields();
             if (Number(typeSelect.value) === 37) this._updateSdcardPinHints();
         },
 
@@ -944,6 +1008,23 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             var hint = document.getElementById('peripheral-pin-role-hint');
             var input = document.getElementById('peripheral-pins-input');
             if (!hint || !input) return;
+            const source = document.getElementById('gpio-io-source')?.value;
+            const logical = [11, 12, 13, 14, 18, 19, 20].indexOf(type) >= 0 && source === 'expander';
+            const bus = type === 38 ? document.getElementById('generic-sensor-bus-id')?.value
+                : (type === 55 ? document.getElementById('io-expander-bus-id')?.value : '');
+            const namedPins = type === 56;
+            input.disabled = logical || !!bus || namedPins;
+            input.required = !logical && !bus && !namedPins && type !== 38 && type !== 60 && type !== 51;
+            const group = document.getElementById('peripheral-pins-group');
+            if (group) group.classList.toggle('is-hidden', logical || !!bus || namedPins || type === 60 || type === 51);
+            if (namedPins) {
+                hint.textContent = '显示与触摸引脚在下方按角色配置。';
+                return;
+            }
+            if (logical || bus) {
+                hint.textContent = logical ? '逻辑通道使用父扩展器的接线。' : '使用所选 I2C 总线的接线。';
+                return;
+            }
             if (type === 38 && !(document.getElementById('generic-sensor-driver')?.value || '')) {
                 hint.textContent = '逻辑数据源不需要物理引脚；选择本地驱动后按 SDA、SCL 填写。';
                 input.placeholder = '逻辑数据源可留空';
@@ -970,44 +1051,388 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             return [];
         },
 
-        _updateGenericSensorDriverFields(applyDefaults) {
+        _peripheralIoErrorMessage(err, fallback) {
+            return err?.data?.message || err?.data?.error || err?.message || fallback || '操作失败';
+        },
+
+        _formatI2cAddress(value) {
+            if (value === undefined || value === null || value === '') return '--';
+            var number = typeof value === 'string' && /^0x/i.test(value)
+                ? parseInt(value.slice(2), 16) : Number(value);
+            if (!Number.isFinite(number)) return String(value);
+            return '0x' + Math.max(0, Math.min(255, Math.trunc(number))).toString(16).toUpperCase().padStart(2, '0');
+        },
+
+        _getPeripheralDriverDescriptors(type) {
+            const descriptor = this._getPeripheralTypeDescriptor(type);
+            if (!descriptor) return [];
+            if (Array.isArray(descriptor.driverDescriptors)) return descriptor.driverDescriptors;
+            // Older firmware describes only driver names. Retain those drivers
+            // without advertising a new driver the device never declared.
+            const legacy = {
+                aht20: [0x38, [['temperature', '°C'], ['humidity', '%']]],
+                sht30: [0x44, [['temperature', '°C'], ['humidity', '%']]],
+                sht31: [0x44, [['temperature', '°C'], ['humidity', '%']]],
+                bh1750: [0x23, [['illuminance', 'lx']]],
+                bmp280: [0x76, [['temperature', '°C'], ['pressure', 'hPa'], ['altitude', 'm']]],
+                mpu6050: [0x68, [['accelX', 'm/s2'], ['accelY', 'm/s2'], ['accelZ', 'm/s2'], ['temperature', '°C']]]
+            };
+            return this._descriptorStringList(descriptor, ['drivers', 'supportedDrivers', 'capabilities.drivers', 'operations.drivers']).map(function(name) {
+                const values = legacy[name] || [0, []];
+                return { name: name.toUpperCase(), defaultAddress: values[0], channels: values[1].map((c) => ({ name: c[0], unit: c[1] })), params: [] };
+            });
+        },
+
+        _getPeripheralDriverMeta(type, name) {
+            return this._getPeripheralDriverDescriptors(type).find((driver) => String(driver.name || '').toLowerCase() === String(name || '').toLowerCase()) || null;
+        },
+
+        _fillDriverSelect(select, type, value, allowLogical) {
+            const descriptor = this._getPeripheralTypeDescriptor(type);
+            const selected = String(value || '').toLowerCase();
+            select.innerHTML = allowLogical ? '<option value="">逻辑数据源（不初始化驱动）</option>' : '';
+            this._getPeripheralDriverDescriptors(type).forEach(function(driver) {
+                const option = document.createElement('option');
+                option.value = String(driver.name).toLowerCase();
+                option.textContent = driver.label || driver.name;
+                option.disabled = !descriptor || descriptor.implemented !== true || driver.compiled === false;
+                select.appendChild(option);
+            });
+            if (selected && !Array.from(select.options).some((o) => o.value === selected)) {
+                const unavailable = document.createElement('option');
+                unavailable.value = selected;
+                unavailable.textContent = selected.toUpperCase() + '（当前固件未提供）';
+                unavailable.disabled = true;
+                select.appendChild(unavailable);
+            }
+            if (selected) select.value = selected;
+        },
+
+        _setFeatureAvailabilityHint(id, descriptor, featureName) {
+            const element = document.getElementById(id);
+            if (!element) return;
+            if (!descriptor) element.textContent = '设备能力尚未加载，请重试。';
+            else if (!featureName) element.textContent = '逻辑数据源无需本地驱动。';
+            else if (descriptor.featureActive === false) element.textContent = (descriptor.featureReason || '功能尚未启用') + '；可保留配置，请在“功能配置”启用“' + featureName + '”并重启。';
+            else element.textContent = '按已配置外设初始化；读取状态以设备诊断结果为准。';
+        },
+
+        _renderDriverParams(meta, saved, reset) {
+            const host = document.getElementById('generic-sensor-driver-params');
+            if (!host) return;
+            const previous = {};
+            host.querySelectorAll('[data-driver-param]').forEach((input) => { previous[input.dataset.driverParam] = input.value; });
+            host.textContent = '';
+            const labels = { shuntResistance: '分流电阻', maxCurrent: '预期最大电流', conversionTimeUs: '转换时间', averaging: '平均次数' };
+            (meta?.params || []).forEach(function(param) {
+                if (param.key === 'mode' && String(meta.name).toUpperCase() === 'MPU6050') return;
+                if (!/^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(param.key)) return;
+                const group = document.createElement('div');
+                group.className = 'fb-form-group';
+                const label = document.createElement('label');
+                label.htmlFor = 'generic-driver-' + param.key;
+                label.textContent = (param.label || labels[param.key] || param.key) + (param.unit ? ' (' + param.unit + ')' : '');
+                const choices = param.choices || param.values;
+                const input = document.createElement(Array.isArray(choices) ? 'select' : 'input');
+                input.id = label.htmlFor;
+                input.dataset.driverParam = param.key;
+                if (Array.isArray(choices)) {
+                    choices.forEach(function(choice) {
+                        const option = document.createElement('option');
+                        option.value = String(typeof choice === 'object' ? choice.value : choice);
+                        option.textContent = String(typeof choice === 'object' ? (choice.label || choice.value) : choice);
+                        input.appendChild(option);
+                    });
+                } else {
+                    input.type = 'number';
+                    input.step = param.type === 'integer' || param.type === 'uint' || param.type === 'int' ? '1' : 'any';
+                    if (param.min !== undefined) input.min = param.min;
+                    if (param.max !== undefined) input.max = param.max;
+                    input.required = true;
+                }
+                input.value = String(saved?.[param.key] ?? (!reset ? previous[param.key] : undefined) ?? param.default ?? '');
+                group.append(label, input);
+                host.appendChild(group);
+            });
+        },
+
+        _setPeripheralReferenceOptions(id, type, selectedValue) {
+            const select = document.getElementById(id);
+            if (!select) return;
+            const selected = selectedValue === undefined ? select.value : selectedValue;
+            select.innerHTML = type === 2 ? '<option value="">直接配置 SDA、SCL</option>' : '<option value="">请选择已配置的扩展器</option>';
+            (this._periphProviders || []).filter((p) => Number(p.type) === type).forEach(function(periph) {
+                const option = document.createElement('option');
+                option.value = periph.id;
+                option.textContent = (periph.name || periph.id) + ' (' + periph.id + ')' + (!periph.enabled ? ' · 已禁用' : (periph.featureActive === false ? ' · 功能未启用' : ''));
+                select.appendChild(option);
+            });
+            if (selected && !Array.from(select.options).some((o) => o.value === selected)) {
+                const missing = document.createElement('option');
+                missing.value = selected;
+                missing.textContent = selected + '（引用待校验）';
+                select.appendChild(missing);
+            }
+            select.value = selected || '';
+        },
+
+        async _loadPeripheralProviders() {
+            const session = this._periphFormSession;
+            try {
+                const all = [];
+                for (let page = 1; page <= 4; page++) {
+                    const res = await apiGet('/api/peripherals', { page: page, pageSize: 100, compact: 1 });
+                    if (this._periphFormSession !== session) return;
+                    if (!res?.success || !Array.isArray(res.data)) throw new Error('引用外设加载失败');
+                    all.push(...res.data);
+                    if (all.length >= Number(res.total || res.data.length) || !res.data.length) break;
+                }
+                this._periphProviders = all;
+                this._setPeripheralReferenceOptions('generic-sensor-bus-id', 2);
+                this._setPeripheralReferenceOptions('io-expander-bus-id', 2);
+                this._setPeripheralReferenceOptions('gpio-provider-id', 55);
+                this._updateGpioSourceFields();
+            } catch (err) {
+                if (this._periphFormSession !== session) return;
+                const status = document.getElementById('gpio-source-status');
+                if (status) status.textContent = '引用外设加载失败，请重新打开配置。';
+            }
+        },
+
+        _updateDisplayFields(saved) {
+            var params = saved && typeof saved === 'object' ? saved : null;
+            var pins = params && params.pins && typeof params.pins === 'object' ? params.pins : {};
+            var descriptor = this._getPeripheralTypeDescriptor(56) || {};
+            var limits = descriptor.configLimits || {};
+            var setBounds = function(id, min, max) {
+                var input = document.getElementById(id);
+                if (!input) return;
+                if (min !== undefined) input.min = String(min);
+                if (max !== undefined) input.max = String(max);
+            };
+            setBounds('display-width', limits.widthMin, limits.widthMax);
+            setBounds('display-height', limits.heightMin, limits.heightMax);
+            setBounds('display-buffer-lines', limits.bufferLinesMin, limits.bufferLinesMax);
+            setBounds('display-brightness', limits.brightnessMin, limits.brightnessMax);
+            setBounds('display-spi-frequency', limits.spiFrequencyMin, limits.spiFrequencyMax);
+            var fillSelect = function(id, options, current, labels) {
+                var select = document.getElementById(id);
+                if (!select || !Array.isArray(options) || options.length === 0) return;
+                current = current ?? select.value;
+                select.innerHTML = options.map(function(option) {
+                    var value = typeof option === 'object' ? (option.value || option.driver || option.backend || option.id || option.name) : option;
+                    var label = typeof option === 'object' ? (option.label || option.displayName || value) : ((labels && labels[value]) || value);
+                    return '<option value="' + escapeHtml(String(value)) + '">' + escapeHtml(String(label)) + '</option>';
+                }).join('');
+                if (current && Array.from(select.options).some(function(option) { return option.value === String(current); })) select.value = String(current);
+            };
+            var drivers = descriptor.driverOptions || [];
+            var backends = Array.from(new Set(drivers.map(function(driver) { return driver.backend || 'spi_tft'; })));
+            fillSelect('display-backend', backends, params?.backend, { spi_tft: 'SPI TFT', rgb: 'RGB565 (PSRAM)' });
+            var backend = params?.backend || document.getElementById('display-backend')?.value || 'spi_tft';
+            fillSelect('display-driver', drivers.filter(function(driver) { return !driver.backend || driver.backend === backend; }), params?.driver,
+                { st7789: 'ST7789', ili9341: 'ILI9341', st7701: 'ST7701' });
+            fillSelect('display-touch-backend', descriptor.touchOptions, params?.touchBackend, { none: '无触摸', gt911: 'GT911' });
+            fillSelect('display-i2c-frequency', limits.i2cFrequencies, params?.i2cFrequency, { 100000: '100 kHz', 400000: '400 kHz' });
+            var values = params ? {
+                'display-backend': params.backend,
+                'display-driver': params.driver,
+                'display-touch-backend': params.touchBackend,
+                'display-width': params.width,
+                'display-height': params.height,
+                'display-rotation': params.rotation,
+                'display-color-depth': params.colorDepth,
+                'display-buffer-lines': params.bufferLines,
+                'display-brightness': params.brightness,
+                'display-spi-frequency': params.spiFrequency,
+                'display-i2c-frequency': params.i2cFrequency,
+                'display-mosi': pins.mosi,
+                'display-sclk': pins.sclk,
+                'display-cs': pins.cs,
+                'display-dc': pins.dc,
+                'display-rst': pins.rst,
+                'display-backlight': pins.backlight,
+                'display-touch-sda': pins.touchSda,
+                'display-touch-scl': pins.touchScl,
+                'display-touch-int': pins.touchInt,
+                'display-touch-rst': pins.touchRst,
+                'display-backlight-channel': params.backlightChannel
+            } : {};
+            Object.keys(values).forEach(function(id) {
+                var input = document.getElementById(id);
+                if (input && values[id] !== undefined && values[id] !== null) input.value = String(values[id]);
+            });
+            var selectedDriver = drivers.find(function(driver) {
+                return (driver.driver || driver.value) === document.getElementById('display-driver')?.value;
+            });
+            setBounds('display-width', selectedDriver?.minWidth ?? limits.widthMin, selectedDriver?.maxWidth ?? limits.widthMax);
+            setBounds('display-height', selectedDriver?.minHeight ?? limits.heightMin, selectedDriver?.maxHeight ?? limits.heightMax);
+            if (backend === 'rgb') {
+                document.getElementById('display-width').value = '480';
+                document.getElementById('display-height').value = '480';
+            }
+            var rgbFields = document.getElementById('display-rgb-fields');
+            var rgbInputs = document.getElementById('display-rgb-inputs');
+            if (rgbInputs && !rgbInputs.children.length) {
+                var fields = [
+                    ['rgbInitProfile', '初始化序列', 'st7701_type1'],
+                    ['rgbFrequency', '像素时钟 Hz (1M-16M)', 12000000],
+                    ['hsyncFrontPorch', '水平前沿', 10], ['hsyncPulseWidth', '水平脉宽', 8], ['hsyncBackPorch', '水平后沿', 50],
+                    ['vsyncFrontPorch', '垂直前沿', 10], ['vsyncPulseWidth', '垂直脉宽', 8], ['vsyncBackPorch', '垂直后沿', 20],
+                    ['hsyncIdleLow', 'HSYNC 空闲低', false], ['vsyncIdleLow', 'VSYNC 空闲低', false], ['pclkActiveNeg', 'PCLK 下降沿有效', false],
+                    ['controlBackend', '辅助控制器', 'none'], ['controlAddress', '控制器地址 (十进制)', 0],
+                    ['controlResetMask', '复位掩码', 0], ['controlBacklightMask', '背光掩码', 0], ['controlEnableMask', '使能掩码', 0],
+                    ['controlInactiveMask', '保持低电平掩码（与其他掩码不重叠）', 0],
+                    ['controlTouchIntMask', 'GT911 INT 同步掩码（单一位）', 0],
+                    ['controlSda', '控制 SDA', -1], ['controlScl', '控制 SCL', -1],
+                    ['rgbDe', 'DE', -1], ['rgbVsync', 'VSYNC', -1], ['rgbHsync', 'HSYNC', -1], ['rgbPclk', 'PCLK', -1]
+                ];
+                for (var index = 0; index < 16; index++) fields.push(['rgbData' + index, 'D' + index, -1]);
+                rgbInputs.innerHTML = fields.map(function(field) {
+                    var name = field[0], label = field[1], value = field[2], id = 'display-' + name;
+                    var input = name === 'controlBackend' ? '<select id="' + id + '"><option value="none">无</option><option value="tca9554">TCA9554</option><option value="ch32v003">CH32V003</option></select>' :
+                        '<input id="' + id + '" type="' + (typeof value === 'boolean' ? 'checkbox' : (typeof value === 'number' ? 'number' : 'text')) +
+                        '" value="' + value + '"' + (name === 'rgbInitProfile' ? ' readonly' : '') + '>';
+                    return '<div class="fb-form-group"><label for="' + id + '">' + label + '</label>' + input + '</div>';
+                }).join('');
+            }
+            if (rgbFields) {
+                rgbFields.classList.toggle('is-hidden', backend !== 'rgb');
+                rgbFields.querySelectorAll('input,select').forEach(function(input) {
+                    input.disabled = backend !== 'rgb';
+                    var key = input.id.slice(8);
+                    var dataIndex = key.match(/^rgbData(\d+)$/);
+                    var value = dataIndex ? pins.rgbDataPins?.[Number(dataIndex[1])] : (params?.[key] ?? pins[key]);
+                    if (value !== undefined) {
+                        if (input.type === 'checkbox') input.checked = value === true;
+                        else input.value = String(value);
+                    }
+                });
+            }
+            if (params && params.backlightActiveHigh !== undefined) {
+                var activeHigh = document.getElementById('display-backlight-active-high');
+                if (activeHigh) activeHigh.checked = !!params.backlightActiveHigh;
+            }
+            var touchBackend = document.getElementById('display-touch-backend')?.value || 'none';
+            var touchFields = document.getElementById('display-touch-fields');
+            if (touchFields) {
+                touchFields.classList.toggle('is-hidden', touchBackend === 'none');
+                touchFields.querySelectorAll('input, select').forEach(function(input) { input.disabled = touchBackend === 'none'; });
+            }
+            var backlight = Number(document.getElementById('display-backlight')?.value ?? -1);
+            var backlightFields = document.getElementById('display-backlight-fields');
+            if (backlightFields) {
+                var available = Number.isInteger(backlight) && backlight >= 0;
+                backlightFields.classList.toggle('is-hidden', !available);
+                backlightFields.querySelectorAll('input, select').forEach(function(input) { input.disabled = !available; });
+            }
+        },
+
+        _updateIoExpanderFields(applyDefaults, saved) {
+            const select = document.getElementById('io-expander-driver');
+            if (!select) return;
+            this._fillDriverSelect(select, 55, saved?.driverName || saved?.driver || select.value, false);
+            const meta = this._getPeripheralDriverMeta(55, select.value);
+            this._setPeripheralReferenceOptions('io-expander-bus-id', 2, saved?.busPeripheralId);
+            const address = document.getElementById('io-expander-address');
+            if (address && saved) address.value = this._formatI2cAddress(saved.i2cAddress ?? saved.address);
+            else if (address && applyDefaults && meta) address.value = this._formatI2cAddress(meta.defaultAddress);
+            const interval = document.getElementById('io-expander-interval');
+            if (interval) {
+                interval.min = String(meta?.minIntervalMs || 20);
+                if (saved?.sampleInterval !== undefined) interval.value = saved.sampleInterval;
+            }
+            this._setFeatureAvailabilityHint('io-expander-feature-status', this._getPeripheralTypeDescriptor(55), '通用 IO 扩展器');
+            this._updatePeripheralPinRoleHint(55);
+        },
+
+        _updateGpioSourceFields(savedChannel) {
+            const type = Number(document.getElementById('peripheral-type-input')?.value);
+            const supported = type === 11 || type === 12;
+            document.getElementById('gpio-source-fields')?.classList.toggle('is-hidden', !supported);
+            const source = document.getElementById('gpio-io-source');
+            if (!source) return;
+            const option = Array.from(source.options).find((o) => o.value === 'expander');
+            const descriptor = this._getPeripheralTypeDescriptor(55);
+            if (option) option.disabled = !supported || !descriptor || descriptor.implemented !== true;
+            if (!supported) source.value = 'gpio';
+            const expanded = supported && source.value === 'expander';
+            document.getElementById('gpio-expander-fields')?.classList.toggle('is-hidden', !expanded);
+            if (supported) {
+                (expanded || type === 12) ? this.hideElement('gpio-input-mode-group') : this.showElement('gpio-input-mode-group');
+                (!expanded && type === 12) ? this.hideElement('gpio-invert-logic-group') : this.showElement('gpio-invert-logic-group');
+            }
+            const channels = document.getElementById('gpio-provider-channel');
+            const selected = savedChannel === undefined ? (channels?.value || '0') : String(savedChannel);
+            const parentId = document.getElementById('gpio-provider-id')?.value;
+            const parent = (this._periphProviders || []).find((p) => p.id === parentId);
+            const meta = this._getPeripheralDriverMeta(55, parent?.params?.driverName || parent?.params?.driver || 'PCF8574');
+            const count = Number(meta?.channelCount || descriptor?.channelCount || meta?.channels?.length || 8);
+            if (channels) {
+                channels.innerHTML = Array.from({ length: Math.min(32, count) }, (_, i) => '<option value="' + i + '">P' + i + '</option>').join('');
+                if (!Array.from(channels.options).some((option) => option.value === selected)) {
+                    const unavailable = document.createElement('option');
+                    unavailable.value = selected;
+                    unavailable.textContent = 'P' + selected + '（通道不可用）';
+                    unavailable.disabled = true;
+                    channels.appendChild(unavailable);
+                }
+                channels.value = selected;
+            }
+            const status = document.getElementById('gpio-source-status');
+            if (status) status.textContent = expanded
+                ? (descriptor?.featureActive === false ? 'IO 扩展功能未启用；配置保留，启用并重启后执行。' : (!parentId ? '先配置父扩展器，再绑定逻辑通道。' : (type === 12 ? '初始状态按逻辑值处理；勾选反相后输出电平相反。' : '使用父设备采样；输入为释放高电平，不使用 MCU 内部上下拉。')))
+                : '';
+            this._updatePeripheralPinRoleHint(type);
+        },
+
+        _updateGenericSensorDriverFields(applyDefaults, savedParams) {
             var select = document.getElementById('generic-sensor-driver');
             var fields = document.getElementById('generic-sensor-i2c-fields');
             if (!select || !fields) return;
+            if (applyDefaults) this._pendingSensorDriverParams = null;
+            if (!savedParams && !applyDefaults && this._pendingSensorDriverParams) savedParams = this._pendingSensorDriverParams;
             var descriptor = this._getPeripheralTypeDescriptor(38);
-            var drivers = this._descriptorStringList(descriptor, [
-                'drivers', 'supportedDrivers', 'capabilities.drivers', 'operations.drivers'
-            ]);
-            Array.from(select.options).forEach(function(option) {
-                if (!option.value) {
-                    option.disabled = false;
-                    return;
-                }
-                option.disabled = !descriptor || descriptor.implemented !== true || drivers.indexOf(option.value.toLowerCase()) < 0;
-            });
-            if (select.selectedOptions[0]?.disabled) select.value = '';
+            var previous = savedParams?.driverName || savedParams?.driver || select.value;
+            this._fillDriverSelect(select, 38, previous, true);
             var driver = select.value.toLowerCase();
+            var meta = this._getPeripheralDriverMeta(38, driver);
+            if (savedParams) this._pendingSensorDriverParams = meta ? null : Object.assign({}, savedParams);
             fields.classList.toggle('is-hidden', !driver);
             ['generic-sensor-bus-id', 'generic-sensor-address', 'generic-sensor-channel'].forEach(function(id) {
                 var input = document.getElementById(id);
                 if (input) input.disabled = !driver;
             });
-            if (driver && applyDefaults) {
-                var defaults = {
-                    bmp280: ['0x76', 'pressure'],
-                    mpu6050: ['0x68', 'accel_x'],
-                    sht30: ['0x44', 'temperature'],
-                    sht31: ['0x44', 'temperature'],
-                    aht20: ['0x38', 'temperature']
-                };
-                var values = defaults[driver];
-                if (values) {
-                    var address = document.getElementById('generic-sensor-address');
-                    var channel = document.getElementById('generic-sensor-channel');
-                    if (address) address.value = values[0];
-                    if (channel) channel.value = values[1];
+            this._setPeripheralReferenceOptions('generic-sensor-bus-id', 2, savedParams?.busPeripheralId);
+            const address = document.getElementById('generic-sensor-address');
+            if (address && savedParams && (savedParams.i2cAddress ?? savedParams.address) !== undefined) {
+                address.value = this._formatI2cAddress(savedParams.i2cAddress ?? savedParams.address);
+            } else if (address && applyDefaults && meta) address.value = this._formatI2cAddress(meta.defaultAddress);
+            const channel = document.getElementById('generic-sensor-channel');
+            if (channel) {
+                // Channels are selected per read/action; the peripheral stores
+                // only the MPU operating mode, never a default measurement.
+                const selected = savedParams
+                    ? (meta?.channels || []).find((item) => !item.mode || Number(item.mode) === Number(savedParams.mode || 0) + 1)?.name || ''
+                    : (!applyDefaults ? channel.value : '');
+                channel.innerHTML = (meta?.channels || []).map((item) => '<option value="' + escapeHtml(item.name) + '">' + escapeHtml((item.label || item.name) + (item.unit ? ' (' + item.unit + ')' : '')) + '</option>').join('');
+                if (selected && !Array.from(channel.options).some((o) => o.value === selected)) {
+                    const unavailable = document.createElement('option');
+                    unavailable.value = selected;
+                    unavailable.textContent = selected + '（通道不可用）';
+                    unavailable.disabled = true;
+                    channel.appendChild(unavailable);
                 }
+                if (selected) channel.value = selected;
             }
+            this._renderDriverParams(meta, savedParams, applyDefaults);
+            const interval = document.getElementById('generic-sensor-interval');
+            if (interval) {
+                interval.min = String(Math.max(100, Number(meta?.minIntervalMs) || 100));
+                if (savedParams?.sampleInterval !== undefined) interval.value = savedParams.sampleInterval;
+                else if (applyDefaults && Number(interval.value) < Number(interval.min)) interval.value = interval.min;
+            }
+            this._setFeatureAvailabilityHint('generic-sensor-feature-status', descriptor, driver ? 'I2C 传感器采集' : '');
             this._updatePeripheralPinRoleHint(38);
         },
 
@@ -1070,47 +1495,6 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 return output ? chip + ' 可用 GPIO 候选: ' + output : '';
             }
             return '';
-        },
-
-        _validatePinsInline() {
-            var typeEl = document.getElementById('peripheral-type-input');
-            var pinsEl = document.getElementById('peripheral-pins-input');
-            var hintEl = document.getElementById('peripheral-pins-validation-hint');
-            if (!typeEl || !pinsEl) return;
-            var type = typeEl.value;
-            var pins = pinsEl.value.trim();
-            if (!type || !pins) {
-                if (hintEl) hintEl.innerHTML = '';
-                return;
-            }
-            var excludeId = document.getElementById('peripheral-original-id')?.value || '';
-            var self = this;
-            apiGet('/api/peripherals/validate-pins', { type: type, pins: pins, excludeId: excludeId })
-                .then(function(res) {
-                    if (!hintEl) return;
-                    if (!res || !res.success) {
-                        hintEl.innerHTML = '<span class="u-text-danger">' + t('peri-validate-fail', '校验请求失败') + '</span>';
-                        return;
-                    }
-                    if (!res.pins || res.pins.length === 0) {
-                        hintEl.innerHTML = '';
-                        return;
-                    }
-                    var msgs = [];
-                    res.pins.forEach(function(p) {
-                        if (p.error) msgs.push('GPIO' + p.pin + ': ' + p.error);
-                        else if (p.warning) msgs.push('GPIO' + p.pin + ': ' + p.warning);
-                    });
-                    if (msgs.length === 0) {
-                        hintEl.innerHTML = '<span style="color:var(--success)">\u2713 ' + t('peri-pin-available', '引脚可用') + '</span>';
-                    } else {
-                        var cls = res.allValid ? 'u-text-warning' : 'u-text-danger';
-                        hintEl.innerHTML = '<span class="' + cls + '">' + msgs.map(function(m) { return escapeHtml(m); }).join('<br>') + '</span>';
-                    }
-                })
-                .catch(function() {
-                    if (hintEl) hintEl.innerHTML = '';
-                });
         },
 
         editPeripheral(id) {

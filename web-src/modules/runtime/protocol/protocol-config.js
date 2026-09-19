@@ -9,11 +9,17 @@
         // Tab ID → 分片文件名和容器 ID 的映射
         _protocolFragmentMap: {
             'mqtt': { container: 'mqtt-fragment-container', fragment: 'protocol-mqtt' },
-            'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' }
+            'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' },
+            'remote-resources': { container: 'remote-resources-fragment-container', fragment: 'protocol-remote-resources' }
         },
 
         loadProtocolConfig(tabId, options) {
             var self = this;
+            if (tabId === 'remote-resources' && typeof this._loadRemoteResourcesTab === 'function') {
+                this._stopMasterStatusRefresh();
+                if (typeof this._stopMqttStatusPolling === 'function') this._stopMqttStatusPolling();
+                return this._loadRemoteResourcesTab(options);
+            }
             if (tabId === 'modbus-rtu' &&
                 typeof ModuleLoader !== 'undefined' &&
                 ModuleLoader &&
@@ -150,6 +156,7 @@
                     this._updateMqttsMemoryHint(mqtt.tlsSupported, schemeEl.value);
                 }
                 this._setValue('mqtt-broker', mqtt.server ?? '');
+                this._setValue('mqtt-ota-base-url', mqtt.otaBaseUrl || '');
                 this._setValue('mqtt-port', mqtt.port || 1883);
                 this._setValue('mqtt-client-id', mqtt.clientId ?? '');
                 this._setValue('mqtt-username', mqtt.username || '');
@@ -244,6 +251,24 @@
                 data.mqtt_enabled = document.getElementById('mqtt-enabled')?.checked ? 'true' : 'false';
                 data.mqtt_scheme = document.getElementById('mqtt-scheme')?.value || 'mqtt';
                 data.mqtt_server = document.getElementById('mqtt-broker')?.value ?? '';
+                data.mqtt_otaBaseUrl = document.getElementById('mqtt-ota-base-url')?.value.trim() || '';
+                if (data.mqtt_otaBaseUrl) {
+                    let parsedOtaBaseUrl;
+                    try {
+                        parsedOtaBaseUrl = new URL(data.mqtt_otaBaseUrl);
+                    } catch (_) {
+                        parsedOtaBaseUrl = null;
+                    }
+                    if (!data.mqtt_otaBaseUrl.startsWith('https://') || !parsedOtaBaseUrl ||
+                        parsedOtaBaseUrl.protocol !== 'https:' ||
+                        !parsedOtaBaseUrl.hostname || data.mqtt_otaBaseUrl.includes('?') ||
+                        data.mqtt_otaBaseUrl.includes('#') || parsedOtaBaseUrl.username ||
+                        parsedOtaBaseUrl.password) {
+                        Notification.warning('OTA HTTPS基址必须是无查询参数和片段的 https:// 地址', '通信协议');
+                        document.getElementById('mqtt-ota-base-url')?.focus();
+                        return;
+                    }
+                }
                 data.mqtt_port = document.getElementById('mqtt-port')?.value || '1883';
                 data.mqtt_clientId = document.getElementById('mqtt-client-id')?.value || '';
                 data.mqtt_username = document.getElementById('mqtt-username')?.value || '';

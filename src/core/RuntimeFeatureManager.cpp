@@ -154,9 +154,12 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"rfid", "RFID MFRC522", "peripheral", 12, 200,
                      FASTBEE_ENABLE_RFID != 0, false,
                      "SPI MFRC522", nullptr, 24, true});
-    registerFeature({"i2cSensors", "I2C 进阶传感器", "peripheral", 15, 500,
+    registerFeature({"ioExpander", "通用 IO 扩展器", "peripheral", 6, 1024,
+                     FASTBEE_ENABLE_IO_EXPANDER != 0, false,
+                     "I2C PCF8574 · 按父设备共享实例（估算）", nullptr, 12});
+    registerFeature({"i2cSensors", "I2C 传感器采集", "peripheral", 15, 500,
                      FASTBEE_ENABLE_I2C_SENSORS != 0, false,
-                     "I2C BMP280/MPU6050", nullptr, 23, true});
+                     "I2C 温湿度/光照/气压/姿态/电压电流功率 · 按需采样", nullptr, 23, true});
     registerFeature({"rfLearn", "433MHz RF 学习", "peripheral", 4, 300,
                      FASTBEE_ENABLE_RF_LEARN != 0, false,
                      "RF receiver + GPIO", nullptr, 12});
@@ -183,6 +186,10 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"deviceControl", "设备控制面板", "system", 27, 0,
                      FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
                      "No resident device RAM; browser assets streamed; API heap is transient/on-demand", nullptr, 0});
+    registerFeature({"screenPanel", "屏幕面板", "peripheral", 80, 69632,
+                     FASTBEE_ENABLE_SCREEN_PANEL != 0, false,
+                     "SPI display + optional I2C touch; ~48KB snapshot and stripe prefer PSRAM; 8KB task stack remains internal",
+                     nullptr, 20, false});
     registerFeature({"ota", "OTA 固件升级", "system", 10, 1024,
                      FASTBEE_ENABLE_OTA != 0, false,
                      "Dual partition + LittleFS support", nullptr, 20});
@@ -308,6 +315,13 @@ bool RuntimeFeatureManager::saveCurrentConfig() {
     return saveConfig(doc);
 }
 
+void RuntimeFeatureManager::latchBootFeatures() {
+    if (bootFeaturesLatched_) return;
+    ioExpanderBootEnabled_ = isUserEnabled("ioExpander");
+    i2cSensorsBootEnabled_ = isUserEnabled("i2cSensors");
+    bootFeaturesLatched_ = true;
+}
+
 bool RuntimeFeatureManager::loadConfig() {
     generateDefaults();
 
@@ -327,6 +341,7 @@ bool RuntimeFeatureManager::loadConfig() {
             if (!resetToDefaults()) {
                 LOGGER.error("[FeatureCfg] Safe defaults active in memory but config repair failed");
             }
+            latchBootFeatures();
             return false;
         }
         // 首次运行: 生成默认配置并写入文件
@@ -334,6 +349,7 @@ bool RuntimeFeatureManager::loadConfig() {
         loaded_ = true;
         syncBudgetState();
         applyDependencyRules();
+        latchBootFeatures();
         saveCurrentConfig();
         return true;
     }
@@ -369,6 +385,7 @@ bool RuntimeFeatureManager::loadConfig() {
     syncBudgetState();
     if (mergeLegacyFeatureBundles()) needsCanonicalRewrite = true;
     if (applyDependencyRules()) needsCanonicalRewrite = true;
+    latchBootFeatures();
 
     if (needsCanonicalRewrite && !needsLegacyMDNSMigration) {
         LOGGER.info("[FeatureCfg] Normalizing legacy sparse config to full snapshot");
@@ -395,7 +412,10 @@ bool RuntimeFeatureManager::shouldEnable(const char* key) const {
     }
     const auto* f = findFeature(key);
     if (!f) return false;
-    if (!(f->meta.compiled && f->userEnabled && f->budgetPassed)) return false;
+    const bool effectiveEnabled = strcmp(key, "ioExpander") == 0
+        ? ioExpanderBootEnabled_ : strcmp(key, "i2cSensors") == 0
+            ? i2cSensorsBootEnabled_ : f->userEnabled;
+    if (!(f->meta.compiled && effectiveEnabled && f->budgetPassed)) return false;
     if (f->runtimeDisabled) return false;
     // 延迟初始化门控: requiresNetwork 的功能在网络子系统就绪前不激活，
     // 把重型外设/协议的内存分配错峰到 WiFi 启动之后（抬高启动期可用 DRAM）
@@ -652,6 +672,15 @@ bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) c
     obj["group"] = st.meta.group;
     obj["compiled"] = st.meta.compiled;
     obj["userEnabled"] = st.userEnabled;
+    obj["budgetPassed"] = st.budgetPassed;
+    if (strcmp(st.meta.key, "ioExpander") == 0 || strcmp(st.meta.key, "i2cSensors") == 0) {
+        const bool bootEnabled = strcmp(st.meta.key, "ioExpander") == 0
+            ? ioExpanderBootEnabled_ : i2cSensorsBootEnabled_;
+        obj["requiresRestart"] = true;
+        obj["bootEnabled"] = bootEnabled;
+        obj["pendingRestart"] = st.userEnabled != bootEnabled;
+        obj["onDemand"] = true;
+    }
     // Report the same effective state that the initialization gates use.
     // A feature can be compiled and user-enabled while still being held
     // back by the startup budget, a dependency, network deferral, or a
@@ -720,8 +749,8 @@ void RuntimeFeatureManager::getStatusSummaryJson(JsonObject summary) const {
     summary["activeRamB"] = activeRamB;
     summary["runtimeDegraded"] = runtimeDegraded_;
 #if defined(ESP_PLATFORM)
-    summary["free8KB"] = heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024;
-    summary["largest8KB"] = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024;
+    summary["free8KB"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024;
+    summary["largest8KB"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024;
 #endif
 }
 

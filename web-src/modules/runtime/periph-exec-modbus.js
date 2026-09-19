@@ -370,9 +370,39 @@
 
         // ============ Target periph change (Modbus routing) ============
 
+        _syncModbusActionOptions(block) {
+            var isModbus = (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
+            block.querySelectorAll('.pe-action-type option').forEach(function(option) {
+                var restricted = isModbus && ['16', '17', '18'].indexOf(option.value) < 0;
+                if (restricted) {
+                    option.dataset.modbusRestricted = '1';
+                    option.hidden = true;
+                    option.disabled = true;
+                } else if (option.dataset.modbusRestricted) {
+                    delete option.dataset.modbusRestricted;
+                    option.hidden = false;
+                    option.disabled = !!option.dataset.ioUnsupported;
+                }
+            });
+        },
+
+        _updateModbusWriteHelp(block, actionType) {
+            var input = block.querySelector('.pe-action-value');
+            var help = block.querySelector('.pe-action-value-group .pe-help-text');
+            var text = actionType === 17
+                ? '十进制 寄存器地址:数值，例如 5:255；地址和值均为 0-65535。仅填数值时使用设备基地址。'
+                : '十进制 通道偏移:状态，例如 0:1；偏移叠加设备基地址，状态为 0 或 1。功能码遵循设备线圈/寄存器模式。';
+            if (input) input.placeholder = actionType === 17 ? '5:255' : '0:1';
+            if (help) help.textContent = text;
+        },
+
         _onTargetPeriphChange(selectEl, index) {
             var block = this._getPeriphExecBlock('periph-exec-actions', index);
             if (!block) return;
+            // Remote targets use their own resource catalogue. Re-entering the
+            // local action-type handler clears the just-selected resource.
+            var selectedAction = Number(block.querySelector('.pe-action-type')?.value);
+            if (selectedAction === 33 || selectedAction === 34) return;
             var periphId = selectEl.value;
             var isModbus = periphId && periphId.indexOf('modbus:') === 0;
             var isModbusTask = periphId && periphId.indexOf('modbus-task:') === 0;
@@ -392,8 +422,15 @@
                 this._setSectionVisible(sensorGroup, false);
                 this._setSectionVisible(ctrlPanel, false);
             } else if (isModbus && !isModbusTask) {
+                if (selectedAction === 16 || selectedAction === 17) {
+                    this._setSectionVisible(actionTypeGroup, true);
+                    this.onPeriphExecActionTypeChangeInBlock(selectedAction, index);
+                    return;
+                }
                 this._mountPeriphExecLazyActionPanel(block, -1);
-                this._setSectionVisible(actionTypeGroup, false);
+                var actionSelect = block.querySelector('.pe-action-type');
+                if (actionSelect) actionSelect.value = '18';
+                this._setSectionVisible(actionTypeGroup, true);
                 this._setSectionVisible(actionValueGroup, false);
                 this._setSectionVisible(recvGroup, false);
                 this._setSectionVisible(pollTasksGroup, false);
@@ -405,6 +442,7 @@
                 var actionType = block.querySelector('.pe-action-type');
                 if (actionType) this.onPeriphExecActionTypeChangeInBlock(actionType.value, index);
             }
+            this._syncModbusActionOptions(block);
         },
 
         // ============ Modbus device / control panels ============

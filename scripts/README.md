@@ -15,16 +15,18 @@
 | `build-all-artifacts.ps1` | 为所有版本生成发布固件包和 `manifest.json` | `powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput` |
 | `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env <env> -Port <serial-port>` |
 | `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -RequireNetworkConnected` |
-| `device-web-smoke.ps1` | 按间隔检查 16 个公开页面和 4 个关键脚本资源并输出 CSV，可选延迟门槛 | `powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-ip> -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000` |
+| `device-web-smoke.ps1` | 按间隔检查发布清单中的全部 Web 资源并输出 CSV，可选强制清单与延迟门槛 | `powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-ip> -RequireManifest -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000` |
+| `test-screen-panel-device.mjs` | 实物设备的面板/历史/远程资源能力、鉴权与 API 契约检查；可选保存相同布局验证持久化和版本冲突，不派发外设动作 | `node scripts/test-screen-panel-device.mjs --url=http://<device-ip> --report=artifacts/panel-device.json` |
+| `test-screen-panel-browser-device.mjs` | 实机浏览器导航、配置草稿和桌面/手机截图检查；默认只读。显式 `--exercise-switch` 仅在未绑定显示外设时临时启用面板，最终恢复原开关，不保存布局或执行控制 | `node scripts/test-screen-panel-browser-device.mjs --url=http://<device-ip> --output=artifacts/panel-browser` |
 | `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -Rounds 100` |
 | `run-device-fleet-tests.ps1` | 对多台设备执行 STA/mDNS/API/资源汇总；支持 JSON 编队配置 | `powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false` |
 | `long-term-device-monitor.ps1` | 仓库实验室五台固定设备的串口、STA HTTP、重启和覆盖缺口长期监测；异常以非零退出码结束 | `powershell -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 -DurationHours 8 -IntervalSeconds 60` |
-| `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收 | 见下方 8 小时严格验收命令 |
+| `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收；支持部署后 live fleet JSON | 见下方 8 小时严格验收命令 |
 | `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://<device-sta-ip> --user admin --pass 123456 --allow-begin` |
 
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
 
-`device-fleet.example.json` 中的五组 IP 与串口是当前实验室示例，不是设备的固定分配。使用 `run-device-fleet-tests.ps1` 前先复制并替换为本地值；`long-term-device-monitor.ps1` 当前直接绑定该实验室测试台，不适合作为通用设备发现入口。
+`device-fleet.example.json` 中的五组 IP 与串口是当前实验室拓扑示例，不是设备的固定分配，也不声明菜单验收意图。使用 `run-device-fleet-tests.ps1` 或 `fleet-stability-monitor.mjs --device-config` 前先生成本次部署的 live fleet 文件；每项必须包含 `label`、`ip`、`profile`、`domain`、`serial`。可选的 `expectedMenus` 是非空菜单名数组：配置后作为硬验收契约，即使设备因 `no-memory` 降级并隐藏菜单也会判定失败；省略时继续按 `/api/system/status` 的运行时功能状态推导菜单，仅用于兼容受限设备、旧清单或探索性监测。正式验收必须根据部署前已确认的 `features.json` 配置意图或部署清单显式生成 `expectedMenus`；不能在故障发生后从已经降级的运行态反推期望集合。用户明确关闭可选菜单时，契约应只列出实际要求的 7 个核心菜单，不能按 S3 等硬件型号强制写成 11 个。`long-term-device-monitor.ps1` 当前直接绑定该实验室测试台，不适合作为通用设备发现入口。
 
 ### 8 小时严格验收
 
@@ -32,12 +34,14 @@
 
 ```powershell
 $runDir = "artifacts/final-stability-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss")
+$fleetConfig = "artifacts/device-acceptance/fleet-live.json"
 node test/browser/fleet-stability-monitor.mjs `
+  --device-config $fleetConfig `
   --interval 180 --max-cycles 161 --min-duration-hours 8 `
   --report-every 8 --cycle-timeout 420 --output-dir $runDir
 ```
 
-严格门禁要求五台设备全时段在线、浏览器每周期完整覆盖、登录和全部可见菜单成功，无重试、HTTP/控制台/页面错误、WebGuard 503 或异常重启；同时检查内部 DRAM、最大连续块、响应 p95 及其首尾趋势。该命令本身是验收方法，不代表设备已经通过真机测试。
+严格门禁要求 live fleet 中选定的设备全时段在线、浏览器每周期完整覆盖、登录和期望菜单成功，无重试、HTTP/控制台/页面错误、WebGuard 503、任何 `no-memory` 功能降级或异常重启；同时检查内部 DRAM、最大连续块、响应 p95 及其首尾趋势。报告分别保留周期前、周期后的 `no-memory` 历史峰值，并只把最后一个周期的采样标为“最新/最终”；最后周期缺采样时明确显示“无采样”，不会拿较早值冒充当前值。配置包含非空 `domain` 时监测器优先验证该域名，并以同项 `ip` 作为回退；任何域名失败后回退都会计入严格门禁。该命令本身是验收方法，不代表设备已经通过真机测试。
 
 ## 测试矩阵
 
@@ -95,8 +99,13 @@ node test/browser/fleet-stability-monitor.mjs `
 |------|------|
 | `check-utf8-text.js` | 检查文本文件 UTF-8、BOM 和替换字符 |
 | `validate-mqtt-ntp-lifecycle.js` | 校验启动 NTP 同步事件和 MQTT 启用后的自动连接状态链路 |
-| `kill-stale-processes.py` | 清理本地调试残留进程 |
+| `kill-stale-processes.py` | 补齐工具链 PATH、应用 C6 OneWire 兼容补丁并诊断当前构建目录的锁定文件；不自动终止进程 |
 | `serial-diagnostics.py` | 串口日志抓取和可选硬复位诊断，替代旧的串口嗅探脚本 |
+| `test-http-device-latency.mjs` | 不登录、不改配置，串行读取健康状态、小页面、CSS 和能力接口，区分 TCP 连接、首字节和正文耗时；`--url=http://<device-ip> --rounds=3 --gap=1500 --output=artifacts/http-latency.json`。健康快照不能替代串口对瞬时内存压力的观测 |
+| `read-device-flash-safe.py` | 仅读取完整 Flash；针对串口丢包使用单帧窗口，校验两次 MD5 后才保存，拒绝覆盖已有备份 |
+| `extract-device-flash.py` | 从完整备份验证分区并提取 LittleFS，保留原配置用于部署；不会格式化备份或覆盖已有提取目录 |
+
+面板实测脚本从 `FASTBEE_USERNAME` / `FASTBEE_PASSWORD` 读取凭据，默认沿用开发测试账号。显式传入 `--exercise-config` 才写入相同布局并检查持久化、无效配置拒绝及过期版本 `409`；该模式要求设备已开启开发者模式。报告不保存密码、登录令牌或配置内容。Flash 备份和提取文件可能含有真实网络/API 密钥，应仅保存在私有的 `artifacts` 目录。
 
 ## 已合并的旧脚本
 

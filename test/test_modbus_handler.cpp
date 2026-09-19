@@ -18,6 +18,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 void test_modbus_handler_group();
 
@@ -549,6 +552,304 @@ static void test_master_config_periph_exec_override_pattern() {
     TEST_ASSERT_EQUAL_UINT8(2, cfg.maxRetries);
 }
 
+static std::string readModbusProductionFile(const char* path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) return {};
+    std::ostringstream content;
+    content << input.rdbuf();
+    return content.str();
+}
+
+static size_t countTextOccurrences(const std::string& text, const std::string& needle) {
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        count++;
+        pos += needle.length();
+    }
+    return count;
+}
+
+// Native builds intentionally do not link the hardware protocol sources. This
+// contract test therefore inspects the exact production path that owns batch
+// result routing, rather than testing a second copy of the aggregation logic.
+static void test_raw_poll_batch_uses_atomic_per_frame_production_path() {
+    const std::string handler = readModbusProductionFile("src/protocols/ModbusHandler.cpp");
+    const std::string header = readModbusProductionFile("include/protocols/ModbusHandler.h");
+    const std::string executor = readModbusProductionFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "ModbusHandler.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(executor.empty(), "PeriphExecExecutor.cpp must be readable");
+
+    const size_t batchStart = handler.find("String ModbusHandler::executePollTaskBatch");
+    const size_t batchEnd = handler.find("String ModbusHandler::getPollStatistics", batchStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, batchStart,
+                                  "production batch implementation must exist");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, batchEnd,
+                                  "production batch implementation boundary must exist");
+    const std::string batch = handler.substr(batchStart, batchEnd - batchStart);
+
+    const size_t appendStart = batch.find("auto appendResult");
+    const size_t rawBranch = batch.find("if (rawTransfer)", appendStart);
+    const size_t frameDispatch = batch.find("rawFrameCallback(slaveAddress, result)", rawBranch);
+    const size_t rawReturn = batch.find("return;", frameDispatch);
+    const size_t jsonStrip = batch.find("result.substring(1, result.length() - 1)", appendStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, appendStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, rawBranch);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, frameDispatch);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, rawReturn);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, jsonStrip);
+    TEST_ASSERT_TRUE_MESSAGE(rawBranch < frameDispatch && frameDispatch < rawReturn &&
+                             rawReturn < jsonStrip,
+                             "raw HEX must return after per-frame dispatch before JSON bracket stripping");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(batch, "combined += r.substring")),
+        "legacy unconditional HEX-corrupting batch concatenation must be absent");
+    TEST_ASSERT_TRUE_MESSAGE(
+        countTextOccurrences(batch, "return rawTransfer ? \"[]\" : combined;") >= 2,
+        "raw batch output must never masquerade as an aggregated JSON payload");
+
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, header.find("using PollFrameCallback"),
+        "batch API must expose a per-frame raw result callback");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, header.find("PollFrameCallback rawFrameCallback = nullptr"),
+        "batch API callback must remain optional for JSON callers");
+
+    const size_t actionStart = executor.find("bool PeriphExecExecutor::executeModbusPollAction");
+    const size_t actionEnd = executor.find("String PeriphExecExecutor::guessSensorDataField", actionStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, actionStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, actionEnd);
+    const std::string actionPath = executor.substr(actionStart, actionEnd - actionStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        countTextOccurrences(actionPath, "&pollBatchComplete, dispatchRawFrame") == 1 &&
+        countTextOccurrences(actionPath, "&legacyBatchComplete, dispatchRawFrame") == 1,
+        "both structured and legacy PeriphExec poll paths must pass the raw frame callback");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos,
+        actionPath.find("slaveAddress, frame, ModbusDataSource::PeriphExecPoll"),
+        "raw frames must use the queued PeriphExecPoll MQTT outlet with the real slave address");
+}
+
+static void test_raw_oneshot_read_uses_atomic_per_frame_production_path() {
+    const std::string manager = readModbusProductionFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+
+    const size_t readStart = manager.find("String ProtocolManager::executeModbusRead");
+    const size_t readEnd = manager.find("String ProtocolManager::executeModbusRawSend", readStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, readStart,
+                                  "production Modbus one-shot read path must exist");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, readEnd,
+                                  "production Modbus one-shot read boundary must exist");
+    const std::string readPath = manager.substr(readStart, readEnd - readStart);
+
+    const size_t rawMode = readPath.find("const bool rawTransfer =");
+    const size_t frameCapture = readPath.find(
+        "rawTransfer ? &rawResponseHex : nullptr", rawMode);
+    const size_t frameDispatch = readPath.find(
+        "slaveAddr, rawResponseHex, ModbusDataSource::PeriphExecPoll",
+        frameCapture);
+    const size_t jsonBranch = readPath.find("t.containsKey(\"mappings\")", frameDispatch);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, rawMode);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, frameCapture);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, frameDispatch);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, jsonBranch);
+    TEST_ASSERT_TRUE_MESSAGE(rawMode < frameCapture && frameCapture < frameDispatch &&
+                             frameDispatch < jsonBranch,
+                             "each captured RAW one-shot ADU must be dispatched before the JSON mapping path");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(readPath, "item[\"value\"] = hexStr")),
+        "RAW RTU frames must not be wrapped in a JSON value field");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(readPath, "formatRawHex(")),
+        "RAW one-shot reads must not reconstruct the UART response");
+}
+
+static void test_raw_poll_preserves_uart_adu_without_json_suppression() {
+    const std::string handler = readModbusProductionFile("src/protocols/ModbusHandler.cpp");
+    const std::string header = readModbusProductionFile("include/protocols/ModbusHandler.h");
+    const std::string manager = readModbusProductionFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "ModbusHandler.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, header.find("String* rawResponseHex = nullptr"),
+        "read API must optionally expose the exact validated response ADU");
+
+    const size_t readStart = handler.find("OneShotResult ModbusHandler::readRegistersOnce");
+    const size_t readEnd = handler.find("OneShotError ModbusHandler::_readRangeInto", readStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, readStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, readEnd);
+    const std::string readPath = handler.substr(readStart, readEnd - readStart);
+    const size_t transactionPos = readPath.find("result.error = _sendOneShotRequestRaw(");
+    const size_t preservePos = readPath.find("*rawResponseHex += byteHex", transactionPos);
+    const size_t errorReturnPos = readPath.find("if (result.error != ONESHOT_SUCCESS)", preservePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        transactionPos != std::string::npos && preservePos != std::string::npos &&
+        errorReturnPos != std::string::npos &&
+        transactionPos < preservePos && preservePos < errorReturnPos,
+        "CRC-valid exception ADUs must be preserved before structured error return");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos,
+        readPath.find("Protocols::MODBUS_MAX_REGISTERS_PER_READ"),
+        "RAW reads must support the full protocol read quantity, not the 32-value JSON cache limit");
+
+    const size_t finalizeStart = handler.find("String ModbusHandler::_finalizePollResult");
+    const size_t finalizeEnd = handler.find("String ModbusHandler::executePollTaskBatch", finalizeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, finalizeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, finalizeEnd);
+    const std::string finalizePath = handler.substr(finalizeStart, finalizeEnd - finalizeStart);
+    const size_t rawSuccessPos = finalizePath.find("if (config.transferType == 1) {");
+    const size_t exactFramePos = finalizePath.find("const String& hexStr = *rawResponseHex", rawSuccessPos);
+    const size_t reportPolicyPos = finalizePath.find("uint32_t newHash = computeDataHash", rawSuccessPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        rawSuccessPos != std::string::npos && exactFramePos != std::string::npos &&
+        reportPolicyPos != std::string::npos && rawSuccessPos < exactFramePos &&
+        exactFramePos < reportPolicyPos,
+        "RAW polling must forward the captured UART ADU before JSON hash/deadband suppression");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(
+               finalizePath.substr(rawSuccessPos, reportPolicyPos - rawSuccessPos),
+               "formatRawHex(")),
+        "RAW polling must not reconstruct a response from decoded values");
+
+    const size_t batchStart = handler.find("String ModbusHandler::executePollTaskBatch");
+    const size_t batchEnd = handler.find("String ModbusHandler::getPollStatistics", batchStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, batchStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, batchEnd);
+    const std::string batchPath = handler.substr(batchStart, batchEnd - batchStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos,
+        batchPath.find("if (rawTransfer || !Protocols::MODBUS_MERGE_READS_ENABLED || candCount == 1)"),
+        "RAW polling must bypass request merging so every reported ADU was actually on the UART");
+
+    const size_t managerReadStart = manager.find("String ProtocolManager::executeModbusRead");
+    const size_t managerReadEnd = manager.find("String ProtocolManager::executeModbusRawSend", managerReadStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, managerReadStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, managerReadEnd);
+    const std::string managerRead = manager.substr(managerReadStart, managerReadEnd - managerReadStart);
+    const size_t managerCapturePos = managerRead.find("rawTransfer ? &rawResponseHex : nullptr");
+    const size_t managerDispatchPos = managerRead.find(
+        "slaveAddr, rawResponseHex, ModbusDataSource::PeriphExecPoll", managerCapturePos);
+    const size_t managerErrorPos = managerRead.find("if (readResult.error != ONESHOT_SUCCESS)", managerDispatchPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        managerCapturePos != std::string::npos && managerDispatchPos != std::string::npos &&
+        managerErrorPos != std::string::npos && managerCapturePos < managerDispatchPos &&
+        managerDispatchPos < managerErrorPos,
+        "RAW one-shot reads must forward captured exception ADUs before JSON error handling");
+}
+
+static void test_rtu_frame_gap_uses_millisecond_units() {
+    const std::string handler = readModbusProductionFile("src/protocols/ModbusHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "ModbusHandler.cpp must be readable");
+
+    const size_t helperStart = handler.find("static unsigned long modbusRtuFrameGapMs");
+    const size_t helperEnd = handler.find("}", helperStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, helperStart,
+                                  "RTU frame-gap conversion helper must exist");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, helperEnd);
+    const std::string helper = handler.substr(helperStart, helperEnd - helperStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, helper.find("35000UL / baudRate"),
+        "35 bit-times must be converted to milliseconds before millis comparison");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, helper.find("35000UL % baudRate"),
+        "RTU frame-gap conversion must round up partial milliseconds");
+    TEST_ASSERT_TRUE_MESSAGE(
+        countTextOccurrences(handler, "modbusRtuFrameGapMs(config.baudRate)") >= 2,
+        "master and slave receive paths must share the corrected frame-gap units");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(
+               handler, "35000000UL / config.baudRate")),
+        "microsecond-valued timeout must never be compared directly with millis");
+}
+
+static void test_per_slave_poll_backoff_isolation_contract() {
+    const std::string handler = readModbusProductionFile("src/protocols/ModbusHandler.cpp");
+    const std::string header = readModbusProductionFile("include/protocols/ModbusHandler.h");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "ModbusHandler.h must be readable");
+
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos,
+        header.find("SlaveBackoffState _slaveBackoff[SLAVE_BACKOFF_SLOT_COUNT]"),
+        "poll breaker state must use a bounded per-slave table");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(header, "_consecutiveTimeouts")),
+        "the global timeout breaker must not remain");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        0, static_cast<uint32_t>(countTextOccurrences(header, "std::map")),
+        "breaker state must not allocate map nodes during long-running polling");
+
+    const size_t deadlineStart = handler.find("bool ModbusHandler::_deadlineReached");
+    const size_t findStateStart = handler.find(
+        "ModbusHandler::SlaveBackoffState* ModbusHandler::_findSlaveBackoffState",
+        deadlineStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, deadlineStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, findStateStart);
+    const std::string deadline = handler.substr(deadlineStart, findStateStart - deadlineStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos,
+        deadline.find("static_cast<int32_t>(now - deadline) >= 0"),
+        "cooldown deadlines must remain safe when millis wraps");
+
+    const size_t transactionStart = handler.find(
+        "OneShotError ModbusHandler::_executeModbusTransactionRaw");
+    const size_t requestStart = handler.find(
+        "OneShotResult ModbusHandler::sendOneShotRequest", transactionStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, transactionStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, requestStart);
+    const std::string transaction = handler.substr(
+        transactionStart, requestStart - transactionStart);
+    const size_t bypassCheck = transaction.find("!bypassSlaveBackoff");
+    const size_t readOnlyCheck = transaction.find("isReadFunctionCode(request[1])");
+    const size_t deferCheck = transaction.find("_shouldDeferSlaveRequest");
+    const size_t serialWrite = transaction.find("modbusSerial->write");
+    TEST_ASSERT_TRUE_MESSAGE(
+        bypassCheck != std::string::npos && readOnlyCheck != std::string::npos &&
+        deferCheck != std::string::npos && serialWrite != std::string::npos &&
+        bypassCheck < deferCheck && readOnlyCheck < deferCheck && deferCheck < serialWrite,
+        "only non-control reads may be deferred, before UART traffic starts");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, transaction.find("error == ONESHOT_CRC_ERROR ? 20U : 50U"),
+        "in-request retry delay must distinguish CRC and timeout failures");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, transaction.find("_recordSlaveOutcome(expectedSlaveAddr, error"),
+        "each real poll-read outcome must update only its slave state");
+
+    const size_t outcomeStart = handler.find("void ModbusHandler::_recordSlaveOutcome");
+    const size_t destructorStart = handler.find("ModbusHandler::~ModbusHandler", outcomeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcomeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, destructorStart);
+    const std::string outcome = handler.substr(outcomeStart, destructorStart - outcomeStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("ONESHOT_TIMEOUT"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("ONESHOT_CRC_ERROR"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("ONESHOT_EXCEPTION"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("state->consecutiveFailures = 0"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("state->backoffLevel = 0"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, outcome.find("state->cooldownUntil = 0"));
+
+    const size_t controlStart = handler.find("OneShotResult ModbusHandler::sendControlRequest");
+    const size_t nextWriteStart = handler.find("OneShotResult ModbusHandler::writeCoilOnce", controlStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, controlStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, nextWriteStart);
+    const std::string control = handler.substr(controlStart, nextWriteStart - controlStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, control.find("retriesOverride, true"),
+        "control requests must explicitly bypass poll backoff");
+
+    const size_t statsStart = handler.find("String ModbusHandler::getPollStatistics");
+    const size_t cacheStart = handler.find(
+        "const ModbusHandler::PollTaskCache* ModbusHandler::getTaskCache", statsStart);
+    const std::string stats = handler.substr(statsStart, cacheStart - statsStart);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stats.find("backoffSkips"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stats.find("slaveHealth"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stats.find("crcErrors"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stats.find("exceptions"));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, stats.find("halfOpenProbes"));
+}
+
 // ========== 测试组入口 ==========
 
 void test_modbus_handler_group() {
@@ -619,4 +920,9 @@ void test_modbus_handler_group() {
     RUN_TEST(test_master_config_default_inter_poll_delay);
     RUN_TEST(test_master_config_defaults_in_valid_range);
     RUN_TEST(test_master_config_periph_exec_override_pattern);
+    RUN_TEST(test_raw_poll_batch_uses_atomic_per_frame_production_path);
+    RUN_TEST(test_raw_oneshot_read_uses_atomic_per_frame_production_path);
+    RUN_TEST(test_raw_poll_preserves_uart_adu_without_json_suppression);
+    RUN_TEST(test_rtu_frame_gap_uses_millisecond_units);
+    RUN_TEST(test_per_slave_poll_backoff_isolation_contract);
 }

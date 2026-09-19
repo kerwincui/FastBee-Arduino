@@ -1179,21 +1179,21 @@ $script:Results += [pscustomobject]@{
     Message = if ($exportSingleOk) { "OK" } elseif ($exportMemDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "single config export failed" }
 }
 
-# Test 2: Export multiple configs
-$networkContent = Invoke-RawWithRetry -Path "/api/config/transfer/export?name=network.json"
-$networkMemDegraded = (-not [string]::IsNullOrWhiteSpace($networkContent)) -and ($networkContent -match "memory pressure|low memory")
+# Test 2: Export multiple non-sensitive configs
+$featureContent = Invoke-RawWithRetry -Path "/api/config/transfer/export?name=features.json"
+$featureMemDegraded = (-not [string]::IsNullOrWhiteSpace($featureContent)) -and ($featureContent -match "memory pressure|low memory")
 $exportMultiBundle = [ordered]@{
     type = "fastbee-config-bundle"
     version = 1
     scope = "selected"
     files = @(
         [ordered]@{ name = "device.json"; content = $exportSingleContent },
-        [ordered]@{ name = "network.json"; content = $networkContent }
+        [ordered]@{ name = "features.json"; content = $featureContent }
     )
 } | ConvertTo-Json -Depth 8 -Compress
-$exportMultiOk = $exportSingleOk -and (-not [string]::IsNullOrWhiteSpace($networkContent))
+$exportMultiOk = $exportSingleOk -and (-not [string]::IsNullOrWhiteSpace($featureContent))
 $exportMultiOk = $exportMultiOk -and ([string]$exportMultiBundle -match '"type"\s*:\s*"fastbee-config-bundle"')
-$exportMultiDegraded = ($exportMemDegraded -or $networkMemDegraded) -and -not $exportMultiOk
+$exportMultiDegraded = ($exportMemDegraded -or $featureMemDegraded) -and -not $exportMultiOk
 $script:Results += [pscustomobject]@{
     Name = "config-transfer-export-multiple"
     Method = "GET"
@@ -1201,6 +1201,26 @@ $script:Results += [pscustomobject]@{
     Passed = ($exportMultiOk -or $exportMultiDegraded)
     Attempts = 1
     Message = if ($exportMultiOk) { "OK" } elseif ($exportMultiDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "multiple config export failed" }
+}
+
+# Test 2b: Raw sensitive configuration must never be downloadable.
+$sensitiveExportOk = $true
+$sensitiveExportMessages = @()
+foreach ($sensitiveName in @("network.json", "protocol.json", "auth.json", "users.json")) {
+    $blocked = Invoke-FastBeeApi -Method GET -Path ("/api/config/transfer/export?name=" + $sensitiveName)
+    $blockedStatus = Get-ObjectValue -Object $blocked -Name "status"
+    if ($null -eq $blocked -or $blocked.success -ne $false -or [int]$blockedStatus -ne 403) {
+        $sensitiveExportOk = $false
+        $sensitiveExportMessages += "$sensitiveName was not rejected with 403"
+    }
+}
+$script:Results += [pscustomobject]@{
+    Name = "config-transfer-sensitive-export-blocked"
+    Method = "GET"
+    Path = "/api/config/transfer/export"
+    Passed = $sensitiveExportOk
+    Attempts = 1
+    Message = if ($sensitiveExportOk) { "OK" } else { $sensitiveExportMessages -join "; " }
 }
 
 # Test 3: Import config (using exported bundle)

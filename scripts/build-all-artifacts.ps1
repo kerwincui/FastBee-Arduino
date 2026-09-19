@@ -90,6 +90,7 @@ function ConvertTo-Hashtable {
 }
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 # ─── 预构建：清理可能锁住 .bin 文件的残留进程 ───────────────────────────────
 # PlatformIO 串口监视器退出后可能残留 esptool.exe / python.exe 进程，
@@ -111,8 +112,6 @@ function Kill-StaleProcesses {
     }
 }
 
-Write-Host "[Pre-Build] Checking for stale processes..." -ForegroundColor Cyan
-Kill-StaleProcesses
 # Release naming: fastbee-{chip}-F{flash}R{psram}.bin
 # Examples: fastbee-esp32-F4R0.bin, fastbee-esp32s3-F16R8.bin
 $OutputNameByEnv = @{
@@ -313,6 +312,34 @@ function Copy-Artifact {
     return $DestName
 }
 
+function Invoke-WebArchiveVerifier {
+    param(
+        [string]$Environment,
+        [string]$WebDirectory
+    )
+
+    $Verifier = Join-Path $ProjectDir "scripts\verify-web-release-assets.js"
+    $Json = & node $Verifier "--env=$Environment" "--www-dir=$WebDirectory"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Target Web archive verification failed for $Environment"
+    }
+    return ($Json | ConvertFrom-Json)
+}
+
+function Copy-WebArtifactDirectory {
+    param(
+        [string]$SourceDirectory,
+        [string]$DestinationDirectory
+    )
+
+    $DestinationParent = Split-Path -Parent $DestinationDirectory
+    New-Item -ItemType Directory -Path $DestinationParent -Force | Out-Null
+    if (Test-Path -LiteralPath $DestinationDirectory) {
+        Remove-Item -LiteralPath $DestinationDirectory -Recurse -Force
+    }
+    Copy-Item -LiteralPath $SourceDirectory -Destination $DestinationDirectory -Recurse
+}
+
 function Clear-OutputDirectory {
     param([string]$Path)
 
@@ -338,6 +365,14 @@ function Clear-OutputDirectory {
         }
     }
 }
+
+$firmwareLock = Enter-FastBeeFirmwareBuildLock `
+    -ProjectRoot $ProjectDir `
+    -Label "build-all-artifacts"
+$buildBlocked = $false
+try {
+Write-Host "[Pre-Build] Checking for stale processes..." -ForegroundColor Cyan
+Kill-StaleProcesses
 
 $OutputPath = Resolve-ProjectPath $OutputDir
 Set-Location $ProjectDir
@@ -379,6 +414,14 @@ foreach ($EnvName in $Environments) {
     if (-not (Test-Path -LiteralPath $EnvDist -PathType Container)) {
         throw "Missing artifact directory: $EnvDist"
     }
+    $EnvWebDir = Join-Path $EnvDist "www"
+    $SourceWebValidation = Invoke-WebArchiveVerifier -Environment $EnvName -WebDirectory $EnvWebDir
+    $ReleaseWebDir = Join-Path (Join-Path $OutputPath $EnvName) "www"
+    Copy-WebArtifactDirectory -SourceDirectory $EnvWebDir -DestinationDirectory $ReleaseWebDir
+    $ReleaseWebValidation = Invoke-WebArchiveVerifier -Environment $EnvName -WebDirectory $ReleaseWebDir
+    if ($SourceWebValidation.treeSha256 -ne $ReleaseWebValidation.treeSha256) {
+        throw "Archived Web tree differs from the buildfs source for $EnvName"
+    }
 
     $Entry = [ordered]@{
         environment = $EnvName
@@ -394,6 +437,12 @@ foreach ($EnvName in $Environments) {
         releaseFile = $ReleaseName
         deployCommand = "powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env $EnvName -Port COMx"
         sourceDir = Get-ProjectRelativePath $EnvDist
+        webAssets = [ordered]@{
+            directory = Get-ProjectRelativePath $ReleaseWebDir
+            fileCount = $ReleaseWebValidation.fileCount
+            treeSha256 = $ReleaseWebValidation.treeSha256
+            requestGovernor = $ReleaseWebValidation.requestGovernor
+        }
         smokeTest = [ordered]@{
             required = $true
             command = "powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile $Profile"
@@ -588,7 +637,7 @@ if (-not (Test-Path (Split-Path $BaselinePath -Parent))) {
 if ($deltaReport.gateSummary -eq "BLOCKED") {
     Write-Host "[WP-71 GATE] BUILD BLOCKED: size delta or app partition capacity threshold exceeded!" -ForegroundColor Red
     Write-Host "Details: $ReportPath" -ForegroundColor Red
-    exit 1
+    $buildBlocked = $true
 } elseif ($deltaReport.gateSummary -eq "WARNING") {
     Write-Host "[WP-71 GATE] WARNING: size delta or app partition usage requires review!" -ForegroundColor Yellow
     Write-Host "Details: $ReportPath" -ForegroundColor Yellow
@@ -597,6 +646,12 @@ if ($deltaReport.gateSummary -eq "BLOCKED") {
     Write-Host "Report saved to: $ReportPath" -ForegroundColor Gray
 }
 # ────────────────────────────────────────────────────────────────────────────
+}
+finally {
+    Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+}
+
+if ($buildBlocked) { exit 1 }
 
 Write-Host ""
 Write-Host "All artifacts are ready:" -ForegroundColor Green

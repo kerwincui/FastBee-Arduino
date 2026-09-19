@@ -89,27 +89,38 @@ async function deviceApi<T = any>(
 
 /**
  * 触发规则“执行一次”并等待异步执行完成（轮询 results）。
- * 以 baseline startTime 区分本次执行与历史结果，避免误判旧记录。
- * 返回本次执行结果（含 statusName: completed/failed），超时返回 null。
+ * 使用 admission 返回的 operationId 精确追踪，避免 millis 回绕、同毫秒
+ * 执行或历史记录导致误判。返回唯一终态结果，超时返回 null。
  */
 async function runRuleAndWait(
   page: Page,
   ruleId: string,
-  timeoutMs = 25000
-): Promise<{ ruleId: string; statusName: string; startTime: number; reportCount?: number } | null> {
-  const before = await deviceApi(page, `/api/periph-exec/results?limit=20`);
-  const beforeItems = ((before.json as any)?.data || []).filter((it: any) => it.ruleId === ruleId);
-  const baseline = beforeItems.reduce((m: number, it: any) => Math.max(m, it.startTime || 0), 0);
-
-  await deviceApi(page, `/api/periph-exec/run?id=${encodeURIComponent(ruleId)}`, { method: 'POST' });
+  timeoutMs = 35000
+): Promise<{
+  operationId: number;
+  ruleId: string;
+  statusName: string;
+  state: string;
+  terminal: boolean;
+  startTime: number;
+  reportCount?: number;
+} | null> {
+  const admission = await deviceApi(page, `/api/periph-exec/run?id=${encodeURIComponent(ruleId)}`, {
+    method: 'POST',
+  });
+  const operationId = Number((admission.json as any)?.operationId || 0);
+  if (!admission.ok || operationId <= 0) return null;
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await deviceApi(page, `/api/periph-exec/results?limit=20`);
-    const items = ((res.json as any)?.data || []).filter(
-      (it: any) => it.ruleId === ruleId && (it.startTime || 0) > baseline
+    const res = await deviceApi(
+      page,
+      `/api/periph-exec/results?operationId=${encodeURIComponent(String(operationId))}&limit=1`
     );
-    const done = items.find((it: any) => it.statusName === 'completed' || it.statusName === 'failed');
+    const items = ((res.json as any)?.data || []).filter(
+      (it: any) => Number(it.operationId) === operationId
+    );
+    const done = items.find((it: any) => it.terminal === true);
     if (done) return done;
     await page.waitForTimeout(1000);
   }
@@ -2327,7 +2338,7 @@ test.describe('Suite-06: 外设执行', () => {
 
     try {
       // 执行规则并等待完成（仅含传感器动作，DHT读取成功即completed）
-      const result = await runRuleAndWait(authPage, ruleId, 30000);
+      const result = await runRuleAndWait(authPage, ruleId, 40000);
       expect(result, '传感器规则应执行完成').not.toBeNull();
       expect(result!.statusName).toBe('completed');
 

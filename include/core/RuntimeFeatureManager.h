@@ -128,6 +128,7 @@ public:
     };
 
     static constexpr size_t kMaxFeatures = 32;  // 覆盖所有 A/B/C/D 类功能
+    static_assert(kMaxFeatures <= 32, "UserConfigSnapshot masks must cover every feature");
 
     bool loaded() const { return loaded_; }
     size_t featureCount() const { return count_; }
@@ -153,10 +154,16 @@ private:
     bool loaded_ = false;
     bool networkReady_ = false;    // 延迟初始化: 网络子系统就绪标志
     bool runtimeDegraded_ = false;
+    // Hardware capabilities adopt saved intent only on the first config load.
+    // Later rollback/reload operations must not change their live state.
+    bool bootFeaturesLatched_ = false;
+    bool ioExpanderBootEnabled_ = false;
+    bool i2cSensorsBootEnabled_ = false;
 
     RuntimeFeatureManager() = default;
     void registerFeature(const FeatureMeta& meta);
     void generateDefaults();       // 注册所有功能并设置默认启用状态
+    void latchBootFeatures();
     void syncBudgetState();        // 从 FeatureBudgetRegistry 同步 budgetPassed
     friend class FeatureBudgetRegistry;
     FeatureState* findFeature(const char* key);

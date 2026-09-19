@@ -21,14 +21,14 @@
 // 关键参数（经初版 3×8192 在线验证后下调以保留充足空闲 heap）：
 //   WORKER_COUNT  = 1   ESP32-C3/经典 ESP32，优先保留 Web/认证连续内存
 //                 = 2   ESP32-C6/S3，保留原有并发能力
-//   WORKER_STACK  = max(SIMPLE_TASK_STACK, 6144)
+//   WORKER_STACK  = max(SIMPLE_TASK_STACK, 7168) for PSRAM builds, otherwise 6144
 //     注意：SIMPLE_TASK_STACK 在 C3/C6 环境为 4096（platformio.ini），
 //     实测传感器采集+上报规则在 4096 栈上 HWM 仅剩 ~948B，频繁触发
 //     （如高频开关灯 + 定时采集并发）时更深路径（DHT 重试/断连重试队列/
 //     日志格式化）会击穿栈 canary 导致 panic 重启，故此处强制 6144 下限。
 //   QUEUE_CAPACITY= 16  突发缓冲（满则走原失败回退分支）
 //
-// 启动期一次性付出：C3/经典 ESP32 为 1 × 6144 = 6KB，C6/S3 为 12KB
+// 启动期：C3/经典无 PSRAM 为 6KB，C6/无 PSRAM S3 为 12KB，PSRAM S3 为 14KB
 // 运行期增长：0
 //
 
@@ -39,8 +39,19 @@ public:
     static constexpr size_t   QUEUE_CAPACITY  = 16;
     // 强制最小 6144：C3/C6 的 SIMPLE_TASK_STACK=4096 不足以覆盖
     // 传感器采集+JSON 上报路径（实测 HWM 剩 948B，濒临栈溢出重启）
+#if defined(BOARD_HAS_PSRAM) && FASTBEE_USE_PSRAM
+    // S3 panel + Modbus retries measured only 48 bytes free with 6144.
+    // Flattening the batch table saves 336 bytes, still below the 512-byte
+    // critical threshold. Add 1024 only to PSRAM build profiles (2KB for S3).
+    // Keep this floor if PSRAM fails at runtime: shrinking a live execution
+    // path is unsafe. The existing DRAM admission gate includes WORKER_STACK
+    // and can decline worker creation if the configured stack cannot fit.
+    static constexpr uint32_t WORKER_STACK    =
+        (SIMPLE_TASK_STACK < 7168) ? 7168 : SIMPLE_TASK_STACK;
+#else
     static constexpr uint32_t WORKER_STACK    =
         (SIMPLE_TASK_STACK < 6144) ? 6144 : SIMPLE_TASK_STACK;
+#endif
 
     PeriphExecWorkerPool();
     ~PeriphExecWorkerPool();

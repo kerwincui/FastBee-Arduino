@@ -135,6 +135,7 @@ bool WiFiManager::connectToWiFi() {
     WiFi.setSleep(false);
 
     // 开始连接
+    lastDisconnectReason = 0;
     WiFi.begin(targetSSID.c_str(), targetPassword.c_str());
     staInitialized = true;  // 标记STA已初始化
 
@@ -560,6 +561,7 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_
             break;
 
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            lastDisconnectReason = 0;
             statusInfo.ipAddress = WiFi.localIP().toString();
             statusInfo.status = NetworkStatus::CONNECTED;
             connecting = false;
@@ -590,6 +592,7 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_
                 return;  // 忽略误报事件
             }
 
+            lastDisconnectReason = info.wifi_sta_disconnected.reason;
             statusInfo.status = NetworkStatus::DISCONNECTED;
             connecting = false;
             // 记录 IDF 断连 reason（如 201=密码错/202=认证失败/6=未授权/8=离开），

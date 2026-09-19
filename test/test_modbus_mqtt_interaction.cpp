@@ -16,8 +16,11 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "mocks/MockWiFi.h"
@@ -31,6 +34,78 @@
 void test_modbus_mqtt_interaction_group();
 
 using namespace NetMQTTHelper;
+
+static std::string readModbusInteractionSource(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::ifstream file(std::string(root) + "/" + relativePath);
+        if (!file.is_open()) continue;
+        std::ostringstream content;
+        content << file.rdbuf();
+        return content.str();
+    }
+    return "";
+}
+
+static uint16_t calculateTestModbusCrc(const uint8_t* data, size_t length) {
+    uint16_t crc = 0xFFFFU;
+    for (size_t pos = 0; pos < length; ++pos) {
+        crc ^= static_cast<uint16_t>(data[pos]);
+        for (uint8_t bit = 0; bit < 8U; ++bit) {
+            crc = (crc & 0x0001U) != 0U
+                      ? static_cast<uint16_t>((crc >> 1U) ^ 0xA001U)
+                      : static_cast<uint16_t>(crc >> 1U);
+        }
+    }
+    return crc;
+}
+
+static std::string bytesToHex(const std::vector<uint8_t>& bytes) {
+    static constexpr char HEX[] = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(bytes.size() * 2U);
+    for (uint8_t value : bytes) {
+        result.push_back(HEX[value >> 4U]);
+        result.push_back(HEX[value & 0x0FU]);
+    }
+    return result;
+}
+
+static std::string buildCompleteRtuAduHex(size_t bodyLength) {
+    std::vector<uint8_t> frame(bodyLength);
+    for (size_t i = 0; i < frame.size(); ++i) {
+        frame[i] = static_cast<uint8_t>((i * 37U + 1U) & 0xFFU);
+    }
+    const uint16_t crc = calculateTestModbusCrc(frame.data(), frame.size());
+    frame.push_back(static_cast<uint8_t>(crc & 0xFFU));
+    frame.push_back(static_cast<uint8_t>((crc >> 8U) & 0xFFU));
+    return bytesToHex(frame);
+}
+
+static bool isCompleteRtuAduHex(const std::string& hex) {
+    if (hex.size() < 8U || (hex.size() % 2U) != 0U || hex.size() > 512U) {
+        return false;
+    }
+
+    auto hexValue = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    std::vector<uint8_t> frame(hex.size() / 2U);
+    for (size_t i = 0; i < frame.size(); ++i) {
+        const int high = hexValue(hex[i * 2U]);
+        const int low = hexValue(hex[i * 2U + 1U]);
+        if (high < 0 || low < 0) return false;
+        frame[i] = static_cast<uint8_t>((high << 4) | low);
+    }
+
+    const uint16_t crc = calculateTestModbusCrc(frame.data(), frame.size() - 2U);
+    return frame[frame.size() - 2U] == static_cast<uint8_t>(crc & 0xFFU) &&
+           frame[frame.size() - 1U] == static_cast<uint8_t>((crc >> 8U) & 0xFFU);
+}
 
 // ================================================================
 // 内联复现生产代码中的关键逻辑（用于行为验证，不依赖真实模块）
@@ -81,7 +156,7 @@ static bool publishReportDataHex(uint8_t transferType, const String& payload,
     if (!allHex) return false;
 
     unsigned int byteLen = hexLen / 2;
-    if (byteLen > 256) byteLen = 256;  // 生产代码上限
+    if (byteLen > 256) return false;  // 完整 RTU 帧不可静默截断
 
     auto hexVal = [](char c) -> uint8_t {
         if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
@@ -100,6 +175,52 @@ static bool publishReportDataHex(uint8_t transferType, const String& payload,
     return true;
 }
 
+enum class SimulatedRawError : uint8_t {
+    Success,
+    Timeout,
+    Exception
+};
+
+static bool publishCapturedRawResponse(SimulatedRawError error,
+                                       const uint8_t* response, size_t responseLength,
+                                       MockMQTTClient& mqtt, const char* topic) {
+    const bool forwardableException =
+        error == SimulatedRawError::Exception &&
+        responseLength >= 5U && response != nullptr &&
+        (response[1] & 0x80U) != 0U;
+    if (error != SimulatedRawError::Success && !forwardableException) {
+        return false;
+    }
+    if (!response || responseLength == 0) return false;
+
+    String responseHex;
+    responseHex.reserve(responseLength * 2U);
+    for (size_t i = 0; i < responseLength; ++i) {
+        char byteHex[3];
+        snprintf(byteHex, sizeof(byteHex), "%02X", response[i]);
+        responseHex += byteHex;
+    }
+    return publishReportDataHex(1, responseHex, mqtt, topic);
+}
+
+static bool isStructuredJsonPayload(const uint8_t* payload, unsigned int length) {
+    if (!payload || length == 0) return false;
+
+    unsigned int first = 0;
+    while (first < length) {
+        char c = static_cast<char>(payload[first]);
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n') break;
+        ++first;
+    }
+    if (first >= length || (payload[first] != '[' && payload[first] != '{')) {
+        return false;
+    }
+
+    JsonDocument probe;
+    DeserializationError error = deserializeJson(probe, payload, length);
+    return !error && (probe.is<JsonArray>() || probe.is<JsonObject>());
+}
+
 /**
  * @brief 模拟 DATA_COMMAND 接收端的 transferType 分流逻辑
  *
@@ -115,19 +236,14 @@ static void handleDataCommand(uint8_t transferType,
     String msg;
     for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
-    // 检测是否为 JSON
-    bool looksLikeJson = false;
-    for (unsigned int i = 0; i < length; i++) {
-        char c = (char)payload[i];
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
-        looksLikeJson = (c == '[' || c == '{');
-        break;
-    }
+    // 必须成功反序列化为对象/数组才属于结构化 JSON。原始 RTU 帧可能
+    // 恰好以 '[' 或 '{' 开头，不能只凭首字节判断。
+    bool structuredJson = isStructuredJsonPayload(payload, length);
 
     enqueueMsg = msg;
     shouldEnqueue = true;
 
-    if (!looksLikeJson && length >= 2) {
+    if (!structuredJson && length >= 2) {
         if (transferType != 1) {
             // JSON 模式严格拒绝非 JSON
             shouldEnqueue = false;
@@ -481,7 +597,7 @@ static void test_hex_mode_hex_ascii_command() {
     TEST_ASSERT_TRUE(setupNetworkAndMQTT(mgr, mqtt, MockMultiNetworkManager::NetType::NET_WIFI));
 
     uint8_t transferType = 1;  // HEX 透传
-    const char* hexAscii = "0103000100001D5CA";
+    const char* hexAscii = "010300010001D5CA";
 
     String enqueueMsg;
     bool shouldEnqueue;
@@ -524,6 +640,23 @@ static void test_hex_mode_binary_command() {
     TestLog::testEnd(true);
 }
 
+static void test_hex_mode_json_like_binary_command_is_raw_frame() {
+    TestLog::testStart("HEX mode treats invalid JSON prefix as raw RTU frame");
+
+    // 0x5B ('[') is a valid Modbus slave address. The remaining bytes do not
+    // form JSON, so the complete binary frame must still take the raw path.
+    const uint8_t binFrame[] = { 0x5B, 0x03, 0x00, 0x01, 0x00, 0x01, 0xD9, 0x30 };
+    String enqueueMsg;
+    bool shouldEnqueue = false;
+    handleDataCommand(1, binFrame, sizeof(binFrame), enqueueMsg, shouldEnqueue);
+
+    TEST_ASSERT_TRUE(shouldEnqueue);
+    TEST_ASSERT_TRUE(enqueueMsg.indexOf("modbus_raw_send") >= 0);
+    TEST_ASSERT_TRUE(enqueueMsg.indexOf("5B0300010001D930") >= 0);
+
+    TestLog::testEnd(true);
+}
+
 /**
  * @brief HEX 透传模式 + 平台下发 JSON 命令仍按 JSON 处理
  */
@@ -556,10 +689,10 @@ static void test_hex_mode_json_command_still_works() {
 // ---------- 6. HEX 帧大小上限验证 ----------
 
 /**
- * @brief HEX 帧超过 256 字节时截断
+ * @brief HEX 帧超过 256 字节时整帧拒绝，不能截断后发布无效 CRC 帧
  */
-static void test_hex_frame_max_256_bytes() {
-    TestLog::testStart("HEX frame capped at 256 bytes");
+static void test_hex_frame_over_256_bytes_is_rejected() {
+    TestLog::testStart("HEX frame over 256 bytes is rejected");
 
     MockMQTTClient mqtt;
     MQTTConfig config = buildDefaultMQTTConfig();
@@ -578,13 +711,241 @@ static void test_hex_frame_max_256_bytes() {
 
     uint8_t transferType = 1;
     bool sentAsBinary = publishReportDataHex(transferType, longHex, mqtt, "/data/report");
-    TEST_ASSERT_TRUE(sentAsBinary);
+    TEST_ASSERT_FALSE(sentAsBinary);
+    TEST_ASSERT_EQUAL(0, (int)mqtt.getPublishedMessages().size());
+    TestLog::step("Oversized RTU frame rejected without publishing a truncated frame");
 
-    // 验证发布的二进制长度为 256（被截断）
-    auto msgs = mqtt.getPublishedMessages();
-    TEST_ASSERT_GREATER_THAN(0, (int)msgs.size());
-    TEST_ASSERT_LESS_OR_EQUAL(256, (int)msgs.back().payload.length());
-    TestLog::step("HEX frame truncated to 256 bytes max");
+    TestLog::testEnd(true);
+}
+
+static void test_hex_frame_exactly_256_bytes_is_accepted() {
+    TestLog::testStart("HEX frame at 256-byte boundary is accepted");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config = buildDefaultMQTTConfig();
+    mqtt.initialize(config);
+    mqtt.connect();
+
+    String boundaryHex;
+    boundaryHex.reserve(512);
+    for (int i = 0; i < 256; i++) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02X", (uint8_t)(i & 0xFF));
+        boundaryHex += buf;
+    }
+
+    TEST_ASSERT_TRUE(publishReportDataHex(1, boundaryHex, mqtt, "/data/report"));
+    TEST_ASSERT_EQUAL(1, (int)mqtt.getPublishedMessages().size());
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_raw_transaction_lengths_are_256_safe() {
+    TestLog::testStart("Modbus raw transaction uses 256-safe lengths");
+
+    const std::string header = readModbusInteractionSource(
+        "include/protocols/ModbusHandler.h");
+    const std::string implementation = readModbusInteractionSource(
+        "src/protocols/ModbusHandler.cpp");
+    const std::string manager = readModbusInteractionSource(
+        "src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "ModbusHandler.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(implementation.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("sendRawFrameBytesOnce") != std::string::npos &&
+        header.find("size_t& responseLength") != std::string::npos,
+        "raw API must return its byte length through size_t");
+    TEST_ASSERT_TRUE_MESSAGE(
+        implementation.find("size_t respIdx = 0;") != std::string::npos &&
+        implementation.find("bool responseOverflow = false;") != std::string::npos &&
+        implementation.find("respIdx > rawCap") != std::string::npos,
+        "receive index must not wrap and oversized responses must not be truncated");
+    TEST_ASSERT_TRUE_MESSAGE(
+        implementation.find("uint8_t rawResponse[Protocols::MODBUS_BUFFER_SIZE]") != std::string::npos &&
+        implementation.find("result.error = _sendOneShotRequestRaw(") != std::string::npos,
+        "32-register reads must parse their 69-byte response outside OneShotResult");
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("sendRawFrameBytesOnce") != std::string::npos &&
+        manager.find("uint8_t response[Protocols::MODBUS_BUFFER_SIZE]") != std::string::npos,
+        "MQTT raw command path must use the complete byte-response API");
+
+    constexpr size_t maxDataWithoutCrc = 256U - 2U;
+    TEST_ASSERT_EQUAL_UINT32(256U, maxDataWithoutCrc + 2U);
+    TEST_ASSERT_GREATER_THAN(256U, maxDataWithoutCrc + 3U);
+    TestLog::step("254-byte body + CRC remains a 256-byte ADU without wraparound");
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_mqtt_raw_command_requires_complete_crc_adu() {
+    TestLog::testStart("Modbus MQTT raw command requires complete CRC-valid ADU");
+
+    TEST_ASSERT_TRUE(isCompleteRtuAduHex("010300010001D5CA"));
+    TEST_ASSERT_FALSE(isCompleteRtuAduHex("010300010001D5CB"));
+    TEST_ASSERT_FALSE(isCompleteRtuAduHex("010300010001"));
+    TEST_ASSERT_FALSE(isCompleteRtuAduHex("010300010001D5C"));
+
+    const std::string maxAdu = buildCompleteRtuAduHex(254U);
+    const std::string oversizedAdu = buildCompleteRtuAduHex(255U);
+    TEST_ASSERT_EQUAL_UINT32(512U, maxAdu.size());
+    TEST_ASSERT_TRUE(isCompleteRtuAduHex(maxAdu));
+    TEST_ASSERT_EQUAL_UINT32(514U, oversizedAdu.size());
+    TEST_ASSERT_FALSE(isCompleteRtuAduHex(oversizedAdu));
+
+    const std::string manager = readModbusInteractionSource(
+        "src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+    const auto rawStart = manager.find(
+        "String ProtocolManager::executeModbusRawSend(const String& hexPayload)");
+    const auto rawEnd = manager.find("#endif // FASTBEE_ENABLE_MODBUS", rawStart);
+    TEST_ASSERT_TRUE_MESSAGE(rawStart != std::string::npos && rawEnd != std::string::npos,
+                             "MQTT raw command implementation must be discoverable");
+    const std::string rawBlock = manager.substr(rawStart, rawEnd - rawStart);
+    const auto minLengthPos = rawBlock.find("hex.length() < 8U");
+    const auto crcPos = rawBlock.find(
+        "calculateCRC(byteArray, byteLen - 2U)");
+    const auto mismatchPos = rawBlock.find(
+        "byteArray[byteLen - 2U] != crcLo");
+    const auto rejectPos = rawBlock.find("return \"\";", mismatchPos);
+    const auto sendPos = rawBlock.find("sendRawFrameBytesOnce");
+    TEST_ASSERT_TRUE_MESSAGE(
+        minLengthPos != std::string::npos && crcPos != std::string::npos &&
+        mismatchPos != std::string::npos && rejectPos != std::string::npos &&
+        sendPos != std::string::npos &&
+        minLengthPos < crcPos && crcPos < mismatchPos &&
+        mismatchPos < rejectPos && rejectPos < sendPos,
+        "CRC and minimum-ADU validation must reject before UART transmission");
+    TEST_ASSERT_TRUE_MESSAGE(
+        rawBlock.find("size_t effectiveLen = byteLen;") == std::string::npos,
+        "MQTT passthrough must not reinterpret an invalid ADU as a CRC-less body");
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_legacy_oneshot_count_matches_copied_capacity() {
+    TestLog::testStart("Modbus legacy OneShot count is capacity bounded");
+
+    const std::string implementation = readModbusInteractionSource(
+        "src/protocols/ModbusHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(implementation.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        implementation.find("rawLen < Protocols::MODBUS_ONESHOT_BUFFER_SIZE") != std::string::npos &&
+        implementation.find("result.count = static_cast<uint16_t>(copyLen);") != std::string::npos,
+        "legacy result count must describe only bytes copied into its 32 slots");
+    TEST_ASSERT_TRUE_MESSAGE(
+        implementation.find("result.count = rawLen") == std::string::npos,
+        "legacy result must never advertise an uncopied raw response length");
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_raw_exception_forwarding_contract() {
+    TestLog::testStart("Modbus raw exception frame forwarding contract");
+
+    const std::string implementation = readModbusInteractionSource(
+        "src/protocols/ModbusHandler.cpp");
+    const std::string manager = readModbusInteractionSource(
+        "src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(implementation.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+
+    const auto rawStart = implementation.find(
+        "OneShotError ModbusHandler::_executeModbusTransactionRaw(");
+    const auto rawEnd = implementation.find("return error;", rawStart);
+    TEST_ASSERT_TRUE_MESSAGE(rawStart != std::string::npos && rawEnd != std::string::npos,
+                             "raw transaction implementation must be discoverable");
+    const std::string rawBlock = implementation.substr(rawStart, rawEnd - rawStart);
+    const auto capacityPos = rawBlock.find("if (respIdx > rawCap)");
+    const auto copyPos = rawBlock.find("memcpy(rawResp, respBuf, respIdx);");
+    const auto lengthPos = rawBlock.find("rawLen = respIdx;");
+    const auto exceptionPos = rawBlock.find("if (respBuf[1] & 0x80)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        capacityPos != std::string::npos && copyPos != std::string::npos &&
+        lengthPos != std::string::npos && exceptionPos != std::string::npos &&
+        capacityPos < copyPos && copyPos < lengthPos && lengthPos < exceptionPos,
+        "CRC-valid raw response must be copied before exception classification");
+
+    const auto legacyStart = implementation.find(
+        "OneShotResult ModbusHandler::_executeModbusTransaction(");
+    TEST_ASSERT_TRUE_MESSAGE(legacyStart != std::string::npos && legacyStart < rawStart,
+                             "legacy transaction wrapper must be discoverable");
+    const std::string legacyBlock = implementation.substr(legacyStart, rawStart - legacyStart);
+    const auto successOnlyPos = legacyBlock.find("if (result.error == ONESHOT_SUCCESS)");
+    const auto legacyCopyPos = legacyBlock.find("result.data[i] = rawBuf[i];");
+    TEST_ASSERT_TRUE_MESSAGE(
+        successOnlyPos != std::string::npos && legacyCopyPos != std::string::npos &&
+        successOnlyPos < legacyCopyPos,
+        "ordinary OneShot transactions must keep exception responses as errors without copied data");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("const bool forwardableException =") != std::string::npos &&
+        manager.find("rawError == ONESHOT_EXCEPTION") != std::string::npos &&
+        manager.find("responseLength >= 5U") != std::string::npos &&
+        manager.find("(response[1] & 0x80U) != 0U") != std::string::npos &&
+        manager.find("rawError != ONESHOT_SUCCESS && !forwardableException") != std::string::npos,
+        "MQTT raw path must only admit a captured Modbus exception response");
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_exception_response_is_binary_mqtt_payload() {
+    TestLog::testStart("Modbus exception response is preserved as binary MQTT payload");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config = buildDefaultMQTTConfig();
+    mqtt.initialize(config);
+    mqtt.connect();
+
+    const uint8_t exceptionFrame[] = { 0x01, 0x83, 0x02, 0xC0, 0xF1 };
+    TEST_ASSERT_TRUE(publishCapturedRawResponse(
+        SimulatedRawError::Exception, exceptionFrame, sizeof(exceptionFrame),
+        mqtt, "/data/report"));
+
+    const auto messages = mqtt.getPublishedMessages();
+    TEST_ASSERT_EQUAL(1, static_cast<int>(messages.size()));
+    TEST_ASSERT_EQUAL_UINT32(sizeof(exceptionFrame), messages.back().payload.length());
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(
+        exceptionFrame,
+        reinterpret_cast<const uint8_t*>(messages.back().payload.c_str()),
+        sizeof(exceptionFrame));
+
+    mqtt.clearPublishedMessages();
+    TEST_ASSERT_FALSE(publishCapturedRawResponse(
+        SimulatedRawError::Timeout, nullptr, 0, mqtt, "/data/report"));
+    TEST_ASSERT_FALSE(publishCapturedRawResponse(
+        SimulatedRawError::Exception, nullptr, 0, mqtt, "/data/report"));
+    const uint8_t nonExceptionFrame[] = { 0x01, 0x03, 0x02, 0x00, 0x00 };
+    TEST_ASSERT_FALSE(publishCapturedRawResponse(
+        SimulatedRawError::Exception, nonExceptionFrame, sizeof(nonExceptionFrame),
+        mqtt, "/data/report"));
+    TEST_ASSERT_EQUAL(0, static_cast<int>(mqtt.getPublishedMessages().size()));
+
+    TestLog::testEnd(true);
+}
+
+static void test_modbus_raw_mode_starts_without_poll_targets() {
+    TestLog::testStart("Modbus raw mode starts without polling targets");
+
+    const std::string manager = readModbusInteractionSource(
+        "src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "ProtocolManager.cpp must be readable");
+    const auto restartStart = manager.find(
+        "ModbusRestartResult ProtocolManager::restartModbus()");
+    const auto restartEnd = manager.find("void ProtocolManager::stopModbus()", restartStart);
+    TEST_ASSERT_TRUE_MESSAGE(restartStart != std::string::npos && restartEnd != std::string::npos,
+                             "restartModbus implementation must be discoverable");
+    const std::string restartBlock = manager.substr(restartStart, restartEnd - restartStart);
+    const auto rawModeGuard = restartBlock.find("modbusConfig.transferType != 1");
+    const auto noTaskGuard = restartBlock.find("!hasEnabledPollTask && !hasEnabledSubDevice");
+    const auto idleReturn = restartBlock.find("ModbusRestartResult::IdleNoEnabledTargets");
+    const auto handlerCreate = restartBlock.find("new (std::nothrow) ModbusHandler()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        rawModeGuard != std::string::npos && noTaskGuard != std::string::npos &&
+        idleReturn != std::string::npos && handlerCreate != std::string::npos &&
+        rawModeGuard < noTaskGuard && noTaskGuard < idleReturn && idleReturn < handlerCreate,
+        "only structured mode may idle when no tasks/devices are enabled; raw mode must start its handler");
 
     TestLog::testEnd(true);
 }
@@ -821,7 +1182,7 @@ static void test_all_network_x_transfer_command_combinations() {
     // JSON 命令 (所有模式通用)
     const char* jsonCmd = "[{\"id\":\"relay\",\"value\":\"1\"}]";
     // HEX ASCII 帧
-    const char* hexAscii = "0103000100001D5CA";
+    const char* hexAscii = "010300010001D5CA";
 
     CmdCase cases[] = {
         // JSON 模式：接受 JSON 命令
@@ -987,14 +1348,14 @@ static void test_full_chain_hex_mode_roundtrip() {
     TestLog::step("Step 1: HEX frame published as binary");
 
     // 2. 平台下发二进制 Modbus 帧
-    const uint8_t dlFrame[] = { 0x01, 0x06, 0x00, 0x01, 0x00, 0x05 };
+    const uint8_t dlFrame[] = { 0x01, 0x06, 0x00, 0x01, 0x00, 0x05, 0x18, 0x09 };
     String enqueueMsg;
     bool shouldEnqueue;
     handleDataCommand(1, dlFrame, sizeof(dlFrame), enqueueMsg, shouldEnqueue);
     TEST_ASSERT_TRUE(shouldEnqueue);
     TEST_ASSERT_TRUE(enqueueMsg.indexOf("modbus_raw_send") >= 0);
     // 验证帧内容被正确编码
-    TEST_ASSERT_TRUE(enqueueMsg.indexOf("010600010005") >= 0);
+    TEST_ASSERT_TRUE(enqueueMsg.indexOf("0106000100051809") >= 0);
     TestLog::step("Step 2: Binary command frame → modbus_raw_send");
 
     // 3. raw_send 执行后的响应也通过 HEX 上报
@@ -1032,10 +1393,18 @@ void test_modbus_mqtt_interaction_group() {
     // 5. HEX 透传模式下平台下发帧
     RUN_TEST(test_hex_mode_hex_ascii_command);
     RUN_TEST(test_hex_mode_binary_command);
+    RUN_TEST(test_hex_mode_json_like_binary_command_is_raw_frame);
     RUN_TEST(test_hex_mode_json_command_still_works);
 
     // 6. HEX 帧大小上限验证
-    RUN_TEST(test_hex_frame_max_256_bytes);
+    RUN_TEST(test_hex_frame_over_256_bytes_is_rejected);
+    RUN_TEST(test_hex_frame_exactly_256_bytes_is_accepted);
+    RUN_TEST(test_modbus_raw_transaction_lengths_are_256_safe);
+    RUN_TEST(test_modbus_mqtt_raw_command_requires_complete_crc_adu);
+    RUN_TEST(test_modbus_legacy_oneshot_count_matches_copied_capacity);
+    RUN_TEST(test_modbus_raw_exception_forwarding_contract);
+    RUN_TEST(test_modbus_exception_response_is_binary_mqtt_payload);
+    RUN_TEST(test_modbus_raw_mode_starts_without_poll_targets);
 
     // 7. collectCachedPollData 过滤验证
     RUN_TEST(test_collect_poll_data_json_mode);

@@ -5,6 +5,7 @@
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="mqtt">MQTT</div>
                 <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
+                <div class="config-tab" data-tab="remote-resources">远程资源</div>
             </div>
 
             <!-- MQTT 配置 - 按需分片加载 -->
@@ -19,6 +20,13 @@
             <div id="modbus-rtu" class="config-content">
                 <div id="modbus-rtu-fragment-container">
                     <!-- Fragment: protocol-modbus-rtu.html loaded on demand -->
+                </div>
+            </div>
+
+            <!-- 远程 MQTT 通道与天气来源 - 按需分片加载 -->
+            <div id="remote-resources" class="config-content">
+                <div id="remote-resources-fragment-container">
+                    <!-- Fragment: protocol-remote-resources.html loaded on demand -->
                 </div>
             </div>
         </div>

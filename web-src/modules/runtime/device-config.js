@@ -555,12 +555,20 @@
 
         factoryReset() {
             const confirmInput = document.getElementById('dev-factory-confirm');
+            const passwordInput = document.getElementById('dev-factory-password');
             const btn = document.getElementById('dev-factory-btn');
             const confirmValue = confirmInput?.value?.toUpperCase().trim();
+            const password = passwordInput?.value || '';
 
             if (confirmValue !== 'RESET') {
                 Notification.warning(t('dc-reset-confirm', '请输入 RESET 以确认操作'), t('dc-reset-btn', '恢复出厂设置'));
                 if (confirmInput) confirmInput.focus();
+                return;
+            }
+
+            if (!password) {
+                Notification.warning(t('dc-reset-password-required', '请输入当前账户密码以重新认证'), t('dc-reset-btn', '恢复出厂设置'));
+                if (passwordInput) passwordInput.focus();
                 return;
             }
 
@@ -571,8 +579,9 @@
 
             if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
-            apiFactoryReset()
+            apiFactoryReset({ confirm: 'RESET', password: password })
                 .then(res => {
+                    if (passwordInput) passwordInput.value = '';
                     if (res && res.success) {
                         Notification.success(t('dc-reset-success', '恢复出厂设置成功，设备正在重启...'), t('dc-reset-btn', '恢复出厂设置'));
                     } else {
@@ -581,6 +590,7 @@
                     }
                 })
                 .catch(err => {
+                    if (passwordInput) passwordInput.value = '';
                     // 区分超时 vs 连接断开（设备恢复出厂导致连接断开属预期）
                     const isTimeout = err && err.name === 'AbortError';
                     const isConnectionClosed = err && (

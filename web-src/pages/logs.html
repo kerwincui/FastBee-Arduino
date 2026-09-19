@@ -2,19 +2,19 @@
     <div class="fb-card">
         <div class="fb-card-header fb-card-header-toolbar fb-data-toolbar">
             <div class="fb-data-toolbar-leading">
-                <select id="log-file-select" class="fb-select fb-w-auto">
+                <select id="log-file-select" class="fb-select fb-w-auto" aria-label="日志文件">
                     <option value="system.log">system.log</option>
                 </select>
                 <span id="log-meta" class="fb-data-toolbar-summary" role="status" aria-live="polite">加载中...</span>
             </div>
             <div class="fb-card-header-actions">
-                <button class="fb-btn fb-btn-refresh" id="log-refresh-list-btn">刷新</button>
-                <button class="fb-btn fb-btn-primary" id="refresh-logs-btn">刷新日志</button>
+                <button class="fb-btn fb-btn-refresh" id="log-refresh-list-btn">刷新文件</button>
+                <button class="fb-btn fb-btn-primary" id="refresh-logs-btn">刷新内容</button>
                 <button class="fb-btn fb-btn-danger" id="clear-logs-btn">清空</button>
             </div>
         </div>
         <div class="fb-card-body log-viewer-body">
-            <pre id="log-content" class="log-content">日志加载中...</pre>
+            <pre id="log-content" class="log-content" tabindex="0" aria-label="日志内容">日志加载中...</pre>
         </div>
     </div>
 </div>

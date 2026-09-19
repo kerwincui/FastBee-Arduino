@@ -177,12 +177,15 @@ bool TaskManager::disableTask(const String& name) {
 void TaskManager::run() {
     unsigned long now = millis();
     const unsigned long cycleStart = now;
-    std::vector<ScheduledTask> due;
+    size_t dueCount = 0;
     if (tasksMutex) xSemaphoreTake(tasksMutex, portMAX_DELAY);
-    if (!isRunning) {
+    if (!isRunning || runInProgress) {
         if (tasksMutex) xSemaphoreGive(tasksMutex);
         return;
     }
+    // Callbacks may mutate tasks or re-enter run(). Only this cycle owns the
+    // bounded snapshot until every selected callback has been processed.
+    runInProgress = true;
     
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     // 获取内存保护等级，用于低内存时跳过低优先级任务
@@ -207,12 +210,18 @@ void TaskManager::run() {
         if (now - task.lastRun < task.interval) continue;
         
         task.lastRun = now;
-        due.push_back(task);
+        auto& scheduled = dueTasks[dueCount++];
+        memcpy(scheduled.name, task.name, sizeof(scheduled.name));
+        scheduled.function = task.function;
+        scheduled.parameter = task.parameter;
+        scheduled.priority = task.priority;
+        scheduled.executionBudget = task.executionBudget;
     }
     if (tasksMutex) xSemaphoreGive(tasksMutex);
 
     // Execute callbacks outside the mutex: callbacks may add/remove tasks.
-    for (const auto& scheduled : due) {
+    for (size_t index = 0; index < dueCount; ++index) {
+        const auto& scheduled = dueTasks[index];
         if (!scheduled.function) continue;
 
         // Once higher-priority work has consumed this scheduler tick, defer
@@ -270,6 +279,9 @@ void TaskManager::run() {
             LOG_WARNING(buf);
         }
     }
+    if (tasksMutex) xSemaphoreTake(tasksMutex, portMAX_DELAY);
+    runInProgress = false;
+    if (tasksMutex) xSemaphoreGive(tasksMutex);
 }
 
 void TaskManager::listTasks() {

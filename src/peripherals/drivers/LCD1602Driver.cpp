@@ -2,9 +2,9 @@
 #if FASTBEE_ENABLE_LCD1602
 
 #include "peripherals/drivers/LCD1602Driver.h"
+#include "core/I2CBusManager.h"
 #include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
-#include <Wire.h>
 
 // PCF8574 LCD 背光控制位
 #define LCD_BACKLIGHT 0x08
@@ -96,14 +96,24 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
     _address = config.i2cAddress;
     _backlightOn = config.backlight;
     
-    // 初始化 I2C
-    Wire.begin(_sdaPin, _sclPin);
+    String busError;
+    if (!FastBee::I2CBusManager::instance().acquire(
+            this, _sdaPin, _sclPin, 100000, busError)) {
+        LOG_ERRORF("LCD1602: I2C lease failed: %s", busError.c_str());
+        _sdaPin = 255;
+        _sclPin = 255;
+        return false;
+    }
+    _busAcquired = true;
     
     // 尝试检测地址
     if (_address == 0) {
         _address = detectAddress();
         if (_address == 0) {
             LOG_ERROR("LCD1602: No LCD found at I2C addresses");
+            auto& bus = FastBee::I2CBusManager::instance();
+            if (!bus.release(this, 100)) bus.deferRelease(this);
+            _busAcquired = false;
             return false;
         }
         LOG_INFOF("LCD1602: Auto-detected I2C address 0x%02X", _address);
@@ -150,17 +160,20 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
 
 void LCD1602Driver::end()
 {
-    if (!_initialized) return;
-    
-    // 关闭背光
-    backlightOff();
-    
-    // 清屏
-    clear();
+    if (_initialized) {
+        // 关闭背光并清屏，同时租约仍然有效。
+        backlightOff();
+        clear();
+    }
     
     _initialized = false;
     _sdaPin = 255;
     _sclPin = 255;
+    if (_busAcquired) {
+        auto& bus = FastBee::I2CBusManager::instance();
+        if (!bus.release(this, 100)) bus.deferRelease(this);
+        _busAcquired = false;
+    }
     
     LOG_INFO("LCD1602: Stopped");
 }
@@ -329,10 +342,14 @@ uint8_t LCD1602Driver::detectAddress()
 {
     // 扫描常见地址范围
     uint8_t addresses[] = {0x27, 0x3F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E};
+    FastBee::I2CBusLock lock(100);
+    TwoWire* wire = lock.locked()
+        ? FastBee::I2CBusManager::instance().wire(this) : nullptr;
+    if (!wire) return 0;
     
     for (uint8_t addr : addresses) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
+        wire->beginTransmission(addr);
+        if (wire->endTransmission() == 0) {
             return addr;
         }
     }
@@ -383,9 +400,13 @@ void LCD1602Driver::_write4bits(uint8_t value)
 
 void LCD1602Driver::_expanderWrite(uint8_t value)
 {
-    Wire.beginTransmission(_address);
-    Wire.write(value);
-    Wire.endTransmission();
+    FastBee::I2CBusLock lock(100);
+    TwoWire* wire = lock.locked()
+        ? FastBee::I2CBusManager::instance().wire(this) : nullptr;
+    if (!wire) return;
+    wire->beginTransmission(_address);
+    wire->write(value);
+    wire->endTransmission();
 }
 
 void LCD1602Driver::_waitMicroseconds(uint16_t us)

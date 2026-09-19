@@ -670,7 +670,7 @@ static void test_source_maintenance_reasserts_power_and_contrast() {
                              "performMaintenance must keep the interval throttle");
 }
 
-static void test_source_maintenance_has_no_temp_warning_log() {
+static void test_source_maintenance_warning_is_rate_limited() {
     std::string content = readLcdSrcFile("src/peripherals/LCDManager.cpp");
     if (content.empty()) {
         TEST_IGNORE_MESSAGE("LCDManager.cpp not readable, skipping source check");
@@ -681,9 +681,22 @@ static void test_source_maintenance_has_no_temp_warning_log() {
     TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "performMaintenance() definition not found");
     std::string code = stripLineComments(body);
 
-    // 排查时临时提升过的 WARNING 级诊断日志不得残留（生产版不裁剪 WARNING，会刷屏）
-    TEST_ASSERT_FALSE_MESSAGE(srcContains(code, "LOG_WARNING"),
-                              "temporary WARNING diagnostics must not stay in performMaintenance");
+    // 恢复失败是真实运行故障，保留 WARNING，但必须受五分钟周期限制且失败后推进水位。
+    const size_t warning = code.find("I2C recovery failed");
+    TEST_ASSERT_TRUE_MESSAGE(warning != std::string::npos,
+                             "I2C recovery failure must remain observable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        code.find("FULL_RECOVERY_INTERVAL_MS = 300000") < warning,
+        "maintenance warning must be guarded by the five-minute recovery interval");
+    const size_t watermark = code.find("_lastFullRecovery = now", warning);
+    const size_t failureReturn = code.find("return;", warning);
+    TEST_ASSERT_TRUE_MESSAGE(
+        watermark != std::string::npos && failureReturn != std::string::npos &&
+            watermark < failureReturn,
+        "failed recovery must advance its watermark before returning");
+    TEST_ASSERT_TRUE_MESSAGE(
+        code.find("LOG_WARNING", code.find("LOG_WARNING") + 1) == std::string::npos,
+        "maintenance must not accumulate additional warning-level diagnostics");
 }
 
 static void test_source_lcd_serializes_i2c_operations_and_reports_bus_failure() {
@@ -712,7 +725,12 @@ static void test_source_lcd_serializes_i2c_operations_and_reports_bus_failure() 
                              "maintenance must probe before reasserting the display");
     TEST_ASSERT_TRUE_MESSAGE(srcContains(refresh, "probeI2cDisplay(true)"),
                              "I2C refresh must probe the configured display address");
-    TEST_ASSERT_TRUE_MESSAGE(srcContains(probe, "Wire.endTransmission()"),
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(probe, "FastBee::I2CBusLock busLock(100)"),
+                             "the display probe must serialize access to the shared I2C bus");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(probe, "I2CBusManager::instance().wire(this)"),
+                             "the display probe must use its registered bus lease");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(probe, "wire->beginTransmission") &&
+                             srcContains(probe, "wire->endTransmission()"),
                              "the display probe must complete an I2C address transaction");
     TEST_ASSERT_TRUE_MESSAGE(srcContains(refresh, "return false"),
                              "an unavailable I2C display must not be reported as successful");
@@ -786,9 +804,9 @@ static void test_source_config_struct_has_contrast_field() {
 }
 
 static void test_source_peripheral_manager_persists_contrast() {
-    std::string content = readLcdSrcFile("src/core/PeripheralManager.cpp");
+    std::string content = readLcdSrcFile("src/core/PeripheralManagerPersistence.cpp");
     if (content.empty()) {
-        TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
+        TEST_IGNORE_MESSAGE("PeripheralManagerPersistence.cpp not readable, skipping source check");
         return;
     }
 
@@ -956,7 +974,7 @@ void test_lcd_manager_group() {
     // Group 10: 源码级回归守卫（禁止 begin() 清缓冲区回归）
     RUN_TEST(test_source_maintenance_uses_init_display_not_begin);
     RUN_TEST(test_source_maintenance_reasserts_power_and_contrast);
-    RUN_TEST(test_source_maintenance_has_no_temp_warning_log);
+    RUN_TEST(test_source_maintenance_warning_is_rate_limited);
     RUN_TEST(test_source_lcd_serializes_i2c_operations_and_reports_bus_failure);
     RUN_TEST(test_source_initialize_applies_contrast_and_power_save);
     RUN_TEST(test_source_lcd_header_declares_maintenance_state);

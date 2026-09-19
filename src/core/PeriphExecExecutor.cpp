@@ -10,6 +10,9 @@
 
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecManager.h"
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "protocols/RemoteResourceManager.h"
+#endif
 #include "core/RuleScript.h"
 #include "core/ScriptEngine.h"
 #include "core/FastBeeFramework.h"
@@ -34,6 +37,8 @@
 #include "peripherals/SensorDriver.h"
 #endif
 #include "core/SensorDriverCache.h"
+#include "core/SensorConfigSupport.h"
+#include "core/DriverRegistry.h"
 #include "network/WebConfigManager.h"
 #include "network/NetworkManager.h"
 #if FASTBEE_ENABLE_LCD
@@ -262,6 +267,72 @@ void appendActionResult(std::vector<ActionExecResult>& results,
     results.push_back(result);
 }
 
+template <size_t N>
+void copyTraceText(char (&destination)[N], const String& source) {
+    snprintf(destination, N, "%s", source.c_str());
+}
+
+bool operationDeadlineReached(unsigned long deadlineAt, unsigned long now = millis()) {
+    return deadlineAt != 0 && static_cast<int32_t>(now - deadlineAt) >= 0;
+}
+
+void appendActionTrace(AsyncExecResult* traceOut,
+                       size_t actionIndex,
+                       const ExecAction& action,
+                       const String& valueSummary,
+                       bool success,
+                       unsigned long durationMs,
+                       size_t detailCount,
+                       const String& remark) {
+    if (!traceOut) return;
+    if (traceOut->actionTraceCount >= ASYNC_EXEC_ACTION_TRACE_LIMIT) {
+        traceOut->actionTraceTruncated = true;
+        return;
+    }
+
+    AsyncExecActionTrace& trace =
+        traceOut->actionTraces[traceOut->actionTraceCount++];
+    trace.index = static_cast<uint8_t>(actionIndex > 255 ? 255 : actionIndex);
+    trace.actionType = action.actionType;
+    trace.success = success;
+    trace.durationMs = durationMs;
+    trace.detailCount = static_cast<uint8_t>(detailCount > 255 ? 255 : detailCount);
+    copyTraceText(trace.targetPeriphId, action.targetPeriphId);
+    copyTraceText(trace.valueSummary, valueSummary);
+    copyTraceText(trace.remark, remark);
+}
+
+const String* safeActionTraceValue(const ExecAction& action,
+                                   const String& effectiveValue,
+                                   const std::vector<ActionExecResult>& actionResults) {
+    switch (static_cast<ExecActionType>(action.actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_BLINK:
+        case ExecActionType::ACTION_BREATHE:
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
+        case ExecActionType::ACTION_STEPPER_CONTROL:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
+        case ExecActionType::ACTION_MODBUS_REG_WRITE:
+        case ExecActionType::ACTION_MODBUS_POLL:
+        case ExecActionType::ACTION_SENSOR_READ:
+        case ExecActionType::ACTION_DISPLAY_NUMBER:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
+            return actionResults.empty()
+                ? &effectiveValue : &actionResults.front().actualValue;
+        default:
+            // Scripts, OTA URLs, generic peripheral/UART/RF payloads and free
+            // text may contain credentials or private data. Their presence is
+            // traceable without retaining the payload in the authenticated
+            // read-only results endpoint.
+            return nullptr;
+    }
+}
+
 /** 判断字符串是否全为数字（非空），用于识别平台直接下发的数值指令（如占空比 125）。 */
 bool isAllDigits(const String& s) {
     if (s.isEmpty()) return false;
@@ -344,6 +415,38 @@ void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
 
 bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue,
                                            const String& receivedValue) {
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) {
+        String normalized = effectiveValue;
+        normalized.trim();
+        normalized.toLowerCase();
+        if (normalized != "on" && normalized != "off" && normalized != "trigger") return false;
+        String status;
+        String error;
+        const bool accepted = FastBee::RemoteResourceManager::instance().execute(
+            action.targetPeriphId, normalized == "on", status, error);
+        if (!accepted) {
+            LOGGER.warningf("[PeriphExec] Remote channel '%s' rejected: %s",
+                            action.targetPeriphId.c_str(), error.c_str());
+        }
+        return accepted;
+    }
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ)) {
+        String error;
+        const bool accepted = FastBee::RemoteResourceManager::instance().requestRead(
+            action.targetPeriphId, error);
+        if (!accepted) {
+            LOGGER.warningf("[PeriphExec] Remote read '%s' rejected: %s",
+                            action.targetPeriphId.c_str(), error.c_str());
+        }
+        return accepted;
+    }
+#else
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ)) {
+        return false;
+    }
+#endif
     // 调用其他外设 (actionType 10) 必须先于系统动作范围判断。
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
         return executeCallPeripheralAction(action, effectiveValue, receivedValue);
@@ -376,8 +479,18 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
 }
 
 std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport, size_t* reportCountOut) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport,
+    size_t* reportCountOut, bool* completedAllOut, unsigned long deadlineAt,
+    AsyncExecResult* traceOut) {
 
+    if (completedAllOut) *completedAllOut = true;
+    if (traceOut) {
+        traceOut->actionCount = static_cast<uint8_t>(
+            rule.actions.size() > 255 ? 255 : rule.actions.size());
+        traceOut->actionTraceCount = 0;
+        traceOut->actionTraceTruncated =
+            rule.actions.size() > ASYNC_EXEC_ACTION_TRACE_LIMIT;
+    }
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
     // 可上报动作的结果进入上报队列：采集类（SENSOR_READ / MODBUS_POLL）
@@ -385,7 +498,16 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     // 瞬时传输、规则控制和显示类动作不上报。
     std::vector<ActionExecResult> reportableResults;
 
-    for (const auto& action : rule.actions) {
+    for (size_t actionIndex = 0; actionIndex < rule.actions.size(); ++actionIndex) {
+        const auto& action = rule.actions[actionIndex];
+        if (operationDeadlineReached(deadlineAt)) {
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::DEADLINE_EXCEEDED;
+            appendActionTrace(traceOut, actionIndex, action, "", false, 0, 0,
+                              "deadline_exceeded");
+            break;
+        }
+
         // MemGuard 堆守卫：使用 DRAM（MALLOC_CAP_INTERNAL）而非总堆，避免 PSRAM 干扰判断；
         // 2026-08-05 fix: 另加 8BIT 口径（INTERNAL 含 IRAM/RTC 虚高 ~28KB，
         // 崩溃现场 INTERNAL 29KB 时 8BIT 仅剩 <1KB，传感器 JSON 解析小分配直接 abort）
@@ -396,16 +518,28 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         if (monitor) {
             if (monitor->isMemoryCritical()) {
                 LOGGER.warning("[PeriphExec] Heap CRITICAL, skipping remaining actions");
+                if (completedAllOut) *completedAllOut = false;
+                if (traceOut) traceOut->errorCode = AsyncExecError::LOW_MEMORY;
+                appendActionTrace(traceOut, actionIndex, action, "", false, 0, 0,
+                                  "memory_pressure");
                 break;
             }
             if (monitor->isMemorySevere() && dramFree < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM) {
                 LOGGER.warningf("[PeriphExec] DRAM SEVERE (%lu), skipping remaining actions",
                                 (unsigned long)dramFree);
+                if (completedAllOut) *completedAllOut = false;
+                if (traceOut) traceOut->errorCode = AsyncExecError::LOW_MEMORY;
+                appendActionTrace(traceOut, actionIndex, action, "", false, 0, 0,
+                                  "memory_pressure");
                 break;
             }
         } else if (dramFree < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM) {
             LOGGER.warningf("[PeriphExec] DRAM too low (%lu), skipping remaining actions",
                             (unsigned long)dramFree);
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::LOW_MEMORY;
+            appendActionTrace(traceOut, actionIndex, action, "", false, 0, 0,
+                              "memory_pressure");
             break;
         }
         // 4096：每次动作前刷新水位；MQTT 连接稳态 8BIT ~7KB 时允许规则
@@ -413,12 +547,31 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         if (dram8Free < 4096) {
             LOGGER.warningf("[PeriphExec] DRAM(8bit) too low (%lu), skipping remaining actions",
                             (unsigned long)dram8Free);
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::LOW_MEMORY;
+            appendActionTrace(traceOut, actionIndex, action, "", false, 0, 0,
+                              "memory_pressure");
             break;
         }
 
+        const unsigned long actionStartedAt = millis();
         // 执行前延时
         if (action.syncDelayMs > 0) {
-            delay(action.syncDelayMs > 10000 ? 10000 : action.syncDelayMs);
+            const unsigned long delayMs = action.syncDelayMs > 10000
+                ? 10000UL : static_cast<unsigned long>(action.syncDelayMs);
+            if (deadlineAt != 0) {
+                const unsigned long now = millis();
+                const unsigned long remaining = deadlineAt - now;
+                if (operationDeadlineReached(deadlineAt, now) || delayMs >= remaining) {
+                    if (completedAllOut) *completedAllOut = false;
+                    if (traceOut) traceOut->errorCode = AsyncExecError::DEADLINE_EXCEEDED;
+                    appendActionTrace(traceOut, actionIndex, action, "", false,
+                                      millis() - actionStartedAt, 0,
+                                      "deadline_before_delay");
+                    break;
+                }
+            }
+            delay(delayMs);
         }
 
         // 确定有效值：useReceivedValue 时用接收值，否则用 actionValue
@@ -435,7 +588,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         bool isReportableAction = false;
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
             ActionExecResult ar;
-            ok = executeSensorReadAction(action, ar);
+            ok = executeSensorReadAction(action, ar, rule.recordHistory);
             ar.success = ok;
             ar.remark = ok ? "success" : "sensor_read_failed";
             actionResults.push_back(ar);
@@ -447,22 +600,27 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             }
             isReportableAction = true;
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_TRIGGER_EVENT)) {
-            // 触发设备事件：优先使用用户在 UI 中选择的事件 ID（effectiveValue）
-            // 若未指定事件则回退为当前规则 ID（向后兼容）
-            String triggerEventId = effectiveValue.isEmpty() ? rule.id : effectiveValue;
+            // Canonical schema: targetPeriphId is the event ID and actionValue
+            // is payload. Keep a legacy fallback for old files, while all new
+            // Manager saves require the explicit target.
+            String triggerEventId = action.targetPeriphId;
+            if (triggerEventId.isEmpty()) {
+                triggerEventId = effectiveValue.isEmpty() ? rule.id : effectiveValue;
+            }
             LOGGER.infof("[PeriphExec] Trigger device event: id=%s name=%s (data=%s)",
                          triggerEventId.c_str(), rule.name.c_str(), effectiveValue.c_str());
             // 分发给规则（供其他规则订阅事件作为触发源），不受 reportAfterExec 控制
             PeriphExecManager::getInstance().triggerEventById(triggerEventId, effectiveValue);
             // 仅在勾选“是否上报数据”且未被外部抑制时，通过 DEVICE_EVENT 主题上报
             if (rule.reportAfterExec && !suppressReport) {
-                PeriphExecManager::getInstance().notifyMqttEventPublish(rule.id, rule.name, effectiveValue);
+                PeriphExecManager::getInstance().notifyMqttEventPublish(
+                    triggerEventId, rule.name, effectiveValue);
             }
             ok = true;
             appendActionResult(
                 actionResults,
-                rule.id,
-                rule.name,
+                triggerEventId,
+                effectiveValue,
                 ok,
                 "event_triggered"
             );
@@ -499,6 +657,28 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             LOGGER.infof("[PeriphExec] Action completed: target=%s, value=%s, result=%s",
                 ar.targetPeriphId.c_str(), ar.actualValue.c_str(),
                 ar.success ? "SUCCESS" : "FAILED");
+        }
+
+        const String* traceValue = safeActionTraceValue(
+            action, effectiveValue, actionResults);
+        const String traceRemark = actionResults.empty()
+            ? String(ok ? "success" : "execute_failed")
+            : actionResults.front().remark;
+        if (traceValue) {
+            appendActionTrace(traceOut, actionIndex, action, *traceValue, ok,
+                              millis() - actionStartedAt, actionResults.size(), traceRemark);
+        } else {
+            appendActionTrace(traceOut, actionIndex, action,
+                              effectiveValue.isEmpty() ? String() : String("[omitted]"), ok,
+                              millis() - actionStartedAt, actionResults.size(), traceRemark);
+        }
+        if (!ok && traceOut && traceOut->errorCode == AsyncExecError::NONE) {
+            traceOut->errorCode = AsyncExecError::ACTION_FAILED;
+        }
+        if (operationDeadlineReached(deadlineAt)) {
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::DEADLINE_EXCEEDED;
+            break;
         }
     }
 
@@ -537,7 +717,7 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
             // 传感器读取：采集当前实时值（无副作用）
             ActionExecResult ar;
-            if (executeSensorReadAction(action, ar)) {
+            if (executeSensorReadAction(action, ar, rule.recordHistory)) {
                 ar.success = true;
                 ar.remark = "boot_state";
                 reportableResults.push_back(ar);
@@ -603,6 +783,21 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
     }
 
     ExecActionType actType = static_cast<ExecActionType>(action.actionType);
+    PeripheralConfig digitalTarget;
+    if (pm.getPeripheralSnapshot(action.targetPeriphId, digitalTarget) &&
+        digitalTarget.isExpanderChannel()) {
+        if (digitalTarget.type != PeripheralType::GPIO_DIGITAL_OUTPUT ||
+            (actType != ExecActionType::ACTION_HIGH && actType != ExecActionType::ACTION_LOW &&
+             actType != ExecActionType::ACTION_HIGH_INVERTED &&
+             actType != ExecActionType::ACTION_LOW_INVERTED &&
+             actType != ExecActionType::ACTION_GPIO_TOGGLE &&
+             actType != ExecActionType::ACTION_BLINK)) return false;
+        if (actType == ExecActionType::ACTION_BLINK) {
+            const long interval = effectiveValue.isEmpty() ? 500L : effectiveValue.toInt();
+            if (interval < 200L || interval > 65535L ||
+                pm.readPin(action.targetPeriphId) == GPIOState::STATE_UNDEFINED) return false;
+        }
+    }
 
     switch (actType) {
         case ExecActionType::ACTION_HIGH: {
@@ -665,13 +860,8 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
         }
 
         case ExecActionType::ACTION_GPIO_TOGGLE: {
-            // 电平翻转：读当前电平取反写入，与 executeCallPeripheralAction 的 "toggle" 命令语义一致
-            GPIOState current = pm.readPin(action.targetPeriphId);
-            GPIOState next = (current == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
-            LOGGER.infof("[PeriphExec] Execute TOGGLE on %s (%d -> %d)", action.targetPeriphId.c_str(),
-                         (int)current, (int)next);
             pm.stopActionTicker(action.targetPeriphId);
-            return pm.writePin(action.targetPeriphId, next);
+            return pm.togglePin(action.targetPeriphId);
         }
 
         // Modbus 线圈写入 (FC05) — 支持 "channel:state" 或 "state" 格式
@@ -816,13 +1006,28 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     (void)action; (void)rule; (void)controlResults;
     return false;
 #else
+    const unsigned long batchStart = millis();
+    constexpr unsigned long MODBUS_POLL_BATCH_TIMEOUT_MS = 30000; // 30s
+    auto remainingBatchBudgetMs = [&]() -> uint32_t {
+        const uint32_t elapsed = millis() - batchStart;
+        return elapsed >= MODBUS_POLL_BATCH_TIMEOUT_MS
+            ? 0U
+            : MODBUS_POLL_BATCH_TIMEOUT_MS - elapsed;
+    };
+
     auto* fw = FastBeeFramework::getInstance();
     if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
     auto* protMgr = fw->getProtocolManager();
     if (!protMgr) { LOGGER.warning("[PeriphExec] ProtocolManager not available"); return false; }
-    ModbusHandler* modbus = protMgr->getModbusHandler();
+    const uint32_t remainingBeforeLease = remainingBatchBudgetMs();
+    const uint32_t leaseWaitMs = remainingBeforeLease < 2000U
+        ? remainingBeforeLease
+        : 2000U;
+    if (leaseWaitMs == 0) return false;
+    auto modbusLease = protMgr->acquireModbusHandler(pdMS_TO_TICKS(leaseWaitMs));
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) {
-        LOGGER.warning("[PeriphExec] ModbusHandler not available for poll action");
+        LOGGER.warning("[PeriphExec] ModbusHandler unavailable or restarting for poll action");
         return false;
     }
 
@@ -881,6 +1086,14 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         return false;
     }
 
+    const bool rawTransfer = modbus->getConfigRef().transferType == 1;
+    size_t rawFramesDispatched = 0;
+    auto dispatchRawFrame = [&](uint8_t slaveAddress, const String& frame) {
+        rawFramesDispatched++;
+        protMgr->dispatchModbusData(
+            slaveAddress, frame, ModbusDataSource::PeriphExecPoll);
+    };
+
     // 检测 JSON 格式 vs 旧逗号分隔格式
     if (actionVal.charAt(0) == '{') {
         // === 新 JSON 格式: {"poll":[0,1],"ctrl":[{"d":0,"a":"on","c":0}]} ===
@@ -892,10 +1105,67 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         }
 
         bool anySuccess = false;
+        bool requestedOperation = false;
+        bool allOperationsComplete = true;
+        const size_t initialControlResultCount = controlResults ? controlResults->size() : 0;
 
-        // 批次总超时：防止 poll+ctrl 累积耗时过长占用 worker 线程
-        unsigned long batchStart = millis();
-        constexpr unsigned long MODBUS_POLL_BATCH_TIMEOUT_MS = 30000; // 30s
+        // 批次总超时从函数入口计时，包含 handler lease 等待与 poll+ctrl。
+        auto prepareControlPolicy = [&](uint16_t& effectiveTimeout,
+                                        uint8_t& effectiveRetries) -> bool {
+            const uint32_t remaining = remainingBatchBudgetMs();
+            constexpr uint16_t MIN_TRANSACTION_TIMEOUT_MS = 100;
+            constexpr uint16_t MAX_TRANSACTION_TIMEOUT_MS = 5000;
+            constexpr uint16_t BUS_ACQUIRE_TIMEOUT_MS = 2000;
+            constexpr uint8_t MAX_TRANSACTION_RETRIES = 3;
+            if (remaining <= BUS_ACQUIRE_TIMEOUT_MS +
+                                 MIN_TRANSACTION_TIMEOUT_MS) {
+                return false;
+            }
+            const uint32_t transactionBudget =
+                remaining - BUS_ACQUIRE_TIMEOUT_MS;
+
+            effectiveTimeout = timeout == 0 ? MIN_TRANSACTION_TIMEOUT_MS : timeout;
+            if (effectiveTimeout < MIN_TRANSACTION_TIMEOUT_MS) {
+                effectiveTimeout = MIN_TRANSACTION_TIMEOUT_MS;
+            }
+            if (effectiveTimeout > MAX_TRANSACTION_TIMEOUT_MS) {
+                effectiveTimeout = MAX_TRANSACTION_TIMEOUT_MS;
+            }
+            if (effectiveTimeout > transactionBudget) {
+                effectiveTimeout = static_cast<uint16_t>(transactionBudget);
+            }
+
+            effectiveRetries = retries > MAX_TRANSACTION_RETRIES
+                ? MAX_TRANSACTION_RETRIES
+                : retries;
+            const uint32_t attemptBudget =
+                static_cast<uint32_t>(effectiveTimeout) + 50U;
+            uint32_t maxAttempts = transactionBudget / attemptBudget;
+            if (maxAttempts == 0) maxAttempts = 1;
+            if (static_cast<uint32_t>(effectiveRetries) + 1U > maxAttempts) {
+                effectiveRetries = static_cast<uint8_t>(maxAttempts - 1U);
+            }
+            return true;
+        };
+        auto writeCoilWithinBudget = [&](uint8_t slave, uint16_t address,
+                                         bool value, OneShotResult& result) -> bool {
+            uint16_t effectiveTimeout = 0;
+            uint8_t effectiveRetries = 0;
+            if (!prepareControlPolicy(effectiveTimeout, effectiveRetries)) return false;
+            result = modbus->writeCoilOnce(slave, address, value, true,
+                                           effectiveTimeout, effectiveRetries);
+            return true;
+        };
+        auto writeRegisterWithinBudget = [&](uint8_t slave, uint16_t address,
+                                             uint16_t value,
+                                             OneShotResult& result) -> bool {
+            uint16_t effectiveTimeout = 0;
+            uint8_t effectiveRetries = 0;
+            if (!prepareControlPolicy(effectiveTimeout, effectiveRetries)) return false;
+            result = modbus->writeRegisterOnce(slave, address, value, true,
+                                               effectiveTimeout, effectiveRetries);
+            return true;
+        };
 
         // 处理 poll 数组: 执行采集任务
         JsonArray pollArr = doc["poll"].as<JsonArray>();
@@ -911,15 +1181,36 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 if (batchCount >= Protocols::MODBUS_MAX_POLL_TASKS) {
                     Serial.printf("[PeriphExec] Poll batch truncated at %d tasks\n",
                                   Protocols::MODBUS_MAX_POLL_TASKS);
+                    allOperationsComplete = false;
                     break;
                 }
                 batchIdx[batchCount++] = v.as<uint8_t>();
             }
+            requestedOperation = requestedOperation || batchCount > 0;
 
             // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
-            String result = modbus->executePollTaskBatch(batchIdx, batchCount, timeout, retries, interDelay, false);
+            bool pollBatchComplete = false;
+            const uint32_t elapsedBeforePoll = millis() - batchStart;
+            const uint32_t pollBudget = elapsedBeforePoll >= MODBUS_POLL_BATCH_TIMEOUT_MS
+                ? 0
+                : MODBUS_POLL_BATCH_TIMEOUT_MS - elapsedBeforePoll;
+            String result = "[]";
+            if (pollBudget > 0) {
+                result = modbus->executePollTaskBatch(
+                    batchIdx, batchCount, timeout, retries, interDelay, false,
+                    pollBudget, &pollBatchComplete, dispatchRawFrame);
+            }
+            if (!pollBatchComplete) {
+                allOperationsComplete = false;
+                if (controlResults) {
+                    appendActionResult(*controlResults, action.targetPeriphId, "", false,
+                                       pollBudget == 0 ? "modbus_poll_deadline" : "modbus_poll_incomplete");
+                }
+            }
             Serial.printf("[PeriphExec] Poll batch (%d tasks) len=%u\n", batchCount, (unsigned)result.length());
-            if (result != "[]") {
+            if (rawTransfer) {
+                anySuccess = rawFramesDispatched > 0;
+            } else if (result != "[]") {
                 anySuccess = true;
                 // 解析批量结果并追加到结构化数组（避免字符串拼接）
                 JsonDocument taskDoc;
@@ -930,9 +1221,13 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     }
                 } else {
                     Serial.printf("[PeriphExec] Poll batch result JSON parse failed\n");
+                    allOperationsComplete = false;
                 }
             }
-            if (anySuccess && resultsArr.size() > 0) {
+            if (rawTransfer) {
+                Serial.printf("[PeriphExec] Poll completed, dispatched %u raw frame(s)\n",
+                              static_cast<unsigned>(rawFramesDispatched));
+            } else if (anySuccess && resultsArr.size() > 0) {
                 // 只在最终出口做一次 serializeJson
                 String mergedJson;
                 serializeJson(resultDoc, mergedJson);
@@ -952,10 +1247,16 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         if (ctrlArr) {
             const ModbusConfig& cfg = modbus->getConfigRef();
             for (JsonVariant cv : ctrlArr) {
+                requestedOperation = true;
                 // 批次总超时检查（poll+ctrl 共享同一时间预算）
-                if (millis() - batchStart > MODBUS_POLL_BATCH_TIMEOUT_MS) {
+                if (remainingBatchBudgetMs() == 0) {
                     Serial.printf("[PeriphExec] Ctrl batch timeout (%lums), stopping early\n",
                                   (unsigned long)MODBUS_POLL_BATCH_TIMEOUT_MS);
+                    allOperationsComplete = false;
+                    if (controlResults) {
+                        appendActionResult(*controlResults, action.targetPeriphId, "", false,
+                                           "modbus_ctrl_deadline");
+                    }
                     break;
                 }
                 // MemGuard 堆守卫：与 pollArr 保持一致的防护
@@ -965,12 +1266,22 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     if ((monCtrl && monCtrl->isMemoryCritical()) || FastBee::MemoryBudget::dramFree() < 15000) {
                         Serial.printf("[PeriphExec] Heap dropped to %d during ctrl, stopping early\n",
                                       (int)ESP.getFreeHeap());
+                        allOperationsComplete = false;
+                        if (controlResults) {
+                            appendActionResult(*controlResults, action.targetPeriphId, "", false,
+                                               "memory_pressure");
+                        }
                         break;
                     }
                 }
                 uint8_t devIdx = cv["d"].as<uint8_t>();
                 if (devIdx >= cfg.master.deviceCount) {
                     Serial.printf("[PeriphExec] ctrl device index %d out of range\n", devIdx);
+                    allOperationsComplete = false;
+                    if (controlResults) {
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx), "", false,
+                                           "invalid_device_index");
+                    }
                     continue;
                 }
                 const ModbusSubDevice& dev = cfg.master.devices[devIdx];
@@ -978,7 +1289,19 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 uint8_t ch = cv["c"] | 0;
                 uint16_t val = cv["v"] | 0;
 
-                if (interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
+                if (interDelay > 0) {
+                    const uint32_t remainingBeforeDelay = remainingBatchBudgetMs();
+                    if (remainingBeforeDelay <= interDelay) {
+                        allOperationsComplete = false;
+                        if (controlResults) {
+                            appendActionResult(*controlResults,
+                                               "modbus:" + String(devIdx), "", false,
+                                               "modbus_ctrl_deadline");
+                        }
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(interDelay));
+                }
 
                 String devType(dev.deviceType);
                 if (devType == "relay") {
@@ -990,14 +1313,34 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     uint16_t addr = dev.coilBase + ch;
                     bool ok = false;
                     if (dev.controlProtocol == 0) {
-                        auto res = modbus->writeCoilOnce(dev.slaveAddress, addr, coilVal, true);
+                        OneShotResult res;
+                        if (!writeCoilWithinBudget(dev.slaveAddress, addr,
+                                                   coilVal, res)) {
+                            allOperationsComplete = false;
+                            if (controlResults) {
+                                appendActionResult(*controlResults,
+                                                   "modbus:" + String(devIdx), "", false,
+                                                   "modbus_ctrl_deadline");
+                            }
+                            break;
+                        }
                         ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
                         Serial.printf("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d\n",
                             dev.slaveAddress, addr, coilVal, ok);
                     } else {
                         uint16_t regVal = coilVal ? 1 : 0;
-                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal, true);
+                        OneShotResult res;
+                        if (!writeRegisterWithinBudget(dev.slaveAddress, addr,
+                                                       regVal, res)) {
+                            allOperationsComplete = false;
+                            if (controlResults) {
+                                appendActionResult(*controlResults,
+                                                   "modbus:" + String(devIdx), "", false,
+                                                   "modbus_ctrl_deadline");
+                            }
+                            break;
+                        }
                         ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
                         Serial.printf("[PeriphExec] Relay reg ctrl: slave=%d reg=%d val=0x%04X ok=%d\n",
@@ -1020,7 +1363,17 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     }
                 } else if (devType == "pwm") {
                     uint16_t regAddr = dev.pwmRegBase + ch;
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
+                    OneShotResult res;
+                    if (!writeRegisterWithinBudget(dev.slaveAddress, regAddr,
+                                                   val, res)) {
+                        allOperationsComplete = false;
+                        if (controlResults) {
+                            appendActionResult(*controlResults,
+                                               "modbus:" + String(devIdx), "", false,
+                                               "modbus_ctrl_deadline");
+                        }
+                        break;
+                    }
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
                     Serial.printf("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d\n",
@@ -1046,7 +1399,17 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     if (strcmp(param, "I") == 0) pidIdx = 4;
                     else if (strcmp(param, "D") == 0) pidIdx = 5;
                     uint16_t regAddr = dev.pidAddrs[pidIdx];
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
+                    OneShotResult res;
+                    if (!writeRegisterWithinBudget(dev.slaveAddress, regAddr,
+                                                   val, res)) {
+                        allOperationsComplete = false;
+                        if (controlResults) {
+                            appendActionResult(*controlResults,
+                                               "modbus:" + String(devIdx), "", false,
+                                               "modbus_ctrl_deadline");
+                        }
+                        break;
+                    }
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
                     Serial.printf("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d\n",
@@ -1090,7 +1453,18 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         continue;
                     }
                     if (limitDecision.enabled && dev.motorRegs[4] != 0) {
-                        auto pulseRes = modbus->writeRegisterOnce(dev.slaveAddress, dev.motorRegs[4], limitDecision.pulse, true);
+                        OneShotResult pulseRes;
+                        if (!writeRegisterWithinBudget(
+                                dev.slaveAddress, dev.motorRegs[4],
+                                limitDecision.pulse, pulseRes)) {
+                            allOperationsComplete = false;
+                            if (controlResults) {
+                                appendActionResult(*controlResults,
+                                                   "modbus:" + String(devIdx), "", false,
+                                                   "modbus_ctrl_deadline");
+                            }
+                            break;
+                        }
                         if (pulseRes.error != ONESHOT_SUCCESS) {
                             LOGGER.warningf("[PeriphExec] Motor ctrl failed to write bounded pulse: dev=%d pulse=%u",
                                             devIdx, static_cast<unsigned int>(limitDecision.pulse));
@@ -1103,7 +1477,17 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         }
                         motorVal = 1;
                     }
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, motorVal, true);
+                    OneShotResult res;
+                    if (!writeRegisterWithinBudget(dev.slaveAddress, regAddr,
+                                                   motorVal, res)) {
+                        allOperationsComplete = false;
+                        if (controlResults) {
+                            appendActionResult(*controlResults,
+                                               "modbus:" + String(devIdx), "", false,
+                                               "modbus_ctrl_deadline");
+                        }
+                        break;
+                    }
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     if (ok) {
                         if (limitDecision.enabled) {
@@ -1138,7 +1522,15 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             }
         }
 
-        return anySuccess;
+        if (controlResults) {
+            for (size_t i = initialControlResultCount; i < controlResults->size(); ++i) {
+                if (!(*controlResults)[i].success) {
+                    allOperationsComplete = false;
+                    break;
+                }
+            }
+        }
+        return requestedOperation && allOperationsComplete;
     }
 
     // === 旧格式兼容: 逗号分隔的任务索引，如 "0,1,3" ===
@@ -1168,8 +1560,13 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     }
 
     // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
-    String legacyResult = modbus->executePollTaskBatch(legacyBatchIdx, legacyBatchCount, timeout, retries, interDelay, false);
-    if (legacyResult != "[]") {
+    bool legacyBatchComplete = false;
+    const uint32_t legacyBudget = remainingBatchBudgetMs();
+    if (legacyBudget == 0) return false;
+    String legacyResult = modbus->executePollTaskBatch(
+        legacyBatchIdx, legacyBatchCount, timeout, retries, interDelay, false,
+        legacyBudget, &legacyBatchComplete, dispatchRawFrame);
+    if (!rawTransfer && legacyResult != "[]") {
         anySuccess = true;
         // 解析批量结果并追加到结构化数组（避免字符串拼接）
         JsonDocument taskDoc;
@@ -1181,7 +1578,10 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         }
     }
 
-    if (anySuccess && resultsArr.size() > 0) {
+    if (rawTransfer) {
+        LOGGER.infof("[PeriphExec] Poll action completed, dispatched %u raw frame(s)",
+                     static_cast<unsigned>(rawFramesDispatched));
+    } else if (anySuccess && resultsArr.size() > 0) {
         // 只在最终出口做一次 serializeJson
         String mergedJson;
         serializeJson(resultDoc, mergedJson);
@@ -1192,7 +1592,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         }
     }
 
-    return anySuccess;
+    return legacyBatchCount > 0 && legacyBatchComplete;
 #endif // FASTBEE_ENABLE_MODBUS
 }
 
@@ -1204,6 +1604,10 @@ String PeriphExecExecutor::guessSensorDataField(const String& category) {
     String normalized = category;
     normalized.trim();
     normalized.toLowerCase();
+    if (const auto* metadata = FastBee::DriverRegistry::getInstance().getMetadata(normalized.c_str())) {
+        const auto* channel = metadata->getChannel(0);
+        if (channel) return channel->name;
+    }
     if (normalized == "dht11" || normalized == "dht22" || normalized == "ds18b20") {
         return "temperature";
     } else if (normalized == "sht30" || normalized == "sht31" ||
@@ -1245,7 +1649,8 @@ String PeriphExecExecutor::resolveChannelField(const String& category, const Str
     return periphId;
 }
 
-bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result) {
+bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
+                                                 bool recordHistory) {
     String actionVal = action.actionValue;
     if (actionVal.isEmpty() || actionVal.charAt(0) != '{') {
         LOGGER.warning("[PeriphExec] Sensor read: empty or invalid actionValue");
@@ -1260,9 +1665,20 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
 
     const char* periphId = doc["periphId"] | "";
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig boundConfig;
+    uint32_t sensorConfigVersion = 0;
+    if (!periphId[0] || !pm.getPeripheralSnapshot(String(periphId), boundConfig, &sensorConfigVersion) || !boundConfig.enabled) {
+        if (sensorConfigVersion) PeriphExecManager::getInstance().invalidateSensorReadCache(
+            String(periphId), "SENSOR_NOT_READY", sensorConfigVersion);
+        return false;
+    }
+    const bool configuredI2cSensor = boundConfig.type == PeripheralType::SENSOR_GENERIC &&
+        boundConfig.params.sensor.driver[0] != '\0';
     // Normalize imported/UI values once so aliases and mixed-case categories
     // follow exactly the same execution path.
-    String categoryValue = doc["sensorCategory"] | "analog";
+    String categoryValue = configuredI2cSensor ? String(boundConfig.params.sensor.driver)
+        : String(doc["sensorCategory"] | "analog");
     categoryValue.trim();
     categoryValue.toLowerCase();
     const char* category = categoryValue.c_str();
@@ -1289,9 +1705,10 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         return false;
     }
 
-    PeripheralManager& pm = PeripheralManager::getInstance();
     float rawValue = 0;
     String detectedUnit;
+    uint32_t sensorSampleTimestamp = 0;
+    uint32_t sensorMaxAgeMs = 0;
 
     if (strcmp(category, "analog") == 0) {
         // 热路径零分配：避免 String(periphId) 每周期堆构造
@@ -1302,6 +1719,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         }
     } else if (strcmp(category, "digital") == 0) {
         GPIOState state = pm.readPinByCStr(periphId);
+        if (state == GPIOState::STATE_UNDEFINED) return false;
         rawValue = (state == GPIOState::STATE_HIGH) ? 1.0f : 0.0f;
     } else if (strcmp(category, "radar") == 0) {
         bool detected = false;
@@ -1554,37 +1972,85 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         }
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER
     } else {
-        PeripheralConfig cfg;
-        const bool hasConfig = pm.getPeripheralSnapshot(String(periphId), cfg);
-        const uint8_t pin = hasConfig ? cfg.getPrimaryPin() : 0;
-        String driverParamsBuffer;
-        JsonVariantConst driverParamsNode = doc["driverParams"];
-        if (driverParamsNode.is<const char*>()) {
-            driverParamsBuffer = driverParamsNode.as<const char*>();
-        } else if (driverParamsNode.is<JsonObjectConst>() ||
-                   driverParamsNode.is<JsonArrayConst>()) {
-            serializeJson(driverParamsNode, driverParamsBuffer);
-        } else if (hasConfig && cfg.type == PeripheralType::SENSOR_GENERIC &&
-                   cfg.params.sensor.driver[0] != '\0') {
-            JsonDocument paramsDoc;
-            paramsDoc["addr"] = cfg.params.sensor.address;
-            if (cfg.params.sensor.mode == 1) paramsDoc["mode"] = "gyro";
-            serializeJson(paramsDoc, driverParamsBuffer);
-        }
-
         String sensorError;
-        if (!FastBee::SensorDriverCache::instance().readChannel(
-                String(periphId), category, pin,
-                driverParamsBuffer.isEmpty() ? nullptr : driverParamsBuffer.c_str(),
-                dataField, rawValue, detectedUnit, sensorError)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: %s",
-                            sensorError.c_str());
+        auto failed = [&](const String& error) {
+            PeriphExecManager::getInstance().invalidateSensorReadCache(String(periphId), error, sensorConfigVersion);
+            LOGGER.warningf("[PeriphExec] Sensor read: %s", error.c_str());
             return false;
+        };
+        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors")) {
+            return failed("I2C_SENSORS_UNAVAILABLE: enable the feature and reboot");
         }
-        if (strlen(unit) == 0 && !detectedUnit.isEmpty()) unit = detectedUnit.c_str();
+        PeripheralConfig cfg = boundConfig;
+        if (!configuredI2cSensor) {
+            // Legacy rules may attach a registered driver to a configured I2C
+            // bus/container. Keep their address/mode/driverParams, but resolve
+            // physical wiring through the existing peripheral configuration.
+            if (cfg.type != PeripheralType::I2C && cfg.type != PeripheralType::SENSOR_GENERIC) {
+                return failed("SENSOR_I2C_REFERENCE_REQUIRED");
+            }
+            uint8_t sda = 255, scl = 255;
+            uint32_t frequency = 0;
+            if (cfg.type == PeripheralType::I2C &&
+                (!cfg.params.i2c.isMaster || cfg.params.i2c.address != 0)) {
+                return failed("SENSOR_I2C_MASTER_REQUIRED");
+            }
+            if (!pm.resolveI2cConfig(cfg, sda, scl, frequency, sensorError)) return failed(sensorError);
+            JsonDocument legacy;
+            JsonVariantConst supplied = doc["driverParams"];
+            if (supplied.is<const char*>()) {
+                if (deserializeJson(legacy, supplied.as<const char*>()) || !legacy.is<JsonObject>()) {
+                    return failed("SENSOR_PARAMS_INVALID");
+                }
+            } else if (supplied.is<JsonObjectConst>()) legacy.set(supplied);
+            else if (!supplied.isNull()) return failed("SENSOR_PARAMS_INVALID");
+            legacy["driver"] = category;
+            if (!legacy["addr"].isNull()) legacy["address"] = legacy["addr"];
+            legacy["frequency"] = frequency;
+            initializeSensorDefaults(cfg);
+            cfg.type = PeripheralType::SENSOR_GENERIC;
+            cfg.pinCount = 2; cfg.pins[0] = sda; cfg.pins[1] = scl;
+            if (!FastBee::parseSensorConfig(legacy.as<JsonObjectConst>(), cfg, sensorError)) return failed(sensorError);
+        }
+        if (!FastBee::validateSensorConfig(cfg, sensorError)) return failed(sensorError);
+        uint8_t sda = 255, scl = 255;
+        uint32_t frequency = 0;
+        if (!pm.resolveI2cConfig(cfg, sda, scl, frequency, sensorError)) return failed(sensorError);
+        // An explicit platform property ID is not a driver channel. For old
+        // rules only, accept dataField as the channel when it is a real one.
+        String selectedChannel;
+        if (explicitChannelField.isEmpty()) {
+            if (!explicitFieldStr.isEmpty() && FastBee::resolveSensorChannel(
+                    cfg.params.sensor.driver, cfg.params.sensor.mode,
+                    explicitFieldStr.c_str(), selectedChannel, sensorError)) {
+                channelFieldStr = selectedChannel;
+            } else if (!FastBee::resolveSensorChannel(cfg.params.sensor.driver, cfg.params.sensor.mode,
+                                                      "", channelFieldStr, sensorError)) return failed(sensorError);
+        } else if (!FastBee::resolveSensorChannel(cfg.params.sensor.driver, cfg.params.sensor.mode,
+                                                   explicitChannelField.c_str(), channelFieldStr, sensorError)) {
+            return failed(sensorError);
+        }
+        dataField = channelFieldStr.c_str();
+        JsonDocument paramsDoc;
+        FastBee::buildSensorDriverParams(paramsDoc, cfg, sda, scl, frequency);
+        if (paramsDoc.overflowed()) return failed("SENSOR_PARAMS_MEMORY_UNAVAILABLE");
+        String driverParamsBuffer;
+        serializeJson(paramsDoc, driverParamsBuffer);
+        sensorMaxAgeMs = FastBee::sensorSampleIntervalMs(cfg);
+        if (!FastBee::SensorDriverCache::instance().readChannel(
+                String(periphId), cfg.params.sensor.driver, sda,
+                driverParamsBuffer.c_str(), dataField, rawValue, detectedUnit, sensorError,
+                sensorMaxAgeMs, &sensorSampleTimestamp, sensorConfigVersion)) {
+            return failed(sensorError);
+        }
+        if (!detectedUnit.isEmpty()) unit = detectedUnit.c_str();
     }
 
     float processed = rawValue * scaleFactor + offset;
+    if (!std::isfinite(processed)) {
+        PeriphExecManager::getInstance().invalidateSensorReadCache(String(periphId), "SENSOR_VALUE_NOT_FINITE", sensorConfigVersion);
+        return false;
+    }
     if (decimals > 6) decimals = 6;
 
     result.targetPeriphId = String(periphId);
@@ -1597,22 +2063,25 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
         periphId, category, rawValue, result.actualValue.c_str(), unit, label);
 
-    // 推送传感器数据到 LCD 显示模块
-#if FASTBEE_ENABLE_LCD
-    if (LCDManager::getInstance().isInitialized() && strlen(label) > 0)
-    {
-        String entryId = String(periphId) + "_" + String(dataField);
-        LCDManager::getInstance().updateSensorEntry(entryId, String(label), processed, String(unit), decimals);
-    }
-#endif
-
     // 更新传感器读取值缓存（供 controls API、SSE 和实时监测使用）：
     // 键用内部通道字段保证 DHT 温/湿双条目唯一；dataField 仅存显式配置值，
     // 并携带外设配置 id 供实时监测上报回退（与平台物模型标识符对应）
     {
         String cacheKey = String(periphId) + "_" + String(dataField);
-        PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit), explicitFieldStr, String(periphId));
+        if (!PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue,
+            String(unit), explicitFieldStr, String(periphId), sensorSampleTimestamp, sensorMaxAgeMs,
+            recordHistory, sensorSampleTimestamp, "", sensorConfigVersion)) return false;
     }
+
+    // Publication has been claimed; display work must stay outside PM/cache
+    // guards. The display also filters the epoch when rendering cached values.
+#if FASTBEE_ENABLE_LCD
+    if (LCDManager::getInstance().isInitialized() && strlen(label) > 0) {
+        String entryId = String(periphId) + "_" + String(dataField);
+        LCDManager::getInstance().updateSensorEntry(entryId, String(label), processed,
+            String(unit), decimals, sensorConfigVersion);
+    }
+#endif
 
     return true;
 }
@@ -1681,38 +2150,8 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             return true;
 
         case ExecActionType::ACTION_SYS_FACTORY_RESET: {
-            LOGGER.info("[PeriphExec] Executing factory reset...");
-            const char* configFiles[] = {
-                "/config/device.json", "/config/network.json", "/config/protocol.json",
-                "/config/features.json", "/config/users.json", "/config/auth.json",
-                "/config/system.json", "/config/ai.json", "/config/mqtt.json", "/config/mqtt-backup.json",
-                "/config/modbus.json", "/config/coap.json", "/config/http.json",
-                "/config/tcp.json", "/config/provision.json", "/config/ble_provision.json",
-                PERIPH_EXEC_CONFIG_FILE, "/config/rule_scripts.json",
-                "/config/peripherals.json", "/config/ir_keys.json", "/config/rf_keys.json"
-            };
-            bool resetSucceeded = true;
-            ConfigStorage& storage = ConfigStorage::getInstance();
-            for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
-                if (!storage.deleteJSONConfigGenerations(configFiles[i])) {
-                    LOGGER.errorf("[PeriphExec] Factory reset: failed to remove %s generations",
-                                  configFiles[i]);
-                    resetSucceeded = false;
-                }
-            }
-
-            FastBeeFramework* framework = FastBeeFramework::getInstance();
-            FBNetworkManager* network = framework
-                ? static_cast<FBNetworkManager*>(framework->getNetworkManager())
-                : nullptr;
-            if (!network || !network->clearPersistentFallback()) {
-                LOGGER.error("[PeriphExec] Factory reset: failed to clear network NVS fallback");
-                resetSucceeded = false;
-            }
-            if (!resetSucceeded) return false;
-
-            SystemRebooter::scheduleReboot("PeriphExec factory reset", 1000UL, RestartReason::FACTORY_RESET);
-            return true;
+            LOGGER.warning("[PeriphExec] Factory reset rejected: use authenticated reset endpoint");
+            return false;
         }
 
         case ExecActionType::ACTION_SYS_NTP_SYNC: {
@@ -1909,19 +2348,25 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         pm.stopActionTicker(targetId);
         return pm.writePin(targetId, GPIOState::STATE_LOW);
     } else if (cmd == "toggle") {
-        GPIOState current = pm.readPin(targetId);
-        GPIOState next = (current == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
         pm.stopActionTicker(targetId);
-        return pm.writePin(targetId, next);
+        return pm.togglePin(targetId);
     } else if (cmd == "pwm") {
+        if (targetCfg->isExpanderChannel()) return false;
         uint32_t duty = valueStr.toInt();
         return pm.writePWM(targetId, duty);
     } else if (cmd == "blink") {
-        uint16_t interval = valueStr.toInt();
+        const long requestedInterval = valueStr.toInt();
+        if (targetCfg->isExpanderChannel() &&
+            (!valueStr.isEmpty() && (requestedInterval < 200 || requestedInterval > 65535))) return false;
+        uint16_t interval = requestedInterval;
         if (interval == 0) interval = 500;
+        if (targetCfg->isExpanderChannel() && (interval < 200 ||
+            targetCfg->type != PeripheralType::GPIO_DIGITAL_OUTPUT ||
+            pm.readPin(targetId) == GPIOState::STATE_UNDEFINED)) return false;
         pm.startActionTicker(targetId, 1, interval);
         return true;
     } else if (cmd == "breathe") {
+        if (targetCfg->isExpanderChannel()) return false;
         uint16_t speed = valueStr.toInt();
         if (speed == 0) speed = 2000;
         pm.startActionTicker(targetId, 2, speed);
@@ -2010,12 +2455,14 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）并获取 ModbusHandler 指针
     uint8_t modbusTransferType = 0;
 #if FASTBEE_ENABLE_MODBUS
+    ProtocolManager::ModbusHandlerLease modbusLease;
     ModbusHandler* modbus = nullptr;
     auto* fw = FastBeeFramework::getInstance();
     if (fw) {
         auto* protMgr = fw->getProtocolManager();
         if (protMgr) {
-            modbus = protMgr->getModbusHandler();
+            modbusLease = protMgr->acquireModbusHandler(pdMS_TO_TICKS(2000));
+            modbus = modbusLease.get();
             if (modbus) {
                 modbusTransferType = modbus->getTransferType();
             }

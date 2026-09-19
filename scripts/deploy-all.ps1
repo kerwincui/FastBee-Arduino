@@ -55,6 +55,7 @@ $ErrorActionPreference = "Stop"
 $IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUTF8 = "1"
@@ -104,6 +105,12 @@ function Get-EsptoolPorts {
     return $result
 }
 
+$firmwareLock = Enter-FastBeeFirmwareBuildLock `
+    -ProjectRoot $ProjectDir `
+    -Label "deploy-all" `
+    -Environment $Env `
+    -Port ($Ports -join ",")
+try {
 # ---------------------------------------------------------------- step 1: build
 $factoryImage = Join-Path $ProjectDir ".pio\build\$Env\factory-with-fs.bin"
 if (-not $IsWin) { $factoryImage = $factoryImage -replace '\\', '/' }
@@ -229,3 +236,7 @@ if ($failed.Count -gt 0) {
     throw "Batch flash finished with $($failed.Count) failure(s)."
 }
 Write-Host "All devices flashed successfully." -ForegroundColor Green
+}
+finally {
+    Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+}

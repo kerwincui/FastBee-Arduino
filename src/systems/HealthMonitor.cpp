@@ -1076,8 +1076,11 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
         }
 #endif
         // 内存恢复：MQTTS→MQTT 降级 + 停止 Modbus + 暂停 PeriphExec
-        // 仅在首次进入 SEVERE 或从低级别跳入时执行（避免重复操作）
-        if (oldLevel < MemoryGuardLevel::SEVERE) {
+        // Reclaim once on entry, and again on an actual escalation to CRITICAL.
+        // An earlier stage may have retained the display after enough memory
+        // was freed; a later critical condition must still be able to stop it.
+        if (oldLevel < MemoryGuardLevel::SEVERE ||
+            (oldLevel < MemoryGuardLevel::CRITICAL && newLevel == MemoryGuardLevel::CRITICAL)) {
             performMemoryRecovery(oldLevel, newLevel);
         }
     }
@@ -1529,8 +1532,8 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
     // Step 2: 停止 Modbus RTU（释放串口缓冲 + 停止轮询 CPU 开销）
 #if FASTBEE_ENABLE_MODBUS
     if (pm && !_modbusStoppedForMemory) {
-        ModbusHandler* modbus = pm->getModbusHandler();
-        if (modbus && modbus->isRunning()) {
+        auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(100));
+        if (modbusLease && modbusLease->isRunning()) {
             Serial.println("[MEMRECOVER] Step 2/3: Modbus stopped (was running)");
             pm->stopModbus();
             _modbusStoppedForMemory = true;
@@ -1565,16 +1568,29 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
     }
 
 #if FASTBEE_ENABLE_PERIPH_EXEC
-    // Keep GPIO/ADC/UART available, but release optional display/RMT and
-    // similar drivers. This is runtime-only; peripherals.json is untouched.
+    // Modbus/worker teardown may already have removed the pressure. Sample
+    // live internal DRAM here, not currentHealth (the pre-recovery snapshot),
+    // before disrupting a visible display or another optional peripheral.
+    // Use this target's actual SEVERE bands, including contiguous capacity.
+    // This only skips the next teardown stage: paused services and guard
+    // hysteresis stay unchanged and recover through the normal stable-sample
+    // path. A later CRITICAL escalation retries the stage immediately.
     if (!_optionalPeripheralsSuspendedForMemory) {
-        size_t suspended = PeripheralManager::getInstance().suspendOptionalForMemory();
-        _memorySuspendedPeripheralCount = static_cast<uint16_t>(
-            suspended > UINT16_MAX ? UINT16_MAX : suspended);
-        _optionalPeripheralsSuspendedForMemory = suspended > 0;
-        if (suspended > 0) {
-            Serial.printf("[MEMRECOVER] Optional peripherals suspended: %u\n",
-                          (unsigned)_memorySuspendedPeripheralCount);
+        const uint32_t remainingDram = FastBee::MemoryBudget::dram8Free();
+        const uint32_t remainingLargest = FastBee::MemoryBudget::dram8Largest();
+        if (remainingDram < guardSevereDramThreshold ||
+            remainingLargest < guardSevereLargestThreshold) {
+            size_t suspended = PeripheralManager::getInstance().suspendOptionalForMemory();
+            _memorySuspendedPeripheralCount = static_cast<uint16_t>(
+                suspended > UINT16_MAX ? UINT16_MAX : suspended);
+            _optionalPeripheralsSuspendedForMemory = suspended > 0;
+            if (suspended > 0) {
+                Serial.printf("[MEMRECOVER] Optional peripherals suspended: %u\n",
+                              (unsigned)_memorySuspendedPeripheralCount);
+            }
+        } else {
+            Serial.printf("[MEMRECOVER] Optional peripherals retained: dram=%lu largest=%lu\n",
+                          (unsigned long)remainingDram, (unsigned long)remainingLargest);
         }
     }
 #endif
@@ -1765,14 +1781,16 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
         ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
         if (!pm) return;
 
-        ModbusHandler* modbus = pm->getModbusHandler();
-        if (modbus && modbus->isRunning()) {
-            _modbusRestorePendingForMemory = false;
-            _modbusRestoreRetryAtMs = 0;
-            _modbusStoppedForMemory = false;
-            FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("modbus");
-            Serial.println("[MEMRECOVER]   Modbus handler confirmed running; cleared degraded state");
-            return;
+        {
+            auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(100));
+            if (modbusLease && modbusLease->isRunning()) {
+                _modbusRestorePendingForMemory = false;
+                _modbusRestoreRetryAtMs = 0;
+                _modbusStoppedForMemory = false;
+                FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("modbus");
+                Serial.println("[MEMRECOVER]   Modbus handler confirmed running; cleared degraded state");
+                return;
+            }
         }
 
         // The protocol loop has not consumed the request yet. Avoid stacking
@@ -1831,7 +1849,11 @@ void HealthMonitor::restoreMemoryRecovery() {
 
     // 恢复 Modbus（如果被内存停止过）
 #if FASTBEE_ENABLE_MODBUS
-    if (_modbusStoppedForMemory) {
+    // Queue the first recovery once. Repeated NORMAL health samples also call
+    // this function before reconcilePendingMemoryRecovery(); requeueing here
+    // hides a running handler behind restartPending, discards an idle result,
+    // and continuously postpones the failure retry deadline.
+    if (_modbusStoppedForMemory && !_modbusRestorePendingForMemory) {
         if (pm && pm->restartModbusDeferred()) {
             // restartModbusDeferred() only queues work for loopTask. Keep the
             // degraded flag until a later health sample confirms that the

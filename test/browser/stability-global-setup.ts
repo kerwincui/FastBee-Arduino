@@ -57,7 +57,28 @@ async function waitForDevice(maxMs = 60_000): Promise<boolean> {
 }
 
 async function getDeviceInfo(): Promise<Record<string, unknown> | null> {
-  return fetchJson(`${BASE_URL}/api/system/info?probe=1`, 15_000);
+  const envelope = await fetchJson(`${BASE_URL}/api/system/status`, 15_000);
+  if (!envelope) return null;
+
+  const payload = envelope.data && typeof envelope.data === 'object'
+    ? envelope.data as Record<string, unknown>
+    : envelope;
+  const memory = payload.memory && typeof payload.memory === 'object'
+    ? payload.memory as Record<string, unknown>
+    : {};
+  const uptimeValue = payload.uptime && typeof payload.uptime === 'object'
+    ? (payload.uptime as Record<string, unknown>).ms
+    : payload.uptime;
+
+  return {
+    firmwareVersion: payload.firmwareVersion || payload.version || 'unknown',
+    heapFree: memory.dram8Free ?? memory.heapFree ?? payload.freeHeap ?? 0,
+    heapSize: memory.dram8Total ?? memory.heapSize ?? 0,
+    heapMaxAlloc: memory.dram8Largest ?? memory.heapMaxAlloc ?? 0,
+    psramFree: memory.psramFree ?? 0,
+    psramSize: memory.psramTotal ?? 0,
+    uptime: uptimeValue ?? 0,
+  };
 }
 
 function formatBytes(bytes: number): string {
@@ -79,6 +100,7 @@ function formatUptime(ms: number): string {
 async function stabilityGlobalSetup() {
   const rounds = process.env.STABILITY_ROUNDS || '5';
   const workers = process.env.STABILITY_WORKERS || '2';
+  const maxFailureRate = process.env.STABILITY_MAX_FAILURE_RATE_PERCENT || '0';
 
   console.log('\n╔══════════════════════════════════════════════════════╗');
   console.log('║       FastBee 长期稳定性测试 - 设备预检             ║');
@@ -140,7 +162,7 @@ async function stabilityGlobalSetup() {
   console.log('\n[3/3] 稳定性监控指标:');
   console.log('  - 设备崩溃检测 : uptime 重置 → 记录 CRASH');
   console.log('  - 内存泄漏预警 : heap 持续下降 > 8KB → 记录 WARNING');
-  console.log('  - 失败率阈值   : 单轮 > 10% → 记录 ALERT');
+  console.log(`  - 失败率阈值   : 单轮 > ${maxFailureRate}% → 记录 ALERT`);
   console.log('');
   console.log('═══════════════════════════════════════════════════════');
   console.log('  开始稳定性测试...');

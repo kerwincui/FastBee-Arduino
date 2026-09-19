@@ -191,6 +191,7 @@ private:
     uint8_t _rows = 2;
     uint8_t _address = 0x27;
     bool _backlightOn = true;
+    bool _busAcquired = false;
     
     // 内部方法
     void _sendCommand(uint8_t cmd);

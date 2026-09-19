@@ -35,6 +35,14 @@ param(
 
 $ErrorActionPreference = "Continue"
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
+
+$firmwareLock = Enter-FastBeeFirmwareBuildLock `
+    -ProjectRoot $ProjectDir `
+    -Label "verify-all-builds" `
+    -Environment ($Environments -join ",")
+$verificationExitCode = 1
+try {
 
 Write-Host ""
 Write-Host "=== FastBee-Arduino Build Verification ===" -ForegroundColor Cyan
@@ -140,8 +148,14 @@ foreach ($key in $results.Keys) {
 Write-Host ""
 if ($totalFailed -eq 0) {
     Write-Host "All builds PASSED!" -ForegroundColor Green
-    exit 0
+    $verificationExitCode = 0
 } else {
     Write-Host "$totalFailed build(s) FAILED!" -ForegroundColor Red
-    exit 1
+    $verificationExitCode = 1
 }
+}
+finally {
+    Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+}
+
+exit $verificationExitCode

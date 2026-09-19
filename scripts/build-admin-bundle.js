@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { minifyJS } = require('./minify-js');
 const { resolveWebBuildContext, shouldIncludeAsset } = require('./web-profile');
+const { withWebPublishLock } = require('./web-publish-lock');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
@@ -78,7 +79,7 @@ function buildAdminBundle(context = resolveWebBuildContext()) {
 }
 
 if (require.main === module) {
-    const result = buildAdminBundle();
+    const result = withWebPublishLock(() => buildAdminBundle(), { label: 'build-admin-bundle' });
     console.log(`Built admin publish assets from ${result.fileCount} source files`);
     console.log(`Source: ${result.sourceDir}`);
     console.log(`Compat output: ${result.outputFile}`);

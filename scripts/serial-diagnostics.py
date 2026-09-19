@@ -75,7 +75,9 @@ def open_serial(args, deadline):
             stream.timeout = 0.2
             stream.dsrdtr = False
             stream.rtscts = False
-            stream.dtr = False
+            # Native USB CDC may suppress output until the host asserts DTR.
+            # Keep this opt-in: bridge-based boards can wire DTR to BOOT/EN.
+            stream.dtr = getattr(args, "assert_dtr", False)
             stream.rts = False
             stream.open()
             return stream
@@ -118,6 +120,8 @@ def parse_args():
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate.")
     parser.add_argument("--duration", type=int, default=30, help="Capture duration in seconds.")
     parser.add_argument("--open-timeout", type=int, default=10, help="Seconds to wait for port open.")
+    parser.add_argument("--assert-dtr", action="store_true",
+                        help="Assert DTR for a confirmed native USB CDC device; RTS stays deasserted.")
     parser.add_argument("--reset", action="store_true", help="Reset the board before capturing.")
     parser.add_argument("--chip", default="esp32s3", help="esptool chip name used with --reset.")
     parser.add_argument("--python", default=sys.executable, help="Python executable used for esptool.")

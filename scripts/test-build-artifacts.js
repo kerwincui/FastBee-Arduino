@@ -27,6 +27,11 @@ const REQUIRED_DEPLOY_FILES = [
 ];
 const REQUIRED_BUILD_FILES = ['firmware.bin', 'bootloader.bin', 'partitions.bin', 'littlefs.bin'];
 const REQUIRED_FLASH_IMAGE_FILES = ['bootloader.bin', 'partitions.bin', 'firmware.bin', 'littlefs.bin'];
+const ESP_FLASH_SIZE_NIBBLES = new Map([
+    [4, 0x20],
+    [8, 0x30],
+    [16, 0x40]
+]);
 const BUILD_INPUT_PATHS = [
     'platformio.ini', 'partitions', 'include', 'src', 'lib', 'data', 'web-src', 'patches',
     'scripts/fastbee-artifacts.py', 'scripts/gzip-www.js'
@@ -160,6 +165,17 @@ class BuildArtifactsValidator {
             }
             if (!factory.subarray(offset, end).equals(image)) {
                 this.errors.push(`[${environment}] factory-with-fs.bin does not contain ${entry.file} at 0x${offset.toString(16)}`);
+            }
+            if (entry.file === 'bootloader.bin' || entry.file === 'firmware.bin') {
+                const expectedFlashSizeNibble = ESP_FLASH_SIZE_NIBBLES.get(metadata.flashMB);
+                if (image.length < 4 || factory[offset] !== 0xe9) {
+                    this.errors.push(`[${environment}] ${entry.file} at 0x${offset.toString(16)} has an invalid ESP image header`);
+                } else if ((factory[offset + 3] & 0xf0) !== expectedFlashSizeNibble) {
+                    const actualNibble = factory[offset + 3] & 0xf0;
+                    this.errors.push(
+                        `[${environment}] ${entry.file} flash-size nibble 0x${actualNibble.toString(16)} does not match ${metadata.flashMB}MB`
+                    );
+                }
             }
         });
 

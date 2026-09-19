@@ -213,7 +213,7 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
         ctx->cacheDuration = (uint32_t)cd;
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
-        doc["developerModeEnabled"] = true;
+        doc["developerModeEnabled"] = false;
     }
 
     // 安全策略字段：转发到 UserManager 持久化到 users.json
@@ -274,7 +274,7 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
             f.close();
             if (!err) {
                 if (!fileCfg["developerModeEnabled"].is<bool>()) {
-                    fileCfg["developerModeEnabled"] = true;
+                    fileCfg["developerModeEnabled"] = false;
                 }
                 // 从 users.json 读取安全策略配置（4个UI可配置字段）
                 if (LittleFS.exists("/config/users.json")) {
@@ -306,7 +306,7 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     doc["success"] = true;
     doc["data"]["deviceName"] = "FastBee-ESP32";
     doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    doc["data"]["developerModeEnabled"] = true;
+    doc["data"]["developerModeEnabled"] = false;
     doc["data"]["logLevel"] = "INFO";
     doc["data"]["enableNTP"] = true;
     doc["data"]["ntpServer1"] = "http://iot.fastbee.cn/prod-api/iot/tool/ntp";

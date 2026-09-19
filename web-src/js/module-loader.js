@@ -35,6 +35,10 @@ var ModuleLoader = {
         'periph-exec': [
             'periph-exec'
         ],
+        'screen-panel': [
+            'screen-panel-model',
+            'screen-panel'
+        ],
         'periph-exec-editor': [
             'periph-exec',
             'periph-exec-modbus',

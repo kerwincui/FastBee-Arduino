@@ -11,6 +11,26 @@
 #ifndef FEATURE_FLAGS_H
 #define FEATURE_FLAGS_H
 
+// The generic panel is compiled into full builds, but its runtime feature is
+// disabled by default. Builds for constrained targets may override these
+// macros to 0; screen snapshots and render buffers are allocated only after
+// the runtime feature is explicitly enabled.
+#ifndef FASTBEE_ENABLE_SCREEN_PANEL
+#define FASTBEE_ENABLE_SCREEN_PANEL 1
+#endif
+#ifndef FASTBEE_ENABLE_SCREEN_UI
+#define FASTBEE_ENABLE_SCREEN_UI FASTBEE_ENABLE_SCREEN_PANEL
+#endif
+#ifndef FASTBEE_ENABLE_POINT_HISTORY
+#define FASTBEE_ENABLE_POINT_HISTORY 1
+#endif
+#if FASTBEE_ENABLE_SCREEN_UI && !FASTBEE_ENABLE_SCREEN_PANEL
+#error "FASTBEE_ENABLE_SCREEN_UI requires FASTBEE_ENABLE_SCREEN_PANEL"
+#endif
+#ifndef FASTBEE_ENABLE_REMOTE_RESOURCES
+#define FASTBEE_ENABLE_REMOTE_RESOURCES 1
+#endif
+
 // ============================================================================
 // 协议功能开关
 // ============================================================================
@@ -414,6 +434,15 @@
  */
 #ifndef FASTBEE_ENABLE_I2C_SENSORS
     #define FASTBEE_ENABLE_I2C_SENSORS 0
+#endif
+
+/**
+ * @brief I2C GPIO expander support (PCF8574 in the first implementation)
+ * Default: disabled unless the build profile includes the capability.
+ * Runtime instances are additionally gated by the ioExpander feature switch.
+ */
+#ifndef FASTBEE_ENABLE_IO_EXPANDER
+    #define FASTBEE_ENABLE_IO_EXPANDER 0
 #endif
 
 /**

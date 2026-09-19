@@ -63,7 +63,9 @@ public:
 private:
     FeatureBudgetRegistry() = default;
 
-    static constexpr size_t kMaxDenied = 16;
+    // Cover the full RuntimeFeatureManager registry, including simultaneous
+    // startup refusals. A full table must not silently admit a later feature.
+    static constexpr size_t kMaxDenied = 32;
     const char* denied_[kMaxDenied] = {nullptr};
     size_t deniedCount_ = 0;
     bool checked_ = false;
@@ -78,6 +80,7 @@ public:
     static void deny(const char* name) {
         if (!name) return;
         auto& r = FeatureBudgetRegistry::instance();
+        if (r.isDenied(name)) return;
         if (r.deniedCount_ < FeatureBudgetRegistry::kMaxDenied) {
             r.denied_[r.deniedCount_++] = name;
         }

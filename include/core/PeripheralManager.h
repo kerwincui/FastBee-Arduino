@@ -43,6 +43,7 @@ using ModbusRegWriteFunc  = std::function<bool(uint8_t slaveAddr, uint16_t regAd
 #define PERIPHERAL_CONFIG_FILE "/config/peripherals.json"
 #define PERIPHERAL_CONFIG_BACKUP "/config/gpio.json.bak"
 
+class TwoWire;
 class PeripheralManager {
 public:
     static PeripheralManager& getInstance();
@@ -53,6 +54,9 @@ public:
 
     // 初始化
     bool initialize();
+    // Best-effort bounded output shutdown. Blocks further IO until restart;
+    // false means at least one physical safe-state write was not confirmed.
+    bool shutdownIoExpanders();
 
     // ========== 外设管理（增删改查） ==========
 
@@ -74,7 +78,13 @@ public:
     // 获取外设配置
     PeripheralConfig* getPeripheral(const String& id);
     const PeripheralConfig* getPeripheral(const String& id) const;
-    bool getPeripheralSnapshot(const String& id, PeripheralConfig& snapshot) const;
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& snapshot,
+                               uint32_t* sensorConfigVersion = nullptr) const;
+    // Commit only bounded memory work here. Never call hardware, Web send,
+    // display, SSE or rule callbacks while this guard is held.
+    bool commitSensorRead(uint32_t sensorConfigVersion,
+                          const std::function<bool()>& commit) const;
+    bool releaseSensorCache(const String& id);
 
     // 根据类型获取外设列表
     std::vector<PeripheralConfig> getPeripheralsByType(PeripheralType type) const;
@@ -112,6 +122,9 @@ public:
 
     // 初始化所有启用的外设
     bool initAllEnabledPeripherals();
+    // Task-context only: batch sample shared expanders and advance low-rate IO actions.
+    void pollIoExpanders();
+    uint32_t digitalInputGeneration(const PeripheralConfig& config) const;
 
     // 内存保护：仅在运行时挂起高占用的可选外设。配置文件中的 enabled
     // 值不会被写回；恢复到 NORMAL 后会重新初始化这些外设。
@@ -129,6 +142,9 @@ public:
     // 通用数据读写接口
     bool writeData(const String& id, const uint8_t* data, size_t len);
     bool readData(const String& id, uint8_t* buffer, size_t& len);
+    TwoWire* getManagedI2cWire(const String& id);
+    bool resolveI2cConfig(const PeripheralConfig& config, uint8_t& sda, uint8_t& scl,
+                          uint32_t& frequency, String& errorMsg) const;
 
     // 发送字符串（适用于通信接口）
     bool writeString(const String& id, const String& data);
@@ -317,6 +333,9 @@ private:
     PeripheralMap   peripherals;
     RuntimeStateMap runtimeStates;
     size_t _memorySuspendedCount = 0;
+    // Protected by _mutex. Screen start waits outside this mutex; mutations
+    // of that display are rejected until the two-phase recovery completes.
+    String _memoryRestoringDisplayId;
     // 引脚到外设ID的映射（T2：高频重建，走 SmallNodePool）
     std::map<uint8_t, String, std::less<uint8_t>,
              FastBee::SmallNodeAllocator<std::pair<const uint8_t, String>>> pinToPeripheral;
@@ -368,7 +387,14 @@ private:
     // 内部方法
     bool validateConfig(const PeripheralConfig& config, String& errorMsg);
     bool setupHardware(const PeripheralConfig& config);
+    bool validateIoDependencies(const PeripheralConfig& config, const String& excludeId,
+                                String& errorMsg) const;
+    bool syncIoExpander(const String& providerId, const String& excludeChild = "");
+    bool setupIoExpander(const PeripheralConfig& config);
+    bool teardownIoExpander(const String& providerId);
+    bool canShareI2cPin(const PeripheralConfig& candidate, uint8_t pin, const String& excludeId) const;
     bool teardownHardware(const PeripheralConfig& config);
+    void invalidateSensorConfigurationLocked();
     bool setupUartHardware(const PeripheralConfig& config);
     HardwareSerial* getUartSerial(const String& id);
     bool validateUartCapacity(const PeripheralConfig& candidate,
@@ -413,6 +439,9 @@ private:
 
     // 中断事件队列
     static constexpr uint8_t ISR_QUEUE_SIZE = 16;
+    static constexpr uint8_t ISR_MAX_EVENTS_PER_CYCLE = 8;
+    static constexpr uint32_t ISR_MAINTENANCE_BUDGET_MS = 4;
+    static constexpr uint32_t ISR_STATE_LOCK_TIMEOUT_MS = 2;
     struct GpioIsrEvent {
         uint8_t pin;
         uint8_t rawLevel;
@@ -421,7 +450,7 @@ private:
     // 队列溢出计数（静态：isrHandler 为静态 ISR 上下文，不能依赖实例指针）
     static volatile uint32_t _isrQueueOverruns;
 
-    // 中断去抖：任务上下文按引脚记录上次派发时刻（handleInterrupt 仅在 loop 任务调用）
+    // 中断去抖：维护任务按引脚记录上次派发时刻。
     static constexpr uint16_t ISR_DEBOUNCE_MS = 5;
     static constexpr uint8_t ISR_TRACKED_PIN_COUNT = 64;
     unsigned long _lastIsrDispatch[ISR_TRACKED_PIN_COUNT] = {0};
@@ -438,7 +467,9 @@ private:
 
     // 中断处理
     static void IRAM_ATTR isrHandler(void* arg);
-    void handleInterrupt(uint8_t pin, bool rawLevel);
+    // Consume one event only after bounded state-lock admission. False means
+    // no event was consumed (empty queue or a busy configuration writer).
+    bool handleInterrupt();
     void processInterruptQueue();
 
     // 检查引脚有效性

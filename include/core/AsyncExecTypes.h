@@ -43,8 +43,43 @@ enum class AsyncExecStatus : uint8_t {
     PENDING   = 0,
     RUNNING   = 1,
     COMPLETED = 2,
-    FAILED    = 3
+    FAILED    = 3,
+    CANCELLED = 4,
+    REJECTED  = 5,
+    TIMED_OUT = 6
 };
+
+enum class AsyncExecError : uint8_t {
+    NONE = 0,
+    LOW_MEMORY,
+    DEADLINE_EXCEEDED,
+    ACTION_FAILED,
+    INCOMPLETE_ACTIONS,
+    CANCELLED_BY_SYSTEM,
+    WORKER_QUEUE_FULL
+};
+
+// Results are intentionally fixed-size. A rule contains at most four actions;
+// keeping the trace inline prevents long-running devices from fragmenting the
+// heap when recent operation history is updated.
+struct AsyncExecActionTrace {
+    static constexpr size_t TARGET_CAPACITY = 41;
+    static constexpr size_t VALUE_CAPACITY = 65;
+    static constexpr size_t REMARK_CAPACITY = 49;
+
+    uint8_t       index = 0;
+    uint8_t       actionType = 0;
+    bool          success = false;
+    unsigned long durationMs = 0;
+    uint8_t       detailCount = 0;
+    char          targetPeriphId[TARGET_CAPACITY] = {};
+    char          valueSummary[VALUE_CAPACITY] = {};
+    char          remark[REMARK_CAPACITY] = {};
+};
+
+static constexpr size_t ASYNC_EXEC_ACTION_TRACE_LIMIT = MAX_ACTIONS_PER_RULE;
+static constexpr size_t ASYNC_EXEC_RESULT_HISTORY_LIMIT = MAX_ASYNC_TASKS * 2;
+static constexpr unsigned long ASYNC_EXEC_OPERATION_TIMEOUT_MS = 30000UL;
 
 // ========== 异步执行上下文 ==========
 // 传递给 FreeRTOS 任务的参数结构体（堆分配，任务结束时自行释放）
@@ -58,20 +93,34 @@ struct AsyncExecContext {
     PeriphExecManager* manager;      // 回指管理器（用于记录结果）
     MQTTClient*      mqtt;           // MQTT 客户端指针
     SemaphoreHandle_t taskSlot;      // 完成后归还的计数信号量
+    uint32_t         operationId = 0;
+    unsigned long    queuedAt = 0;
+    unsigned long    deadlineAt = 0;
+    uint8_t          queuePosition = 0;
 };
 
 // ========== 异步执行结果 ==========
 
 struct AsyncExecResult {
+    uint32_t         operationId = 0;
     String           ruleId;
     String           ruleName;
-    AsyncExecStatus  status;
-    unsigned long    startTime;
-    unsigned long    endTime;
+    AsyncExecStatus  status = AsyncExecStatus::PENDING;
+    AsyncExecError   errorCode = AsyncExecError::NONE;
+    unsigned long    queuedAt = 0;
+    unsigned long    startTime = 0;
+    unsigned long    endTime = 0;
+    unsigned long    deadlineAt = 0;
+    uint8_t          queuePosition = 0;
+    bool             asyncExecution = true;
     // 本次执行实际上报物联网平台的动作结果数量（reportAfterExec 勾选且产生可上报结果时 > 0）。
     // 用于回归验证：GPIO/PWM/DAC、NeoPixel、Modbus 写等属性控制动作
     // 勾选“上报数据”后确实生成上报。
     uint8_t          reportCount = 0;
+    uint8_t          actionCount = 0;
+    uint8_t          actionTraceCount = 0;
+    bool             actionTraceTruncated = false;
+    AsyncExecActionTrace actionTraces[ASYNC_EXEC_ACTION_TRACE_LIMIT];
 };
 
 // ========== RAII Mutex 守护 ==========
@@ -161,9 +210,10 @@ public:
 
     // 获取一个空闲的上下文（返回 nullptr 如果池满）
     AsyncExecContext* acquire() {
-        MutexGuard lock(_mutex, pdMS_TO_TICKS(100));
+        // 池内临界区只有固定数组扫描和一次对象重置。这里必须等待锁，
+        // 否则把短暂锁竞争误报为池耗尽会造成规则被无故拒绝。
+        MutexGuard lock(_mutex);
         if (!lock.isLocked()) {
-            _exhaustCount++;
             return nullptr;  // 无法获取锁
         }
 
@@ -182,9 +232,11 @@ public:
     void release(AsyncExecContext* ctx) {
         if (!ctx) return;
 
-        MutexGuard lock(_mutex, pdMS_TO_TICKS(100));
+        // release 是所有权归还路径，不能因超时静默放弃，否则固定池槽会
+        // 永久泄漏并在长期运行后耗尽。临界区固定且极短，可靠等待锁。
+        MutexGuard lock(_mutex);
         if (!lock.isLocked()) {
-            return;  // 无法获取锁，但继续执行释放逻辑（避免内存泄漏）
+            return;
         }
 
         for (size_t i = 0; i < POOL_SIZE; i++) {
@@ -197,6 +249,8 @@ public:
 
     // 获取当前使用数
     size_t usedCount() const {
+        MutexGuard lock(_mutex);
+        if (!lock.isLocked()) return 0;
         size_t count = 0;
         for (size_t i = 0; i < POOL_SIZE; i++) {
             if (_inUse[i]) count++;
@@ -205,7 +259,10 @@ public:
     }
 
     // 获取累计耗尽次数
-    uint32_t exhaustCount() const { return _exhaustCount; }
+    uint32_t exhaustCount() const {
+        MutexGuard lock(_mutex);
+        return lock.isLocked() ? _exhaustCount : 0;
+    }
 
     // 获取池大小
     static constexpr size_t poolSize() { return POOL_SIZE; }
@@ -213,7 +270,7 @@ public:
 private:
     AsyncExecContext _pool[POOL_SIZE];
     bool _inUse[POOL_SIZE];
-    SemaphoreHandle_t _mutex;
+    mutable SemaphoreHandle_t _mutex;
     uint32_t _exhaustCount;  // 累计耗尽次数（acquire 返回 nullptr）
 };
 

@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { withWebPublishLock } = require('./web-publish-lock');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
@@ -134,7 +135,7 @@ function generateManifest() {
 }
 
 if (require.main === module) {
-    generateManifest();
+    withWebPublishLock(generateManifest, { label: 'generate-sw-manifest' });
 }
 
 module.exports = { generateManifest };

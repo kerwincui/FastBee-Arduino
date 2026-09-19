@@ -4,6 +4,7 @@
     "enabled": true,
     "scheme": "mqtt",
     "server": "iot.fastbee.cn",
+    "otaBaseUrl": "",
     "port": 1883,
     "clientId": "",
     "username": "",
@@ -24,13 +25,15 @@
       { "topic": "/info/post", "qos": 0, "retain": false, "enabled": true, "autoPrefix": true, "topicType": 2 },
       { "topic": "/event/post", "qos": 0, "retain": false, "enabled": true, "autoPrefix": true, "topicType": 4 },
       { "topic": "/monitor/post", "qos": 0, "retain": false, "enabled": true, "autoPrefix": true, "topicType": 3 },
-      { "topic": "/ntp/post", "qos": 0, "retain": false, "enabled": true, "autoPrefix": true, "topicType": 7 }
+      { "topic": "/ntp/post", "qos": 0, "retain": false, "enabled": true, "autoPrefix": true, "topicType": 7 },
+      { "topic": "/{deviceNum}/http/upgrade/reply", "qos": 0, "retain": false, "enabled": true, "autoPrefix": false, "topicType": 5 }
     ],
     "subscribeTopics": [
       { "topic": "/function/get", "qos": 0, "enabled": true, "autoPrefix": true, "topicType": 1 },
       { "topic": "/info/get", "qos": 0, "enabled": true, "autoPrefix": true, "topicType": 2 },
       { "topic": "/monitor/get", "qos": 0, "enabled": true, "autoPrefix": true, "topicType": 3 },
-      { "topic": "/ntp/get", "qos": 0, "enabled": true, "autoPrefix": true, "topicType": 7 }
+      { "topic": "/ntp/get", "qos": 0, "enabled": true, "autoPrefix": true, "topicType": 7 },
+      { "topic": "/{deviceNum}/http/upgrade/set", "qos": 0, "enabled": true, "autoPrefix": false, "topicType": 5 }
     ]
   },
   "modbusRtu": {

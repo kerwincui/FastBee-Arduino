@@ -36,8 +36,9 @@ const Notification = {
 
         const body = document.createElement('div');
         body.className = 'notification-body';
-        if (options.html === true) { body.innerHTML = options.message || ''; }
-        else { body.textContent = options.message || ''; }
+        // Notifications may include values reflected by device APIs. Always
+        // render them as text so callers cannot accidentally create a DOM sink.
+        body.textContent = options.message == null ? '' : String(options.message);
 
         const progress = document.createElement('div');
         progress.className = 'notification-progress';

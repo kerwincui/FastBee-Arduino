@@ -54,6 +54,13 @@
             </div>
 
             <div class="fb-form-group">
+                <label for="mqtt-ota-base-url">OTA HTTPS基址</label>
+                <input type="url" id="mqtt-ota-base-url" class="" maxlength="512"
+                    placeholder="https://platform.example.com">
+                <small class="field-hint">留空时从 MQTT Broker 主机推导 HTTPS 下载基址；不支持查询参数或片段。</small>
+            </div>
+
+            <div class="fb-form-group">
                 <label for="mqtt-client-id">客户端ID</label>
                 <input type="text" id="mqtt-client-id" class=""
                     value="" placeholder="自动生成或手动填写">

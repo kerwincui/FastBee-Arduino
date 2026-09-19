@@ -6,7 +6,8 @@
     Object.assign(AppState, {
         _protocolFragmentMap: {
             'mqtt': { container: 'mqtt-fragment-container', fragment: 'protocol-mqtt' },
-            'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' }
+            'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' },
+            'remote-resources': { container: 'remote-resources-fragment-container', fragment: 'protocol-remote-resources' }
         },
 
         _loadFullProtocolConfig: function(tabId, options) {
@@ -47,6 +48,10 @@
         },
 
         loadProtocolConfig: function(tabId, options) {
+            if (tabId === 'remote-resources' && typeof this._loadRemoteResourcesTab === 'function') {
+                if (typeof this._stopMqttStatusPolling === 'function') this._stopMqttStatusPolling();
+                return this._loadRemoteResourcesTab(options);
+            }
             if (tabId !== 'mqtt') {
                 return this._loadFullProtocolConfig(tabId, options);
             }
@@ -134,6 +139,7 @@
                 this._updateMqttsMemoryHint(mqtt.tlsSupported, schemeEl.value);
             }
             this._setValue('mqtt-broker', mqtt.server ?? '');
+            this._setValue('mqtt-ota-base-url', mqtt.otaBaseUrl || '');
             this._setValue('mqtt-port', mqtt.port || 1883);
             this._setValue('mqtt-client-id', mqtt.clientId ?? '');
             this._setValue('mqtt-username', mqtt.username || '');
@@ -238,9 +244,10 @@
                 snapshot['__subscribeTopicsHTML'] = subTopics ? subTopics.innerHTML : '';
             }
             return this._loadFullProtocolConfig('mqtt').then(function() {
-                // 恢复用户编辑的表单值
-                if (form) {
-                    var inputs = form.querySelectorAll('input, select, textarea');
+                // 完整加载会重新挂载分片，必须重新获取当前 DOM；旧 form 已脱离页面。
+                var currentForm = document.getElementById('mqtt-form');
+                if (currentForm) {
+                    var inputs = currentForm.querySelectorAll('input, select, textarea');
                     for (var i = 0; i < inputs.length; i++) {
                         var el = inputs[i];
                         var key = el.id || el.className;
@@ -252,11 +259,13 @@
                         }
                     }
                     // 恢复动态主题容器
-                    if (snapshot['__publishTopicsHTML'] !== undefined && pubTopics) {
-                        pubTopics.innerHTML = snapshot['__publishTopicsHTML'];
+                    var currentPubTopics = document.getElementById('mqtt-publish-topics');
+                    var currentSubTopics = document.getElementById('mqtt-subscribe-topics');
+                    if (snapshot['__publishTopicsHTML'] !== undefined && currentPubTopics) {
+                        currentPubTopics.innerHTML = snapshot['__publishTopicsHTML'];
                     }
-                    if (snapshot['__subscribeTopicsHTML'] !== undefined && subTopics) {
-                        subTopics.innerHTML = snapshot['__subscribeTopicsHTML'];
+                    if (snapshot['__subscribeTopicsHTML'] !== undefined && currentSubTopics) {
+                        currentSubTopics.innerHTML = snapshot['__subscribeTopicsHTML'];
                     }
                 }
                 return self.saveProtocolConfig(formId);

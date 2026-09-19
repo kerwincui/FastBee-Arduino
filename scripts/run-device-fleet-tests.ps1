@@ -56,6 +56,18 @@ param(
 
     [bool]$BrowserTests = $true,
 
+    [ValidateRange(0, 2147483647)]
+    [int64]$MinHeapFreeBytes = 25600,
+
+    [ValidateRange(0, 2147483647)]
+    [int64]$MinHeapMaxAllocBytes = 8000,
+
+    [ValidateRange(0, 2147483647)]
+    [int64]$MaxHeapDropBytes = 20000,
+
+    [ValidateRange(0, 2147483647)]
+    [int64]$MaxHeapMaxAllocDropBytes = 12000,
+
     [int]$MonitorMinutes = 0,
     [int]$MonitorIntervalSec = 60
 )
@@ -270,14 +282,15 @@ function Test-MdnsDomain {
 
 # Playwright 浏览器自动化：登录流程/页面加载/交互（调用既有 run-browser-tests.ps1）
 function Invoke-BrowserSmoke {
-    param([string]$DeviceIP)
+    param([string]$DeviceIP, [string]$AuthUsername, [string]$AuthPassword)
     $btScript = Join-Path $PSScriptRoot "run-browser-tests.ps1"
     if (-not (Test-Path $btScript)) {
         return @{ Ok = $false; Reason = "run-browser-tests.ps1 not found" }
     }
     try {
         $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $btScript `
-            -DeviceIP $DeviceIP -Project smoke -Grep "@quick" 2>&1
+            -DeviceIP $DeviceIP -Project smoke -Grep "@quick" `
+            -Username $AuthUsername -Password $AuthPassword 2>&1
         $exit = $LASTEXITCODE
         if ($exit -eq 0) {
             return @{ Ok = $true; Reason = "playwright smoke passed" }
@@ -306,6 +319,7 @@ foreach ($dev in $Devices) {
         Domain = $dev.Domain
         Profile = $dev.Profile
         StaOk = $false
+        MdnsRequired = -not [string]::IsNullOrWhiteSpace([string]$dev.Domain)
         MdnsOk = $false
         SmokePassed = $false
         SmokeTotal = 0
@@ -313,7 +327,12 @@ foreach ($dev in $Devices) {
         BrowserOk = $null
         HeapBefore = $null
         HeapAfter = $null
+        HeapMaxAllocBefore = $null
+        HeapMaxAllocAfter = $null
+        HeapDropBytes = $null
+        HeapMaxAllocDropBytes = $null
         HeapDropKB = $null
+        HeapOk = $false
         UptimeBefore = $null
         UptimeAfter = $null
         Rebooted = $false
@@ -369,6 +388,7 @@ foreach ($dev in $Devices) {
     # 4) 测试前快照
     $before = Get-FleetSnapshot -BaseUrl $baseUrl -Session $session
     $entry.HeapBefore = $before.heapFree
+    $entry.HeapMaxAllocBefore = $before.heapMaxAlloc
     $entry.UptimeBefore = $before.uptime
 
     # 5) 冒烟测试
@@ -414,7 +434,7 @@ foreach ($dev in $Devices) {
     # 6) 浏览器自动化测试（Playwright smoke：登录/页面加载/交互）
     if ($BrowserTests) {
         Write-Host "  [..] 浏览器自动化 (playwright smoke)..." -ForegroundColor DarkCyan
-        $bt = Invoke-BrowserSmoke -DeviceIP $dev.IP
+        $bt = Invoke-BrowserSmoke -DeviceIP $dev.IP -AuthUsername $Username -AuthPassword $Password
         $entry.BrowserOk = $bt.Ok
         if ($bt.Ok) {
             Write-Host "  [OK] 浏览器: $($bt.Reason)" -ForegroundColor Green
@@ -429,10 +449,40 @@ foreach ($dev in $Devices) {
     if (-not $session2) { $session2 = $session }
     $after = Get-FleetSnapshot -BaseUrl $baseUrl -Session $session2
     $entry.HeapAfter = $after.heapFree
+    $entry.HeapMaxAllocAfter = $after.heapMaxAlloc
     $entry.UptimeAfter = $after.uptime
 
     if ($null -ne $before.heapFree -and $null -ne $after.heapFree) {
-        $entry.HeapDropKB = [Math]::Round(($before.heapFree - $after.heapFree) / 1024, 1)
+        $entry.HeapDropBytes = [int64]($before.heapFree - $after.heapFree)
+        $entry.HeapDropKB = [Math]::Round($entry.HeapDropBytes / 1024, 1)
+    }
+    if ($null -ne $before.heapMaxAlloc -and $null -ne $after.heapMaxAlloc) {
+        $entry.HeapMaxAllocDropBytes = [int64]($before.heapMaxAlloc - $after.heapMaxAlloc)
+    }
+
+    $heapIssues = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $before.heapFree -or $null -eq $after.heapFree -or
+        $null -eq $before.heapMaxAlloc -or $null -eq $after.heapMaxAlloc) {
+        $heapIssues.Add("required DRAM metrics unavailable")
+    }
+    else {
+        if ($after.heapFree -lt $MinHeapFreeBytes) {
+            $heapIssues.Add("heap free $($after.heapFree)B below minimum ${MinHeapFreeBytes}B")
+        }
+        if ($after.heapMaxAlloc -lt $MinHeapMaxAllocBytes) {
+            $heapIssues.Add("largest allocation $($after.heapMaxAlloc)B below minimum ${MinHeapMaxAllocBytes}B")
+        }
+        if ($entry.HeapDropBytes -gt $MaxHeapDropBytes) {
+            $heapIssues.Add("heap drop $($entry.HeapDropBytes)B exceeds ${MaxHeapDropBytes}B")
+        }
+        if ($entry.HeapMaxAllocDropBytes -gt $MaxHeapMaxAllocDropBytes) {
+            $heapIssues.Add("largest allocation drop $($entry.HeapMaxAllocDropBytes)B exceeds ${MaxHeapMaxAllocDropBytes}B")
+        }
+    }
+    $entry.HeapOk = ($heapIssues.Count -eq 0)
+    if (-not $entry.HeapOk) {
+        $entry.Errors += "heap gate failed: $($heapIssues -join '; ')"
+        Write-Host "  [X] DRAM: $($heapIssues -join '; ')" -ForegroundColor Red
     }
     if ($null -ne $before.uptime -and $null -ne $after.uptime -and $after.uptime -lt $before.uptime) {
         $entry.Rebooted = $true
@@ -454,9 +504,14 @@ Write-Host "=============================================================" -Fore
 Write-Host "  舰队测试汇总" -ForegroundColor Cyan
 Write-Host "=============================================================" -ForegroundColor Cyan
 
-$fleetResults | Format-Table Label, IP, StaOk, MdnsOk, SmokePassed, SmokeTotal, SmokeFailed, BrowserOk, HeapDropKB, Rebooted, DurationSec -AutoSize | Out-String | Write-Host
+$fleetResults | Format-Table Label, IP, StaOk, MdnsOk, SmokePassed, SmokeTotal, SmokeFailed, BrowserOk, HeapOk, HeapDropKB, Rebooted, DurationSec -AutoSize | Out-String | Write-Host
 
-$failedDevices = @($fleetResults | Where-Object { -not ($_.StaOk -and $_.SmokePassed) })
+$failedDevices = @($fleetResults | Where-Object {
+    $mdnsGate = (-not $_.MdnsRequired) -or ($_.MdnsOk -eq $true)
+    $browserGate = (-not $BrowserTests) -or ($_.BrowserOk -eq $true)
+    -not ($_.StaOk -and $mdnsGate -and $_.SmokePassed -and $browserGate -and
+        $_.HeapOk -and -not $_.Rebooted)
+})
 
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
 $jsonPath = Join-Path $ReportDir "fleet-summary-$ts.json"
@@ -495,11 +550,12 @@ if ($MonitorMinutes -gt 0) {
         $roundTs = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         foreach ($dev in $Devices) {
             $st = $state[$dev.Label]
+            $monitorHost = if ([string]::IsNullOrWhiteSpace([string]$dev.Domain)) { $dev.IP } else { $dev.Domain }
             $st.Rounds++
             $code = 0; $ms = -1.0; $remoteIp = ""
             $swm = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $wout = curl.exe --noproxy "*" --max-time 8 -s -o NUL -w "%{http_code} %{remote_ip}" "http://$($dev.Domain)/api/system/status" 2>$null
+                $wout = curl.exe --noproxy "*" --max-time 8 -s -o NUL -w "%{http_code} %{remote_ip}" "http://$monitorHost/api/system/status" 2>$null
                 $swm.Stop(); $ms = [Math]::Round($swm.Elapsed.TotalMilliseconds, 0)
                 $wp = ([string]$wout).Split(" ", [StringSplitOptions]::RemoveEmptyEntries)
                 if ($wp.Count -ge 1) { [int]::TryParse($wp[0], [ref]$code) | Out-Null }
@@ -509,7 +565,8 @@ if ($MonitorMinutes -gt 0) {
             $online = ($code -eq 200)
             # mDNS 解析到非预期 IP：DHCP 可能重新分配地址（如掉电重启后），
             # 只要域名仍解析到该设备自身即视为在线，并更新预期 IP，避免误判全离线
-            if ($online -and $remoteIp -and $remoteIp -ne $dev.IP) {
+            if ($online -and -not [string]::IsNullOrWhiteSpace([string]$dev.Domain) -and
+                $remoteIp -and $remoteIp -ne $dev.IP) {
                 Write-Host "  [i] $($dev.Label): IP drift $($dev.IP) -> $remoteIp (mDNS mapping updated)" -ForegroundColor DarkYellow
                 "$roundTs [$($dev.Label)] IP-DRIFT: $($dev.IP) -> $remoteIp" | Out-File -Append $monitorEvents -Encoding UTF8
                 $dev.IP = $remoteIp
@@ -519,7 +576,7 @@ if ($MonitorMinutes -gt 0) {
                 $st.Online++
                 [void]$st.Times.Add($ms)
                 try {
-                    $sts = Invoke-RestMethod -Uri "http://$($dev.Domain)/api/system/status" -TimeoutSec 8 -ErrorAction Stop
+                    $sts = Invoke-RestMethod -Uri "http://$monitorHost/api/system/status" -TimeoutSec 8 -ErrorAction Stop
                     if ($sts.data) {
                         if ($sts.data.memory -and $sts.data.memory.heapFree) { $heap = [int64]$sts.data.memory.heapFree }
                         if ($null -ne $sts.data.uptime) { $uptime = [int64]$sts.data.uptime }
@@ -548,7 +605,7 @@ if ($MonitorMinutes -gt 0) {
                 }
             }
 
-            $row = @{ ts = $roundTs; round = $round; label = $dev.Label; domain = $dev.Domain;
+            $row = @{ ts = $roundTs; round = $round; label = $dev.Label; host = $monitorHost; domain = $dev.Domain;
                       code = $code; remoteIp = $remoteIp; online = $online; ms = $ms;
                       heap = $heap; uptime = $uptime }
             ($row | ConvertTo-Json -Compress) | Out-File -Append $monitorJsonl -Encoding UTF8
@@ -624,5 +681,5 @@ if ($failedDevices.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "  [OK] 全部设备通过 STA 验证、mDNS 映射校验与 API 冒烟测试" -ForegroundColor Green
+Write-Host "  [OK] 全部设备通过 STA、可选 mDNS、API、浏览器、DRAM 与无重启验收门禁" -ForegroundColor Green
 exit 0

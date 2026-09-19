@@ -10,18 +10,25 @@
 #include <freertos/semphr.h>
 #include <core/SystemConstants.h>
 
+enum class MqttPayloadEncoding : uint8_t {
+    TEXT = 0,
+    MODBUS_RTU_HEX = 1
+};
+
 // 固定大小的 MQTT 上报槽（零堆分配）
 struct MqttSlot {
-    char payload[512];    // 固定 512 字节 payload 缓冲
+    char payload[513];    // 最多512字节payload，额外1字节用于字符串终止符
     uint16_t length;      // 实际 payload 长度
+    MqttPayloadEncoding encoding; // 入队时固化，禁止消费时根据协议瞬时状态猜测
     bool occupied;        // 槽位是否被占用
     
-    MqttSlot() : length(0), occupied(false) {
+    MqttSlot() : length(0), encoding(MqttPayloadEncoding::TEXT), occupied(false) {
         payload[0] = '\0';
     }
     
     void clear() {
         length = 0;
+        encoding = MqttPayloadEncoding::TEXT;
         occupied = false;
         payload[0] = '\0';
     }
@@ -38,7 +45,7 @@ enum class MqttTopicType : uint8_t {
     REALTIME_MON  = 3,  // 实时监测
     DEVICE_EVENT  = 4,  // 设备事件
     OTA_UPGRADE   = 5,  // OTA升级
-    OTA_BINARY    = 6,  // OTA二进制
+    OTA_BINARY    = 6,  // OTA二进制（当前不支持，运行时强制禁用）
     NTP_SYNC      = 7   // NTP时间同步
 };
 
@@ -130,10 +137,13 @@ public:
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool publishModbusRtuReport(const String& hexPayload); // 显式二进制 RTU 上报，不依赖 handler 生命周期
     bool publishOtaReply(const String& payload);   // 发布 FastBee HTTPS OTA 状态（不经过规则脚本）
+    bool hasUsableFastBeeOtaReplyTopic() const;    // 规范 reply 主题是否已启用（OTA 写 Flash 前预检）
     bool publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData); // 发布设备事件到 topicType=DEVICE_EVENT 主题（格式同 DATA_REPORT）
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本
+    bool queueModbusRtuReport(const String& hexPayload); // 固化 RAW 编码后入队
     uint8_t getQueueDepth() const { return _slotCount; } // 获取上报队列深度
     // ── 队列背压统计 ──
     struct QueueStats {
@@ -145,6 +155,11 @@ public:
     QueueStats getQueueStats() const { return _queueStats; }
     bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
+    // Dedicated configured remote channels: exact topics, no transforms/prefix,
+    // no retained commands and no offline queue/replay.
+    bool subscribeExact(const String& topic);
+    bool unsubscribeExact(const String& topic);
+    bool publishExact(const String& topic, const String& message);
     bool subscribeAll();  // 订阅所有配置的主题
     void handle();
     String getStatus() const;
@@ -272,6 +287,8 @@ private:
 
     // 查找已启用的发布主题索引（按 topicType），找不到返回 -1
     int findEnabledPublishTopicIndex(MqttTopicType type) const;
+    int findFastBeeOtaReplyTopicIndex() const;
+    void normalizeFastBeeOtaTopics();
 
     // DATA_COMMAND 延迟处理队列（避免在 MQTT 回调中同步执行重操作）
     QueueHandle_t _dataCommandQueue = nullptr;
@@ -281,6 +298,7 @@ private:
 
     // 异步任务上报环形缓冲区（PubSubClient 非线程安全，publish 必须在主循环执行）
     MqttSlot _reportSlots[MQTT_REPORT_SLOTS];  // 环形缓冲区 (~4KB)
+    MqttSlot _pendingReportSlot;               // 发布失败时保留，避免异步 Modbus 响应丢失
     uint8_t _slotWriteIndex = 0;                // 写入位置
     uint8_t _slotReadIndex = 0;                 // 读取位置
     uint8_t _slotCount = 0;                     // 当前已占用的槽位数
@@ -290,6 +308,8 @@ private:
     uint32_t _minReportInterval = 0;            // 最小上报间隔（ms），0=无限制
     unsigned long _lastReportQueueTime = 0;     // 上次入队上报数据的时间
     void processQueuedReports();
+    bool queueReportDataEncoded(const char* payload, uint16_t length,
+                                MqttPayloadEncoding encoding);
     
     // ── 队列背压统计与限流 ──
     QueueStats _queueStats = {};

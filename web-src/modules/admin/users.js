@@ -20,6 +20,28 @@
             summary.textContent = '共 ' + list.length + ' 个用户 · ' + available + ' 个可用';
         },
 
+        _configureUserPasswordFields(isEditMode) {
+            const password = document.getElementById('add-password-input');
+            const confirmPassword = document.getElementById('add-confirm-password-input');
+            [password, confirmPassword].forEach((input) => {
+                if (!input) return;
+                input.required = !isEditMode;
+            });
+            if (password) password.placeholder = isEditMode ? '留空则不修改密码' : '请输入密码';
+            if (confirmPassword) {
+                confirmPassword.placeholder = isEditMode ? '留空则不修改密码' : '请再次输入密码';
+            }
+        },
+
+        _notifyUserActionError(err, message, title) {
+            if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+            if (typeof window.apiNotifyError === 'function') {
+                window.apiNotifyError(err, message, title);
+            } else {
+                Notification.error(message, title);
+            }
+        },
+
         // ============ 事件绑定 ============
         setupUsersEvents() {
             if (this._usersEventsBound) return;
@@ -46,10 +68,12 @@
                     AppState.hideModal(modal);
                     modal.dataset.editMode = 'add';
                     modal.dataset.editUsername = '';
+                    modal.dataset.editEnabled = '';
                 }
                 // 重置用户名输入框状态
                 const usernameInput = document.getElementById('add-username-input');
                 if (usernameInput) usernameInput.disabled = false;
+                this._configureUserPasswordFields(false);
             };
             ['close-add-user-modal', 'cancel-add-user-btn'].forEach(id => {
                 const el = document.getElementById(id);
@@ -71,10 +95,9 @@
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/users');
             }
-            this.loadUsers({ noCache: true });
-            setTimeout(function() {
-                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
-            }, 2000);
+            return this.loadUsers({ noCache: true }).finally(function() {
+                if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = '刷新'; }
+            });
         },
 
         loadUsers(options) {
@@ -172,11 +195,7 @@
                     const delBtn = document.createElement('button');
                     delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
                     delBtn.textContent = '删除';
-                    delBtn.addEventListener('click', () => {
-                        if (confirm(`确定要删除用户 ${user.username} 吗？`)) {
-                            this.deleteUser(user.username);
-                        }
-                    });
+                    delBtn.addEventListener('click', () => this.deleteUser(user.username));
                     actionCell.appendChild(delBtn);
                 }
 
@@ -196,6 +215,7 @@
                 // 先重置为添加模式，再显示弹窗
                 modal.dataset.editMode = 'add';
                 modal.dataset.editUsername = '';
+                modal.dataset.editEnabled = '';
                 AppState.showModal(modal);
             }
 
@@ -215,6 +235,7 @@
             // 启用用户名输入
             const usernameInput = document.getElementById('add-username-input');
             if (usernameInput) usernameInput.disabled = false;
+            this._configureUserPasswordFields(false);
 
             AppState.clearInlineError('add-user-error');
         },
@@ -241,10 +262,12 @@
             // 用户名长度验证
             if (username.length < 3 || username.length > 32) return showErr('用户名长度3-32位！');
 
-            // 密码验证（添加和编辑模式都要求密码必填）
-            if (!password || !confirmPwd) return showErr('请输入密码！');
-            if (password !== confirmPwd) return showErr('密码与确认密码不一致！');
-            if (password.length < 6) return showErr('密码长度至少6位！');
+            // 新增时密码必填；编辑时两个密码框都留空表示保留原密码。
+            if (!isEditMode && (!password || !confirmPwd)) return showErr('请输入密码！');
+            if (password || confirmPwd) {
+                if (password !== confirmPwd) return showErr('密码与确认密码不一致！');
+                if (password.length < 6) return showErr('密码长度至少6位！');
+            }
             
             AppState.clearInlineError('add-user-error');
 
@@ -255,13 +278,19 @@
             let apiCall;
             if (isEditMode) {
                 // 编辑模式：使用 POST /api/users/update
-                apiCall = apiPost('/api/users/update', { username, password, enabled: 'true', description });
+                const update = {
+                    username,
+                    enabled: modal && modal.dataset.editEnabled === 'false' ? 'false' : 'true',
+                    description
+                };
+                if (password) update.password = password;
+                apiCall = apiPost('/api/users/update', update);
             } else {
                 // 添加模式
                 apiCall = apiPost('/api/users', { username, password, description });
             }
 
-            apiCall
+            return apiCall
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${username} ${isEditMode ? '修改' : '创建'}成功`, isEditMode ? '编辑用户' : '添加成功');
@@ -270,6 +299,7 @@
                             AppState.hideModal(modal);
                             modal.dataset.editMode = 'add';
                             modal.dataset.editUsername = '';
+                            modal.dataset.editEnabled = '';
                         }
                         // 重置用户名输入框状态
                         const usernameInput = document.getElementById('add-username-input');
@@ -279,8 +309,17 @@
                         showErr((res && res.error) || (isEditMode ? '修改用户失败' : '添加用户失败，用户名可能已存在'));
                     }
                 })
-                .catch(() => {})
-                .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '确认添加'; } });
+                .catch((err) => this._notifyUserActionError(
+                    err,
+                    isEditMode ? '修改用户失败' : '添加用户失败',
+                    '用户管理'
+                ))
+                .finally(() => {
+                    if (btn && btn.isConnected) {
+                        btn.disabled = false;
+                        btn.textContent = isEditMode ? '保存修改' : '确认添加';
+                    }
+                });
         },
 
         // ============ 编辑用户（复用添加用户弹窗）============
@@ -297,6 +336,7 @@
             // 先标记为编辑模式，防止状态丢失
             modal.dataset.editMode = 'edit';
             modal.dataset.editUsername = user.username;
+            modal.dataset.editEnabled = user.enabled === false ? 'false' : 'true';
 
             // 修改标题
             const title = document.getElementById('add-user-title');
@@ -318,6 +358,7 @@
             const confirmInput = document.getElementById('add-confirm-password-input');
             if (pwdInput) pwdInput.value = '';
             if (confirmInput) confirmInput.value = '';
+            this._configureUserPasswordFields(true);
 
             // 修改确认按钮文本
             const confirmBtn = document.getElementById('confirm-add-user-btn');
@@ -332,7 +373,6 @@
 
         // ============ 切换用户状态（启用/禁用）============
         toggleUserStatus(username, enable) {
-            const action = enable ? '启用' : '禁用';
             const confirmMsg = enable ? '确定要启用用户' : '确定要禁用用户';
             if (!confirm(`${confirmMsg} ${username} 吗？`)) return;
 
@@ -345,7 +385,11 @@
                         Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
-                .catch(() => {});
+                .catch((err) => this._notifyUserActionError(
+                    err,
+                    (enable ? '启用' : '禁用') + '用户失败',
+                    '用户管理'
+                ));
         },
 
         // ============ 解锁用户 ============
@@ -360,7 +404,7 @@
                         Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
-                .catch(() => {});
+                .catch((err) => this._notifyUserActionError(err, '解锁用户失败', '用户管理'));
         },
 
         // ============ 删除用户 ============
@@ -376,7 +420,7 @@
                         Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
-                .catch(() => {});
+                .catch((err) => this._notifyUserActionError(err, '删除用户失败', '用户管理'));
         }
     });
 

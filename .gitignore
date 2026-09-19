@@ -70,6 +70,7 @@ docs/test-report.md
 *-headers.txt
 *-metrics.json
 *-mqtt-status.json
+/.device-config-backups/
 docs/.device-config-backups/
 
 # ESP-IDF sdkconfig generated files
@@ -84,6 +85,7 @@ data/www/
 !data/www/assets/**
 
 # Temporary files
+/tmp/
 temp-web-update.zip
 tmp-file-list.csv
 *.tmp

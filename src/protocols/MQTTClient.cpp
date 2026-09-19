@@ -26,6 +26,10 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "protocols/RemoteResourceManager.h"
+#include "protocols/RemoteResourceModel.h"
+#endif
 #include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/platform.h>
@@ -51,6 +55,76 @@ extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 constexpr size_t MQTTS_MBEDTLS_PSRAM_MIN_ALLOC = 256U;
 constexpr size_t MQTTS_MBEDTLS_PSRAM_RESERVE = 64U * 1024U;
+constexpr const char* FASTBEE_OTA_REPLY_TOPIC = "/{deviceNum}/http/upgrade/reply";
+constexpr const char* FASTBEE_OTA_COMMAND_TOPIC = "/{deviceNum}/http/upgrade/set";
+constexpr const char* FASTBEE_OTA_REPLY_LEGACY = "/http/upgrade/reply";
+constexpr const char* FASTBEE_OTA_COMMAND_LEGACY = "/http/upgrade/set";
+
+void ensureFastBeeOtaPublishTopic(std::vector<MqttPublishTopic>& topics) {
+    bool hasCanonical = false;
+    for (auto& topic : topics) {
+        if (topic.topicType != MqttTopicType::OTA_UPGRADE) continue;
+        String configured = topic.topic;
+        configured.trim();
+        if (configured != FASTBEE_OTA_REPLY_TOPIC) continue;
+        topic.topic = FASTBEE_OTA_REPLY_TOPIC;
+        topic.autoPrefix = false;
+        hasCanonical = true;
+    }
+    if (!hasCanonical) {
+        for (auto& topic : topics) {
+            if (topic.topicType != MqttTopicType::OTA_UPGRADE || !topic.autoPrefix) continue;
+            String configured = topic.topic;
+            configured.trim();
+            if (configured != FASTBEE_OTA_REPLY_LEGACY) continue;
+            topic.topic = FASTBEE_OTA_REPLY_TOPIC;
+            topic.autoPrefix = false;
+            hasCanonical = true;
+            break;
+        }
+    }
+    if (hasCanonical) return;
+
+    MqttPublishTopic topic;
+    topic.topic = FASTBEE_OTA_REPLY_TOPIC;
+    topic.autoPrefix = false;
+    topic.topicType = MqttTopicType::OTA_UPGRADE;
+    topics.push_back(topic);
+    LOG_INFO("MQTT: Added missing FastBee HTTPS OTA reply topic");
+}
+
+void ensureFastBeeOtaSubscribeTopic(std::vector<MqttSubscribeTopic>& topics) {
+    bool hasCanonical = false;
+    for (auto& topic : topics) {
+        if (topic.topicType != MqttTopicType::OTA_UPGRADE) continue;
+        String configured = topic.topic;
+        configured.trim();
+        if (configured != FASTBEE_OTA_COMMAND_TOPIC) continue;
+        topic.topic = FASTBEE_OTA_COMMAND_TOPIC;
+        topic.autoPrefix = false;
+        hasCanonical = true;
+    }
+    if (!hasCanonical) {
+        for (auto& topic : topics) {
+            if (topic.topicType != MqttTopicType::OTA_UPGRADE || !topic.autoPrefix) continue;
+            String configured = topic.topic;
+            configured.trim();
+            if (configured != FASTBEE_OTA_COMMAND_LEGACY) continue;
+            topic.topic = FASTBEE_OTA_COMMAND_TOPIC;
+            topic.autoPrefix = false;
+            hasCanonical = true;
+            break;
+        }
+    }
+    if (hasCanonical) return;
+
+    MqttSubscribeTopic topic;
+    topic.topic = FASTBEE_OTA_COMMAND_TOPIC;
+    topic.autoPrefix = false;
+    topic.topicType = MqttTopicType::OTA_UPGRADE;
+    topics.push_back(topic);
+    LOG_INFO("MQTT: Added missing FastBee HTTPS OTA command topic");
+}
 
 // MQTT 发布路径共享缓冲池：避免 processQueuedReports 中频繁 String(payload, length) 分配
 // 512 字节 × 4 槽 = 2KB DRAM 预分配，与 MqttSlot.payload 尺寸对齐
@@ -266,11 +340,106 @@ static bool mqttPayloadIsStructuredJson(const uint8_t* payload, size_t length) {
     return !error && (probe.is<JsonArray>() || probe.is<JsonObject>());
 }
 
+static uint16_t mqttModbusCrc16(const uint8_t* data, size_t length) {
+    uint16_t crc = 0xFFFF;
+    for (size_t pos = 0; pos < length; ++pos) {
+        crc ^= static_cast<uint16_t>(data[pos]);
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc & 0x0001U) != 0U
+                ? static_cast<uint16_t>((crc >> 1U) ^ 0xA001U)
+                : static_cast<uint16_t>(crc >> 1U);
+        }
+    }
+    return crc;
+}
+
+static bool mqttModbusFrameHasValidCrc(const uint8_t* frame, size_t length) {
+    if (!frame || length < 4U || length > Protocols::MODBUS_BUFFER_SIZE) {
+        return false;
+    }
+    const uint16_t expectedCrc = mqttModbusCrc16(frame, length - 2U);
+    return frame[length - 2U] == static_cast<uint8_t>(expectedCrc & 0xFFU) &&
+           frame[length - 1U] == static_cast<uint8_t>((expectedCrc >> 8U) & 0xFFU);
+}
+
+static bool decodeModbusRtuHex(const char* payload, size_t hexLength,
+                               uint8_t* frame, size_t frameCapacity,
+                               size_t& frameLength) {
+    frameLength = 0;
+    if (!payload || !frame || hexLength < 8U || (hexLength % 2U) != 0U) {
+        return false;
+    }
+
+    const size_t byteLength = hexLength / 2U;
+    if (byteLength > frameCapacity || byteLength > Protocols::MODBUS_BUFFER_SIZE) {
+        return false;
+    }
+
+    auto hexValue = [](char c) -> int8_t {
+        if (c >= '0' && c <= '9') return static_cast<int8_t>(c - '0');
+        if (c >= 'a' && c <= 'f') return static_cast<int8_t>(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return static_cast<int8_t>(c - 'A' + 10);
+        return -1;
+    };
+    for (size_t i = 0; i < byteLength; ++i) {
+        const int8_t high = hexValue(payload[i * 2U]);
+        const int8_t low = hexValue(payload[i * 2U + 1U]);
+        if (high < 0 || low < 0) return false;
+        frame[i] = static_cast<uint8_t>((high << 4U) | low);
+    }
+
+    if (!mqttModbusFrameHasValidCrc(frame, byteLength)) {
+        return false;
+    }
+    frameLength = byteLength;
+    return true;
+}
+
+enum class MqttModbusPayloadEncoding : uint8_t {
+    INVALID,
+    HEX_ASCII,
+    BINARY
+};
+
+static MqttModbusPayloadEncoding decodeModbusRtuPayload(
+        const uint8_t* payload, size_t length,
+        uint8_t* frame, size_t frameCapacity, size_t& frameLength) {
+    frameLength = 0;
+    if (!payload || !frame || length == 0U) {
+        return MqttModbusPayloadEncoding::INVALID;
+    }
+
+    // Evaluate both wire representations by CRC. A binary RTU frame may
+    // consist entirely of ASCII HEX characters, so character shape alone is
+    // not enough. A valid binary frame takes precedence; otherwise accept a
+    // CRC-valid decoded HEX-ASCII frame.
+    const bool hexAsciiValid = decodeModbusRtuHex(
+        reinterpret_cast<const char*>(payload), length,
+        frame, frameCapacity, frameLength);
+    if (mqttModbusFrameHasValidCrc(payload, length)) {
+        if (length > frameCapacity) {
+            frameLength = 0;
+            return MqttModbusPayloadEncoding::INVALID;
+        }
+        memcpy(frame, payload, length);
+        frameLength = length;
+        return MqttModbusPayloadEncoding::BINARY;
+    }
+    if (hexAsciiValid) {
+        return MqttModbusPayloadEncoding::HEX_ASCII;
+    }
+
+    frameLength = 0;
+    return MqttModbusPayloadEncoding::INVALID;
+}
+
 static uint8_t currentModbusTransferType() {
 #if FASTBEE_ENABLE_MODBUS
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-    ModbusHandler* handler = pm ? pm->getModbusHandler() : nullptr;
+    auto lease = pm ? pm->acquireModbusHandler(pdMS_TO_TICKS(100))
+                    : ProtocolManager::ModbusHandlerLease();
+    ModbusHandler* handler = lease.get();
     return handler ? handler->getConfig().transferType : 0;
 #else
     return 0;
@@ -323,6 +492,7 @@ MQTTClient::~MQTTClient() {
     for (uint8_t i = 0; i < MQTT_REPORT_SLOTS; i++) {
         _reportSlots[i].clear();
     }
+    _pendingReportSlot.clear();
     _slotWriteIndex = 0;
     _slotReadIndex = 0;
     _slotCount = 0;
@@ -452,6 +622,10 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.enabled = v["enabled"] | true;
             topic.autoPrefix = v["autoPrefix"] | false;
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 0);
+            if (topic.topicType == MqttTopicType::OTA_BINARY) {
+                topic.enabled = false;
+                LOG_WARNING("MQTT: OTA_BINARY publish is not supported; topic forced disabled");
+            }
             config.publishTopics.push_back(topic);
         }
     }
@@ -480,6 +654,10 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.enabled = v["enabled"] | true;
             topic.autoPrefix = v["autoPrefix"] | false;
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 1);
+            if (topic.topicType == MqttTopicType::OTA_BINARY) {
+                topic.enabled = false;
+                LOG_WARNING("MQTT: OTA_BINARY subscribe is not supported; topic forced disabled");
+            }
             config.subscribeTopics.push_back(topic);
         }
     }
@@ -490,42 +668,6 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         topic.qos = 0;
         config.subscribeTopics.push_back(topic);
     }
-
-#if FASTBEE_ENABLE_OTA
-    // Existing installations may predate FastBee's HTTPS OTA topics. Add the
-    // supported pair in memory without overriding an explicitly disabled row.
-    bool hasOtaReply = false;
-    for (const auto& topic : config.publishTopics) {
-        if (topic.topicType == MqttTopicType::OTA_UPGRADE) {
-            hasOtaReply = true;
-            break;
-        }
-    }
-    if (!hasOtaReply) {
-        MqttPublishTopic topic;
-        topic.topic = "/http/upgrade/reply";
-        topic.autoPrefix = true;
-        topic.topicType = MqttTopicType::OTA_UPGRADE;
-        config.publishTopics.push_back(topic);
-        LOG_INFO("MQTT: Added missing FastBee HTTPS OTA reply topic");
-    }
-
-    bool hasOtaCommand = false;
-    for (const auto& topic : config.subscribeTopics) {
-        if (topic.topicType == MqttTopicType::OTA_UPGRADE) {
-            hasOtaCommand = true;
-            break;
-        }
-    }
-    if (!hasOtaCommand) {
-        MqttSubscribeTopic topic;
-        topic.topic = "/http/upgrade/set";
-        topic.autoPrefix = true;
-        topic.topicType = MqttTopicType::OTA_UPGRADE;
-        config.subscribeTopics.push_back(topic);
-        LOG_INFO("MQTT: Added missing FastBee HTTPS OTA command topic");
-    }
-#endif
 
     // 无论 clientId 是否已配置，确保 deviceNum/productId/userId 都有有效默认值
     // （修复：之前这些默认值仅在 clientId 为空时才设置，导致已有 clientId 时 productId 为空，
@@ -543,6 +685,13 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     if (config.userId.isEmpty()) {
         config.userId = "1";
     }
+
+#if FASTBEE_ENABLE_OTA
+    // Resolve topics only after deviceNum/productId defaults are available.
+    // This also recognizes an already-expanded canonical path even when an
+    // older configuration stored the wrong topicType.
+    normalizeFastBeeOtaTopics();
+#endif
 
     // clientId 若配置文件未指定，按 FastBee 认证格式自动生成：认证类型&设备编号&产品编号&用户ID
     if (cfg["clientId"].isNull() || cfg["clientId"].as<String>().isEmpty()) {
@@ -585,16 +734,20 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
         LOG_INFO("MQTT: Using WiFiClient (mqtt://) transport");
     }
     mqttClient.setServer(config.server.c_str(), config.port);
-    // MQTTS 优化：减小 PubSubClient 缓冲区以降低内存压力
-    // MQTT (1883): 1024 字节（正常消息大小）
-    // MQTTS (8883): 512 字节（节省 ~512B 内存，SSL 已经占用大量内存）
+    // MQTT/MQTTS both require 1024 bytes. This covers a complete 256-byte
+    // Modbus RTU frame plus the configured topic and MQTT publish header.
     bool isMqttsInit = (config.scheme == "mqtts");
     if (!isMqttsInit) {
         _mqttsMemoryBackoffActive = false;
         _lastMqttsTlsMemoryFailure = false;
     }
     uint16_t mqttBufferSize = 1024;
-    mqttClient.setBufferSize(mqttBufferSize);
+    if (!mqttClient.setBufferSize(mqttBufferSize)) {
+        lastErrorCode = -11;
+        LOG_ERRORF("MQTT: Failed to allocate %u-byte packet buffer (current=%u)",
+                   mqttBufferSize, mqttClient.getBufferSize());
+        return false;
+    }
     mqttClient.setKeepAlive(config.keepAlive);
     // MQTTS (TLS) 握手在 ESP32-C6 等低主频芯片上需要 5~15 秒
     // 使用较长的连接超时，连接成功后在 reconnect() 中恢复短超时
@@ -789,7 +942,17 @@ bool MQTTClient::publish(const String& topic, const String& message) {
     bool topicAutoPrefix = false;
     MqttTopicType topicType = MqttTopicType::DATA_REPORT;
     for (const auto& pt : config.publishTopics) {
-        if (pt.topic == topic && pt.enabled) {
+        const String configuredTopic =
+            buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+        if (pt.topic == topic || configuredTopic == topic) {
+            if (pt.topicType == MqttTopicType::OTA_BINARY) {
+                LOG_WARNING("MQTT: OTA_BINARY publish rejected because binary OTA is not supported");
+                return false;
+            }
+            if (!pt.enabled) {
+                LOG_WARNING("MQTT: Publish rejected because the configured topic is disabled");
+                return false;
+            }
             qos = pt.qos;
             retain = pt.retain;
             topicAutoPrefix = pt.autoPrefix;
@@ -838,14 +1001,21 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     }
 
     const MqttPublishTopic& pt = config.publishTopics[topicIndex];
+    if (pt.topicType == MqttTopicType::OTA_BINARY) {
+        LOG_WARNING("MQTT: OTA_BINARY publish rejected because binary OTA is not supported");
+        return false;
+    }
     if (!pt.enabled) {
         return false;
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+    const String fastBeeOtaReplyPath =
+        "/" + config.deviceNum + "/http/upgrade/reply";
     // OTA acknowledgements are a fixed FastBee protocol contract and must not
     // be rewritten by user report scripts.
 #if FASTBEE_ENABLE_RULE_SCRIPT
-    String payload = (pt.topicType == MqttTopicType::OTA_UPGRADE ||
+    String payload = (fullTopic == fastBeeOtaReplyPath ||
+                      pt.topicType == MqttTopicType::OTA_UPGRADE ||
                       pt.topicType == MqttTopicType::OTA_BINARY)
         ? message
         : RuleScriptManager::getInstance().applyReportTransform(0, message);
@@ -881,6 +1051,27 @@ int MQTTClient::findEnabledPublishTopicIndex(MqttTopicType type) const {
         }
     }
     return -1;
+}
+
+int MQTTClient::findFastBeeOtaReplyTopicIndex() const {
+    if (config.deviceNum.isEmpty()) return -1;
+
+    const String expected = "/" + config.deviceNum + "/http/upgrade/reply";
+    int enabledIndex = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); ++i) {
+        const MqttPublishTopic& topic = config.publishTopics[i];
+        if (buildFullTopicWithType(topic.topic, topic.autoPrefix,
+                                   topic.topicType) != expected) continue;
+        // A disabled row for the exact protocol path is an explicit opt-out;
+        // an enabled duplicate must not silently bypass it.
+        if (!topic.enabled) return -1;
+        if (enabledIndex < 0) enabledIndex = static_cast<int>(i);
+    }
+    return enabledIndex;
+}
+
+bool MQTTClient::hasUsableFastBeeOtaReplyTopic() const {
+    return findFastBeeOtaReplyTopicIndex() >= 0;
 }
 
 bool MQTTClient::publishDeviceInfo() {
@@ -1047,14 +1238,26 @@ bool MQTTClient::publishReportData(const String& payload) {
         if (!fw) break;
         auto* pm = fw->getProtocolManager();
         if (!pm) break;
-        ModbusHandler* mh = pm->getModbusHandler();
+        auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(100));
+        ModbusHandler* mh = modbusLease.get();
         if (!mh) break;
         transferType = mh->getConfig().transferType;
         if (transferType != 1) break;
 
+        // Raw passthrough is shared with ordinary structured property reports.
+        // Keep valid JSON objects/arrays on MQTT's text path; only non-JSON
+        // payloads are eligible for strict HEX decoding below.
+        const bool payloadIsStructuredJson = mqttPayloadIsStructuredJson(
+            reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length());
+        if (payloadIsStructuredJson) break;
+
         // 校验是否为偶数长度且字符集全部为 [0-9a-fA-F]
         unsigned int hexLen = payload.length();
-        if (hexLen < 4 || (hexLen % 2) != 0) break;
+        if (hexLen < 8 || (hexLen % 2) != 0) {
+            LOG_WARNINGF("MQTT: Modbus raw report must be even-length HEX (len=%u), publish rejected",
+                         hexLen);
+            return false;
+        }
         bool allHex = true;
         for (unsigned int i = 0; i < hexLen; i++) {
             char c = payload.charAt(i);
@@ -1063,7 +1266,10 @@ bool MQTTClient::publishReportData(const String& payload) {
                      (c >= 'A' && c <= 'F');
             if (!v) { allHex = false; break; }
         }
-        if (!allHex) break;
+        if (!allHex) {
+            LOG_WARNING("MQTT: Modbus raw report contains non-HEX data, publish rejected");
+            return false;
+        }
 
         // HEX ASCII 转换为字节数组
         unsigned int byteLen = hexLen / 2;
@@ -1084,6 +1290,13 @@ bool MQTTClient::publishReportData(const String& payload) {
                                hexVal(payload.charAt(i * 2 + 1)));
         }
 
+        const uint16_t expectedCrc = mh->calculateCRC(buf, byteLen - 2U);
+        if (buf[byteLen - 2U] != static_cast<uint8_t>(expectedCrc & 0xFFU) ||
+            buf[byteLen - 1U] != static_cast<uint8_t>((expectedCrc >> 8) & 0xFFU)) {
+            LOG_WARNING("MQTT: Modbus raw report CRC mismatch, publish rejected");
+            return false;
+        }
+
         // 以二进制方式发布（PubSubClient 接受 const uint8_t*+length）
         {
             RecursiveMutexGuard lock(_publishMutex);
@@ -1096,7 +1309,7 @@ bool MQTTClient::publishReportData(const String& payload) {
 #endif
 
     if (!sentAsBinary) {
-        // 非透传模式或 payload 不是纯 HEX ASCII：按文本发布（原有逻辑）
+        // 非透传模式或已验证的结构化 JSON：按文本发布。
         ok = publishToTopic((size_t)reportTopicIdx, payload);
     }
 
@@ -1108,10 +1321,42 @@ bool MQTTClient::publishReportData(const String& payload) {
     return ok;
 }
 
+bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
+    if (!isConnected) return false;
+
+    const int reportTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::DATA_REPORT);
+    if (reportTopicIdx < 0) {
+        LOG_DEBUG("MQTT: No enabled DATA_REPORT publish topic found");
+        return false;
+    }
+
+    uint8_t frame[Protocols::MODBUS_BUFFER_SIZE];
+    size_t frameLength = 0;
+    if (!decodeModbusRtuHex(hexPayload.c_str(), hexPayload.length(),
+                            frame, sizeof(frame), frameLength)) {
+        LOG_WARNINGF("MQTT: Explicit Modbus RTU report rejected (invalid HEX/CRC, len=%u)",
+                     static_cast<unsigned>(hexPayload.length()));
+        return false;
+    }
+
+    const MqttPublishTopic& topic = config.publishTopics[reportTopicIdx];
+    const String fullTopic = buildFullTopicWithType(
+        topic.topic, topic.autoPrefix, topic.topicType);
+    bool ok = false;
+    {
+        RecursiveMutexGuard lock(_publishMutex);
+        ok = mqttClient.publish(fullTopic.c_str(), frame, frameLength, topic.retain);
+    }
+    Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u result=%s\n",
+                  fullTopic.c_str(), static_cast<unsigned>(frameLength),
+                  ok ? "OK" : "FAIL");
+    return ok;
+}
+
 bool MQTTClient::publishOtaReply(const String& payload) {
     if (!isConnected) return false;
 
-    int otaTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::OTA_UPGRADE);
+    int otaTopicIdx = findFastBeeOtaReplyTopicIndex();
     if (otaTopicIdx < 0) {
         LOG_WARNING("MQTT: No enabled FastBee HTTPS OTA reply topic found");
         return false;
@@ -1224,13 +1469,25 @@ bool MQTTClient::subscribe(const String& topic) {
 
     // 查找对应订阅主题配置的autoPrefix和topicType设置
     bool topicAutoPrefix = false;
+    bool topicEnabled = true;
     MqttTopicType topicType = MqttTopicType::DATA_COMMAND;
     for (const auto& st : config.subscribeTopics) {
-        if (st.topic == topic) {
+        const String configuredTopic =
+            buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
+        if (st.topic == topic || configuredTopic == topic) {
             topicAutoPrefix = st.autoPrefix;
+            topicEnabled = st.enabled;
             topicType = st.topicType;
             break;
         }
+    }
+    if (topicType == MqttTopicType::OTA_BINARY) {
+        LOG_WARNING("MQTT: OTA_BINARY subscribe rejected because binary OTA is not supported");
+        return false;
+    }
+    if (!topicEnabled) {
+        LOG_WARNING("MQTT: Subscribe rejected because the configured topic is disabled");
+        return false;
     }
     String fullTopic = buildFullTopicWithType(topic, topicAutoPrefix, topicType);
     bool ok = mqttClient.subscribe(fullTopic.c_str());
@@ -1240,6 +1497,36 @@ bool MQTTClient::subscribe(const String& topic) {
              ok ? "Subscribed" : "Subscribe failed", fullTopic.c_str());
     ok ? LOG_INFO(buf) : LOG_WARNING(buf);
     return ok;
+}
+
+bool MQTTClient::subscribeExact(const String& topic) {
+    RecursiveMutexGuard lock(_publishMutex);
+    if (!lock.isLocked() || !isConnected || topic.isEmpty() || topic.length()>160 ||
+        topic.indexOf('#')>=0 || topic.indexOf('+')>=0) return false;
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    for (const auto& subscription : config.subscribeTopics) {
+        if (!subscription.enabled || subscription.topicType == MqttTopicType::OTA_BINARY) continue;
+        const String reserved=buildFullTopicWithType(subscription.topic,subscription.autoPrefix,subscription.topicType);
+        if (FastBee::RemoteResourceModel::topicMatches(reserved.c_str(),topic.c_str())) return false;
+    }
+#endif
+    return mqttClient.subscribe(topic.c_str(),0);
+}
+
+bool MQTTClient::publishExact(const String& topic,const String& message) {
+    RecursiveMutexGuard lock(_publishMutex);
+    if (!lock.isLocked() || !isConnected || topic.isEmpty() || topic.length()>160 || message.length()>256 ||
+        topic.indexOf('#')>=0 || topic.indexOf('+')>=0 ||
+        heap_caps_get_free_size(MALLOC_CAP_8BIT)<12288U) return false;
+    auto* fw=FastBeeFramework::getInstance();
+    auto* web=fw ? fw->getWebConfigManager() : nullptr;
+    if (web && web->isWebBusy()) return false;
+    return mqttClient.publish(topic.c_str(),message.c_str(),false);
+}
+
+bool MQTTClient::unsubscribeExact(const String& topic) {
+    RecursiveMutexGuard lock(_publishMutex);
+    return lock.isLocked() && isConnected && mqttClient.unsubscribe(topic.c_str());
 }
 
 bool MQTTClient::subscribeAll() {
@@ -1253,6 +1540,11 @@ bool MQTTClient::subscribeAll() {
     
     // 订阅所有配置的主题
     for (const auto& st : config.subscribeTopics) {
+        if (st.topicType == MqttTopicType::OTA_BINARY) {
+            ets_printf("[MQTT] skip OTA_BINARY topic='%s': binary OTA is not supported\n",
+                       st.topic.c_str());
+            continue;
+        }
         if (!st.topic.isEmpty() && st.enabled) {
             String fullTopic = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
             bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
@@ -1600,32 +1892,40 @@ void MQTTClient::processQueuedReports() {
 
     int processed = 0;
     while (processed < maxBatch) {
-        // 临界区内只做索引操作+memcpy拷出，publish（网络 IO/堆分配）在锁外执行
-        char localPayload[MQTT_SLOT_MAX_PAYLOAD];
-        uint16_t localLength = 0;
-        // 0=队列空 1=取到数据 2=异常槽位（未占用但 count>0，跳过）
-        int slotState = 0;
-        portENTER_CRITICAL(&_slotMux);
-        if (_slotCount > 0) {
-            MqttSlot& slot = _reportSlots[_slotReadIndex];
-            if (slot.occupied) {
-                localLength = slot.length;
-                memcpy(localPayload, slot.payload, localLength);
-                slotState = 1;
-            } else {
-                slotState = 2;
+        // Move one ring entry into a consumer-owned retry slot while holding
+        // the index lock. Network I/O remains outside the critical section.
+        if (!_pendingReportSlot.occupied) {
+            portENTER_CRITICAL(&_slotMux);
+            while (_slotCount > 0 && !_pendingReportSlot.occupied) {
+                MqttSlot& slot = _reportSlots[_slotReadIndex];
+                if (slot.occupied) {
+                    _pendingReportSlot.length = slot.length;
+                    _pendingReportSlot.encoding = slot.encoding;
+                    memcpy(_pendingReportSlot.payload, slot.payload,
+                           slot.length + 1U);
+                    _pendingReportSlot.occupied = true;
+                }
+                slot.clear();
+                _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
+                _slotCount--;
             }
-            slot.clear();
-            _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
-            _slotCount--;
+            portEXIT_CRITICAL(&_slotMux);
         }
-        portEXIT_CRITICAL(&_slotMux);
-        if (slotState == 0) break;  // 队列已排空
-        if (slotState == 1) {
-            if (publishReportData(String(localPayload, localLength))) {
-                _queueStats.publishTotal++;
-            }
+
+        if (!_pendingReportSlot.occupied) break;
+        const String pendingPayload(_pendingReportSlot.payload,
+                                    _pendingReportSlot.length);
+        const bool publishOk =
+            _pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX
+                ? publishModbusRtuReport(pendingPayload)
+                : publishReportData(pendingPayload);
+        if (!publishOk) {
+            // Keep the exact frame/JSON document for the next flush. Producers
+            // can continue using the ring without racing the consumer slot.
+            break;
         }
+        _pendingReportSlot.clear();
+        _queueStats.publishTotal++;
         processed++;
     }
 
@@ -1656,6 +1956,31 @@ bool MQTTClient::queueReportData(const String& payload) {
 }
 
 bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
+    return queueReportDataEncoded(payload, length, MqttPayloadEncoding::TEXT);
+}
+
+bool MQTTClient::queueModbusRtuReport(const String& hexPayload) {
+    uint8_t validationFrame[Protocols::MODBUS_BUFFER_SIZE];
+    size_t validationLength = 0;
+    if (!decodeModbusRtuHex(hexPayload.c_str(), hexPayload.length(),
+                            validationFrame, sizeof(validationFrame),
+                            validationLength)) {
+        LOG_WARNINGF("[MQTT] Invalid Modbus RTU frame rejected before enqueue (hexLen=%u)",
+                     static_cast<unsigned>(hexPayload.length()));
+        _queueStats.dropTotal++;
+        return false;
+    }
+    return queueReportDataEncoded(
+        hexPayload.c_str(), static_cast<uint16_t>(hexPayload.length()),
+        MqttPayloadEncoding::MODBUS_RTU_HEX);
+}
+
+bool MQTTClient::queueReportDataEncoded(const char* payload, uint16_t length,
+                                        MqttPayloadEncoding encoding) {
+    if (!payload && length > 0) {
+        _queueStats.dropTotal++;
+        return false;
+    }
     // 降采样检查：如果距上次上报不足 _minReportInterval 则跳过
     if (_minReportInterval > 0) {
         unsigned long now = millis();
@@ -1666,10 +1991,14 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
         _lastReportQueueTime = now;
     }
 
-    // 超过最大长度时截断
-    if (length > MQTT_SLOT_MAX_PAYLOAD - 1) {
-        LOGGER.warningf("[MQTT] Payload truncated: %u -> %u bytes", length, MQTT_SLOT_MAX_PAYLOAD - 1);
-        length = MQTT_SLOT_MAX_PAYLOAD - 1;
+    // 256-byte Modbus RTU frames occupy exactly 512 HEX characters. Preserve
+    // that boundary and reject larger payloads atomically instead of emitting
+    // a truncated frame/JSON document.
+    if (length > MQTT_SLOT_MAX_PAYLOAD) {
+        LOGGER.warningf("[MQTT] Payload too large: %u > %u bytes, enqueue rejected",
+                        length, MQTT_SLOT_MAX_PAYLOAD);
+        _queueStats.dropTotal++;
+        return false;
     }
 
     // 入队与队满丢旧在同一临界区内完成，避免生产者(worker任务)与
@@ -1689,6 +2018,7 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
     memcpy(slot.payload, payload, length);
     slot.payload[length] = '\0';
     slot.length = length;
+    slot.encoding = encoding;
     slot.occupied = true;
 
     _slotWriteIndex = (_slotWriteIndex + 1) % MQTT_REPORT_SLOTS;
@@ -1829,33 +2159,27 @@ void MQTTClient::_notifyStatusChange() {
 }
 
 MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex) const {
-    // 尝试匹配每个主题（考虑autoPrefix生成的完整路径）
+    // 尝试匹配每个主题（包括占位符展开和autoPrefix生成的完整路径）
     // 先查订阅主题
     for (size_t i = 0; i < config.subscribeTopics.size(); i++) {
         const auto& st = config.subscribeTopics[i];
-        if (st.topic == topicPath) {
+        if (!st.enabled) continue;
+        String fullTopic = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
+        if (fullTopic == topicPath) {
             if (outSubIndex) *outSubIndex = (int8_t)i;
-            return st.topicType;
-        }
-        // 如果该主题启用了autoPrefix，构建完整路径后匹配
-        if (st.autoPrefix) {
-            String fullTopic = buildFullTopicWithType(st.topic, true, st.topicType);
-            if (fullTopic == topicPath) {
-                if (outSubIndex) *outSubIndex = (int8_t)i;
-                return st.topicType;
-            }
+            const String otaCommand =
+                "/" + config.deviceNum + "/http/upgrade/set";
+            return topicPath == otaCommand
+                ? MqttTopicType::OTA_UPGRADE
+                : st.topicType;
         }
     }
     // 再查发布主题
     for (const auto& pt : config.publishTopics) {
-        if (pt.topic == topicPath) {
+        if (!pt.enabled) continue;
+        String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+        if (fullTopic == topicPath) {
             return pt.topicType;
-        }
-        if (pt.autoPrefix) {
-            String fullTopic = buildFullTopicWithType(pt.topic, true, pt.topicType);
-            if (fullTopic == topicPath) {
-                return pt.topicType;
-            }
         }
     }
     return MqttTopicType::DATA_COMMAND; // 默认
@@ -1875,20 +2199,31 @@ String MQTTClient::buildFullTopic(const String& topic, bool autoPrefix) const {
 }
 
 String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, MqttTopicType topicType) const {
+    String resolvedTopic = topic;
+    resolvedTopic.replace("{deviceNum}", config.deviceNum);
+    resolvedTopic.replace("{productId}", config.productId);
+
     if (!autoPrefix) {
-        return topic;
+        return resolvedTopic;
     }
     // autoPrefix启用时，根据topicType自动生成设备前缀
     // OTA类型(5,6): /{deviceNum} + topic
     // 其他类型: /{productId}/{deviceNum} + topic
     String prefix;
     if (topicType == MqttTopicType::OTA_UPGRADE || topicType == MqttTopicType::OTA_BINARY) {
+        // A complete OTA template is already rooted at the device and must not
+        // receive a second device prefix, even if an older UI left autoPrefix on.
+        const String devicePrefix = "/" + config.deviceNum;
+        if (!config.deviceNum.isEmpty() &&
+            (resolvedTopic == devicePrefix || resolvedTopic.startsWith(devicePrefix + "/"))) {
+            return resolvedTopic;
+        }
         if (!config.deviceNum.isEmpty()) {
-            prefix = "/" + config.deviceNum;
+            prefix = devicePrefix;
         }
         // FastBee defines OTA topics at /{deviceNum}/... . The optional
         // application topicPrefix is intentionally not part of this contract.
-        return prefix + (topic.startsWith("/") ? topic : "/" + topic);
+        return prefix + (resolvedTopic.startsWith("/") ? resolvedTopic : "/" + resolvedTopic);
     } else {
         if (!config.productId.isEmpty() && !config.deviceNum.isEmpty()) {
             prefix = "/" + config.productId + "/" + config.deviceNum;
@@ -1898,9 +2233,67 @@ String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, 
     }
     // 额外的topicPrefix（如果设置了的话，追加在设备前缀之前）
     if (!config.topicPrefix.isEmpty()) {
-        return config.topicPrefix + prefix + topic;
+        return config.topicPrefix + prefix + resolvedTopic;
     }
-    return prefix + topic;
+    return prefix + resolvedTopic;
+}
+
+void MQTTClient::normalizeFastBeeOtaTopics() {
+    const String replyPath = "/" + config.deviceNum + "/http/upgrade/reply";
+    int replyWinner = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); ++i) {
+        const auto& topic = config.publishTopics[i];
+        if (buildFullTopicWithType(topic.topic, topic.autoPrefix,
+                                   topic.topicType) != replyPath) continue;
+        if (replyWinner < 0 ||
+            (!topic.enabled && config.publishTopics[replyWinner].enabled)) {
+            replyWinner = static_cast<int>(i);
+        }
+    }
+    if (replyWinner < 0) {
+        ensureFastBeeOtaPublishTopic(config.publishTopics);
+        replyWinner = static_cast<int>(config.publishTopics.size()) - 1;
+    }
+    config.publishTopics[replyWinner].topic = FASTBEE_OTA_REPLY_TOPIC;
+    config.publishTopics[replyWinner].autoPrefix = false;
+    config.publishTopics[replyWinner].topicType = MqttTopicType::OTA_UPGRADE;
+    for (size_t i = config.publishTopics.size(); i-- > 0;) {
+        if (static_cast<int>(i) == replyWinner) continue;
+        const auto& topic = config.publishTopics[i];
+        if (buildFullTopicWithType(topic.topic, topic.autoPrefix,
+                                   topic.topicType) == replyPath) {
+            config.publishTopics.erase(config.publishTopics.begin() + i);
+            if (static_cast<int>(i) < replyWinner) --replyWinner;
+        }
+    }
+
+    const String commandPath = "/" + config.deviceNum + "/http/upgrade/set";
+    int commandWinner = -1;
+    for (size_t i = 0; i < config.subscribeTopics.size(); ++i) {
+        const auto& topic = config.subscribeTopics[i];
+        if (buildFullTopicWithType(topic.topic, topic.autoPrefix,
+                                   topic.topicType) != commandPath) continue;
+        if (commandWinner < 0 ||
+            (!topic.enabled && config.subscribeTopics[commandWinner].enabled)) {
+            commandWinner = static_cast<int>(i);
+        }
+    }
+    if (commandWinner < 0) {
+        ensureFastBeeOtaSubscribeTopic(config.subscribeTopics);
+        commandWinner = static_cast<int>(config.subscribeTopics.size()) - 1;
+    }
+    config.subscribeTopics[commandWinner].topic = FASTBEE_OTA_COMMAND_TOPIC;
+    config.subscribeTopics[commandWinner].autoPrefix = false;
+    config.subscribeTopics[commandWinner].topicType = MqttTopicType::OTA_UPGRADE;
+    for (size_t i = config.subscribeTopics.size(); i-- > 0;) {
+        if (static_cast<int>(i) == commandWinner) continue;
+        const auto& topic = config.subscribeTopics[i];
+        if (buildFullTopicWithType(topic.topic, topic.autoPrefix,
+                                   topic.topicType) == commandPath) {
+            config.subscribeTopics.erase(config.subscribeTopics.begin() + i);
+            if (static_cast<int>(i) < commandWinner) --commandWinner;
+        }
+    }
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -1920,10 +2313,61 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     String message((const char*)payload, length);
     String topicStr(topic);
 
-    // 根据主题路径查找对应的主题类型
-    MqttTopicType tType = getTopicTypeByPath(topicStr);
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    // Handle dedicated state subscriptions before command/script decoding.
+    bool reservedSubscription = false;
+    for (const auto& st : config.subscribeTopics) {
+        const String reserved = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
+        if (FastBee::RemoteResourceModel::topicMatches(reserved.c_str(), topicStr.c_str())) {
+            reservedSubscription = true;
+            break;
+        }
+    }
+    if (!reservedSubscription && FastBee::RemoteResourceManager::instance().consumeMqtt(topicStr,message)) return;
+#endif
+
+    // A disabled subscription may remain active briefly on an existing broker
+    // connection after a runtime config reload. Drop it before topic-type
+    // fallback can reinterpret it as a DATA_COMMAND.
+    for (const auto& st : config.subscribeTopics) {
+        if (st.enabled) continue;
+        const String configuredTopic =
+            buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
+        if (st.topic == topicStr || configuredTopic == topicStr) {
+            if (st.topicType == MqttTopicType::OTA_BINARY) {
+                LOG_WARNING("MQTT: OTA_BINARY message dropped because binary OTA is not supported");
+            } else {
+                LOG_WARNINGF("MQTT: Message dropped for disabled subscription topic=%s",
+                             topicStr.c_str());
+            }
+            return;
+        }
+    }
+
+    // 根据主题路径查找对应的主题类型。OTA_UPGRADE is a fixed FastBee
+    // protocol route: a misconfigured row must never turn another topic into
+    // an OTA command, or fall through to DATA_COMMAND processing.
+    int8_t matchedSubIndex = -1;
+    MqttTopicType tType = getTopicTypeByPath(topicStr, &matchedSubIndex);
+    const String fastBeeOtaCommandTopic = buildFullTopicWithType(
+        FASTBEE_OTA_COMMAND_TOPIC, false, MqttTopicType::OTA_UPGRADE);
+    const bool matchedOtaSubscription =
+        matchedSubIndex >= 0 &&
+        static_cast<size_t>(matchedSubIndex) < config.subscribeTopics.size() &&
+        config.subscribeTopics[static_cast<size_t>(matchedSubIndex)].topicType ==
+            MqttTopicType::OTA_UPGRADE;
+    if ((matchedOtaSubscription || tType == MqttTopicType::OTA_UPGRADE) &&
+        topicStr != fastBeeOtaCommandTopic) {
+        LOG_WARNINGF("MQTT: Rejected non-canonical FastBee OTA topic=%s expected=%s",
+                     topicStr.c_str(), fastBeeOtaCommandTopic.c_str());
+        return;
+    }
+    if (tType == MqttTopicType::OTA_BINARY) {
+        LOG_WARNING("MQTT: OTA_BINARY message dropped because binary OTA is not supported");
+        return;
+    }
     const bool isOtaProtocol =
-        tType == MqttTopicType::OTA_UPGRADE || tType == MqttTopicType::OTA_BINARY;
+        tType == MqttTopicType::OTA_UPGRADE;
     const uint8_t modbusTransferType =
         tType == MqttTopicType::DATA_COMMAND ? currentModbusTransferType() : 0;
     const bool originalIsStructuredJson =
@@ -2033,49 +2477,29 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                     modbusTransferType, (unsigned)messageLength);
                 shouldEnqueue = false;
             } else {
-                auto isHexAsciiPayload = [&]() -> bool {
-                    if ((messageLength % 2U) != 0U || messageLength < 4U) return false;
-                    for (size_t i = 0; i < messageLength; ++i) {
-                        char c = static_cast<char>(messageBytes[i]);
-                        bool ok = (c >= '0' && c <= '9') ||
-                                  (c >= 'a' && c <= 'f') ||
-                                  (c >= 'A' && c <= 'F');
-                        if (!ok) return false;
-                    }
-                    return true;
-                };
-
-                const bool hexAscii = isHexAsciiPayload();
-                const size_t rawFrameLength =
-                    hexAscii ? messageLength / 2U : messageLength;
-                if (rawFrameLength < 2U ||
-                    rawFrameLength > Protocols::MODBUS_BUFFER_SIZE) {
+                uint8_t rawFrame[Protocols::MODBUS_BUFFER_SIZE];
+                size_t rawFrameLength = 0;
+                const MqttModbusPayloadEncoding encoding = decodeModbusRtuPayload(
+                    messageBytes, messageLength, rawFrame, sizeof(rawFrame), rawFrameLength);
+                if (encoding == MqttModbusPayloadEncoding::INVALID) {
                     LOG_WARNINGF(
-                        "MQTT: Modbus raw command length invalid (%u bytes, max=%u), dropped",
-                        (unsigned)rawFrameLength,
-                        (unsigned)Protocols::MODBUS_BUFFER_SIZE);
+                        "MQTT: Modbus raw command is neither a CRC-valid binary RTU frame nor CRC-valid HEX ASCII (len=%u), dropped",
+                        (unsigned)messageLength);
                     shouldEnqueue = false;
                 } else {
                     String hexStr;
-                    if (hexAscii) {
-                        hexStr.reserve(messageLength);
-                        for (size_t i = 0; i < messageLength; ++i) {
-                            char c = static_cast<char>(messageBytes[i]);
-                            if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
-                            hexStr += c;
-                        }
-                        Serial.printf("[MQTT] RX ▼ TRANSPARENT(HEX-ASCII) len=%u hex=%s\n",
-                                      (unsigned)messageLength, hexStr.c_str());
-                    } else {
-                        hexStr.reserve(messageLength * 2U);
-                        for (size_t i = 0; i < messageLength; ++i) {
-                            char hexByte[3];
-                            snprintf(hexByte, sizeof(hexByte), "%02X", messageBytes[i]);
-                            hexStr += hexByte;
-                        }
-                        Serial.printf("[MQTT] RX ▼ TRANSPARENT(BIN->HEX) len=%u hex=%s\n",
-                                      (unsigned)messageLength, hexStr.c_str());
+                    hexStr.reserve(rawFrameLength * 2U);
+                    for (size_t i = 0; i < rawFrameLength; ++i) {
+                        char hexByte[3];
+                        snprintf(hexByte, sizeof(hexByte), "%02X", rawFrame[i]);
+                        hexStr += hexByte;
                     }
+                    const char* encodingName =
+                        encoding == MqttModbusPayloadEncoding::BINARY
+                            ? "BIN->HEX"
+                            : "HEX-ASCII";
+                    Serial.printf("[MQTT] RX ▼ TRANSPARENT(%s) len=%u hex=%s\n",
+                                  encodingName, (unsigned)rawFrameLength, hexStr.c_str());
                     enqueueMsg = "[{\"id\":\"modbus_raw_send\",\"value\":\"" + hexStr + "\"}]";
                 }
             }

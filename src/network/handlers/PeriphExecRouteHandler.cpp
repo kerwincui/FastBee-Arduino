@@ -29,6 +29,15 @@
 namespace {
 constexpr uint8_t CONTROL_GROUP_COUNT = 6;
 constexpr size_t CONTROL_ITEM_MAX_BYTES = 6144;
+constexpr uint32_t PERIPH_EXEC_TIMER_INTERVAL_MIN_SEC = 1;
+constexpr uint32_t PERIPH_EXEC_POLL_INTERVAL_MIN_SEC = 5;
+constexpr uint32_t PERIPH_EXEC_INTERVAL_MAX_SEC = 86400UL;
+
+uint32_t intervalSecondsFromInput(int value) {
+    // Preserve an invalid negative input as zero so Manager applies the
+    // trigger-specific lower bound instead of uint32_t wraparound becoming 24h.
+    return value < 0 ? 0U : static_cast<uint32_t>(value);
+}
 
 const char* const CONTROL_GROUP_HEADERS[CONTROL_GROUP_COUNT] = {
     "\"gpio\":[",
@@ -319,6 +328,62 @@ String escapePeriphExecJsonString(const String& value) {
         }
     }
     return out;
+}
+
+const char* asyncExecStatusName(AsyncExecStatus status) {
+    switch (status) {
+        case AsyncExecStatus::PENDING: return "queued";
+        case AsyncExecStatus::RUNNING: return "running";
+        case AsyncExecStatus::COMPLETED: return "success";
+        case AsyncExecStatus::FAILED: return "failed";
+        case AsyncExecStatus::CANCELLED: return "cancelled";
+        case AsyncExecStatus::REJECTED: return "rejected";
+        case AsyncExecStatus::TIMED_OUT: return "timed_out";
+    }
+    return "unknown";
+}
+
+const char* asyncExecLegacyStatusName(AsyncExecStatus status) {
+    switch (status) {
+        case AsyncExecStatus::PENDING: return "pending";
+        case AsyncExecStatus::RUNNING: return "running";
+        case AsyncExecStatus::COMPLETED: return "completed";
+        case AsyncExecStatus::FAILED: return "failed";
+        case AsyncExecStatus::CANCELLED: return "cancelled";
+        case AsyncExecStatus::REJECTED: return "rejected";
+        case AsyncExecStatus::TIMED_OUT: return "timed_out";
+    }
+    return "unknown";
+}
+
+const char* asyncExecErrorName(AsyncExecError error) {
+    switch (error) {
+        case AsyncExecError::NONE: return "none";
+        case AsyncExecError::LOW_MEMORY: return "low_memory";
+        case AsyncExecError::DEADLINE_EXCEEDED: return "deadline_exceeded";
+        case AsyncExecError::ACTION_FAILED: return "action_failed";
+        case AsyncExecError::INCOMPLETE_ACTIONS: return "incomplete_actions";
+        case AsyncExecError::CANCELLED_BY_SYSTEM: return "cancelled_by_system";
+        case AsyncExecError::WORKER_QUEUE_FULL: return "worker_queue_full";
+    }
+    return "unknown";
+}
+
+bool asyncExecStatusIsTerminal(AsyncExecStatus status) {
+    return status == AsyncExecStatus::COMPLETED ||
+           status == AsyncExecStatus::FAILED ||
+           status == AsyncExecStatus::CANCELLED ||
+           status == AsyncExecStatus::REJECTED ||
+           status == AsyncExecStatus::TIMED_OUT;
+}
+
+int runOnceRejectionStatus(const String& reason) {
+    if (reason == "rule_not_found" || reason == "rule_not_found_or_disabled") return 404;
+    if (reason == "already_running") return 409;
+    if (reason == "action_not_automatable" || reason == "action_order_invalid") return 400;
+    if (reason == "no_task_slot" || reason == "context_pool_exhausted" ||
+        reason == "worker_queue_full") return 429;
+    return 503;
 }
 
 bool shouldDegradeControlsResponse() {
@@ -789,6 +854,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                     case 25: flowSummary += F("显文本"); break;
                     case 26: flowSummary += F("清数码管"); break;
                     case 27: flowSummary += F("OLED显示"); break;
+                    case 33: flowSummary += F("远程控制"); break;
+                    case 34: flowSummary += F("远程读取"); break;
                     default: flowSummary += F("动作"); break;
                 }
                 if (!targetPeriphName.isEmpty()) { flowSummary += F(" → "); flowSummary += targetPeriphName; }
@@ -819,6 +886,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             item += String(rule.execMode);
             item += F(",\"reportAfterExec\":");
             item += rule.reportAfterExec ? F("true") : F("false");
+            item += F(",\"allowPanelControl\":");
+            item += rule.allowPanelControl ? F("true") : F("false");
+            item += F(",\"recordHistory\":");
+            item += rule.recordHistory ? F("true") : F("false");
             item += F(",\"triggerCount\":");
             item += String(triggerCount);
             item += F(",\"actionCount\":");
@@ -897,6 +968,8 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
     rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", true);
+    rule.allowPanelControl = ctx->getParamBool(request, "allowPanelControl", false);
+    rule.recordHistory = ctx->getParamBool(request, "recordHistory", false);
 
     // 旧版 form-encoded: 将平铺字段封装为单元素 triggers[]/actions[]
     ExecTrigger t;
@@ -905,7 +978,8 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     t.operatorType = ctx->getParamInt(request, "operatorType", 0);
     t.compareValue = ctx->getParamValue(request, "compareValue", "");
     t.timerMode = ctx->getParamInt(request, "timerMode", 0);
-    t.intervalSec = ctx->getParamInt(request, "intervalSec", 60);
+    t.intervalSec = intervalSecondsFromInput(
+        ctx->getParamInt(request, "intervalSec", 60));
     t.timePoint = ctx->getParamValue(request, "timePoint", "");
     t.eventId = ctx->getParamValue(request, "eventId", "");
     t.pollResponseTimeout = ctx->getParamInt(request, "pollResponseTimeout", 1000);
@@ -964,6 +1038,8 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.protocolType = ctx->getParamInt(request, "protocolType", existing.protocolType);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing.scriptContent);
     rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", existing.reportAfterExec);
+    rule.allowPanelControl = ctx->getParamBool(request, "allowPanelControl", existing.allowPanelControl);
+    rule.recordHistory = ctx->getParamBool(request, "recordHistory", existing.recordHistory);
 
     // 旧版 form-encoded: 使用已有 trigger/action 作为默认值
     ExecTrigger t;
@@ -975,7 +1051,8 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     t.operatorType = ctx->getParamInt(request, "operatorType", t.operatorType);
     t.compareValue = ctx->getParamValue(request, "compareValue", t.compareValue);
     t.timerMode = ctx->getParamInt(request, "timerMode", t.timerMode);
-    t.intervalSec = ctx->getParamInt(request, "intervalSec", t.intervalSec);
+    t.intervalSec = intervalSecondsFromInput(
+        ctx->getParamInt(request, "intervalSec", static_cast<int>(t.intervalSec)));
     t.timePoint = ctx->getParamValue(request, "timePoint", t.timePoint);
     t.eventId = ctx->getParamValue(request, "eventId", t.eventId);
     t.pollResponseTimeout = ctx->getParamInt(request, "pollResponseTimeout", t.pollResponseTimeout);
@@ -1074,6 +1151,7 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
 
 void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -1087,17 +1165,45 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     
     // 异步提交执行（不阻塞 Web 请求线程）
-    bool submitted = mgr.runOnce(id, value);
+    String rejectionReason;
+    AsyncExecResult operation;
+    bool submitted = mgr.runOnce(id, value, &rejectionReason, &operation);
 
     JsonDocument doc;
     if (submitted) {
         doc["success"] = true;
-        doc["message"] = "Rule execution submitted";
+        doc["message"] = operation.asyncExecution
+            ? "Rule execution accepted" : "Rule execution finished";
+        doc["operationId"] = operation.operationId;
+        doc["state"] = asyncExecStatusName(operation.status);
+        doc["queuedAt"] = operation.queuedAt;
+        doc["deadlineAt"] = operation.deadlineAt;
+        doc["queuePosition"] = operation.queuePosition;
     } else {
         doc["success"] = false;
-        doc["message"] = "Rule not found";
+        doc["reason"] = rejectionReason;
+        if (operation.operationId != 0) {
+            doc["operationId"] = operation.operationId;
+            doc["state"] = asyncExecStatusName(operation.status);
+        }
+        if (rejectionReason == "rule_not_found") {
+            doc["message"] = "Rule not found";
+        } else if (rejectionReason == "already_running") {
+            doc["message"] = "Rule is already running";
+        } else {
+            doc["message"] = "Rule execution was not admitted; retry later";
+        }
     }
-    HandlerUtils::sendJsonStream(request, doc);
+    String responseBody;
+    responseBody.reserve(measureJson(doc) + 1);
+    serializeJson(doc, responseBody);
+    const int responseStatus = submitted
+        ? (operation.asyncExecution && !asyncExecStatusIsTerminal(operation.status) ? 202 : 200)
+        : runOnceRejectionStatus(rejectionReason);
+    AsyncWebServerResponse* response = request->beginResponse(
+        responseStatus, "application/json", responseBody);
+    if (!submitted && responseStatus >= 429) response->addHeader("Retry-After", "2");
+    HandlerUtils::sendWithClose(request, response);
 }
 
 void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* request) {
@@ -1110,38 +1216,63 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         if (limit > 20) limit = 20;
     }
 
+    uint32_t operationFilter = 0;
+    if (request->hasParam("operationId")) {
+        operationFilter = static_cast<uint32_t>(
+            strtoul(request->getParam("operationId")->value().c_str(), nullptr, 10));
+    }
+    const bool includeActions = operationFilter != 0 ||
+        (request->hasParam("includeActions") &&
+         request->getParam("includeActions")->value() == "true");
+
     auto results = PeriphExecManager::getInstance().getRecentResults();
     int total = static_cast<int>(results.size());
     int emitted = 0;
     String items;
-    items.reserve(static_cast<size_t>(limit) * 140);
+    const size_t expectedItems = static_cast<size_t>(
+        limit < total ? limit : total);
+    items.reserve(expectedItems * (includeActions ? 768 : 320));
 
     for (int i = total - 1; i >= 0 && emitted < limit; --i) {
         const auto& result = results[static_cast<size_t>(i)];
+        if (operationFilter != 0 && result.operationId != operationFilter) continue;
         if (emitted > 0) items += ",";
 
-        const char* statusName = "unknown";
-        switch (result.status) {
-            case AsyncExecStatus::PENDING: statusName = "pending"; break;
-            case AsyncExecStatus::RUNNING: statusName = "running"; break;
-            case AsyncExecStatus::COMPLETED: statusName = "completed"; break;
-            case AsyncExecStatus::FAILED: statusName = "failed"; break;
-        }
-
         unsigned long duration = 0;
-        if (result.endTime >= result.startTime) {
+        if (result.startTime != 0 && result.endTime != 0) {
             duration = result.endTime - result.startTime;
         }
 
-        items += F("{\"ruleId\":\"");
+        items += F("{\"operationId\":");
+        items += String(result.operationId);
+        items += F(",\"ruleId\":\"");
         items += escapePeriphExecJsonString(result.ruleId);
         items += F("\",\"ruleName\":\"");
         items += escapePeriphExecJsonString(result.ruleName);
         items += F("\",\"status\":");
         items += String(static_cast<int>(result.status));
         items += F(",\"statusName\":\"");
-        items += statusName;
-        items += F("\",\"startTime\":");
+        items += asyncExecLegacyStatusName(result.status);
+        items += F("\",\"state\":\"");
+        items += asyncExecStatusName(result.status);
+        items += F("\",\"terminal\":");
+        items += asyncExecStatusIsTerminal(result.status) ? F("true") : F("false");
+        items += F(",\"errorCode\":\"");
+        items += asyncExecErrorName(result.errorCode);
+        items += F("\",\"queuedAt\":");
+        items += String(result.queuedAt);
+        items += F(",\"startedAt\":");
+        items += String(result.startTime);
+        items += F(",\"endedAt\":");
+        items += String(result.endTime);
+        items += F(",\"deadlineAt\":");
+        items += String(result.deadlineAt);
+        items += F(",\"queuePosition\":");
+        items += String(static_cast<unsigned int>(result.queuePosition));
+        items += F(",\"async\":");
+        items += result.asyncExecution ? F("true") : F("false");
+        // Legacy timestamps retained for existing device tests and clients.
+        items += F(",\"startTime\":");
         items += String(result.startTime);
         items += F(",\"endTime\":");
         items += String(result.endTime);
@@ -1149,6 +1280,38 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         items += String(duration);
         items += F(",\"reportCount\":");
         items += String(static_cast<unsigned int>(result.reportCount));
+        items += F(",\"actionCount\":");
+        items += String(static_cast<unsigned int>(result.actionCount));
+        items += F(",\"actionTraceTruncated\":");
+        items += result.actionTraceTruncated ? F("true") : F("false");
+        if (includeActions) {
+            items += F(",\"actions\":[");
+            for (uint8_t actionIndex = 0;
+                 actionIndex < result.actionTraceCount &&
+                 actionIndex < ASYNC_EXEC_ACTION_TRACE_LIMIT;
+                 ++actionIndex) {
+                if (actionIndex > 0) items += ',';
+                const auto& action = result.actionTraces[actionIndex];
+                items += F("{\"index\":");
+                items += String(static_cast<unsigned int>(action.index));
+                items += F(",\"actionType\":");
+                items += String(static_cast<unsigned int>(action.actionType));
+                items += F(",\"targetPeriphId\":\"");
+                items += escapePeriphExecJsonString(String(action.targetPeriphId));
+                items += F("\",\"value\":\"");
+                items += escapePeriphExecJsonString(String(action.valueSummary));
+                items += F("\",\"success\":");
+                items += action.success ? F("true") : F("false");
+                items += F(",\"durationMs\":");
+                items += String(action.durationMs);
+                items += F(",\"detailCount\":");
+                items += String(static_cast<unsigned int>(action.detailCount));
+                items += F(",\"remark\":\"");
+                items += escapePeriphExecJsonString(String(action.remark));
+                items += F("\"}");
+            }
+            items += F("]");
+        }
         items += F("}");
         emitted++;
     }
@@ -1236,6 +1399,8 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
         if (rule.scriptContent == "null") rule.scriptContent = "";
     }
     if (obj["reportAfterExec"].is<bool>()) rule.reportAfterExec = obj["reportAfterExec"].as<bool>();
+    if (obj["allowPanelControl"].is<bool>()) rule.allowPanelControl = obj["allowPanelControl"].as<bool>();
+    if (obj["recordHistory"].is<bool>()) rule.recordHistory = obj["recordHistory"].as<bool>();
 
     // 解析 triggers 数组
     if (obj["triggers"].is<JsonArray>()) {
@@ -1248,7 +1413,8 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
             t.operatorType = jsonInt(tObj["operatorType"], 0);
             t.compareValue = tObj["compareValue"] | "";
             t.timerMode = jsonInt(tObj["timerMode"], 0);
-            t.intervalSec = jsonInt(tObj["intervalSec"], 60);
+            t.intervalSec = intervalSecondsFromInput(
+                jsonInt(tObj["intervalSec"], 60));
             t.timePoint = tObj["timePoint"] | "";
             t.eventId = tObj["eventId"] | "";
             // 轮询触发通信参数
@@ -1352,6 +1518,8 @@ void writeRuleCandidate(JsonObject target, const PeriphExecRule& rule) {
     target["protocolType"] = rule.protocolType;
     target["scriptContent"] = rule.scriptContent;
     target["reportAfterExec"] = rule.reportAfterExec;
+    target["allowPanelControl"] = rule.allowPanelControl;
+    target["recordHistory"] = rule.recordHistory;
 
     JsonArray triggers = target["triggers"].to<JsonArray>();
     for (const ExecTrigger& trigger : rule.triggers) {
@@ -1508,7 +1676,8 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
                 addIssue("INVALID_TIMER_MODE", "error", path + ".timerMode",
                          "timerMode must be interval(0) or daily(1)");
             } else if (trigger.timerMode == 0 &&
-                       (trigger.intervalSec < 1 || trigger.intervalSec > 86400UL)) {
+                       (trigger.intervalSec < PERIPH_EXEC_TIMER_INTERVAL_MIN_SEC ||
+                        trigger.intervalSec > PERIPH_EXEC_INTERVAL_MAX_SEC)) {
                 addIssue("INVALID_TIMER_INTERVAL", "error", path + ".intervalSec",
                          "Timer interval must be between 1 and 86400 seconds");
             } else if (trigger.timerMode == 1 && !parseClockTime(trigger.timePoint)) {
@@ -1530,6 +1699,11 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
             }
         }
         if (trigger.triggerType == 5) {
+            if (trigger.intervalSec < PERIPH_EXEC_POLL_INTERVAL_MIN_SEC ||
+                trigger.intervalSec > PERIPH_EXEC_INTERVAL_MAX_SEC) {
+                addIssue("INVALID_POLL_INTERVAL", "error", path + ".intervalSec",
+                         "Poll interval must be between 5 and 86400 seconds");
+            }
             if (trigger.pollResponseTimeout < 100 || trigger.pollResponseTimeout > 5000) {
                 addIssue("INVALID_POLL_TIMEOUT", "error", path + ".pollResponseTimeout",
                          "Poll timeout must be between 100 and 5000 ms");
@@ -1556,9 +1730,9 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
     for (size_t index = 0; index < candidate.actions.size(); ++index) {
         const ExecAction& action = candidate.actions[index];
         const String path = String("rule.actions[") + index + "]";
-        if (action.actionType > 32 || action.actionType == 20) {
+        if (action.actionType > 34 || action.actionType == 20) {
             addIssue("INVALID_ACTION_TYPE", "error", path + ".actionType",
-                     "actionType must be 0-32 and cannot use reserved slot 20");
+                     "actionType must be 0-34 and cannot use reserved slot 20");
             continue;
         }
         if (action.execMode > 1) {
@@ -1595,6 +1769,30 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
             !FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
             addIssue("MODBUS_FEATURE_DISABLED", "error", path + ".actionType",
                      "Modbus feature is disabled");
+        }
+#if !FASTBEE_ENABLE_REMOTE_RESOURCES
+        if (action.actionType == 33 || action.actionType == 34) {
+            addIssue("REMOTE_RESOURCES_NOT_COMPILED", "error", path + ".actionType",
+                     "Remote resources are not compiled into this firmware");
+        }
+#endif
+        if (action.actionType == 33) {
+            if (action.targetPeriphId.isEmpty()) {
+                addIssue("REMOTE_TARGET_REQUIRED", "error", path + ".targetPeriphId",
+                         "Remote channel ID is required");
+            }
+            if ((!action.useReceivedValue && action.actionValue != "on" &&
+                 action.actionValue != "off" && action.actionValue != "trigger") ||
+                (action.useReceivedValue && !action.actionValue.isEmpty())) {
+                addIssue("INVALID_REMOTE_VALUE", "error", path + ".actionValue",
+                         "Remote channel value must be on, off or trigger");
+            }
+        }
+        if (action.actionType == 34 &&
+            (action.targetPeriphId.isEmpty() || !action.actionValue.isEmpty() ||
+             action.useReceivedValue)) {
+            addIssue("INVALID_REMOTE_READ", "error", path,
+                     "Remote read requires a source ID and no action value");
         }
 
         if (actionNeedsPeripheral(action.actionType)) {
@@ -1934,6 +2132,8 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
 
     // 数据上报控制
     ruleDoc["reportAfterExec"] = rule.reportAfterExec;
+    ruleDoc["allowPanelControl"] = rule.allowPanelControl;
+    ruleDoc["recordHistory"] = rule.recordHistory;
 
     String output;
     serializeJson(ruleDoc, output);

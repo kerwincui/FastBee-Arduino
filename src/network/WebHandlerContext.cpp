@@ -404,6 +404,31 @@ static void registerStaticInFlightRelease(AsyncWebServerRequest* request,
     });
 }
 
+static bool getStaticGzipEtag(File& file, char (&etag)[11]) {
+    static constexpr char hexChars[] = "0123456789ABCDEF";
+    if (!file || file.size() < 8 || !file.seek(file.size() - 8)) return false;
+
+    uint32_t crc = 0;
+    if (file.read(reinterpret_cast<uint8_t*>(&crc), sizeof(crc)) != sizeof(crc)) {
+        return false;
+    }
+
+    // Match ESPAsyncWebServer's gzip-trailer ETag representation so existing
+    // browser validators stay compatible if the response path changes later.
+    etag[0] = '"';
+    etag[1] = hexChars[(crc >> 4) & 0x0F];
+    etag[2] = hexChars[crc & 0x0F];
+    etag[3] = hexChars[(crc >> 12) & 0x0F];
+    etag[4] = hexChars[(crc >> 8) & 0x0F];
+    etag[5] = hexChars[(crc >> 20) & 0x0F];
+    etag[6] = hexChars[(crc >> 16) & 0x0F];
+    etag[7] = hexChars[(crc >> 28) & 0x0F];
+    etag[8] = hexChars[(crc >> 24) & 0x0F];
+    etag[9] = '"';
+    etag[10] = '\0';
+    return true;
+}
+
 bool WebHandlerContext::isStaticTransferActive() const {
     const unsigned long now = millis();
     bool active = false;
@@ -726,6 +751,44 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         return false;  // 404 fallback; no slot was taken
     }
 
+    // The File-based AsyncFileResponse constructor used below does not add an
+    // ETag or honor If-None-Match (the FS/path overload does, but would reopen
+    // the file after the memory and concurrency gates).  Reuse the gzip CRC as
+    // a strong validator so no-cache entry pages and expired versioned assets
+    // can return headers-only 304 responses instead of streaming the body
+    // again.  The fixed 11-byte buffer keeps this path allocation-free apart
+    // from the response object already required by the server library.
+    char staticEtag[11] = {};
+    bool hasStaticEtag = false;
+    if (sentGzippedContent) {
+        hasStaticEtag = getStaticGzipEtag(openFile, staticEtag);
+        if (hasStaticEtag && !openFile.seek(0)) {
+            hasStaticEtag = false;
+        }
+    }
+
+    auto addStaticCacheHeaders = [&](AsyncWebServerResponse* target) {
+        if (hasStaticEtag) target->addHeader("ETag", staticEtag);
+        if (isServiceWorker) {
+            target->addHeader("Service-Worker-Allowed", "/");
+            target->addHeader("Cache-Control", "no-cache");
+        } else if (isCacheableStatic && cacheDuration > 0) {
+            target->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
+        } else {
+            target->addHeader("Cache-Control", "no-cache");
+        }
+        target->addHeader("Connection", "close");
+    };
+
+    if (hasStaticEtag && request->hasHeader("If-None-Match") &&
+        request->header("If-None-Match") == staticEtag) {
+        openFile.close();
+        AsyncWebServerResponse* notModified = request->beginResponse(304);
+        addStaticCacheHeaders(notModified);
+        request->send(notModified);
+        return true;
+    }
+
     StaticInFlightLease staticLease = {0, STATIC_MAX_INFLIGHT};
     if (limitInFlight) {
         staticLease = acquireStaticInFlightLease();
@@ -741,6 +804,25 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         }
     }
 
+    // Opening the LittleFS file, calculating its validator, and acquiring the
+    // in-flight slot can consume the last DRAM block while another TCP request
+    // is being serviced. Recheck immediately before AsyncFileResponse's
+    // throwing constructor: the first admission check is intentionally only a
+    // snapshot and is subject to this TOCTOU window. Release the fixed slot
+    // before returning so a rejected request cannot strand the limiter.
+#if FASTBEE_WEB_MEM_GUARD
+    const uint32_t responseFree8 = FastBee::MemoryBudget::dram8Free();
+    const uint32_t responseLargest8 = FastBee::MemoryBudget::dram8Largest();
+    if (responseFree8 < 6144U ||
+        responseLargest8 < (isCompressible && !isCoreEntry ? 3072U : 2048U)) {
+        openFile.close();
+        if (limitInFlight) releaseStaticInFlightLease(staticLease);
+        if (isCoreEntry) sendStaticBusyRetryPage(request);
+        else sendStaticBusyResponse(request, contentType);
+        return true;
+    }
+#endif
+
     AsyncWebServerResponse *response = new AsyncFileResponse(openFile, path, contentType, false);
 
     // Add Content-Encoding header if serving gzipped content
@@ -748,16 +830,10 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         response->addHeader("Content-Encoding", "gzip");
     }
 
-    // Keep the service worker uncached so clients can recover.
-    if (isServiceWorker) {
-        response->addHeader("Service-Worker-Allowed", "/");
-        response->addHeader("Cache-Control", "no-cache");
-    } else if (isCacheableStatic && cacheDuration > 0) {
-        response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
-    } else {
-        response->addHeader("Cache-Control", "no-cache");
-    }
-    response->addHeader("Connection", "close");
+    // Keep the service worker uncached so clients can recover. The shared
+    // helper also mirrors these validators on a 304 response as required by
+    // HTTP cache revalidation.
+    addStaticCacheHeaders(response);
 
     if (limitInFlight) registerStaticInFlightRelease(request, staticLease);
     request->send(response);

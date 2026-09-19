@@ -14,10 +14,17 @@
 #include <memory>
 #include <vector>
 
+#include "core/FeatureFlags.h"
 #include "core/RuntimeFeatureManager.h"
+#if FASTBEE_ENABLE_SCREEN_PANEL
+#include "core/ScreenPanelManager.h"
+#endif
 #include "network/NetworkManager.h"
 #include "network/WebHandlerContext.h"
 #include "network/handlers/HandlerUtils.h"
+#if FASTBEE_ENABLE_SCREEN_UI
+#include "screen/ScreenRuntime.h"
+#endif
 #include "systems/LoggerSystem.h"
 #include "systems/SystemRebooter.h"
 
@@ -103,6 +110,9 @@ FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
     const JsonDocument& doc) {
     auto& mgr = FastBee::RuntimeFeatureManager::instance();
     const bool previousMDNS = mgr.isUserEnabled("mdns");
+#if FASTBEE_ENABLE_SCREEN_UI
+    const bool previousScreenPanel = mgr.isUserEnabled("screenPanel");
+#endif
     FastBee::RuntimeFeatureManager::UserConfigSnapshot previousState;
     const auto updateResult = mgr.updateAndSave(doc, &previousState);
     if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::NO_VALID_ENTRIES) {
@@ -112,18 +122,40 @@ FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
         return PersistResult::FEATURE_SAVE_FAILED;
     }
 
+    auto applyRuntimeSideEffects = [&]() {
+#if FASTBEE_ENABLE_SCREEN_UI
+        const bool screenPanelEnabled = mgr.isUserEnabled("screenPanel");
+        if (screenPanelEnabled == previousScreenPanel) return;
+
+        String screenError;
+        auto& runtime = FastBee::Screen::ScreenRuntime::instance();
+        if (screenPanelEnabled) {
+            const bool started = runtime.start(screenError);
+            ScreenPanelManager::instance().reportApplication(
+                started, false, screenError);
+        } else {
+            const bool stopped = runtime.stop(&screenError);
+            ScreenPanelManager::instance().reportApplication(
+                false, false, stopped ? String() : screenError);
+        }
+#endif
+    };
+
     const bool configuredMDNS = mgr.isUserEnabled("mdns");
     if (ctx && ctx->networkManager) {
         if (ctx->networkManager->getConfig().enableMDNS == configuredMDNS) {
+            applyRuntimeSideEffects();
             return PersistResult::SAVED;
         }
         WiFiConfig networkConfig = ctx->networkManager->getConfig();
         networkConfig.enableMDNS = configuredMDNS;
         if (ctx->networkManager->updateConfig(networkConfig, true)) {
+            applyRuntimeSideEffects();
             return PersistResult::SAVED;
         }
     } else if (configuredMDNS == previousMDNS) {
         // Non-mDNS feature updates do not require the compatibility mirror.
+        applyRuntimeSideEffects();
         return PersistResult::SAVED;
     }
 
@@ -228,7 +260,11 @@ void FeatureRouteHandler::handleConfig(AsyncWebServerRequest* request) {
         ctx->sendError(request, 500, "Failed to synchronize mDNS compatibility config");
         return;
     }
-    ctx->sendSuccess(request, "Feature config saved (reboot required to apply)");
+    JsonDocument response;
+    response["success"] = true;
+    response["message"] = "Feature config saved (reboot required to apply)";
+    response["data"]["requiresRestart"] = true;
+    HandlerUtils::sendJsonStream(request, response);
 }
 
 void FeatureRouteHandler::handleApply(AsyncWebServerRequest* request) {

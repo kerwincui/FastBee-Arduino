@@ -25,6 +25,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         'device-page': 'device',
         'peripheral-page': 'peripheral',
         'periph-exec-page': 'peripheral',
+        'screen-panel-page': 'screen-panel',
         'device-control-page': 'peripheral',
         'logs-page': 'logs',
         'users-page': 'admin',
@@ -185,6 +186,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         var bindingFlags = {
             peripheral: ['_periphEventsBound'],
             'periph-exec': ['_peEventsBound'],
+            'screen-panel': ['_screenPanelEventsBound'],
             protocol: ['_protocolEventsBound'],
             'device-control': ['_eventsBound'],
             logs: ['_logsEventsBound'],
@@ -202,6 +204,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             device: 'setupDeviceConfigEvents',
             peripheral: 'setupPeripheralsEvents',
             'periph-exec': 'setupPeriphExecEvents',
+            'screen-panel': '_spSetupEvents',
             protocol: 'setupProtocolEvents',
             'device-control': 'setupDeviceControlEvents',
             logs: 'setupLogsEvents',
@@ -267,6 +270,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         [
             '#add-peripheral-btn',
             '#periph-exec-page-add-btn',
+            '.remote-resource-write',
             '[data-pe-action="edit"]',
             '[data-pe-action="toggle"]',
             '[data-pe-action="delete"]',
@@ -294,6 +298,9 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 else if (!resourceLocked) el.removeAttribute('title');
             });
         });
+        if (typeof this.applyFeatureDeveloperModeState === 'function') {
+            this.applyFeatureDeveloperModeState(scope);
+        }
     },
 
     // ============ URL 参数处理 ============
@@ -463,6 +470,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             device: 'device-config',
             peripheral: 'peripherals',
             'periph-exec': 'periph-exec',
+            'screen-panel': 'screen-panel',
             protocol: 'protocol',
             'device-control': 'device-control',
             logs: 'logs',
@@ -489,6 +497,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             device: () => { this.loadDeviceConfig({ deferHardware: true }); },
             peripheral: () => { this.loadPeripherals(); },
             'periph-exec': () => { this.loadPeriphExecPage(); },
+            'screen-panel': () => { this.loadScreenPanelPage(); },
             protocol: () => {
                 // 协议页每次进入都刷新轻量功能状态，避免启动期请求失败后
                 // 把临时的待定状态长期当成 Modbus 已禁用。
@@ -653,6 +662,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     _featureMenuMap: {
         ruleScript: 'rule-script',
         deviceControl: 'device-control',   // 设备大屏
+        screenPanel: 'screen-panel',       // 运行降级或缺屏时仍按用户启用意图保留入口
         logViewer: 'logs',                 // 设备日志
         userAdmin: 'users'                 // 用户管理
     },
@@ -721,7 +731,9 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             });
             res.data.features.forEach(function(f) {
                 if (f && f.key) {
-                    active[f.key] = f.compiled !== false && f.active === true;
+                    active[f.key] = f.key === 'screenPanel'
+                        ? (f.compiled !== false && f.userEnabled === true)
+                        : (f.compiled !== false && f.active === true);
                 }
             });
             applyMenuState(active);
@@ -742,6 +754,27 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                     active[key] = false;
                 }
             });
+            // Only the full response exposes user intent for a degraded panel.
+            // Supplement that field once and retain the lightweight runtime
+            // status for the other features, including entries omitted here.
+            if (Object.prototype.hasOwnProperty.call(map, 'screenPanel')) {
+                return featureGetter('/api/features/status')
+                    .then(function(fullResponse) {
+                        const features = fullResponse && fullResponse.success &&
+                            fullResponse.data && fullResponse.data.features;
+                        if (!Array.isArray(features)) throw new Error('feature status unavailable');
+                        const panel = features.find(function(feature) {
+                            return feature && feature.key === 'screenPanel';
+                        });
+                        active.screenPanel = !!panel && panel.compiled !== false && panel.userEnabled === true;
+                        applyMenuState(active);
+                        return res;
+                    })
+                    .catch(function() {
+                        applyMenuState(active);
+                        return res;
+                    });
+            }
             applyMenuState(active);
             return res;
         };
@@ -807,7 +840,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         const pageAlias = { monitor: 'dashboard' };
         const normalizedPage = pageAlias[page] || page;
-        const featureEntry = normalizedPage === 'device-control' ? 'deviceControl' : null;
+        const featureEntry = Object.keys(this._featureMenuMap || {}).find((key) =>
+            this._featureMenuMap[key] === normalizedPage) || null;
         if (featureEntry && this._featureActive === null &&
             typeof this.applyFeatureMenuVisibility === 'function') {
             await this.applyFeatureMenuVisibility();
@@ -887,6 +921,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-gpio': _t('state-page-gpio') !== 'state-page-gpio' ? _t('state-page-gpio') : 'GPIO配置',
             'page-title-peripheral': _t('state-page-peripherals') !== 'state-page-peripherals' ? _t('state-page-peripherals') : '外设配置',
             'page-title-periph-exec': _t('state-page-periph-exec') !== 'state-page-periph-exec' ? _t('state-page-periph-exec') : '外设执行',
+            'page-title-screen-panel': '智能面板',
             'page-title-users': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
             'page-title-device-control': _t('state-page-fullscreen') !== 'state-page-fullscreen' ? _t('state-page-fullscreen') : '设备大屏',
             'page-title-rule-script': _t('state-page-rule-scripts') !== 'state-page-rule-scripts' ? _t('state-page-rule-scripts') : '规则脚本',
@@ -925,7 +960,15 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         }
 
         // 禁用功能的直达页面只保留轻量提示，不加载运行模块或业务接口。
-        if (featureUnavailable) return;
+        // This path never runs the module loader's finally block, so it must
+        // release the temporary loading gate itself. Otherwise the visible
+        // explanation remains inert and disappears from the accessibility tree.
+        if (featureUnavailable) {
+            target.removeAttribute('inert');
+            target.removeAttribute('aria-busy');
+            target.removeAttribute('data-module-loading');
+            return;
+        }
 
         const runLoader = () => {
             if (navSeq !== this._pageNavSeq || this.currentPage !== normalizedPage) return;
@@ -991,14 +1034,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     _setText(id, text) {
         const el = document.getElementById(id);
         if (el) el.textContent = text;
-    },
-
-    /**
-     * 设置 HTML 内容
-     */
-    _setHtml(id, html) {
-        const el = document.getElementById(id);
-        if (el) el.innerHTML = html;
     },
 
     /**

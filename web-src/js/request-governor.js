@@ -24,6 +24,13 @@
     const MEMORY_PRESSURE_NOTICE_COOLDOWN_MS = 5000;
     var lastMemoryPressureNoticeAt = 0;
 
+    // FASTBEE_WEB_PROFILE_REQUEST_LIMITS_START
+    const WEB_PROFILE_REQUEST_LIMITS = Object.freeze({
+        maxConcurrent: 2,
+        maxWeight: 2
+    });
+    // FASTBEE_WEB_PROFILE_REQUEST_LIMITS_END
+
     function isMemoryPressure503(data) {
         if (!data) return false;
 
@@ -227,6 +234,10 @@
         '/api/periph-exec/events/dynamic': { tier: 'heavy', cost: 3, cacheTtl: 15000, timeoutMs: 15000 },
         '/api/periph-exec/events/categories': { tier: 'cheap', cost: 1, cacheTtl: 120000, timeoutMs: 10000 },
         '/api/periph-exec/trigger-types': { tier: 'cheap', cost: 1, cacheTtl: 120000, timeoutMs: 10000 },
+        // Hardware/type descriptors are shared across peripheral and rule pages.
+        // Peripheral writes invalidate this child path through the existing cache
+        // invalidator, so repeated navigation need not allocate the large catalog.
+        '/api/peripherals/types': { tier: 'heavy', cost: 2, cacheTtl: 60000, timeoutMs: 15000 },
         '/api/modbus/coil/control': { tier: 'normal', cost: 1, timeoutMs: 12000 },
         '/api/modbus/coil/batch': { tier: 'heavy', cost: 3, timeoutMs: 15000 },
         '/api/modbus/coil/delay': { tier: 'normal', cost: 2, timeoutMs: 15000 },
@@ -448,8 +459,8 @@
             source: 'init'
         },
 
-        MAX_CONCURRENT: 2,
-        MAX_INFLIGHT_WEIGHT: 2,
+        MAX_CONCURRENT: WEB_PROFILE_REQUEST_LIMITS.maxConcurrent,
+        MAX_INFLIGHT_WEIGHT: WEB_PROFILE_REQUEST_LIMITS.maxWeight,
         MAX_HEAVY_INFLIGHT: 1,
         BATCH_WINDOW_MS: 25,
 
@@ -550,6 +561,12 @@
 
         _canStartEntry: function (entry) {
             var limits = this._getEffectiveLimits();
+            var authentication = entry.normalizedPath.indexOf('/api/auth/') === 0;
+            var explicitControl = entry.method !== 'GET' && entry.normalizedPath !== '/api/batch'
+                && entry.priority >= CONTROL_PRIORITY;
+            // A foreground read is still a read. Its high priority must not
+            // defeat Retry-After and restart a burst while the device recovers.
+            if (Date.now() < this._cooldownUntil && !authentication && !explicitControl) return false;
             if (limits.blockSilent && entry.priority <= 0) return false;
             if (this._inflight >= limits.maxConcurrent) return false;
             if (entry.profile && entry.profile.tier === 'heavy' && this._heavyInflight >= limits.maxHeavy) return false;
@@ -596,15 +613,7 @@
             }
 
             var now = Date.now();
-            var hasPriority = false;
-            for (var k = 0; k < this._queue.length; k++) {
-                if (this._queue[k].priority >= 2) {
-                    hasPriority = true;
-                    break;
-                }
-            }
-
-            if (!hasPriority && now < this._cooldownUntil && this._queue.length > 0) {
+            if (now < this._cooldownUntil && this._queue.length > 0) {
                 if (!this._cooldownTimer) {
                     var delay = this._cooldownUntil - now;
                     this._cooldownTimer = setTimeout(function () {
@@ -612,7 +621,6 @@
                         self._drain();
                     }, delay);
                 }
-                return;
             }
 
             while (this._queue.length > 0) {
@@ -636,7 +644,20 @@
                 _requestContext: entry
             });
             if (entry.abortController) requestOptions.signal = entry.abortController.signal;
-            request(entry.method, entry.path, requestOptions, entry.timeoutMs)
+            // On internal-DRAM targets the API and static loaders must share
+            // one transport budget. Separate one-at-a-time queues still let a
+            // large module response overlap JSON allocation on the device.
+            var transmit = function () {
+                if (entry.pageAborted) {
+                    var error = new Error('Request cancelled before transmission');
+                    error._pageAborted = true;
+                    return Promise.reject(error);
+                }
+                return request(entry.method, entry.path, requestOptions, entry.timeoutMs);
+            };
+            var transfer = self.MAX_CONCURRENT === 1 && typeof window.__fastbeeQueueStaticAsset === 'function'
+                ? window.__fastbeeQueueStaticAsset(transmit) : transmit();
+            transfer
                 .then(function (data) {
                     if (entry.pageGen < self._pageGen && !(entry.options && entry.options.staleOk === true)) {
                         var staleErr = new Error('Request result ignored after page navigation');
@@ -1125,8 +1146,11 @@
         }, RESTART_TIMEOUT);
     };
 
-    window.apiFactoryReset = function () {
-        return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT);
+    window.apiFactoryReset = function (data) {
+        return request('POST', '/api/system/factory-reset', {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: toUrlEncoded(data || {})
+        }, RESTART_TIMEOUT);
     };
 
     window.apiMqttTest = function (data) {

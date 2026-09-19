@@ -51,6 +51,11 @@ static void fastbee_terminate_handler() {
 }
 
 void setup() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && ARDUINO_USB_CDC_ON_BOOT && !ARDUINO_USB_MODE
+    // Production panels enter the ROM bootloader with BOOT + RESET. Ignore
+    // host CDC line-state probes so serial discovery cannot reboot the device.
+    Serial.enableReboot(false);
+#endif
     Serial.begin(115200);
     delay(100);  // 115200 波特率下 100ms 足够输出 ~1150 字节
 

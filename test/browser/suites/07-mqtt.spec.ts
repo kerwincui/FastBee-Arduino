@@ -242,6 +242,34 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     console.log(`发布主题输入框数量: ${count}`);
   });
 
+  test('MQTT-023A: OTA主题选择自动填入FastBee完整路径', async ({ authPage }) => {
+    const publishHeader = authPage.locator('[data-args="mqtt-publish-body"]').first();
+    await publishHeader.click();
+    await expect(authPage.locator('#mqtt-publish-body')).toBeVisible();
+    await authPage.locator('#add-mqtt-topic-btn').click();
+
+    const publishItem = authPage.locator('#mqtt-publish-topics .mqtt-topic-item').last();
+    const publishAutoPrefix = publishItem.locator('.mqtt-autoprefix-input');
+    await publishAutoPrefix.check();
+    await publishItem.locator('.mqtt-topic-type-input').selectOption('5');
+    await expect(publishItem.locator('.mqtt-topic-input'))
+      .toHaveValue('/{deviceNum}/http/upgrade/reply');
+    await expect(publishAutoPrefix).not.toBeChecked();
+
+    const subscribeHeader = authPage.locator('[data-args="mqtt-subscribe-body"]').first();
+    await subscribeHeader.click();
+    await expect(authPage.locator('#mqtt-subscribe-body')).toBeVisible();
+    await authPage.locator('#add-mqtt-subscribe-btn').click();
+
+    const subscribeItem = authPage.locator('#mqtt-subscribe-topics .mqtt-topic-item').last();
+    const subscribeAutoPrefix = subscribeItem.locator('.mqtt-sub-autoprefix-input');
+    await subscribeAutoPrefix.check();
+    await subscribeItem.locator('.mqtt-sub-topic-type-input').selectOption('5');
+    await expect(subscribeItem.locator('.mqtt-sub-topic-input'))
+      .toHaveValue('/{deviceNum}/http/upgrade/set');
+    await expect(subscribeAutoPrefix).not.toBeChecked();
+  });
+
   // ========== 场景E: 遗嘱消息 ==========
 
   test('MQTT-024: 展开遗嘱消息配置', async ({ authPage }) => {

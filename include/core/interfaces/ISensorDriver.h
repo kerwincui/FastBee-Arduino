@@ -2,6 +2,7 @@
 #define I_SENSOR_DRIVER_H
 
 #include <Arduino.h>
+#include <cmath>
 
 /**
  * @brief 传感器读取结果（通用）
@@ -76,6 +77,10 @@ public:
      * @brief 获取最小读取间隔（毫秒）
      */
     virtual unsigned long getMinInterval() const { return 1000; }
+
+    // Stable diagnostic code, owned by the driver. Never expose a failed
+    // reading as a successful zero. Existing drivers retain a generic error.
+    virtual const char* getLastError() const { return ""; }
 };
 
 #endif // I_SENSOR_DRIVER_H

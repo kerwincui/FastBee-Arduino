@@ -1,183 +1,110 @@
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_I2C_SENSORS
 
-#include "core/interfaces/ISensorDriver.h"
 #include "core/DriverRegistry.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
-#include "systems/LoggerSystem.h"
+#include "peripherals/drivers/I2CSensorBus.h"
 
-#include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-
-/**
- * @brief MPU6050 六轴惯性测量单元驱动（加速度 + 陀螺仪 + 温度）
- * 
- * 通道定义：
- *   0 - accelX (m/s²) - X 轴加速度
- *   1 - accelY (m/s²) - Y 轴加速度
- *   2 - accelZ (m/s²) - Z 轴加速度
- *   3 - temperature (°C) - 芯片温度
- * 
- * 注：陀螺仪数据（gyroX/Y/Z）可通过 params 中 "mode":"gyro" 切换
- * 默认模式为加速度 + 温度，适用于倾斜检测和运动感知
- * 
- * 初始化参数（JSON）：
- *   {"addr": 0x68}  - I2C 地址（可选，默认 0x68，AD0=HIGH 时为 0x69）
- *   {"mode": "gyro"} - 切换为陀螺仪模式（通道 0-2 变为 gyroX/Y/Z rad/s）
- * 
- * 编译条件：FASTBEE_ENABLE_I2C_SENSORS=1（仅 esp32s3-full）
- */
-class MPU6050Driver : public ISensorDriver {
+// MPU-6000/MPU-6050 register map rev 4.2. Preserve the public four-channel
+// accel/gyro modes while avoiding vendor begin()'s unbounded reset polling.
+class MPU6050Driver final : public ISensorDriver {
 public:
-    MPU6050Driver() = default;
-    ~MPU6050Driver() override { deinit(); }
-
     const char* getName() const override { return "MPU6050"; }
     uint8_t getChannelCount() const override { return 4; }
-
     const char* getChannelName(uint8_t channel) const override {
-        if (_gyroMode) {
-            switch (channel) {
-                case 0: return "gyroX";
-                case 1: return "gyroY";
-                case 2: return "gyroZ";
-                case 3: return "temperature";
-                default: return "unknown";
-            }
-        }
-        switch (channel) {
-            case 0: return "accelX";
-            case 1: return "accelY";
-            case 2: return "accelZ";
-            case 3: return "temperature";
-            default: return "unknown";
-        }
+        static const char* const accel[] = {"accelX", "accelY", "accelZ", "temperature"};
+        static const char* const gyro[] = {"gyroX", "gyroY", "gyroZ", "temperature"};
+        return channel < 4 ? (_gyroMode ? gyro[channel] : accel[channel]) : "unknown";
     }
-
     const char* getChannelUnit(uint8_t channel) const override {
-        if (_gyroMode) {
-            switch (channel) {
-                case 0: case 1: case 2: return "rad/s";
-                case 3: return "°C";
-                default: return "";
-            }
-        }
-        switch (channel) {
-            case 0: case 1: case 2: return "m/s²";
-            case 3: return "°C";
-            default: return "";
-        }
+        return channel > 3 ? "" : channel == 3 ? "\xC2\xB0" "C" :
+            _gyroMode ? "rad/s" : "m/s\xC2\xB2";
     }
 
     bool init(uint8_t pin, const char* params = nullptr) override {
-        if (_initialized) return true;
-
-        // 运行时功能门控：用户可在 Web UI 禁用 i2cSensors
-        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors")) return false;
-
-        // 内存预算门控：编译启用但启动时 DRAM 不足则自动降级
-        if (FastBee::FeatureBudgetRegistry::instance().isDenied("i2cSensors")) return false;
-
-        _addr = 0x68;
-        _gyroMode = false;
-
-        // 解析可选参数
-        if (params && params[0] == '{') {
-            const char* addrStr = strstr(params, "\"addr\"");
-            if (addrStr) {
-                addrStr = strchr(addrStr, ':');
-                if (addrStr) _addr = (uint8_t)strtol(addrStr + 1, nullptr, 0);
-            }
-            if (strstr(params, "\"gyro\"")) {
-                _gyroMode = true;
-            }
+        (void)pin;
+        deinit();
+        if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors") ||
+            FastBee::FeatureBudgetRegistry::instance().isDenied("i2cSensors")) {
+            return _bus.fail("MPU6050_FEATURE_UNAVAILABLE");
         }
-
-        _mpu = new Adafruit_MPU6050();
-
-        if (!_mpu->begin(_addr, &Wire)) {
-            // 尝试备用地址
-            uint8_t altAddr = (_addr == 0x68) ? 0x69 : 0x68;
-            if (!_mpu->begin(altAddr, &Wire)) {
-                LOGGER.errorf("[MPU6050] Init failed at 0x%02X and 0x%02X", _addr, altAddr);
-                delete _mpu;
-                _mpu = nullptr;
-                return false;
-            }
-            _addr = altAddr;
-        }
-
-        // 配置测量范围
-        _mpu->setAccelerometerRange(MPU6050_RANGE_8_G);     // ±8g
-        _mpu->setGyroRange(MPU6050_RANGE_500_DEG);          // ±500°/s
-        _mpu->setFilterBandwidth(MPU6050_BAND_21_HZ);       // 低通滤波 21Hz
-
-        _initialized = true;
-        LOGGER.infof("[MPU6050] Initialized at 0x%02X mode=%s",
-                     _addr, _gyroMode ? "gyro" : "accel");
+        JsonDocument doc;
+        if (!_bus.open(this, getName(), params, doc)) return false;
+        _gyroMode = doc["mode"].is<const char*>()
+            ? strcmp(doc["mode"].as<const char*>(), "gyro") == 0
+            : (doc["mode"] | 0) == 1;
+        uint8_t id = 0;
+        if (!_bus.readRegister(0x75, &id, 1)) return failInit();
+        if (id != 0x68) { _bus.fail("MPU6050_DEVICE_ID_MISMATCH"); return failInit(); }
+        if (!writeRegister(0x6b, 0x80)) return failInit();
+        const uint32_t started = static_cast<uint32_t>(millis());
+        uint8_t power = 0x80;
+        do {
+            delay(1);
+            if (!_bus.readRegister(0x6b, &power, 1)) return failInit();
+            if (!(power & 0x80)) break;
+        } while (static_cast<uint32_t>(millis() - started) < 200);
+        if (power & 0x80) { _bus.fail("MPU6050_RESET_TIMEOUT"); return failInit(); }
+        delay(100);
+        if (!writeRegister(0x68, 0x07)) return failInit();
+        delay(100);
+        if (!configure()) return failInit();
+        _ready = true;
         return true;
     }
 
     bool read(SensorReading& reading) override {
-        if (!_initialized || !_mpu) {
-            reading.success = false;
-            return false;
+        reading = SensorReading();
+        if (!_ready) return _bus.fail("MPU6050_NOT_INITIALIZED");
+        uint8_t power = 0, config[3] = {};
+        if (!_bus.readRegister(0x6b, &power, 1) ||
+            !_bus.readRegister(0x1a, config, sizeof(config))) return false;
+        // A module-only reset must not silently change the acceleration/gyro
+        // scale. Restore and allow stabilization before publishing a sample.
+        if (power != 1 || config[0] != 4 || config[1] != 8 || config[2] != 16) {
+            if (!configure()) return false;
         }
-
-        unsigned long now = millis();
-        if (_lastReading.success && (now - _lastReading.timestamp) < getMinInterval()) {
-            reading = _lastReading;
-            return true;
+        uint8_t data[14];
+        if (!_bus.readRegister(0x3b, data, sizeof(data))) return false;
+        const uint8_t offset = _gyroMode ? 8 : 0;
+        const float scale = _gyroMode ? (0.0174532925199433f / 65.5f) : (9.80665f / 4096.0f);
+        for (uint8_t axis = 0; axis < 3; ++axis) {
+            const uint8_t index = offset + axis * 2;
+            const int16_t raw = static_cast<int16_t>((uint16_t(data[index]) << 8) | data[index + 1]);
+            if (raw == INT16_MIN || raw == INT16_MAX) return _bus.fail("MPU6050_MEASUREMENT_OUT_OF_RANGE");
+            reading.values[axis] = raw * scale;
         }
-
-        sensors_event_t accel, gyro, temp;
-        _mpu->getEvent(&accel, &gyro, &temp);
-
-        reading.success = true;
+        const int16_t temperature = static_cast<int16_t>((uint16_t(data[6]) << 8) | data[7]);
+        reading.values[3] = temperature / 340.0f + 36.53f;
         reading.channelCount = 4;
-        reading.timestamp = now;
-
-        if (_gyroMode) {
-            reading.values[0] = gyro.gyro.x;
-            reading.values[1] = gyro.gyro.y;
-            reading.values[2] = gyro.gyro.z;
-        } else {
-            reading.values[0] = accel.acceleration.x;
-            reading.values[1] = accel.acceleration.y;
-            reading.values[2] = accel.acceleration.z;
-        }
-        reading.values[3] = temp.temperature;
-
-        _lastReading = reading;
-
-        LOGGER.debugf("[MPU6050] %s X=%.2f Y=%.2f Z=%.2f T=%.1f°C",
-                     _gyroMode ? "Gyro" : "Accel",
-                     reading.values[0], reading.values[1],
-                     reading.values[2], reading.values[3]);
+        reading.timestamp = millis();
+        reading.success = true;
         return true;
     }
 
-    void deinit() override {
-        if (_mpu) {
-            delete _mpu;
-            _mpu = nullptr;
-        }
-        _initialized = false;
-    }
-
+    void deinit() override { _ready = false; _bus.close(); }
     unsigned long getMinInterval() const override { return 100; }
+    const char* getLastError() const override { return _bus.error(); }
 
 private:
-    Adafruit_MPU6050* _mpu = nullptr;
-    uint8_t _addr = 0x68;
-    bool _initialized = false;
+    bool writeRegister(uint8_t reg, uint8_t value) {
+        const uint8_t bytes[] = {reg, value};
+        return _bus.write(bytes, sizeof(bytes));
+    }
+    bool configure() {
+        // 1 kHz sampling, 21 Hz low-pass, +/-500 deg/s and +/-8 g.
+        if (!writeRegister(0x19, 0) || !writeRegister(0x1a, 4) ||
+            !writeRegister(0x1b, 8) || !writeRegister(0x1c, 16) ||
+            !writeRegister(0x6c, 0) || !writeRegister(0x6b, 1)) return false;
+        delay(100);
+        return true;
+    }
+    bool failInit() { deinit(); return false; }
+    FastBee::I2CSensorBus _bus;
+    bool _ready = false;
     bool _gyroMode = false;
-    SensorReading _lastReading;
 };
 
-// 自动注册到 DriverRegistry
 FASTBEE_REGISTER_SENSOR("MPU6050", MPU6050Driver);
-
-#endif // FASTBEE_ENABLE_I2C_SENSORS
+#endif

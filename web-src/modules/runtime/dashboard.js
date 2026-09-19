@@ -177,10 +177,11 @@
 
                     // 网络状态
                     const network = data.network || {};
-                    const netStatus = network.connected ?
-                        `<span class="u-text-success">●</span> 已连接 (${network.ssid || 'N/A'})` :
-                        `<span class="u-text-danger">●</span> 未连接`;
-                    this._setHtml('monitor-network-status', netStatus);
+                    this._renderDashboardConnectionStatus(
+                        'monitor-network-status',
+                        network.connected === true,
+                        network.ssid || 'N/A'
+                    );
                     this._setText('monitor-ip', network.ipAddress || '--');
 
                     // Flash 存储
@@ -298,6 +299,29 @@
         /**
          * 应用网络状态数据到 DOM
          */
+        _renderDashboardConnectionStatus(id, connected, ssid) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = '';
+            const dot = document.createElement('span');
+            dot.className = connected ? 'u-text-success' : 'u-text-danger';
+            dot.textContent = '●';
+            el.appendChild(dot);
+            el.appendChild(document.createTextNode(
+                connected ? ' 已连接 (' + String(ssid || 'N/A') + ')' : ' 未连接'
+            ));
+        },
+
+        _renderDashboardBadge(id, tone, text) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = '';
+            const badge = document.createElement('span');
+            badge.className = 'badge badge-' + tone;
+            badge.textContent = String(text == null || text === '' ? '--' : text);
+            el.appendChild(badge);
+        },
+
         _applyNetworkStatus(res) {
             const d = res.data || {};
         
@@ -308,24 +332,16 @@
                         ? val
                         : '--';
             };
-            const setHtml = (id, html) => {
-                const el = document.getElementById(id);
-                if (el) el.innerHTML = html;
-            };
-        
             // 状态徽章
             const statusMap = {
-                connected: '<span class="badge badge-success">已连接</span>',
-                disconnected: '<span class="badge badge-danger">未连接</span>',
-                connecting: '<span class="badge badge-warning">连接中...</span>',
-                ap_mode: '<span class="badge badge-primary">AP 模式</span>',
-                failed: '<span class="badge badge-danger">连接失败</span>',
+                connected: { tone: 'success', text: '已连接' },
+                disconnected: { tone: 'danger', text: '未连接' },
+                connecting: { tone: 'warning', text: '连接中...' },
+                ap_mode: { tone: 'primary', text: 'AP 模式' },
+                failed: { tone: 'danger', text: '连接失败' },
             };
-            setHtml(
-                'ns-status',
-                statusMap[d.status] ||
-                    `<span class="badge badge-info">${d.status || '--'}</span>`
-            );
+            const status = statusMap[d.status] || { tone: 'info', text: d.status || '--' };
+            this._renderDashboardBadge('ns-status', status.tone, status.text);
         
             // STA 信息
             setText('ns-ssid', d.ssid);
@@ -355,11 +371,14 @@
                         : pct >= 40
                         ? 'u-text-warning'
                         : 'u-text-danger';
-                setHtml(
-                    'ns-rssi',
-                    `<span class="${toneClass}">${rssi} dBm (${pct}%)</span>`
-                );
+                const rssiEl = document.getElementById('ns-rssi');
+                if (rssiEl) {
+                    rssiEl.className = toneClass;
+                    rssiEl.textContent = String(rssi) + ' dBm (' + String(pct) + '%)';
+                }
             } else {
+                const rssiEl = document.getElementById('ns-rssi');
+                if (rssiEl) rssiEl.className = '';
                 setText('ns-rssi', '--');
             }
         
@@ -392,17 +411,15 @@
             );
             setText('ns-tx-count', d.txCount !== undefined ? d.txCount + ' 条' : '--');
             setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + ' 条' : '--');
-            setHtml(
+            this._renderDashboardBadge(
                 'ns-internet',
-                d.internetAvailable
-                    ? '<span class="badge badge-success">可访问</span>'
-                    : '<span class="badge badge-danger">不可访问</span>'
+                d.internetAvailable ? 'success' : 'danger',
+                d.internetAvailable ? '可访问' : '不可访问'
             );
-            setHtml(
+            this._renderDashboardBadge(
                 'ns-conflict',
-                d.conflictDetected
-                    ? '<span class="badge badge-danger">已检测到冲突</span>'
-                    : '<span class="badge badge-success">无冲突</span>'
+                d.conflictDetected ? 'danger' : 'success',
+                d.conflictDetected ? '已检测到冲突' : '无冲突'
             );
             setText('ns-uptime', d.uptimeFormatted || '--');
         },

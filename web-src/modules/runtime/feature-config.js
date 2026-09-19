@@ -30,7 +30,7 @@
             }
             this.loadFeatureStatus();
             // 应用开发模式状态（按钮禁用/提示显示）
-            this.applyDeveloperModeState();
+            this.applyDeveloperModeState(document.getElementById('features-page') || document);
         },
 
         loadFeatureStatus() {
@@ -70,6 +70,7 @@
 
             // 初次渲染即应用依赖联动（父功能禁用的子功能行隐藏）
             this.applyDependencyPreview();
+            this.applyFeatureDeveloperModeState(list);
         },
 
         // 按 group 分组渲染功能表格
@@ -101,7 +102,7 @@
             var bundleCompiled = attached.every(function(child) { return child.compiled; });
             var bundleEnabled = attached.every(function(child) { return child.userEnabled; });
             var locked = !!f.locked || !f.compiled || !bundleCompiled;
-            var disabledAttr = locked ? ' disabled' : '';
+            var disabledAttr = locked ? ' disabled data-feature-locked="true"' : '';
             var checked = f.userEnabled && bundleEnabled ? ' checked' : '';
             var rowClass = locked ? ' class="feature-row-locked"' : '';
             var lockLabel = (!f.lockReason || f.lockReason === 'Not compiled into firmware')
@@ -123,8 +124,14 @@
             if (locked) {
                 statusText = '未编译';
                 statusClass = 'status-badge status-badge-warning';
+            } else if (f.requiresRestart && selected !== !!f.bootEnabled) {
+                statusText = selected ? '重启后启用' : '重启后停用';
+                statusClass = 'status-badge status-badge-warning';
+            } else if (f.runtimeDisabled || (selected && f.budgetPassed === false)) {
+                statusText = f.budgetPassed === false ? '内存预算不足' : '运行受限';
+                statusClass = 'status-badge status-badge-warning';
             } else if (selected && f.active !== false) {
-                statusText = '运行中';
+                statusText = f.onDemand ? '已启用 · 按需使用' : '运行中';
                 statusClass = 'status-badge status-badge-success';
             } else if (selected) {
                 statusText = '重启后启用';
@@ -134,7 +141,8 @@
                 statusClass = 'status-badge status-badge-warning';
             }
 
-            var statusTitle = locked ? ' title="' + escapeHtml(lockLabel) + '"' : '';
+            var statusTitle = locked ? ' title="' + escapeHtml(lockLabel) + '"'
+                : (f.runtimeDisableReason ? ' title="' + escapeHtml(f.runtimeDisableReason) + '"' : '');
 
             return '<tr' + rowClass + ' data-feature-key="' + escapeHtml(f.key) + '">' +
                 '<td>' + escapeHtml(f.name) + '</td>'
@@ -274,9 +282,10 @@
 
         // ========== 开发模式保护 ==========
 
-        applyDeveloperModeState(scope) {
+        applyFeatureDeveloperModeState(scope) {
             var disabled = !AppState.isDeveloperModeEnabled();
             var tip = AppState.getDeveloperModeDisabledText();
+            var root = scope && scope.querySelectorAll ? scope : document;
             
             // 控制保存按钮
             var saveBtn = document.getElementById('features-save-btn');
@@ -289,11 +298,12 @@
             }
             
             // 控制功能开关复选框
-            document.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
-                input.disabled = disabled;
-                input.parentElement.classList.toggle('dev-mode-locked', disabled);
+            root.querySelectorAll('[data-feature-toggle]').forEach(function(input) {
+                var featureLocked = input.getAttribute('data-feature-locked') === 'true';
+                input.disabled = disabled || featureLocked;
+                if (input.parentElement) input.parentElement.classList.toggle('dev-mode-locked', disabled);
                 if (disabled) input.title = tip;
-                else input.removeAttribute('title');
+                else if (!featureLocked) input.removeAttribute('title');
             });
             
             // 显示/隐藏开发模式提示条

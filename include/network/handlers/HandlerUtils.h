@@ -5,10 +5,12 @@
 #include <LittleFS.h>
 #include <vector>
 #include <memory>
+#include <new>
 #include <cstring>
 #include "core/FastBeeFramework.h"
 #include "systems/HealthMonitor.h"
 #include "utils/PsramJsonDocument.h"
+#include "network/JsonDocumentResponse.h"
 
 namespace HandlerUtils {
 
@@ -332,14 +334,28 @@ inline void writeJsonEscapedString(AsyncResponseStream* response, const String& 
     response->print('"');
 }
 
-// 发送 JSON 文档（序列化到 String 后一次性发送，避免 AsyncResponseStream cbuf 扩容 OOM）
+// Send JSON. Large fallback responses take ownership of doc; callers must not
+// reuse it after this call. The response releases it on completion/disconnect.
 inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
     const size_t responseSize = measureJson(doc);
-    if (checkResponseMemory(request, responseSize)) return;
-    if ((responseSize >= 2048 || responseSize + 512 > ESP.getMaxAllocHeap()) &&
-        sendJsonFromPsramBuffer(request, doc, responseSize)) {
+    if (doc.overflowed()) {
+        sendJsonError(request, 503, "JSON document allocation failed", 5);
         return;
     }
+    if (responseSize >= 2048 || responseSize + 512 > ESP.getMaxAllocHeap()) {
+        if (sendJsonFromPsramBuffer(request, doc, responseSize)) return;
+        // Retain the existing heap/fragmentation protection; only remove the
+        // unnecessary response-sized contiguous allocation requirement.
+        if (checkLowMemory(request, 8192)) return;
+        auto* response = new (std::nothrow) FastBee::JsonDocumentResponse(std::move(doc));
+        if (!response) {
+            sendJsonError(request, 503, "JSON response allocation failed", 5);
+            return;
+        }
+        sendWithClose(request, response);
+        return;
+    }
+    if (checkResponseMemory(request, responseSize)) return;
     String json;
     json.reserve(responseSize + 1);
     serializeJson(doc, json);

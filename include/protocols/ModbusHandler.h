@@ -306,24 +306,38 @@ public:
     // Master写操作（阻塞式）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
     
-    // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）
+    // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）。rawResponseHex
+    // 非空时保留 CRC/地址校验后的实际响应 ADU；超过结构化结果 32 项容量的
+    // 合法 RAW 读取仍可完成，但 OneShotResult.count 为 0，仅使用原始响应。
     OneShotResult readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
                                     uint16_t startAddress, uint16_t quantity,
-                                    bool isControl = false);
+                                    bool isControl = false,
+                                    uint16_t timeoutOverride = 0,
+                                    uint8_t retriesOverride = 0xFF,
+                                    String* rawResponseHex = nullptr);
     
     // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
     // emitCallback: 是否触发 dataCallback 回调（默认 true 保持向后兼容）
     //   PeriphExec 轮询时传 false 避免重复分发，直接轮询时保持 true
-    String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries, bool emitCallback = true);
+    String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries,
+                                  bool emitCallback = true,
+                                  bool* completed = nullptr,
+                                  uint32_t maxDurationMs = 0);
+
+    using PollFrameCallback = std::function<void(uint8_t, const String&)>;
 
     // 批量轮询（相邻寄存器合并读优化）：
     //   同一从站+同一功能码、地址间隔 ≤ MODBUS_MERGE_MAX_GAP 的读请求合并为一次范围读，
     //   读回后按原任务切片分发；合并读失败时回退为逐条重试一次。
     //   仅用于主站轮询路径；外部 API 显式直读仍使用 readRegistersOnce，不参与合并。
-    //   返回合并后的 JSON 数组字符串（各任务映射结果的并集）
+    //   JSON 模式返回各任务映射结果的合并数组；透传模式通过 rawFrameCallback
+    //   逐帧返回完整 HEX RTU 帧，函数返回 "[]"，避免多帧无边界拼接。
     String executePollTaskBatch(const uint8_t* taskIdxList, uint8_t idxCount,
                                 uint16_t timeout, uint8_t retries,
-                                uint16_t interDelayMs, bool emitCallback = false);
+                                uint16_t interDelayMs, bool emitCallback = false,
+                                uint32_t maxDurationMs = 30000,
+                                bool* completedAll = nullptr,
+                                PollFrameCallback rawFrameCallback = nullptr);
     
     // ========== 轮询统计接口（用于运行状态显示）==========
     // 单个轮询任务的缓存数据
@@ -355,20 +369,40 @@ public:
     uint32_t getLastPollAgeSec() const { return _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000UL : 0; }
     
     // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
-    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value, bool isControl = false);
-    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue, bool isControl = false);
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value,
+                                bool isControl = false, uint16_t timeoutOverride = 0,
+                                uint8_t retriesOverride = 0xFF);
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue,
+                                bool isControl = false, uint16_t timeoutOverride = 0,
+                                uint8_t retriesOverride = 0xFF);
     OneShotResult writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t startAddr,
                                           uint16_t quantity, const bool* values, bool isControl = false);
-    OneShotResult writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value, bool isControl = false);
+    OneShotResult writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value,
+                                    bool isControl = false, uint16_t timeoutOverride = 0,
+                                    uint8_t retriesOverride = 0xFF);
     OneShotResult writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
                                               uint16_t quantity, const uint16_t* values, bool isControl = false);
 
-    // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
+    // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）。
+    // 兼容接口仅返回 OneShotResult 可容纳的响应前缀；平台透传应使用
+    // sendRawFrameBytesOnce 取得完整原始响应。
     OneShotResult sendRawFrameOnce(uint8_t expectedSlaveAddr,
-                                    const uint8_t* dataWithoutCRC, uint8_t dataLen, bool isControl = false);
+                                    const uint8_t* dataWithoutCRC, size_t dataLen,
+                                    bool isControl = false);
+
+    // 完整原始帧通道：请求数据不含 CRC，函数自动追加；请求 ADU 和响应
+    // 均最多 MODBUS_BUFFER_SIZE 字节，长度在 256 字节边界不会回绕。
+    OneShotError sendRawFrameBytesOnce(uint8_t expectedSlaveAddr,
+                                       const uint8_t* dataWithoutCRC, size_t dataLen,
+                                       uint8_t* response, size_t responseCapacity,
+                                       size_t& responseLength, uint8_t& exceptionCode,
+                                       bool isControl = false);
 
     // 控制操作快速通道（高优先级，短超时）
-    OneShotResult sendControlRequest(uint8_t* requestBuffer, uint8_t requestLength, uint8_t expectedSlaveAddress);
+    OneShotResult sendControlRequest(uint8_t* requestBuffer, size_t requestLength,
+                                     uint8_t expectedSlaveAddress,
+                                     uint16_t timeoutOverride = 0,
+                                     uint8_t retriesOverride = 0xFF);
 
     // 调试帧信息（最近一次 OneShot 操作的 TX/RX hex 字符串）
     const String& getLastTxHex() const { return _lastTxHex; }
@@ -401,9 +435,9 @@ private:
     bool initializePins();
 public:
     // CRC 计算（Modbus CRC-16），对外开放以便 ProtocolManager 等调用
-    uint16_t calculateCRC(const uint8_t* data, uint8_t length);
+    uint16_t calculateCRC(const uint8_t* data, size_t length);
 private:
-    bool validateFrame(const uint8_t* frame, uint8_t length);
+    bool validateFrame(const uint8_t* frame, size_t length);
     void processModbusFrame(const uint8_t* frame, uint8_t length);
     void sendResponse(const uint8_t* data, uint8_t length);
     void setTransmitMode(bool transmit);
@@ -430,32 +464,82 @@ private:
 #endif
     
     // 一次性操作通用发送/接收辅助（提取自readRegistersOnce的通用逻辑）
-    OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
-                                      uint8_t expectedSlaveAddr);
+    OneShotResult sendOneShotRequest(const uint8_t* request, size_t reqLen,
+                                      uint8_t expectedSlaveAddr,
+                                      uint16_t timeoutOverride = 0,
+                                      uint8_t retriesOverride = 0xFF);
 
     // 原始帧事务（返回原始响应字节，供合并范围读解析，避免 OneShotResult 缓冲限制）
-    OneShotError _executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
+    OneShotError _executeModbusTransactionRaw(const uint8_t* request, size_t reqLen,
                                                uint8_t expectedSlaveAddr,
-                                               uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
-                                               uint8_t& exceptionCode);
-    OneShotError _sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
+                                               uint8_t* rawResp, size_t rawCap, size_t& rawLen,
+                                               uint8_t& exceptionCode,
+                                               uint16_t timeoutOverride = 0,
+                                               uint8_t retriesOverride = 0xFF,
+                                               bool bypassSlaveBackoff = false);
+    OneShotError _sendOneShotRequestRaw(const uint8_t* request, size_t reqLen,
                                          uint8_t expectedSlaveAddr,
-                                         uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
-                                         uint8_t& exceptionCode);
+                                         uint8_t* rawResp, size_t rawCap, size_t& rawLen,
+                                         uint8_t& exceptionCode,
+                                         uint16_t timeoutOverride = 0,
+                                         uint8_t retriesOverride = 0xFF,
+                                         bool bypassSlaveBackoff = false);
 
     // 合并读专用：范围读并解析到寄存器值缓冲（qty ≤ MODBUS_MAX_REGISTERS_PER_READ）
     OneShotError _readRangeInto(uint8_t slaveAddress, uint8_t functionCode,
                                 uint16_t startAddress, uint16_t quantity,
-                                uint16_t* outBuf, uint16_t outCap);
+                                uint16_t* outBuf, uint16_t outCap,
+                                uint16_t timeoutOverride = 0,
+                                uint8_t retriesOverride = 0xFF);
 
     // 轮询后处理（统计/缓存/自适应/hash去重/死区/心跳/JSON生成）
     // countStats: 是否计入轮询统计（批量合并路径按事务统一计数，成员传 false）
     String _finalizePollResult(uint8_t taskIdx, const OneShotResult& result,
-                               bool emitCallback, bool countStats);
+                               bool emitCallback, bool countStats,
+                               const String* rawResponseHex = nullptr);
     
     // 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
-    OneShotResult _executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
-                                             uint8_t expectedSlaveAddr);
+    OneShotResult _executeModbusTransaction(const uint8_t* request, size_t reqLen,
+                                             uint8_t expectedSlaveAddr,
+                                             uint16_t timeoutOverride = 0,
+                                             uint8_t retriesOverride = 0xFF,
+                                             bool bypassSlaveBackoff = false);
+
+    // Poll-read circuit breaker state is fixed-size to avoid long-running heap
+    // fragmentation. The table has room for every configured poll task plus a
+    // few direct-read addresses; least-recently-used inactive slots are reused.
+    struct SlaveBackoffState {
+        uint8_t slaveAddress;
+        uint8_t consecutiveFailures;
+        uint8_t backoffLevel;
+        uint8_t lastError;
+        bool occupied;
+        bool halfOpen;
+        uint32_t cooldownUntil;
+        uint32_t lastTouched;
+        uint32_t timeoutCount;
+        uint32_t crcErrorCount;
+        uint32_t exceptionCount;
+        uint32_t successCount;
+        uint32_t skippedCount;
+        uint32_t halfOpenProbeCount;
+    };
+
+    static constexpr uint8_t SLAVE_BACKOFF_SLOT_COUNT =
+        Protocols::MODBUS_MAX_POLL_TASKS + 4;
+    static constexpr uint8_t SLAVE_FAILURE_THRESHOLD = 3;
+    static constexpr uint8_t SLAVE_MAX_BACKOFF_LEVEL = 6;
+    static constexpr uint32_t SLAVE_BACKOFF_MAX_MS = 30000UL;
+    static constexpr uint16_t SLAVE_BACKOFF_JITTER_WINDOW_MS = 251;
+
+    SlaveBackoffState* _findSlaveBackoffState(uint8_t slaveAddress, bool create,
+                                               uint32_t now);
+    bool _shouldDeferSlaveRequest(uint8_t slaveAddress, uint32_t now);
+    void _recordSlaveOutcome(uint8_t slaveAddress, OneShotError error, uint32_t now);
+    static bool _deadlineReached(uint32_t now, uint32_t deadline);
+    static uint32_t _computeSlaveBackoffMs(uint8_t slaveAddress,
+                                           uint8_t backoffLevel,
+                                           OneShotError error);
     
     // 线圈延时任务处理
     void processCoilDelayTasks();
@@ -463,6 +547,7 @@ private:
     // 一次性操作互斥标志和信号量
     volatile bool isOneShotReading;
     SemaphoreHandle_t _oneShotSemaphore;
+    SemaphoreHandle_t _pollStateMutex;    // 串行化批次及轮询缓存/统计更新
     volatile bool _controlPending;        // 控制操作挂起标志（高优先级通道）
     
     // 线圈延时任务队列
@@ -478,18 +563,19 @@ private:
     uint32_t _timeoutPollCount;    // 超时次数
     unsigned long _lastPollTime;   // 最后轮询时间（millis）
     
-    // 连续超时保护：防止持续超时耗尽堆内存导致 abort()
-    uint16_t _consecutiveTimeouts;          // 连续超时计数
-    unsigned long _cooldownUntil;           // 冷却结束时间（millis）
-    static constexpr uint16_t CONSECUTIVE_TIMEOUT_THRESHOLD = 6;   // 连续超时阈值
-    static constexpr unsigned long COOLDOWN_DURATION_MS = 30000;    // 冷却时长 30 秒
+    // Per-slave poll-read isolation. Control operations and write function
+    // codes bypass this table so a failed sensor cannot block actuator writes.
+    SlaveBackoffState _slaveBackoff[SLAVE_BACKOFF_SLOT_COUNT];
+    uint32_t _slaveBackoffSkips;
+    uint32_t _slaveBackoffEvictions;
     
     PollTaskCache _taskCache[Protocols::MODBUS_MAX_POLL_TASKS];
+    void publishPollObservations(uint8_t taskIdx, bool sampled);
+    void invalidatePollObservations();
 
-    // 合并读静态缓冲区（受限大小：125 寄存器 = 250 字节数据 + 256 字节原始响应帧）
-    // OneShot 事务由信号量串行化，成员缓冲不会并发冲突
+    // 合并读静态缓冲区（125 寄存器 = 250 字节）。由 _pollStateMutex
+    // 保护整个读取、切片与缓存更新阶段，而非只保护串口收发阶段。
     uint16_t _mergeReadBuf[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
-    uint8_t  _mergeRespBuf[Protocols::MODBUS_BUFFER_SIZE];
     
 #if FASTBEE_MODBUS_SLAVE_ENABLE
     // 寄存器模拟存储（从站模式使用）

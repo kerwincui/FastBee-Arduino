@@ -15,6 +15,11 @@
 #include "utils/StringUtils.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <cmath>
+#include <algorithm>
+#if FASTBEE_ENABLE_PERIPH_EXEC && (FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY)
+#include "core/PeriphExecManager.h"
+#endif
 
 #if FASTBEE_ENABLE_MODBUS
 
@@ -26,6 +31,7 @@
 namespace {
 constexpr uint16_t MODBUS_MIN_RESPONSE_TIMEOUT_MS = 100;
 constexpr uint16_t MODBUS_MAX_RESPONSE_TIMEOUT_MS = 5000;
+constexpr uint16_t MODBUS_BUS_ACQUIRE_TIMEOUT_MS = 2000;
 constexpr uint8_t MODBUS_MAX_MASTER_RETRIES = 3;
 constexpr uint16_t MODBUS_MIN_INTER_POLL_DELAY_MS = 20;
 constexpr uint16_t MODBUS_MAX_INTER_POLL_DELAY_MS = 1000;
@@ -33,6 +39,62 @@ constexpr uint16_t MODBUS_MIN_POLL_INTERVAL_SEC = 2;
 constexpr uint16_t MODBUS_SAFE_POLL_INTERVAL_SEC = 5;
 constexpr uint16_t MODBUS_MAX_POLL_INTERVAL_SEC = 3600;
 constexpr uint8_t MODBUS_HEAVY_TASK_THRESHOLD = 4;
+
+class RecursiveSemaphoreGuard {
+public:
+    explicit RecursiveSemaphoreGuard(SemaphoreHandle_t mutex,
+                                     TickType_t timeout = portMAX_DELAY)
+        : _mutex(mutex), _locked(false) {
+        if (_mutex) _locked = xSemaphoreTakeRecursive(_mutex, timeout) == pdTRUE;
+    }
+    ~RecursiveSemaphoreGuard() {
+        if (_locked && _mutex) xSemaphoreGiveRecursive(_mutex);
+    }
+    bool isLocked() const { return _locked; }
+
+    RecursiveSemaphoreGuard(const RecursiveSemaphoreGuard&) = delete;
+    RecursiveSemaphoreGuard& operator=(const RecursiveSemaphoreGuard&) = delete;
+
+private:
+    SemaphoreHandle_t _mutex;
+    bool _locked;
+};
+
+static bool fitTransactionPolicyToBudget(uint16_t requestedTimeout,
+                                         uint8_t requestedRetries,
+                                         uint32_t remainingMs,
+                                         uint16_t& effectiveTimeout,
+                                         uint8_t& effectiveRetries) {
+    if (remainingMs <= MODBUS_BUS_ACQUIRE_TIMEOUT_MS +
+                           MODBUS_MIN_RESPONSE_TIMEOUT_MS) {
+        return false;
+    }
+    const uint32_t transactionBudget =
+        remainingMs - MODBUS_BUS_ACQUIRE_TIMEOUT_MS;
+    const uint16_t maxTimeout = static_cast<uint16_t>(
+        transactionBudget > MODBUS_MAX_RESPONSE_TIMEOUT_MS
+            ? MODBUS_MAX_RESPONSE_TIMEOUT_MS
+            : transactionBudget);
+    effectiveTimeout = requestedTimeout == 0
+        ? MODBUS_MIN_RESPONSE_TIMEOUT_MS
+        : requestedTimeout;
+    if (effectiveTimeout < MODBUS_MIN_RESPONSE_TIMEOUT_MS) {
+        effectiveTimeout = MODBUS_MIN_RESPONSE_TIMEOUT_MS;
+    } else if (effectiveTimeout > maxTimeout) {
+        effectiveTimeout = maxTimeout;
+    }
+    const uint32_t attemptBudget = static_cast<uint32_t>(effectiveTimeout) + 50U;
+    uint32_t maxAttempts = transactionBudget / attemptBudget;
+    if (maxAttempts == 0) maxAttempts = 1;
+    effectiveRetries = requestedRetries;
+    if (effectiveRetries > MODBUS_MAX_MASTER_RETRIES) {
+        effectiveRetries = MODBUS_MAX_MASTER_RETRIES;
+    }
+    if (effectiveRetries + 1U > maxAttempts) {
+        effectiveRetries = static_cast<uint8_t>(maxAttempts - 1U);
+    }
+    return true;
+}
 
 // 轮询数据 hash 去重（DJB2 算法）
 static uint32_t computeDataHash(const uint16_t* data, size_t count) {
@@ -76,16 +138,18 @@ ModbusHandler::ModbusHandler()
 #else
     : isInitialized(false), modbusSerial(&Serial1),
 #endif
-      isOneShotReading(false), _oneShotSemaphore(nullptr), _controlPending(false),
+      isOneShotReading(false), _oneShotSemaphore(nullptr), _pollStateMutex(nullptr),
+      _controlPending(false),
       _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), 
       _lastPollTime(0), _lastStatusHash(0),
-      _consecutiveTimeouts(0), _cooldownUntil(0) {
+      _slaveBackoffSkips(0), _slaveBackoffEvictions(0) {
 #if FASTBEE_MODBUS_SLAVE_ENABLE
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
     memset(discreteInputs, 0, sizeof(discreteInputs));
 #endif
+    memset(_slaveBackoff, 0, sizeof(_slaveBackoff));
     
     // 创建二值信号量（用于 OneShot 操作同步）
     _oneShotSemaphore = xSemaphoreCreateBinary();
@@ -93,6 +157,155 @@ ModbusHandler::ModbusHandler()
         // 初始状态：信号量可用（OneShot 未进行中）
         xSemaphoreGive(_oneShotSemaphore);
     }
+    _pollStateMutex = xSemaphoreCreateRecursiveMutex();
+}
+
+// 3.5 characters at 8N1 is 35 bit-times. The UART receive loops compare
+// against millis(), so convert microseconds to milliseconds with ceiling.
+static unsigned long modbusRtuFrameGapMs(uint32_t baudRate) {
+    if (baudRate == 0) return 2;
+    const unsigned long wholeMs = 35000UL / baudRate;
+    const unsigned long roundedMs = wholeMs + ((35000UL % baudRate) != 0 ? 1UL : 0UL);
+    return roundedMs < 2UL ? 2UL : roundedMs;
+}
+
+bool ModbusHandler::_deadlineReached(uint32_t now, uint32_t deadline) {
+    // Signed subtraction is safe across millis() wrap for deadlines below
+    // INT32_MAX milliseconds; the largest breaker delay is only 30 seconds.
+    return static_cast<int32_t>(now - deadline) >= 0;
+}
+
+ModbusHandler::SlaveBackoffState* ModbusHandler::_findSlaveBackoffState(
+    uint8_t slaveAddress, bool create, uint32_t now) {
+    if (slaveAddress == 0 || slaveAddress > 247) return nullptr;
+
+    int freeIndex = -1;
+    for (uint8_t i = 0; i < SLAVE_BACKOFF_SLOT_COUNT; i++) {
+        SlaveBackoffState& state = _slaveBackoff[i];
+        if (state.occupied && state.slaveAddress == slaveAddress) return &state;
+        if (!state.occupied && freeIndex < 0) freeIndex = i;
+    }
+    if (!create) return nullptr;
+
+    int targetIndex = freeIndex;
+    if (targetIndex < 0) {
+        uint32_t oldestAge = 0;
+        // Prefer an inactive/expired entry so an active breaker is not lost.
+        for (uint8_t i = 0; i < SLAVE_BACKOFF_SLOT_COUNT; i++) {
+            SlaveBackoffState& state = _slaveBackoff[i];
+            const bool active = state.cooldownUntil != 0 &&
+                                !_deadlineReached(now, state.cooldownUntil);
+            if (active) continue;
+            const uint32_t age = now - state.lastTouched;
+            if (targetIndex < 0 || age > oldestAge) {
+                targetIndex = i;
+                oldestAge = age;
+            }
+        }
+        // Every slot is cooling down. Reuse the least-recently-touched slot;
+        // this is bounded and only possible with more addresses than table slots.
+        if (targetIndex < 0) {
+            for (uint8_t i = 0; i < SLAVE_BACKOFF_SLOT_COUNT; i++) {
+                const uint32_t age = now - _slaveBackoff[i].lastTouched;
+                if (targetIndex < 0 || age > oldestAge) {
+                    targetIndex = i;
+                    oldestAge = age;
+                }
+            }
+        }
+        if (_slaveBackoffEvictions != UINT32_MAX) _slaveBackoffEvictions++;
+    }
+
+    SlaveBackoffState& state = _slaveBackoff[targetIndex];
+    memset(&state, 0, sizeof(state));
+    state.occupied = true;
+    state.slaveAddress = slaveAddress;
+    state.lastTouched = now;
+    return &state;
+}
+
+uint32_t ModbusHandler::_computeSlaveBackoffMs(uint8_t slaveAddress,
+                                                uint8_t backoffLevel,
+                                                OneShotError error) {
+    uint32_t baseMs = 1000UL;
+    if (error == ONESHOT_CRC_ERROR) baseMs = 500UL;
+    else if (error == ONESHOT_EXCEPTION) baseMs = 2000UL;
+
+    uint8_t shift = backoffLevel > 0 ? backoffLevel - 1 : 0;
+    if (shift > SLAVE_MAX_BACKOFF_LEVEL - 1) shift = SLAVE_MAX_BACKOFF_LEVEL - 1;
+    uint32_t backoffMs = baseMs << shift;
+    const uint32_t jitterMs =
+        (slaveAddress * 37UL + backoffLevel * 17UL +
+         static_cast<uint8_t>(error) * 13UL) % SLAVE_BACKOFF_JITTER_WINDOW_MS;
+    if (backoffMs > SLAVE_BACKOFF_MAX_MS - jitterMs) {
+        backoffMs = SLAVE_BACKOFF_MAX_MS - jitterMs;
+    }
+    return backoffMs + jitterMs;
+}
+
+bool ModbusHandler::_shouldDeferSlaveRequest(uint8_t slaveAddress, uint32_t now) {
+    SlaveBackoffState* state = _findSlaveBackoffState(slaveAddress, false, now);
+    if (!state || state->cooldownUntil == 0) return false;
+
+    state->lastTouched = now;
+    if (_deadlineReached(now, state->cooldownUntil)) {
+        state->cooldownUntil = 0;
+        state->halfOpen = true;
+        if (state->halfOpenProbeCount != UINT32_MAX) state->halfOpenProbeCount++;
+        LOG_INFOF("[Modbus] Slave %u backoff ended; allowing half-open probe",
+                  static_cast<unsigned>(slaveAddress));
+        return false;
+    }
+
+    if (state->skippedCount != UINT32_MAX) state->skippedCount++;
+    if (_slaveBackoffSkips != UINT32_MAX) _slaveBackoffSkips++;
+    const uint32_t remainingMs = state->cooldownUntil - now;
+    LOG_WARNINGF("[Modbus] Slave %u isolated for %lums; skipping poll read",
+                 static_cast<unsigned>(slaveAddress),
+                 static_cast<unsigned long>(remainingMs));
+    return true;
+}
+
+void ModbusHandler::_recordSlaveOutcome(uint8_t slaveAddress, OneShotError error,
+                                         uint32_t now) {
+    SlaveBackoffState* state = _findSlaveBackoffState(slaveAddress, true, now);
+    if (!state) return;
+
+    state->lastTouched = now;
+    state->lastError = static_cast<uint8_t>(error);
+    state->halfOpen = false;
+
+    if (error == ONESHOT_SUCCESS) {
+        if (state->successCount != UINT32_MAX) state->successCount++;
+        state->consecutiveFailures = 0;
+        state->backoffLevel = 0;
+        state->cooldownUntil = 0;
+        return;
+    }
+
+    uint32_t* errorCounter = nullptr;
+    if (error == ONESHOT_TIMEOUT) errorCounter = &state->timeoutCount;
+    else if (error == ONESHOT_CRC_ERROR) errorCounter = &state->crcErrorCount;
+    else if (error == ONESHOT_EXCEPTION) errorCounter = &state->exceptionCount;
+    else return;
+    if (*errorCounter != UINT32_MAX) (*errorCounter)++;
+
+    if (state->consecutiveFailures != UINT8_MAX) state->consecutiveFailures++;
+    if (state->consecutiveFailures < SLAVE_FAILURE_THRESHOLD) {
+        state->cooldownUntil = 0;
+        return;
+    }
+
+    if (state->backoffLevel < SLAVE_MAX_BACKOFF_LEVEL) state->backoffLevel++;
+    const uint32_t backoffMs = _computeSlaveBackoffMs(
+        slaveAddress, state->backoffLevel, error);
+    state->cooldownUntil = now + backoffMs;
+    LOG_WARNINGF(
+        "[Modbus] Slave %u failure=%u consecutive=%u; backoff=%lums level=%u",
+        static_cast<unsigned>(slaveAddress), static_cast<unsigned>(error),
+        static_cast<unsigned>(state->consecutiveFailures),
+        static_cast<unsigned long>(backoffMs),
+        static_cast<unsigned>(state->backoffLevel));
 }
 
 ModbusHandler::~ModbusHandler() {
@@ -102,11 +315,19 @@ ModbusHandler::~ModbusHandler() {
         vSemaphoreDelete(_oneShotSemaphore);
         _oneShotSemaphore = nullptr;
     }
+    if (_pollStateMutex) {
+        vSemaphoreDelete(_pollStateMutex);
+        _pollStateMutex = nullptr;
+    }
 }
 
 bool ModbusHandler::begin(const ModbusConfig& cfg) {
+    if (isInitialized) invalidatePollObservations();
     this->config = cfg;
     sanitizeConfig(this->config);
+    memset(_slaveBackoff, 0, sizeof(_slaveBackoff));
+    _slaveBackoffSkips = 0;
+    _slaveBackoffEvictions = 0;
     
     if (!initializePins()) {
         LOG_ERROR("Modbus: Pin initialization failed");
@@ -119,6 +340,7 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
     }
     
     isInitialized = true;
+    for (uint8_t i = 0; i < config.master.taskCount; ++i) publishPollObservations(i, false);
     
     const char* modeStr = (config.mode == MODBUS_MASTER) ? "Master" : "Slave";
     LOG_INFOF("Modbus: Initialized in %s mode", modeStr);
@@ -137,6 +359,12 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
 void ModbusHandler::sanitizeConfig(ModbusConfig& config) {
     bool masterChanged = false;
     bool heavyLoadAdjusted = false;
+
+    if (config.transferType != 0 && config.transferType != 1) {
+        LOG_WARNINGF("[Modbus] Invalid transferType=%u, falling back to JSON mode",
+                     static_cast<unsigned int>(config.transferType));
+        config.transferType = 0;
+    }
 
     uint16_t originalResponseTimeout = config.responseTimeout;
     uint16_t originalMasterTimeout = config.master.responseTimeout;
@@ -255,6 +483,7 @@ bool ModbusHandler::begin(const String& configPath) {
 
 void ModbusHandler::end() {
     if (isInitialized) {
+        invalidatePollObservations();
         modbusSerial->end();
         isInitialized = false;
         LOG_INFO("Modbus: Stopped");
@@ -289,6 +518,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         return false;
     }
     
+    if (isInitialized) invalidatePollObservations();
     if (doc.containsKey("slaveAddress"))
         config.slaveAddress = doc["slaveAddress"].as<uint8_t>();
     if (doc.containsKey("baudRate"))
@@ -451,6 +681,8 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     }
     
     LOG_INFO("Modbus: Config loaded successfully");
+    memset(_taskCache, 0, sizeof(_taskCache));
+    if (isInitialized) for (uint8_t i = 0; i < config.master.taskCount; ++i) publishPollObservations(i, false);
     return true;
 }
 
@@ -615,7 +847,8 @@ void ModbusHandler::handleSlave() {
         unsigned long currentTime = millis();
         
         // 帧超时检测（3.5字符时间）
-        if (index > 0 && (currentTime - slaveLastByteTime) > (35000000 / config.baudRate)) {
+        if (index > 0 &&
+            (currentTime - slaveLastByteTime) > modbusRtuFrameGapMs(config.baudRate)) {
             index = 0;
         }
         
@@ -820,9 +1053,9 @@ bool ModbusHandler::writeMultipleRegisters(uint16_t startAddr, uint16_t quantity
 
 #endif // FASTBEE_MODBUS_SLAVE_ENABLE (slave register ops)
 
-uint16_t ModbusHandler::calculateCRC(const uint8_t* data, uint8_t length) {
+uint16_t ModbusHandler::calculateCRC(const uint8_t* data, size_t length) {
     uint16_t crc = 0xFFFF;
-    for (uint8_t pos = 0; pos < length; pos++) {
+    for (size_t pos = 0; pos < length; pos++) {
         crc ^= (uint16_t)data[pos];
         for (uint8_t i = 8; i != 0; i--) {
             if ((crc & 0x0001) != 0) {
@@ -836,7 +1069,7 @@ uint16_t ModbusHandler::calculateCRC(const uint8_t* data, uint8_t length) {
     return crc;
 }
 
-bool ModbusHandler::validateFrame(const uint8_t* frame, uint8_t length) {
+bool ModbusHandler::validateFrame(const uint8_t* frame, size_t length) {
     if (length < 4) return false;
     
     uint16_t calculatedCRC = calculateCRC(frame, length - 2);
@@ -1375,8 +1608,12 @@ bool ModbusHandler::masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAdd
 // ========== 一次性寄存器读取（阻塞式，用于MQTT指令触发） ==========
 
 OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
-                                                uint16_t startAddress, uint16_t quantity, bool isControl) {
+                                                uint16_t startAddress, uint16_t quantity,
+                                                bool isControl, uint16_t timeoutOverride,
+                                                uint8_t retriesOverride,
+                                                String* rawResponseHex) {
     OneShotResult result;
+    if (rawResponseHex) *rawResponseHex = "";
 
     // 参数校验（读操作特有）
     if (functionCode < 0x01 || functionCode > 0x04) {
@@ -1385,7 +1622,10 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         LOG_WARNINGF("[Modbus] OneShot read: invalid function code 0x%02X", functionCode);
         return result;
     }
-    if (quantity == 0 || quantity > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
+    const uint16_t maxQuantity = rawResponseHex
+        ? Protocols::MODBUS_MAX_REGISTERS_PER_READ
+        : Protocols::MODBUS_ONESHOT_BUFFER_SIZE;
+    if (quantity == 0 || quantity > maxQuantity) {
         result.error = ONESHOT_EXCEPTION;
         result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
         LOG_WARNINGF("[Modbus] OneShot read: invalid quantity %d", quantity);
@@ -1407,21 +1647,49 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
     requestBuffer[6] = crc & 0xFF;
     requestBuffer[7] = (crc >> 8) & 0xFF;
 
-    // 使用通用发送/接收（控制操作使用快速通道）
-    OneShotResult rawResult = isControl ? sendControlRequest(requestBuffer, 8, slaveAddress)
-                                        : sendOneShotRequest(requestBuffer, 8, slaveAddress);
+    // 寄存器响应最多为 69 字节（32 个寄存器），不能借用只有 32 个槽位的
+    // OneShotResult 暂存原始帧。直接在字节缓冲中接收并解析最终寄存器值。
+    uint8_t rawResponse[Protocols::MODBUS_BUFFER_SIZE];
+    size_t respLen = 0;
+    uint8_t exceptionCode = 0;
+    if (isControl) _controlPending = true;
+    result.error = _sendOneShotRequestRaw(
+        requestBuffer, sizeof(requestBuffer), slaveAddress,
+        rawResponse, sizeof(rawResponse), respLen, exceptionCode,
+        timeoutOverride, retriesOverride, isControl);
+    if (isControl) _controlPending = false;
+    result.exceptionCode = exceptionCode;
 
-    if (rawResult.error != ONESHOT_SUCCESS) {
-        return rawResult;
+    // _sendOneShotRequestRaw only exposes bytes after CRC and slave-address
+    // validation. Preserve that exact ADU before structured parsing can reject
+    // an exception, unexpected function code, or non-standard response shape.
+    if (rawResponseHex && respLen > 0) {
+        rawResponseHex->reserve(respLen * 2U);
+        for (size_t i = 0; i < respLen; i++) {
+            char byteHex[3];
+            snprintf(byteHex, sizeof(byteHex), "%02X", rawResponse[i]);
+            *rawResponseHex += byteHex;
+        }
+        if (rawResponseHex->length() != respLen * 2U) {
+            LOG_WARNING("[Modbus] OneShot read: unable to preserve complete raw response");
+            *rawResponseHex = "";
+        }
+    }
+    if (result.error != ONESHOT_SUCCESS) {
+        return result;
+    }
+
+    // RAW callers may request the full Modbus read limit even though the
+    // structured OneShotResult stores only 32 decoded values. The validated
+    // ADU above is the authoritative result for those larger reads.
+    if (rawResponseHex && quantity > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
+        result.count = 0;
+        return result;
     }
 
     // 从原始响应中提取数据
-    // rawResult.data[] 中存储了原始响应字节（每个uint16存一个字节）
-    // rawResult.count 是原始响应字节数
-    uint8_t respLen = rawResult.count;
-
     // 功能码匹配
-    uint8_t respFC = (uint8_t)rawResult.data[1];
+    uint8_t respFC = rawResponse[1];
     if (respFC != functionCode) {
         LOG_WARNINGF("[Modbus] OneShot read: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respFC);
         result.error = ONESHOT_CRC_ERROR;
@@ -1430,7 +1698,7 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
 
     // 提取寄存器/线圈数据
     if (functionCode == 0x03 || functionCode == 0x04) {
-        uint8_t byteCount = (uint8_t)rawResult.data[2];
+        uint8_t byteCount = rawResponse[2];
         if (byteCount != quantity * 2) {
             LOG_WARNINGF("[Modbus] OneShot read: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
             result.error = ONESHOT_CRC_ERROR;
@@ -1438,15 +1706,16 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         }
         // 防御性检查：确保响应数据不越界
         uint16_t maxIdx = 3 + (quantity - 1) * 2 + 1;  // 最后需要访问的索引
-        if (maxIdx >= rawResult.count) {
-            LOG_WARNINGF("[Modbus] OneShot read: response too short (need idx %d, have %d bytes)", maxIdx, rawResult.count);
+        if (maxIdx >= respLen) {
+            LOG_WARNINGF("[Modbus] OneShot read: response too short (need idx %d, have %u bytes)",
+                         maxIdx, static_cast<unsigned>(respLen));
             result.error = ONESHOT_CRC_ERROR;
             return result;
         }
         for (uint16_t i = 0; i < quantity; i++) {
             uint16_t idx1 = 3 + i * 2;
             uint16_t idx2 = 4 + i * 2;
-            result.data[i] = ((uint16_t)(uint8_t)rawResult.data[idx1] << 8) | (uint8_t)rawResult.data[idx2];
+            result.data[i] = ((uint16_t)rawResponse[idx1] << 8) | rawResponse[idx2];
         }
     } else if (functionCode == 0x01 || functionCode == 0x02) {
         // 标准 FC 0x01/0x02 响应: [addr, FC, byteCount, data..., CRC_L, CRC_H]
@@ -1459,27 +1728,30 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         uint8_t actualByteCount;
         if (respLen == standardLen) {
             dataOffset = 3;
-            actualByteCount = (uint8_t)rawResult.data[2];
+            actualByteCount = rawResponse[2];
         } else if (respLen == nonStdLen) {
             dataOffset = 2;
             actualByteCount = expectedDataBytes;
-            LOG_INFOF("[Modbus] OneShot read: non-standard FC 0x%02X response (no byteCount field, %d bytes)", functionCode, respLen);
+            LOG_INFOF("[Modbus] OneShot read: non-standard FC 0x%02X response (no byteCount field, %u bytes)",
+                      functionCode, static_cast<unsigned>(respLen));
         } else {
             dataOffset = 3;
-            actualByteCount = (uint8_t)rawResult.data[2];
-            LOG_WARNINGF("[Modbus] OneShot read: unexpected FC 0x%02X response length %d (expected %d or %d)", functionCode, respLen, standardLen, nonStdLen);
+            actualByteCount = rawResponse[2];
+            LOG_WARNINGF("[Modbus] OneShot read: unexpected FC 0x%02X response length %u (expected %d or %d)",
+                         functionCode, static_cast<unsigned>(respLen), standardLen, nonStdLen);
         }
 
         // 调试：打印原始响应帧 hex
         {
             String rxHex = "";
-            for (uint8_t i = 0; i < respLen && i < 16; i++) {
+            for (size_t i = 0; i < respLen && i < 16; i++) {
                 if (i > 0) rxHex += ' ';
-                char h[4]; snprintf(h, sizeof(h), "%02X", (uint8_t)rawResult.data[i]);
+                char h[4]; snprintf(h, sizeof(h), "%02X", rawResponse[i]);
                 rxHex += h;
             }
-            LOG_INFOF("[Modbus] FC 0x%02X raw resp: [%s] len=%d dataOffset=%d byteCount=%d",
-                      functionCode, rxHex.c_str(), respLen, dataOffset, actualByteCount);
+            LOG_INFOF("[Modbus] FC 0x%02X raw resp: [%s] len=%u dataOffset=%d byteCount=%d",
+                      functionCode, rxHex.c_str(), static_cast<unsigned>(respLen),
+                      dataOffset, actualByteCount);
         }
 
         for (uint16_t i = 0; i < quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
@@ -1488,8 +1760,8 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
             // 防御性检查：确保访问索引不越界
             uint16_t accessIdx = (uint16_t)dataOffset + byteIdx;
             uint8_t dataByte = 0;
-            if (byteIdx < actualByteCount && accessIdx < rawResult.count) {
-                dataByte = (uint8_t)rawResult.data[accessIdx];
+            if (byteIdx < actualByteCount && accessIdx < respLen) {
+                dataByte = rawResponse[accessIdx];
             }
             result.data[i] = (dataByte & (1 << bitIdx)) ? 1 : 0;
             LOG_DEBUGF("[Modbus] FC 0x%02X CH%d: dataByte=0x%02X bitIdx=%d → value=%d",
@@ -1509,7 +1781,9 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
 // ============================================================================
 OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functionCode,
                                             uint16_t startAddress, uint16_t quantity,
-                                            uint16_t* outBuf, uint16_t outCap) {
+                                            uint16_t* outBuf, uint16_t outCap,
+                                            uint16_t timeoutOverride,
+                                            uint8_t retriesOverride) {
     // 参数校验
     if (!outBuf) return ONESHOT_EXCEPTION;
     if (functionCode < 0x01 || functionCode > 0x04) {
@@ -1536,24 +1810,27 @@ OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functio
     requestBuffer[6] = crc & 0xFF;
     requestBuffer[7] = (crc >> 8) & 0xFF;
 
-    // 发送并接收原始响应帧（成员缓冲，事务由信号量串行化）
-    uint8_t rawLen = 0;
+    // 响应使用调用栈局部缓冲。串口信号量只覆盖收发，若在释放后继续
+    // 解析共享成员缓冲，另一个 worker 可在切片期间覆盖响应。
+    uint8_t rawResponse[Protocols::MODBUS_BUFFER_SIZE];
+    size_t rawLen = 0;
     uint8_t exceptionCode = 0;
     OneShotError error = _sendOneShotRequestRaw(requestBuffer, 8, slaveAddress,
-                                                _mergeRespBuf, sizeof(_mergeRespBuf), rawLen, exceptionCode);
+                                                rawResponse, sizeof(rawResponse), rawLen,
+                                                exceptionCode, timeoutOverride, retriesOverride);
     if (error != ONESHOT_SUCCESS) {
         return error;
     }
 
     // 功能码匹配
-    uint8_t respFC = _mergeRespBuf[1];
+    uint8_t respFC = rawResponse[1];
     if (respFC != functionCode) {
         LOG_WARNINGF("[Modbus] MergedRead: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respFC);
         return ONESHOT_CRC_ERROR;
     }
 
     if (functionCode == 0x03 || functionCode == 0x04) {
-        uint16_t byteCount = _mergeRespBuf[2];
+        uint16_t byteCount = rawResponse[2];
         if (byteCount != (uint16_t)quantity * 2) {
             LOG_WARNINGF("[Modbus] MergedRead: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
             return ONESHOT_CRC_ERROR;
@@ -1567,7 +1844,7 @@ OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functio
         for (uint16_t i = 0; i < quantity; i++) {
             uint16_t idx1 = 3 + i * 2;
             uint16_t idx2 = 4 + i * 2;
-            outBuf[i] = ((uint16_t)_mergeRespBuf[idx1] << 8) | _mergeRespBuf[idx2];
+            outBuf[i] = ((uint16_t)rawResponse[idx1] << 8) | rawResponse[idx2];
         }
     } else {
         // FC 0x01/0x02：线圈/离散量按位展开为每元素 0/1（与 readRegistersOnce 一致）
@@ -1579,15 +1856,17 @@ OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functio
         uint8_t actualByteCount;
         if (rawLen == standardLen) {
             dataOffset = 3;
-            actualByteCount = _mergeRespBuf[2];
+            actualByteCount = rawResponse[2];
         } else if (rawLen == nonStdLen) {
             dataOffset = 2;
             actualByteCount = expectedDataBytes;
-            LOG_INFOF("[Modbus] MergedRead: non-standard FC 0x%02X response (no byteCount field, %d bytes)", functionCode, rawLen);
+            LOG_INFOF("[Modbus] MergedRead: non-standard FC 0x%02X response (no byteCount field, %u bytes)",
+                      functionCode, static_cast<unsigned>(rawLen));
         } else {
             dataOffset = 3;
-            actualByteCount = _mergeRespBuf[2];
-            LOG_WARNINGF("[Modbus] MergedRead: unexpected FC 0x%02X response length %d (expected %d or %d)", functionCode, rawLen, standardLen, nonStdLen);
+            actualByteCount = rawResponse[2];
+            LOG_WARNINGF("[Modbus] MergedRead: unexpected FC 0x%02X response length %u (expected %d or %d)",
+                         functionCode, static_cast<unsigned>(rawLen), standardLen, nonStdLen);
         }
 
         for (uint16_t i = 0; i < quantity; i++) {
@@ -1596,7 +1875,7 @@ OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functio
             uint16_t accessIdx = (uint16_t)dataOffset + byteIdx;
             uint8_t dataByte = 0;
             if (byteIdx < actualByteCount && accessIdx < rawLen) {
-                dataByte = _mergeRespBuf[accessIdx];
+                dataByte = rawResponse[accessIdx];
             }
             outBuf[i] = (dataByte & (1 << bitIdx)) ? 1 : 0;
         }
@@ -1609,24 +1888,36 @@ OneShotError ModbusHandler::_readRangeInto(uint8_t slaveAddress, uint8_t functio
 // ============================================================================
 // 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
 // ============================================================================
-OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
-                                                        uint8_t expectedSlaveAddr) {
+OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, size_t reqLen,
+                                                         uint8_t expectedSlaveAddr,
+                                                         uint16_t timeoutOverride,
+                                                         uint8_t retriesOverride,
+                                                         bool bypassSlaveBackoff) {
     OneShotResult result;
     result.error = ONESHOT_TIMEOUT;
     result.count = 0;
 
     uint8_t rawBuf[Protocols::MODBUS_BUFFER_SIZE];
-    uint8_t rawLen = 0;
-    result.error = _executeModbusTransactionRaw(request, reqLen, expectedSlaveAddr,
-                                                rawBuf, sizeof(rawBuf), rawLen, result.exceptionCode);
+    size_t rawLen = 0;
+    result.error = _executeModbusTransactionRaw(
+        request, reqLen, expectedSlaveAddr,
+        rawBuf, sizeof(rawBuf), rawLen, result.exceptionCode,
+        timeoutOverride, retriesOverride, bypassSlaveBackoff);
     if (result.error == ONESHOT_SUCCESS) {
-        // 成功 — 将原始响应帧存入 result.data（按uint16打包，便于调用者解析）
-        result.count = rawLen;  // 存储原始响应字节数
-        // 将响应字节逐一存入data数组（每个uint16存一个字节）
-        for (uint8_t i = 0; i < rawLen && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
+        // OneShotResult 是常规短响应兼容容器；count 必须与实际复制量一致。
+        const size_t copyLen = rawLen < Protocols::MODBUS_ONESHOT_BUFFER_SIZE
+                                   ? rawLen
+                                   : Protocols::MODBUS_ONESHOT_BUFFER_SIZE;
+        result.count = static_cast<uint16_t>(copyLen);
+        for (size_t i = 0; i < copyLen; i++) {
             result.data[i] = rawBuf[i];
         }
-        LOG_INFOF("[Modbus] OneShot: success, %d bytes response from slave %d", rawLen, expectedSlaveAddr);
+        if (copyLen < rawLen) {
+            LOG_WARNINGF("[Modbus] OneShot: response truncated for legacy result (%u/%u bytes)",
+                         static_cast<unsigned>(copyLen), static_cast<unsigned>(rawLen));
+        }
+        LOG_INFOF("[Modbus] OneShot: success, %u bytes response from slave %d",
+                  static_cast<unsigned>(rawLen), expectedSlaveAddr);
     }
     return result;
 }
@@ -1635,40 +1926,51 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
 // 原始帧事务：重试/超时/CRC 等核心通信逻辑，响应以原始字节返回
 // （合并范围读响应可达 255 字节，超出 OneShotResult.data 缓冲，故提供原始版本）
 // ============================================================================
-OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request, uint8_t reqLen,
-                                                          uint8_t expectedSlaveAddr,
-                                                          uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
-                                                          uint8_t& exceptionCode) {
+OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request, size_t reqLen,
+                                                           uint8_t expectedSlaveAddr,
+                                                           uint8_t* rawResp, size_t rawCap, size_t& rawLen,
+                                                           uint8_t& exceptionCode,
+                                                           uint16_t timeoutOverride,
+                                                           uint8_t retriesOverride,
+                                                           bool bypassSlaveBackoff) {
     OneShotError error = ONESHOT_TIMEOUT;
     rawLen = 0;
     exceptionCode = 0;
 
-    // 连续超时冷却保护：防止持续超时耗尽堆内存导致 abort()
-    if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
-        unsigned long now = millis();
-        if (now < _cooldownUntil) {
-            LOG_WARNINGF("[Modbus] In cooldown (%lus left), skip transaction",
-                         (_cooldownUntil - now) / 1000);
-            return ONESHOT_TIMEOUT;
-        }
-        // 冷却结束，重置计数器，尝试一次
-        _consecutiveTimeouts = 0;
-        LOG_INFO("[Modbus] Cooldown ended, resuming communication");
+    if (!request || reqLen < 4 || reqLen > Protocols::MODBUS_BUFFER_SIZE ||
+        !rawResp || rawCap == 0) {
+        exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        LOG_WARNINGF("[Modbus] OneShot: invalid raw transaction buffers (tx=%u rxCap=%u)",
+                     static_cast<unsigned>(reqLen), static_cast<unsigned>(rawCap));
+        return ONESHOT_EXCEPTION;
+    }
+
+    // Only poll/read traffic participates in the per-slave breaker. Standard
+    // writes and explicit control traffic always reach the bus.
+    const bool enforceSlaveBackoff =
+        !bypassSlaveBackoff && expectedSlaveAddr > 0 &&
+        isReadFunctionCode(request[1]);
+    if (enforceSlaveBackoff &&
+        _shouldDeferSlaveRequest(expectedSlaveAddr, millis())) {
+        return ONESHOT_TIMEOUT;
     }
 
     // 超时参数
-    uint16_t timeout = config.master.responseTimeout;
+    uint16_t timeout = timeoutOverride > 0
+        ? timeoutOverride
+        : config.master.responseTimeout;
     if (timeout == 0) timeout = 1000;
-    unsigned long charTimeout = 35000000UL / config.baudRate;
-    if (charTimeout < 2) charTimeout = 2;
-    uint8_t maxRetries = config.master.maxRetries;
+    const unsigned long charTimeout = modbusRtuFrameGapMs(config.baudRate);
+    uint8_t maxRetries = retriesOverride != 0xFF
+        ? retriesOverride
+        : config.master.maxRetries;
 
     // 捕获 TX 帧 hex（用于调试面板显示）—— 低堆时跳过以减少分配压力
     bool heapSafe = FastBee::MemoryBudget::dramFree() > 15000;
     if (heapSafe) {
         _lastTxHex = "";
         _lastRxHex = "";
-        for (uint8_t i = 0; i < reqLen; i++) {
+        for (size_t i = 0; i < reqLen; i++) {
             if (i > 0) _lastTxHex += ' ';
             char hex[4];
             snprintf(hex, sizeof(hex), "%02X", request[i]);
@@ -1679,8 +1981,18 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
     // 重试循环
     for (uint8_t attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
-            LOG_INFOF("[Modbus] OneShot: retry %d/%d", attempt, maxRetries);
-            delay(50);
+            const uint8_t retryShift = attempt > 4 ? 3 : attempt - 1;
+            const uint16_t retryBaseMs =
+                error == ONESHOT_CRC_ERROR ? 20U : 50U;
+            const uint16_t retryJitterMs = static_cast<uint16_t>(
+                (expectedSlaveAddr * 17U + attempt * 29U +
+                 static_cast<uint8_t>(error) * 11U) % 31U);
+            const uint16_t retryDelayMs = static_cast<uint16_t>(
+                (retryBaseMs << retryShift) + retryJitterMs);
+            LOG_INFOF("[Modbus] OneShot: retry %d/%d after %ums (error=%u)",
+                      attempt, maxRetries, retryDelayMs,
+                      static_cast<unsigned>(error));
+            delay(retryDelayMs);
             yield();
         }
 
@@ -1689,25 +2001,36 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
         // 发送请求帧
         setTransmitMode(true);
-        modbusSerial->write(request, reqLen);
+        const size_t written = modbusSerial->write(request, reqLen);
         modbusSerial->flush();
         setTransmitMode(false);
+        if (written != reqLen) {
+            LOG_WARNINGF("[Modbus] OneShot: short serial write (%u/%u bytes)",
+                         static_cast<unsigned>(written), static_cast<unsigned>(reqLen));
+            error = ONESHOT_TIMEOUT;
+            continue;
+        }
 
         // 阻塞等待响应
         uint8_t respBuf[Protocols::MODBUS_BUFFER_SIZE];
-        uint8_t respIdx = 0;
+        size_t respIdx = 0;
         unsigned long sendTime = millis();
         unsigned long lastRxTime = sendTime;
-        bool frameComplete = false;
         bool timedOut = false;
+        bool responseOverflow = false;
 
         while (true) {
-            while (modbusSerial->available() && respIdx < Protocols::MODBUS_BUFFER_SIZE) {
-                respBuf[respIdx++] = modbusSerial->read();
+            while (modbusSerial->available()) {
+                const int received = modbusSerial->read();
+                if (received < 0) break;
+                if (respIdx < sizeof(respBuf)) {
+                    respBuf[respIdx++] = static_cast<uint8_t>(received);
+                } else {
+                    responseOverflow = true;
+                }
                 lastRxTime = millis();
             }
             if (respIdx > 0 && (millis() - lastRxTime) > charTimeout) {
-                frameComplete = true;
                 break;
             }
             if ((millis() - sendTime) > timeout) {
@@ -1724,9 +2047,17 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
             continue;
         }
 
+        // 不能把 257+ 字节响应静默截成一个看似有效的 256 字节帧。
+        if (responseOverflow) {
+            LOG_WARNING("[Modbus] OneShot: response exceeds 256-byte RTU frame limit");
+            error = ONESHOT_CRC_ERROR;
+            continue;
+        }
+
         // 帧过短
         if (respIdx < 4) {
-            LOG_WARNINGF("[Modbus] OneShot: frame too short (%d bytes)", respIdx);
+            LOG_WARNINGF("[Modbus] OneShot: frame too short (%u bytes)",
+                         static_cast<unsigned>(respIdx));
             error = ONESHOT_CRC_ERROR;
             continue;
         }
@@ -1741,7 +2072,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         // 捕获 RX 帧 hex（CRC 校验通过后）—— 低堆时跳过
         if (heapSafe) {
             _lastRxHex = "";
-            for (uint8_t i = 0; i < respIdx; i++) {
+            for (size_t i = 0; i < respIdx; i++) {
                 if (i > 0) _lastRxHex += ' ';
                 char hex[4];
                 snprintf(hex, sizeof(hex), "%02X", respBuf[i]);
@@ -1756,34 +2087,34 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
             continue;
         }
 
-        // 异常响应检测
+        // CRC 和地址均合法的响应必须先完整交给原始帧调用者。Modbus
+        // 异常响应仍是有效 RTU 帧，透传模式需要将其原样回传给平台。
+        if (respIdx > rawCap) {
+            exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+            LOG_WARNINGF("[Modbus] OneShot: response buffer too small (%u < %u)",
+                         static_cast<unsigned>(rawCap), static_cast<unsigned>(respIdx));
+            error = ONESHOT_EXCEPTION;
+            rawLen = 0;
+            break;
+        }
+        memcpy(rawResp, respBuf, respIdx);
+        rawLen = respIdx;
+
+        // 异常是确定性协议响应，不重试；保留 ONESHOT_EXCEPTION 语义，
+        // 由原始帧上层决定是否转发已捕获的完整异常帧。
         if (respBuf[1] & 0x80) {
             error = ONESHOT_EXCEPTION;
             exceptionCode = respBuf[2];
             LOG_WARNINGF("[Modbus] OneShot: exception response 0x%02X", respBuf[2]);
-            break; // 异常是确定性错误，不重试
+            break;
         }
 
-        // 成功 — 复制原始响应帧到调用者缓冲
         error = ONESHOT_SUCCESS;
-        rawLen = respIdx;
-        if (rawResp) {
-            size_t copyLen = (respIdx < rawCap) ? respIdx : rawCap;
-            memcpy(rawResp, respBuf, copyLen);
-        }
         break;
     }
 
-    // 连续超时追踪：成功时重置，超时时累加并触发冷却
-    if (error == ONESHOT_SUCCESS || error == ONESHOT_EXCEPTION) {
-        _consecutiveTimeouts = 0;
-    } else if (error == ONESHOT_TIMEOUT) {
-        _consecutiveTimeouts++;
-        if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
-            _cooldownUntil = millis() + COOLDOWN_DURATION_MS;
-            LOG_WARNINGF("[Modbus] %d consecutive timeouts, entering %lus cooldown",
-                         _consecutiveTimeouts, COOLDOWN_DURATION_MS / 1000);
-        }
+    if (enforceSlaveBackoff) {
+        _recordSlaveOutcome(expectedSlaveAddr, error, millis());
     }
 
     return error;
@@ -1792,8 +2123,10 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 // ============================================================================
 // 通用一次性发送/接收辅助方法
 // ============================================================================
-OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
-                                                 uint8_t expectedSlaveAddr) {
+OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, size_t reqLen,
+                                                  uint8_t expectedSlaveAddr,
+                                                  uint16_t timeoutOverride,
+                                                  uint8_t retriesOverride) {
     OneShotResult result;
 
     // 前置检查
@@ -1806,7 +2139,8 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         // 使用信号量等待总线空闲（FreeRTOS 友好）
         if (_oneShotSemaphore) {
             // 等待获取信号量，最多 2 秒
-            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+            if (xSemaphoreTake(_oneShotSemaphore,
+                               pdMS_TO_TICKS(MODBUS_BUS_ACQUIRE_TIMEOUT_MS)) == pdFALSE) {
                 result.error = ONESHOT_BUSY;
                 LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
                 return result;
@@ -1814,7 +2148,7 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
             LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
         } else {
             // 信号量未创建，使用旧的轮询方式（降级兼容）
-            const unsigned long maxWaitMs = 2000;
+            const unsigned long maxWaitMs = MODBUS_BUS_ACQUIRE_TIMEOUT_MS;
             unsigned long startWait = millis();
             while (isOneShotReading) {
                 if (millis() - startWait >= maxWaitMs) {
@@ -1851,7 +2185,8 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
     isOneShotReading = true;
 
     // 执行实际的 Modbus 通信
-    result = _executeModbusTransaction(request, reqLen, expectedSlaveAddr);
+    result = _executeModbusTransaction(request, reqLen, expectedSlaveAddr,
+                                       timeoutOverride, retriesOverride);
 
     isOneShotReading = false;
     // 释放信号量
@@ -1864,10 +2199,13 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
 // ============================================================================
 // 带信号量保护的原始帧发送/接收（合并范围读专用，响应不受 OneShotResult 缓冲限制）
 // ============================================================================
-OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8_t reqLen,
-                                                    uint8_t expectedSlaveAddr,
-                                                    uint8_t* rawResp, size_t rawCap, uint8_t& rawLen,
-                                                    uint8_t& exceptionCode) {
+OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, size_t reqLen,
+                                                     uint8_t expectedSlaveAddr,
+                                                     uint8_t* rawResp, size_t rawCap, size_t& rawLen,
+                                                     uint8_t& exceptionCode,
+                                                     uint16_t timeoutOverride,
+                                                     uint8_t retriesOverride,
+                                                     bool bypassSlaveBackoff) {
     rawLen = 0;
     exceptionCode = 0;
 
@@ -1880,14 +2218,15 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8
         // 使用信号量等待总线空闲（FreeRTOS 友好）
         if (_oneShotSemaphore) {
             // 等待获取信号量，最多 2 秒
-            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+            if (xSemaphoreTake(_oneShotSemaphore,
+                               pdMS_TO_TICKS(MODBUS_BUS_ACQUIRE_TIMEOUT_MS)) == pdFALSE) {
                 LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
                 return ONESHOT_BUSY;
             }
             LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
         } else {
             // 信号量未创建，使用旧的轮询方式（降级兼容）
-            const unsigned long maxWaitMs = 2000;
+            const unsigned long maxWaitMs = MODBUS_BUS_ACQUIRE_TIMEOUT_MS;
             unsigned long startWait = millis();
             while (isOneShotReading) {
                 if (millis() - startWait >= maxWaitMs) {
@@ -1921,8 +2260,10 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8
     isOneShotReading = true;
 
     // 执行实际的 Modbus 通信
-    OneShotError error = _executeModbusTransactionRaw(request, reqLen, expectedSlaveAddr,
-                                                      rawResp, rawCap, rawLen, exceptionCode);
+    OneShotError error = _executeModbusTransactionRaw(
+        request, reqLen, expectedSlaveAddr,
+        rawResp, rawCap, rawLen, exceptionCode,
+        timeoutOverride, retriesOverride, bypassSlaveBackoff);
 
     isOneShotReading = false;
     // 释放信号量
@@ -1935,8 +2276,10 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, uint8
 // ============================================================================
 // 控制操作快速通道（高优先级，短超时）
 // ============================================================================
-OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, uint8_t requestLength, 
-                                                 uint8_t expectedSlaveAddress) {
+OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, size_t requestLength,
+                                                 uint8_t expectedSlaveAddress,
+                                                 uint16_t timeoutOverride,
+                                                 uint8_t retriesOverride) {
     OneShotResult result;
     result.error = ONESHOT_TIMEOUT;
     result.count = 0;
@@ -1952,7 +2295,8 @@ OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, uint8_t 
     
     // 尝试获取信号量（2000ms超时，与普通请求一致）
     if (_oneShotSemaphore) {
-        if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+        if (xSemaphoreTake(_oneShotSemaphore,
+                           pdMS_TO_TICKS(MODBUS_BUS_ACQUIRE_TIMEOUT_MS)) == pdFALSE) {
             _controlPending = false;
             result.error = ONESHOT_BUSY;
             LOG_WARNING("[Modbus] ControlRequest: busy (timeout waiting for semaphore)");
@@ -1964,7 +2308,9 @@ OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, uint8_t 
     isOneShotReading = true;
     
     // 执行实际的 Modbus 通信
-    result = _executeModbusTransaction(requestBuffer, requestLength, expectedSlaveAddress);
+    result = _executeModbusTransaction(requestBuffer, requestLength,
+                                       expectedSlaveAddress, timeoutOverride,
+                                       retriesOverride, true);
     
     // 释放信号量和标志
     isOneShotReading = false;
@@ -1979,7 +2325,10 @@ OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, uint8_t 
 // ============================================================================
 // FC 0x05 写单个线圈（阻塞）
 // ============================================================================
-OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value, bool isControl) {
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
+                                            bool value, bool isControl,
+                                            uint16_t timeoutOverride,
+                                            uint8_t retriesOverride) {
     LOG_INFOF("[Modbus] writeCoilOnce: slave=%d coil=%d value=%d isControl=%d", 
               slaveAddr, coilAddr, value ? 1 : 0, isControl ? 1 : 0);
 
@@ -1994,8 +2343,9 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
-                                     : sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl
+        ? sendControlRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride)
+        : sendOneShotRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride);
 
     // 验证回显帧：FC 0x05 的正常响应是原请求的回显
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
@@ -2011,7 +2361,10 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
 // ============================================================================
 // FC 0x05 写单个线圈 — 原始值版本（支持设备专有值如 0x5500 toggle）
 // ============================================================================
-OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue, bool isControl) {
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
+                                            uint16_t rawValue, bool isControl,
+                                            uint16_t timeoutOverride,
+                                            uint8_t retriesOverride) {
     LOG_INFOF("[Modbus] writeCoilOnce(raw): slave=%d coil=%d rawValue=0x%04X isControl=%d", 
               slaveAddr, coilAddr, rawValue, isControl ? 1 : 0);
 
@@ -2026,8 +2379,9 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
-                                     : sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl
+        ? sendControlRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride)
+        : sendOneShotRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride);
 
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
         uint8_t respFC = (uint8_t)result.data[1];
@@ -2042,26 +2396,64 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
 // ============================================================================
 // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
 // ============================================================================
-OneShotResult ModbusHandler::sendRawFrameOnce(uint8_t expectedSlaveAddr,
-                                               const uint8_t* dataWithoutCRC, uint8_t dataLen, bool isControl) {
-    LOG_INFOF("[Modbus] sendRawFrameOnce: slave=%d dataLen=%d isControl=%d", 
-              expectedSlaveAddr, dataLen, isControl ? 1 : 0);
+OneShotError ModbusHandler::sendRawFrameBytesOnce(
+    uint8_t expectedSlaveAddr,
+    const uint8_t* dataWithoutCRC, size_t dataLen,
+    uint8_t* response, size_t responseCapacity,
+    size_t& responseLength, uint8_t& exceptionCode,
+    bool isControl) {
+    responseLength = 0;
+    exceptionCode = 0;
+    LOG_INFOF("[Modbus] sendRawFrameBytesOnce: slave=%d dataLen=%u isControl=%d",
+              expectedSlaveAddr, static_cast<unsigned>(dataLen), isControl ? 1 : 0);
 
-    if (dataLen < 2 || dataLen > (Protocols::MODBUS_BUFFER_SIZE - 2)) {
-        OneShotResult result;
-        result.error = ONESHOT_EXCEPTION;
-        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
-        return result;
+    if (!dataWithoutCRC || dataLen < 2 ||
+        dataLen > Protocols::MODBUS_BUFFER_SIZE - 2U ||
+        !response || responseCapacity == 0) {
+        exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        return ONESHOT_EXCEPTION;
     }
 
     uint8_t frame[Protocols::MODBUS_BUFFER_SIZE];
     memcpy(frame, dataWithoutCRC, dataLen);
-    uint16_t crc = calculateCRC(frame, dataLen);
+    const uint16_t crc = calculateCRC(frame, dataLen);
     frame[dataLen] = crc & 0xFF;
-    frame[dataLen + 1] = (crc >> 8) & 0xFF;
+    frame[dataLen + 1U] = (crc >> 8) & 0xFF;
 
-    return isControl ? sendControlRequest(frame, dataLen + 2, expectedSlaveAddr)
-                     : sendOneShotRequest(frame, dataLen + 2, expectedSlaveAddr);
+    if (isControl) _controlPending = true;
+    const OneShotError error = _sendOneShotRequestRaw(
+        frame, dataLen + 2U, expectedSlaveAddr,
+        response, responseCapacity, responseLength, exceptionCode,
+        0, 0xFF, isControl);
+    if (isControl) _controlPending = false;
+    return error;
+}
+
+OneShotResult ModbusHandler::sendRawFrameOnce(uint8_t expectedSlaveAddr,
+                                               const uint8_t* dataWithoutCRC,
+                                               size_t dataLen, bool isControl) {
+    OneShotResult result;
+    uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
+    size_t responseLength = 0;
+    result.error = sendRawFrameBytesOnce(
+        expectedSlaveAddr, dataWithoutCRC, dataLen,
+        response, sizeof(response), responseLength, result.exceptionCode,
+        isControl);
+    if (result.error != ONESHOT_SUCCESS) return result;
+
+    const size_t copyLen = responseLength < Protocols::MODBUS_ONESHOT_BUFFER_SIZE
+                               ? responseLength
+                               : Protocols::MODBUS_ONESHOT_BUFFER_SIZE;
+    for (size_t i = 0; i < copyLen; i++) {
+        result.data[i] = response[i];
+    }
+    result.count = static_cast<uint16_t>(copyLen);
+    if (copyLen < responseLength) {
+        LOG_WARNINGF("[Modbus] sendRawFrameOnce: legacy result truncated (%u/%u bytes)",
+                     static_cast<unsigned>(copyLen),
+                     static_cast<unsigned>(responseLength));
+    }
+    return result;
 }
 
 // ============================================================================
@@ -2128,7 +2520,10 @@ OneShotResult ModbusHandler::writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t 
 // ============================================================================
 // FC 0x06 写单个寄存器（阻塞）
 // ============================================================================
-OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value, bool isControl) {
+OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr,
+                                                uint16_t value, bool isControl,
+                                                uint16_t timeoutOverride,
+                                                uint8_t retriesOverride) {
     LOG_INFOF("[Modbus] writeRegisterOnce: slave=%d reg=%d value=%d isControl=%d", 
               slaveAddr, regAddr, value, isControl ? 1 : 0);
 
@@ -2143,8 +2538,9 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
-                                     : sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl
+        ? sendControlRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride)
+        : sendOneShotRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride);
 
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
         uint8_t respFC = (uint8_t)result.data[1];
@@ -2323,7 +2719,18 @@ String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t
 }
 
 // PeriphExec 调度的轮询任务执行
-String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries, bool emitCallback) {
+String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout,
+                                             uint8_t retries, bool emitCallback,
+                                             bool* completed,
+                                             uint32_t maxDurationMs) {
+    if (completed) *completed = false;
+    const unsigned long pollStartMs = millis();
+    RecursiveSemaphoreGuard pollStateLock(_pollStateMutex, pdMS_TO_TICKS(2000));
+    if (!pollStateLock.isLocked()) {
+        LOG_WARNING("[Modbus] PollTask: poll state busy");
+        return "[]";
+    }
+
     if (taskIdx >= config.master.taskCount) {
         LOG_WARNINGF("[Modbus] executePollTaskByIndex: invalid idx %d (count=%d)", taskIdx, config.master.taskCount);
         return "[]";
@@ -2338,47 +2745,47 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         return "[]";
     }
 
-    // 记录轮询开始时间
-    unsigned long _pollStartMs = millis();
-
-    // 保存原始通信参数
-    uint16_t origTimeout = config.master.responseTimeout;
-    uint8_t origRetries = config.master.maxRetries;
-
-    // 临时设置 PeriphExec 传入的参数
-    config.master.responseTimeout = timeout;
-    config.master.maxRetries = retries;
+    uint16_t effectiveTimeout = timeout;
+    uint8_t effectiveRetries = retries;
+    if (maxDurationMs > 0) {
+        const uint32_t elapsed = millis() - pollStartMs;
+        if (elapsed >= maxDurationMs ||
+            !fitTransactionPolicyToBudget(timeout, retries, maxDurationMs - elapsed,
+                                          effectiveTimeout, effectiveRetries)) {
+            LOG_WARNING("[Modbus] PollTask: deadline exhausted before transaction");
+            return "[]";
+        }
+    }
 
     LOG_DEBUGF("[Modbus] PollTask[%d]: slave=%d FC=%d start=%d qty=%d (timeout=%d retries=%d)",
               taskIdx, task.slaveAddress, task.functionCode, task.startAddress, task.quantity,
-              timeout, retries);
+              effectiveTimeout, effectiveRetries);
 
     // 检查是否有控制操作挂起，如有则跳过本次轮询，让控制操作优先获取信号量
     if (_controlPending) {
         LOG_INFO("[Modbus] PollTask: control pending, skipping poll to yield bus");
-        config.master.responseTimeout = origTimeout;
-        config.master.maxRetries = origRetries;
         return "[]";
     }
 
+    String rawResponseHex;
+    String* rawResponseOut = config.transferType == 1 ? &rawResponseHex : nullptr;
     OneShotResult result = readRegistersOnce(task.slaveAddress, task.functionCode,
-                                              task.startAddress, task.quantity);
-
-    // 恢复原始参数
-    config.master.responseTimeout = origTimeout;
-    config.master.maxRetries = origRetries;
+                                              task.startAddress, task.quantity,
+                                              false, effectiveTimeout, effectiveRetries,
+                                              rawResponseOut);
+    if (completed) *completed = result.error == ONESHOT_SUCCESS;
 
     // 上报轮询耗时到 HealthMonitor
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     {
-        uint32_t pollDuration = millis() - _pollStartMs;
+        uint32_t pollDuration = millis() - pollStartMs;
         HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
         if (hm) hm->setPollDurationMs(pollDuration);
     }
 #endif
 
     // 读后处理：统计/缓存/自适应/去重/JSON 生成（countStats=true：单条读按任务计数）
-    return _finalizePollResult(taskIdx, result, emitCallback, true);
+    return _finalizePollResult(taskIdx, result, emitCallback, true, rawResponseOut);
 }
 
 // ============================================================================
@@ -2386,7 +2793,8 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
 // countStats=false 用于批量合并路径（统计按合并事务统一计数，避免重复）
 // ============================================================================
 String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& result,
-                                          bool emitCallback, bool countStats) {
+                                          bool emitCallback, bool countStats,
+                                          const String* rawResponseHex) {
     PollTask& task = config.master.tasks[taskIdx];
 
     // 更新统计计数
@@ -2428,9 +2836,20 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
         // 标记缓存无效
         cache.valid = false;
         cache.count = 0;
+        publishPollObservations(taskIdx, true);
         // 低堆时跳过状态通知（避免 JsonDocument 分配导致 abort）
         if (FastBee::MemoryBudget::dramFree() > 15000) {
             _notifyStatusChange();
+        }
+        // A Modbus exception or otherwise unexpected response remains a valid
+        // transparent ADU when the transaction layer captured it after CRC and
+        // address validation. Forward it while retaining the structured error
+        // and cache semantics above.
+        if (config.transferType == 1 && rawResponseHex && !rawResponseHex->isEmpty()) {
+            if (emitCallback && dataCallback) {
+                dataCallback(task.slaveAddress, *rawResponseHex);
+            }
+            return *rawResponseHex;
         }
         return "[]";
     }
@@ -2442,12 +2861,36 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
     cache.valid = true;
     cache.count = result.count;
     memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
+    publishPollObservations(taskIdx, true);
     _notifyStatusChange();  // 通知状态变化：轮询成功
 
     // 自适应：通信成功时重置错误计数，逐步恢复间隔
     task.consecutiveErrors = 0;
     if (task.originalInterval > 0 && task.pollInterval > task.originalInterval) {
         task.pollInterval = max((uint16_t)(task.pollInterval - 1), task.originalInterval);
+    }
+
+    // Transparent polling forwards every CRC-valid UART response exactly once.
+    // It must not be reconstructed, merged, or suppressed by JSON-mode
+    // hash/deadband reporting policy.
+    if (config.transferType == 1) {
+        if (!rawResponseHex || rawResponseHex->isEmpty()) {
+            LOG_WARNING("[Modbus] PollTask: validated raw ADU unavailable, report skipped");
+            return "[]";
+        }
+        const String& hexStr = *rawResponseHex;
+        task.lastDataHash = computeDataHash(result.data, result.count);
+        task.firstPoll = false;
+        task.consecutiveNoChange = 0;
+        task.lastReportTime = millis();
+        memcpy(task.lastValues, result.data,
+               min((uint16_t)result.count,
+                   (uint16_t)Protocols::MODBUS_ONESHOT_BUFFER_SIZE) * sizeof(uint16_t));
+        task.lastValuesValid = true;
+        if (emitCallback && dataCallback) {
+            dataCallback(task.slaveAddress, hexStr);
+        }
+        return hexStr;
     }
 
     // ========== 上报决策：Hash 去重 + 死区 + 心跳 ==========
@@ -2497,15 +2940,6 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
     // 数据有变化时恢复原始间隔
     if (task.originalInterval > 0 && task.pollInterval > task.originalInterval) {
         task.pollInterval = task.originalInterval;
-    }
-
-    // 透传模式：将读取结果格式化为原始 HEX 帧直接上报
-    if (config.transferType == 1) {
-        String hexStr = formatRawHex(task.slaveAddress, task.functionCode, result.data, result.count);
-        if (emitCallback && dataCallback) {
-            dataCallback(task.slaveAddress, hexStr);
-        }
-        return hexStr;
     }
 
     // 应用寄存器映射生成 JSON
@@ -2560,7 +2994,7 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
             json += m.sensorId;
             json += "\",\"value\":\"";
             json += valBuf;
-            json += "\"}";
+            json += "\",\"remark\":\"\"}";
             first = false;
         }
         json += "]";
@@ -2582,7 +3016,7 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
         if (i > 0) json += ",";
         json += String(result.data[i]);
     }
-    json += "\"}]";
+    json += "\",\"remark\":\"\"}]";
 
     if (emitCallback && dataCallback) {
         dataCallback(task.slaveAddress, json);
@@ -2599,8 +3033,32 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
 // ============================================================================
 String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t idxCount,
                                            uint16_t timeout, uint8_t retries,
-                                           uint16_t interDelayMs, bool emitCallback) {
+                                           uint16_t interDelayMs, bool emitCallback,
+                                           uint32_t maxDurationMs,
+                                           bool* completedAll,
+                                           PollFrameCallback rawFrameCallback) {
+    if (completedAll) *completedAll = false;
     if (!taskIdxList || idxCount == 0) return "[]";
+
+    const unsigned long batchStartMs = millis();
+    RecursiveSemaphoreGuard pollStateLock(_pollStateMutex, pdMS_TO_TICKS(2000));
+    if (!pollStateLock.isLocked()) {
+        LOG_WARNING("[Modbus] Batch: poll state busy");
+        return "[]";
+    }
+    bool complete = true;
+    auto remainingBudgetMs = [&]() -> uint32_t {
+        if (maxDurationMs == 0) return UINT32_MAX;
+        const uint32_t elapsed = millis() - batchStartMs;
+        return elapsed >= maxDurationMs ? 0 : maxDurationMs - elapsed;
+    };
+    auto delayWithinBudget = [&](uint16_t requestedMs) -> bool {
+        if (requestedMs == 0) return true;
+        uint32_t remaining = remainingBudgetMs();
+        if (remaining != UINT32_MAX && requestedMs >= remaining) return false;
+        vTaskDelay(pdMS_TO_TICKS(requestedMs));
+        return true;
+    };
 
     // 收集有效候选任务索引（去重、跳过越界/禁用任务）
     uint8_t cand[Protocols::MODBUS_MAX_POLL_TASKS];
@@ -2609,9 +3067,13 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
         uint8_t idx = taskIdxList[i];
         if (idx >= config.master.taskCount) {
             LOG_WARNINGF("[Modbus] Batch: invalid task idx %d (count=%d)", idx, config.master.taskCount);
+            complete = false;
             continue;
         }
-        if (!config.master.tasks[idx].enabled) continue;
+        if (!config.master.tasks[idx].enabled) {
+            complete = false;
+            continue;
+        }
         bool dup = false;
         for (uint8_t j = 0; j < candCount; j++) {
             if (cand[j] == idx) { dup = true; break; }
@@ -2622,23 +3084,62 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
     }
     if (candCount == 0) return "[]";
 
-    // 未启用合并或仅单任务：退化为逐条执行（语义与原有路径完全一致）
-    if (!Protocols::MODBUS_MERGE_READS_ENABLED || candCount == 1) {
-        String combined;
+    const bool rawTransfer = config.transferType == 1;
+    String combined;
+    if (!rawTransfer) {
         combined.reserve(512);
         combined = "[";
-        bool first = true;
-        for (uint8_t i = 0; i < candCount; i++) {
-            if (i > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
-            String r = executePollTaskByIndex(cand[i], timeout, retries, emitCallback);
-            if (r.length() > 2) {
-                if (!first) combined += ",";
-                combined += r.substring(1, r.length() - 1);  // 去掉外层 []
-                first = false;
+    }
+    bool first = true;
+    auto appendResult = [&](uint8_t taskIdx, const String& result) {
+        if (result.isEmpty() || result == "[]") return;
+
+        const uint8_t slaveAddress = config.master.tasks[taskIdx].slaveAddress;
+        if (rawTransfer) {
+            if (rawFrameCallback) {
+                rawFrameCallback(slaveAddress, result);
+            } else if (emitCallback && dataCallback) {
+                dataCallback(slaveAddress, result);
+            } else {
+                LOG_WARNING("[Modbus] Batch: raw frame has no per-frame output callback");
+                complete = false;
             }
+            return;
         }
-        combined += "]";
-        return combined;
+
+        if (result.length() <= 2 || result[0] != '[' ||
+            result[result.length() - 1] != ']') {
+            LOG_WARNING("[Modbus] Batch: structured poll result is not a JSON array");
+            complete = false;
+            return;
+        }
+        if (emitCallback && dataCallback) {
+            dataCallback(slaveAddress, result);
+        }
+        if (!first) combined += ",";
+        combined += result.substring(1, result.length() - 1);
+        first = false;
+    };
+
+    // 未启用合并或仅单任务：退化为逐条执行（语义与原有路径完全一致）
+    if (rawTransfer || !Protocols::MODBUS_MERGE_READS_ENABLED || candCount == 1) {
+        for (uint8_t i = 0; i < candCount; i++) {
+            if (remainingBudgetMs() == 0 ||
+                (i > 0 && !delayWithinBudget(interDelayMs))) {
+                complete = false;
+                LOG_WARNING("[Modbus] Batch: deadline reached before all tasks ran");
+                break;
+            }
+            bool taskCompleted = false;
+            String r = executePollTaskByIndex(
+                cand[i], timeout, retries, false, &taskCompleted,
+                remainingBudgetMs() == UINT32_MAX ? 0 : remainingBudgetMs());
+            if (!taskCompleted) complete = false;
+            appendResult(cand[i], r);
+        }
+        if (!rawTransfer) combined += "]";
+        if (completedAll) *completedAll = complete;
+        return rawTransfer ? "[]" : combined;
     }
 
     // 检查堆内存是否充足
@@ -2652,14 +3153,6 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
         LOG_INFO("[Modbus] Batch: control pending, skipping poll to yield bus");
         return "[]";
     }
-
-    unsigned long batchStartMs = millis();
-
-    // 临时设置 PeriphExec 传入的通信参数
-    uint16_t origTimeout = config.master.responseTimeout;
-    uint8_t origRetries = config.master.maxRetries;
-    config.master.responseTimeout = timeout;
-    config.master.maxRetries = retries;
 
     // 按 (slaveId, functionCode, startAddress) 插入排序（稳定，数量≤ 8）
     for (uint8_t i = 1; i < candCount; i++) {
@@ -2691,8 +3184,11 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
         uint16_t start;
         uint16_t qty;      // 合并后范围长度
         uint8_t  memberCount;
-        MergeMember members[Protocols::MODBUS_MAX_POLL_TASKS];
+        uint8_t  memberStart;
     };
+    // Each candidate belongs to one segment. A flat table avoids reserving
+    // MAX_TASKS copies per segment on the worker's timeout/retry call stack.
+    MergeMember members[Protocols::MODBUS_MAX_POLL_TASKS];
     MergeSegment segs[Protocols::MODBUS_MAX_POLL_TASKS];
     uint8_t segCount = 0;
 
@@ -2713,9 +3209,9 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
                 uint32_t newQty  = newEnd - last.start;
                 if (gap <= Protocols::MODBUS_MERGE_MAX_GAP &&
                     newQty <= Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
-                    last.members[last.memberCount].taskIdx = cand[i];
-                    last.members[last.memberCount].offset = (uint16_t)(tStart - last.start);
-                    last.members[last.memberCount].qty = t.quantity;
+                    members[i].taskIdx = cand[i];
+                    members[i].offset = (uint16_t)(tStart - last.start);
+                    members[i].qty = t.quantity;
                     last.memberCount++;
                     last.qty = (uint16_t)newQty;
                     merged = true;
@@ -2729,31 +3225,35 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
             s.start = t.startAddress;
             s.qty = t.quantity;
             s.memberCount = 1;
-            s.members[0].taskIdx = cand[i];
-            s.members[0].offset = 0;
-            s.members[0].qty = t.quantity;
+            s.memberStart = i;
+            members[i].taskIdx = cand[i];
+            members[i].offset = 0;
+            members[i].qty = t.quantity;
         }
     }
 
     LOG_INFOF("[Modbus] Batch: %d tasks -> %d transactions", candCount, segCount);
 
-    // 拼接各任务 JSON 结果（去掉各自外层括号后合并为一个数组）
-    String combined;
-    combined.reserve(512);
-    combined = "[";
-    bool first = true;
-    auto appendJson = [&](const String& r) {
-        if (r.length() > 2) {
-            if (!first) combined += ",";
-            combined += r.substring(1, r.length() - 1);
-            first = false;
-        }
-    };
-
     // 逐段执行
     for (uint8_t s = 0; s < segCount; s++) {
-        if (s > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
+        if (remainingBudgetMs() == 0 ||
+            (s > 0 && !delayWithinBudget(interDelayMs))) {
+            complete = false;
+            LOG_WARNING("[Modbus] Batch: deadline reached before all segments ran");
+            break;
+        }
         MergeSegment& seg = segs[s];
+
+        uint16_t effectiveTimeout = timeout;
+        uint8_t effectiveRetries = retries;
+        const uint32_t remaining = remainingBudgetMs();
+        if (remaining != UINT32_MAX &&
+            !fitTransactionPolicyToBudget(timeout, retries, remaining,
+                                          effectiveTimeout, effectiveRetries)) {
+            complete = false;
+            LOG_WARNING("[Modbus] Batch: insufficient budget for next transaction");
+            break;
+        }
 
         // 统计按事务计数
         _totalPollCount++;
@@ -2761,35 +3261,41 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
 
         if (seg.memberCount == 1) {
             // 单成员段：走原有 readRegistersOnce 路径，语义不变
-            const MergeMember& m = seg.members[0];
-            OneShotResult r = readRegistersOnce(seg.slave, seg.fc, seg.start, m.qty);
+            const MergeMember& m = members[seg.memberStart];
+            OneShotResult r = readRegistersOnce(
+                seg.slave, seg.fc, seg.start, m.qty,
+                false, effectiveTimeout, effectiveRetries);
             if (r.error == ONESHOT_SUCCESS) _successPollCount++;
             else if (r.error == ONESHOT_TIMEOUT) _timeoutPollCount++;
             else _failedPollCount++;
-            appendJson(_finalizePollResult(m.taskIdx, r, emitCallback, false));
+            if (r.error != ONESHOT_SUCCESS) complete = false;
+            appendResult(m.taskIdx, _finalizePollResult(m.taskIdx, r, false, false));
             continue;
         }
 
         // 合并范围读
         OneShotError err = _readRangeInto(seg.slave, seg.fc, seg.start, seg.qty,
-                                          _mergeReadBuf, Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+                                          _mergeReadBuf,
+                                          Protocols::MODBUS_MAX_REGISTERS_PER_READ,
+                                          effectiveTimeout, effectiveRetries);
         if (err == ONESHOT_SUCCESS) {
             _successPollCount++;
             LOG_INFOF("[Modbus] Merged read ok: slave=%d fc=0x%02X start=%d qty=%d members=%d",
                       seg.slave, seg.fc, seg.start, seg.qty, seg.memberCount);
             // 按原请求 (偏移,长度) 切片分发
             for (uint8_t mi = 0; mi < seg.memberCount; mi++) {
-                const MergeMember& m = seg.members[mi];
+                const MergeMember& m = members[seg.memberStart + mi];
                 if ((uint32_t)m.offset + m.qty > seg.qty || m.qty > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
                     LOG_WARNINGF("[Modbus] Batch: member slice out of range (task=%d off=%d qty=%d)",
                                  m.taskIdx, m.offset, m.qty);
+                    complete = false;
                     continue;
                 }
                 OneShotResult slice;
                 slice.error = ONESHOT_SUCCESS;
                 slice.count = m.qty;
                 memcpy(slice.data, _mergeReadBuf + m.offset, m.qty * sizeof(uint16_t));
-                appendJson(_finalizePollResult(m.taskIdx, slice, emitCallback, false));
+                appendResult(m.taskIdx, _finalizePollResult(m.taskIdx, slice, false, false));
             }
         } else {
             // 合并读失败：失败计数按合并事务记一次，回退为逐条原始请求重试一次
@@ -2798,19 +3304,32 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
             LOG_WARNINGF("[Modbus] Merged read failed (slave=%d fc=0x%02X start=%d qty=%d err=%d), falling back to individual reads",
                          seg.slave, seg.fc, seg.start, seg.qty, err);
             for (uint8_t mi = 0; mi < seg.memberCount; mi++) {
-                const MergeMember& m = seg.members[mi];
-                if (mi > 0 && interDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(interDelayMs));
-                OneShotResult r = readRegistersOnce(seg.slave, seg.fc,
-                                                    (uint16_t)(seg.start + m.offset), m.qty);
+                const MergeMember& m = members[seg.memberStart + mi];
+                if (remainingBudgetMs() == 0 ||
+                    (mi > 0 && !delayWithinBudget(interDelayMs))) {
+                    complete = false;
+                    LOG_WARNING("[Modbus] Batch: deadline reached during fallback reads");
+                    break;
+                }
+                uint16_t fallbackTimeout = timeout;
+                uint8_t fallbackRetries = retries;
+                const uint32_t fallbackRemaining = remainingBudgetMs();
+                if (fallbackRemaining != UINT32_MAX &&
+                    !fitTransactionPolicyToBudget(timeout, retries, fallbackRemaining,
+                                                  fallbackTimeout, fallbackRetries)) {
+                    complete = false;
+                    break;
+                }
+                OneShotResult r = readRegistersOnce(
+                    seg.slave, seg.fc,
+                    (uint16_t)(seg.start + m.offset), m.qty,
+                    false, fallbackTimeout, fallbackRetries);
+                if (r.error != ONESHOT_SUCCESS) complete = false;
                 // countStats=false：失败已按合并事务计一次，回退结果不重复计数
-                appendJson(_finalizePollResult(m.taskIdx, r, emitCallback, false));
+                appendResult(m.taskIdx, _finalizePollResult(m.taskIdx, r, false, false));
             }
         }
     }
-
-    // 恢复原始通信参数
-    config.master.responseTimeout = origTimeout;
-    config.master.maxRetries = origRetries;
 
     // 上报批次总耗时到 HealthMonitor
 #if FASTBEE_ENABLE_HEALTH_MONITOR
@@ -2821,8 +3340,9 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
     }
 #endif
 
-    combined += "]";
-    return combined;
+    if (!rawTransfer) combined += "]";
+    if (completedAll) *completedAll = complete;
+    return rawTransfer ? "[]" : combined;
 }
 
 // ============================================================================
@@ -2835,7 +3355,46 @@ String ModbusHandler::getPollStatistics() const {
     doc["successPolls"] = _successPollCount;
     doc["failedPolls"] = _failedPollCount;
     doc["timeoutPolls"] = _timeoutPollCount;
+    doc["backoffSkips"] = _slaveBackoffSkips;
+    doc["backoffEvictions"] = _slaveBackoffEvictions;
     doc["lastPollMs"] = _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000 : 0;
+
+    const uint32_t now = millis();
+    uint32_t slaveTimeouts = 0;
+    uint32_t slaveCrcErrors = 0;
+    uint32_t slaveExceptions = 0;
+    uint8_t trackedSlaves = 0;
+    JsonArray slaveHealth = doc["slaveHealth"].to<JsonArray>();
+    for (uint8_t i = 0; i < SLAVE_BACKOFF_SLOT_COUNT; i++) {
+        const SlaveBackoffState& state = _slaveBackoff[i];
+        if (!state.occupied) continue;
+
+        trackedSlaves++;
+        slaveTimeouts += state.timeoutCount;
+        slaveCrcErrors += state.crcErrorCount;
+        slaveExceptions += state.exceptionCount;
+        const bool backoffActive = state.cooldownUntil != 0 &&
+                                   !_deadlineReached(now, state.cooldownUntil);
+
+        JsonObject item = slaveHealth.add<JsonObject>();
+        item["address"] = state.slaveAddress;
+        item["consecutiveFailures"] = state.consecutiveFailures;
+        item["backoffLevel"] = state.backoffLevel;
+        item["backoffActive"] = backoffActive;
+        item["remainingMs"] = backoffActive ? state.cooldownUntil - now : 0;
+        item["halfOpen"] = state.halfOpen;
+        item["lastError"] = state.lastError;
+        item["timeouts"] = state.timeoutCount;
+        item["crcErrors"] = state.crcErrorCount;
+        item["exceptions"] = state.exceptionCount;
+        item["successes"] = state.successCount;
+        item["skipped"] = state.skippedCount;
+        item["halfOpenProbes"] = state.halfOpenProbeCount;
+    }
+    doc["trackedSlaves"] = trackedSlaves;
+    doc["slaveTimeouts"] = slaveTimeouts;
+    doc["slaveCrcErrors"] = slaveCrcErrors;
+    doc["slaveExceptions"] = slaveExceptions;
     
     String out;
     serializeJson(doc, out);
@@ -2847,12 +3406,112 @@ const ModbusHandler::PollTaskCache* ModbusHandler::getTaskCache(uint8_t taskIdx)
     return &_taskCache[taskIdx];
 }
 
+void ModbusHandler::publishPollObservations(uint8_t taskIdx, bool sampled) {
+#if FASTBEE_ENABLE_PERIPH_EXEC && (FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY)
+    if (config.mode != MODBUS_MASTER || taskIdx >= config.master.taskCount) return;
+    const auto& task = config.master.tasks[taskIdx];
+    if (!task.enabled) return;
+    const auto& cache = _taskCache[taskIdx];
+    for (uint8_t index = 0; index < task.mappingCount; ++index) {
+        const auto& mapping = task.mappings[index];
+        if (!mapping.sensorId[0]) continue;
+        ObservationUpdate update;
+        update.sourceRef = String("modbus.") + mapping.sensorId;
+        update.label = mapping.sensorId;
+        update.unit = mapping.unit;
+        update.dataField = mapping.sensorId;
+        update.recordable = true;
+        update.maxAgeMs = std::max<uint32_t>(15000, static_cast<uint32_t>(task.pollInterval) * 3000);
+        // Do not invoke newlib's floating-point formatter on the worker stack
+        // just to fingerprint configuration (including failed Modbus reads).
+        // Hash each field explicitly, avoiding structure padding/host endianness.
+        uint32_t fingerprint = 2166136261UL;
+        const auto hashField = [&fingerprint](uint32_t field) {
+            for (uint8_t byte = 0; byte < 4; ++byte) {
+                fingerprint = (fingerprint ^ (field & 0xFFU)) * 16777619UL;
+                field >>= 8;
+            }
+        };
+        hashField(config.rxPin);
+        hashField(config.txPin);
+        hashField(config.baudRate);
+        hashField(task.slaveAddress);
+        hashField(task.functionCode);
+        hashField(task.startAddress);
+        hashField(mapping.regOffset);
+        hashField(mapping.dataType);
+        uint32_t scaleBits = 0;
+        static_assert(sizeof(scaleBits) == sizeof(mapping.scaleFactor), "float32 scale required");
+        memcpy(&scaleBits, &mapping.scaleFactor, sizeof(scaleBits));
+        hashField(scaleBits);
+        hashField(mapping.decimalPlaces);
+        for (const char* ch = mapping.unit; *ch; ++ch)
+            fingerprint = (fingerprint ^ static_cast<uint8_t>(*ch)) * 16777619UL;
+        // Version the encoding so pre-existing persisted history is invalidated.
+        char revisionId[] = "mb2:00000000";
+        constexpr char revisionHexDigits[] = "0123456789abcdef";
+        for (uint8_t digit = 0; digit < 8; ++digit)
+            revisionId[4 + digit] = revisionHexDigits[(fingerprint >> (28 - digit * 4)) & 0xFU];
+        update.sourceRevision = revisionId;
+        update.quality = sampled ? ObservationQuality::ERROR : ObservationQuality::UNKNOWN;
+        if (sampled && cache.valid) {
+            const size_t offset = mapping.regOffset;
+            const size_t words = mapping.dataType >= 2 && mapping.dataType <= 4 ? 2 : 1;
+            if (mapping.dataType <= 4 && offset + words <= cache.count) {
+                double raw = cache.values[offset];
+                if (mapping.dataType == 1) raw = static_cast<int16_t>(cache.values[offset]);
+                if (words == 2) {
+                    const uint32_t bits = (static_cast<uint32_t>(cache.values[offset]) << 16) | cache.values[offset + 1];
+                    if (mapping.dataType == 2) raw = bits;
+                    else if (mapping.dataType == 3) raw = static_cast<int32_t>(bits);
+                    else { float decoded; memcpy(&decoded, &bits, sizeof(decoded)); raw = decoded; }
+                }
+                const double value = raw * mapping.scaleFactor;
+                if (std::isfinite(value)) {
+                    update.value = String(value, static_cast<unsigned int>(std::min<uint8_t>(mapping.decimalPlaces, 6)));
+                    update.quality = ObservationQuality::GOOD;
+                    update.sampleTimestamp = cache.timestamp;
+                }
+            }
+        }
+        if (update.quality == ObservationQuality::ERROR)
+            update.error = cache.valid ? "MODBUS_MAPPING_INVALID" : "MODBUS_READ_FAILED";
+        PeriphExecManager::getInstance().upsertObservation(update);
+    }
+#else
+    (void)taskIdx; (void)sampled;
+#endif
+}
+
+void ModbusHandler::invalidatePollObservations() {
+#if FASTBEE_ENABLE_PERIPH_EXEC && (FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY)
+    for (uint8_t i = 0; i < config.master.taskCount; ++i) {
+        const auto& task = config.master.tasks[i];
+        for (uint8_t j = 0; j < task.mappingCount; ++j) {
+            if (task.mappings[j].sensorId[0]) PeriphExecManager::getInstance().invalidateObservation(
+                String("modbus.") + task.mappings[j].sensorId, "MODBUS_CONFIGURATION_CHANGED");
+        }
+    }
+#endif
+}
+
 void ModbusHandler::resetPollStatistics() {
     _totalPollCount = 0;
     _successPollCount = 0;
     _failedPollCount = 0;
     _timeoutPollCount = 0;
     _lastPollTime = 0;
+    _slaveBackoffSkips = 0;
+    _slaveBackoffEvictions = 0;
+    for (uint8_t i = 0; i < SLAVE_BACKOFF_SLOT_COUNT; i++) {
+        SlaveBackoffState& state = _slaveBackoff[i];
+        state.timeoutCount = 0;
+        state.crcErrorCount = 0;
+        state.exceptionCount = 0;
+        state.successCount = 0;
+        state.skippedCount = 0;
+        state.halfOpenProbeCount = 0;
+    }
     memset(_taskCache, 0, sizeof(_taskCache));
     LOG_INFO("[Modbus] Poll statistics reset");
 }

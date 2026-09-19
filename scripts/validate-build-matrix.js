@@ -40,6 +40,7 @@ const ENV_EXPECTATIONS = {
         mcu: 'esp32',
         partition: 'partitions/8MB.csv',
         flashSize: '8MB',
+        uploadFlashSize: '8MB',
         psram: false,
         ds18b20: true,
         ota: true,
@@ -53,6 +54,7 @@ const ENV_EXPECTATIONS = {
         mcu: 'esp32',
         partition: 'partitions/8MB.csv',
         flashSize: '8MB',
+        uploadFlashSize: '8MB',
         psram: true,
         ds18b20: true,
         ota: true,
@@ -489,6 +491,8 @@ function validateEnvExpectations(platformioText, issues) {
         forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags || [], issues);
 
         const resolvedBuildFlags = resolveIniBuildFlags(platformioText, sectionName);
+        requireTokens(`${label} resolved build_flags`, resolvedBuildFlags,
+            ['-DFASTBEE_ENABLE_I2C_SENSORS=1', '-DFASTBEE_ENABLE_IO_EXPANDER=1'], issues);
         if (expectation.ds18b20) {
             requireTokens(`${label} resolved build_flags`, resolvedBuildFlags,
                 ['-DFASTBEE_ENABLE_SENSOR_DRIVER=1', '-DFASTBEE_ENABLE_DS18B20=1'], issues);

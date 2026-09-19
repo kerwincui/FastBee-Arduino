@@ -1,4 +1,5 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices, type ReporterDescription } from '@playwright/test';
+import path from 'node:path';
 
 /**
  * FastBee-Arduino 浏览器自动化测试配置
@@ -30,20 +31,29 @@ import { defineConfig, devices } from '@playwright/test';
 
 const deviceIp = process.env.DEVICE_IP || '192.168.1.1';
 const devicePort = process.env.DEVICE_PORT || '80';
+const externalOutputDir = process.env.FASTBEE_PLAYWRIGHT_OUTPUT_DIR?.trim();
+const externalReportDir = process.env.FASTBEE_PLAYWRIGHT_REPORT_DIR?.trim();
+const reporters: ReporterDescription[] = externalReportDir
+  ? [
+      ['html', { outputFolder: path.join(externalReportDir, 'html'), open: 'never' }],
+      ['json', { outputFile: path.join(externalReportDir, 'results.json') }],
+      ['list'],
+    ]
+  : [
+      ['html', { outputFolder: 'reports/html', open: 'never' }],
+      ['json', { outputFile: 'reports/results.json' }],
+      ['list'],
+    ];
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: './test-results',
+  outputDir: externalOutputDir || './test-results',
   fullyParallel: false, // 嵌入式设备串行，避免并发压力
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
   workers: 1, // 单 worker，设备资源有限
   timeout: 90_000, // 嵌入式设备首次认证/刷新可能需要更长时间
-  reporter: [
-    ['html', { outputFolder: 'reports/html', open: 'never' }],
-    ['json', { outputFile: 'reports/results.json' }],
-    ['list'],
-  ],
+  reporter: reporters,
   use: {
     baseURL: `http://${deviceIp}:${devicePort}`,
     screenshot: 'only-on-failure',

@@ -14,6 +14,7 @@
  */
 
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
@@ -21,14 +22,20 @@ const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
 const { getWebProfile } = require('./web-profile');
 const { runWebQualityGate } = require('./web-quality-gate');
+const { withWebPublishLock } = require('./web-publish-lock');
+const { runNodeScriptUnderFirmwareLock } = require('./firmware-build-lock-runner');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const WWW_DIR = path.join(DATA_DIR, 'www');
 const STAGING_ROOT_DIR = path.join(ROOT_DIR(), '.pio', 'fs-staging');
-const STAGING_RUN_ID = `run-${Date.now()}-${process.pid}`;
+const STAGING_RUN_ID = createStagingRunId();
 const STAGING_DATA_DIR = resolveStageDir();
 const STAGING_WWW_DIR = path.join(STAGING_DATA_DIR, 'www');
 const COMPRESS_EXTENSIONS = new Set(['.html', '.js', '.css']);
+const TRANSIENT_METADATA_ERRORS = new Set(['EACCES', 'EBUSY', 'ENOENT', 'EPERM']);
+const metadataRetryBuffer = new Int32Array(new SharedArrayBuffer(4));
+const METADATA_RETRY_ATTEMPTS = 40;
+const METADATA_RETRY_DELAY_MS = 50;
 let activeWwwWhitelist = null;
 
 const stats = {
@@ -40,6 +47,23 @@ const stats = {
     totalCompressedSize: 0
 };
 
+function statWithRetries(filePath) {
+    let lastError;
+    for (let attempt = 1; attempt <= METADATA_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+            return fs.statSync(filePath);
+        } catch (error) {
+            lastError = error;
+            if (!error || !TRANSIENT_METADATA_ERRORS.has(error.code) ||
+                attempt === METADATA_RETRY_ATTEMPTS) {
+                throw error;
+            }
+            Atomics.wait(metadataRetryBuffer, 0, 0, METADATA_RETRY_DELAY_MS);
+        }
+    }
+    throw lastError;
+}
+
 function walkDir(dir, callback) {
     if (!fs.existsSync(dir)) {
         console.error(`Directory not found: ${dir}`);
@@ -49,7 +73,7 @@ function walkDir(dir, callback) {
     const files = fs.readdirSync(dir);
     files.forEach((file) => {
         const filePath = path.join(dir, file);
-        const stat = fs.statSync(filePath);
+        const stat = statWithRetries(filePath);
 
         if (stat.isDirectory()) {
             walkDir(filePath, callback);
@@ -73,6 +97,10 @@ function readArgValue(prefixes) {
         }
     }
     return '';
+}
+
+function createStagingRunId() {
+    return `run-${Date.now()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
 function resolveStageDir() {
@@ -476,11 +504,11 @@ function getActiveEnvFromPlatformioIni(targetEnvOverride = null) {
             return targetEnvOverride;
         }
     }
-    
+
     let currentEnv = null;
     let activeEnv = null;
     let defaultEnv = null;
-    
+
     for (const line of lines) {
         const trimmed = line.trim();
         const envMatch = trimmed.match(/^\[env:([^\]]+)\]$/);
@@ -507,7 +535,7 @@ function getActiveEnvFromPlatformioIni(targetEnvOverride = null) {
             }
         }
     }
-    
+
     // 回退到 default_envs
     return activeEnv || defaultEnv || 'esp32-F4R0';
 }
@@ -539,25 +567,7 @@ function runPioCommand(args, label, options = {}) {
     });
 }
 
-async function main() {
-    const args = process.argv.slice(2);
-    // Asset generation must be safe to run in CI and on a workstation with
-    // several boards attached. Hardware access is opt-in so a plain gzip
-    // command can never flash the first upload_port from platformio.ini.
-    const upload = args.includes('--upload');
-    const noUpload = args.includes('--no-upload');
-    const noMonitor = args.includes('--no-monitor');
-
-    if (upload && noUpload) {
-        throw new Error('--upload and --no-upload cannot be used together');
-    }
-    
-    console.log('========================================');
-    console.log('  ESP32 Web Asset Gzip Tool');
-    console.log('========================================');
-    console.log(`Target directory: ${WWW_DIR}`);
-    console.log(`Staging directory: ${STAGING_WWW_DIR}`);
-
+function buildPublishStage() {
     console.log('\n[Step 0] Building web modules...');
     const buildResult = buildWebModules();
     buildResult.syncedModules.forEach((item) => {
@@ -586,6 +596,32 @@ async function main() {
     deleteOriginals();
     runWebQualityGate({ context: buildResult.context });
     const stageResult = stagePublishArtifacts(buildResult);
+
+    return { buildResult, stageResult };
+}
+
+async function main() {
+    const args = process.argv.slice(2);
+    // Asset generation must be safe to run in CI and on a workstation with
+    // several boards attached. Hardware access is opt-in so a plain gzip
+    // command can never flash the first upload_port from platformio.ini.
+    const upload = args.includes('--upload');
+    const noUpload = args.includes('--no-upload');
+    const noMonitor = args.includes('--no-monitor');
+
+    if (upload && noUpload) {
+        throw new Error('--upload and --no-upload cannot be used together');
+    }
+
+    console.log('========================================');
+    console.log('  ESP32 Web Asset Gzip Tool');
+    console.log('========================================');
+    console.log(`Target directory: ${WWW_DIR}`);
+    console.log(`Staging directory: ${STAGING_WWW_DIR}`);
+
+    const { buildResult, stageResult } = withWebPublishLock(buildPublishStage, {
+        label: `gzip-www:${buildResultEnvironmentHint()}`
+    });
 
     console.log('\n========================================');
     console.log('  Compression completed');
@@ -623,18 +659,36 @@ async function main() {
 }
 
 if (require.main === module) {
-    main().catch((error) => {
+    try {
+        const lockExitCode = runNodeScriptUnderFirmwareLock({
+            label: `gzip-www:${buildResultEnvironmentHint()}`,
+            environment: buildResultEnvironmentHint()
+        });
+        if (lockExitCode === null) {
+            main().catch((error) => {
+                console.error(error);
+                process.exit(1);
+            });
+        } else {
+            process.exitCode = lockExitCode;
+        }
+    } catch (error) {
         console.error(error);
-        process.exit(1);
-    });
+        process.exitCode = 1;
+    }
 }
 
 function ROOT_DIR() {
     return path.join(__dirname, '..');
 }
 
+function buildResultEnvironmentHint() {
+    return readArgValue(['--env=']) || 'default';
+}
+
 module.exports = {
     assertGzipOnlyTree,
+    createStagingRunId,
     findUncompressedTextAssets,
     stagePublishArtifacts
 };

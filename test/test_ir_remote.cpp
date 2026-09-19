@@ -27,6 +27,7 @@
 #include <string>
 #include <cstdio>
 #include <cctype>
+#include "core/PeripheralTypes.h"
 
 void test_ir_remote_group();
 
@@ -1065,6 +1066,32 @@ static void test_lock_nonrecursive_reentry_is_deadlock() {
 }
 
 // ============================================================
+// TEST GROUP 14: Production peripheral type capability contract
+// ============================================================
+
+static void test_ir_peripheral_type_parser_aliases() {
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(PeripheralType::IR_RECEIVER),
+        static_cast<int>(parsePeripheralType("IR_RECEIVER")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(PeripheralType::IR_RECEIVER),
+        static_cast<int>(parsePeripheralType("IR")));
+}
+
+static void test_peripheral_type_capabilities_fail_closed() {
+    TEST_ASSERT_FALSE(isPeripheralTypeImplemented(PeripheralType::GPIO_TOUCH));
+    TEST_ASSERT_TRUE(isPeripheralTypeImplemented(PeripheralType::UART));
+    TEST_ASSERT_TRUE(isPeripheralTypeUserConfigurable(PeripheralType::UART));
+    TEST_ASSERT_TRUE(isPeripheralTypeImplemented(PeripheralType::MODBUS_DEVICE));
+    TEST_ASSERT_FALSE(isPeripheralTypeUserConfigurable(PeripheralType::MODBUS_DEVICE));
+#if FASTBEE_ENABLE_IR_REMOTE
+    TEST_ASSERT_TRUE(isPeripheralTypeImplemented(PeripheralType::IR_RECEIVER));
+#else
+    TEST_ASSERT_FALSE(isPeripheralTypeImplemented(PeripheralType::IR_RECEIVER));
+#endif
+}
+
+// ============================================================
 // 测试组注册
 // ============================================================
 void test_ir_remote_group() {
@@ -1162,4 +1189,8 @@ void test_ir_remote_group() {
     RUN_TEST(test_lock_check_releases_on_all_paths);
     RUN_TEST(test_lock_begin_stop_balanced_single_disable);
     RUN_TEST(test_lock_nonrecursive_reentry_is_deadlock);
+
+    // Group 14: production type parsing and capability ownership
+    RUN_TEST(test_ir_peripheral_type_parser_aliases);
+    RUN_TEST(test_peripheral_type_capabilities_fail_closed);
 }

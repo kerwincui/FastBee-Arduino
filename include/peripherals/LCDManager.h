@@ -31,6 +31,7 @@ struct SensorDisplayEntry {
     uint8_t decimals;       // 小数位数
     unsigned long timestamp; // 最后更新时间 (millis)
     bool valid;             // 数据是否有效
+    uint32_t configVersion = 0; // 0 for callers without a PM sensor snapshot
 };
 
 /**
@@ -176,7 +177,7 @@ public:
      * @param decimals 小数位数
      */
     void updateSensorEntry(const String& id, const String& label, float value, 
-                           const String& unit, uint8_t decimals = 1);
+                           const String& unit, uint8_t decimals = 1, uint32_t configVersion = 0);
     
     /**
      * @brief 标记传感器数据无效（读取失败时调用）
@@ -340,6 +341,7 @@ private:
     unsigned long _lastBusWarning = 0;        // 上次 I2C 不可用告警时刻
     int8_t _sdaPin = -1;                     // 保存 I2C 引脚用于长期恢复
     int8_t _sclPin = -1;
+    bool _busAcquired = false;
     const unsigned long _minUpdateInterval = 50;  // 最小刷新间隔（ms）
     
     // 传感器显示模块

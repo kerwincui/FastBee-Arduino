@@ -19,6 +19,8 @@
 using boolean = bool;
 using byte = uint8_t;
 
+class Stream;
+
 constexpr int DEC = 10;
 constexpr int HEX = 16;
 constexpr int OCT = 8;
@@ -70,6 +72,11 @@ public:
     int indexOf(char needle, int fromIndex = 0) const {
         if (fromIndex < 0 || static_cast<size_t>(fromIndex) > _value.size()) return -1;
         size_t pos = _value.find(needle, static_cast<size_t>(fromIndex));
+        return pos == std::string::npos ? -1 : static_cast<int>(pos);
+    }
+
+    int lastIndexOf(char needle) const {
+        size_t pos = _value.rfind(needle);
         return pos == std::string::npos ? -1 : static_cast<int>(pos);
     }
 

@@ -10,6 +10,9 @@
         _pePeripherals: [],
         _peDataSources: [],
         _peSensorSources: [],
+        _peRemoteChannels: [],
+        _peWeatherSources: [],
+        _peRemoteResourcesAvailable: false,
         _peCurrentPage: 1,
         _pePageSize: 10,
         _peTotalRules: 0,
@@ -173,6 +176,12 @@
             // 刷新按钮
             var peRefreshBtn = document.getElementById('periph-exec-refresh-btn');
             if (peRefreshBtn) peRefreshBtn.addEventListener('click', () => this._refreshPeriphExecList());
+            var peFilter = document.getElementById('periph-exec-filter-periph');
+            if (peFilter) {
+                var loadFilterOptions = () => this._populatePeriphExecFilter();
+                peFilter.addEventListener('focus', loadFilterOptions);
+                peFilter.addEventListener('pointerdown', loadFilterOptions);
+            }
             // 注册模态窗事件绑定器（模态窗 DOM 加载后由 _loadModals 触发）
             if (typeof this._registerModalBinder === 'function') {
                 this._registerModalBinder('periph-exec', () => this._bindPeriphExecModalEvents());
@@ -192,6 +201,18 @@
             if (cancelPeriphExecBtn) cancelPeriphExecBtn.addEventListener('click', () => this.closePeriphExecModal());
             var savePeriphExecBtn = document.getElementById('save-periph-exec-btn');
             if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
+            var historySettingsLink = document.getElementById('periph-exec-history-settings-link');
+            if (historySettingsLink) historySettingsLink.addEventListener('click', () => {
+                this.closePeriphExecModal();
+                Promise.resolve(this.changePage('screen-panel')).then(() => {
+                    if (typeof this._spSwitchTopTab === 'function') this._spSwitchTopTab('sp-config');
+                    var settings = document.querySelector('.sp-history-settings');
+                    if (settings) {
+                        settings.open = true;
+                        settings.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                    }
+                });
+            });
             var triggerContainer = document.getElementById('periph-exec-triggers');
             if (triggerContainer) {
                 triggerContainer.addEventListener('click', (event) => this._handlePeriphExecTriggerClick(event));
@@ -248,6 +269,9 @@
             this._peDataSources = [];
             this._peSensorSources = [];
             this._peExecRules = [];
+            this._peRemoteChannels = [];
+            this._peWeatherSources = [];
+            this._peRemoteResourcesAvailable = false;
             const loadSeq = ++this._peEditLoadSeq;
             const pageGeneration = this._getPeriphExecPageGeneration();
             const ensureCreateActive = () => {
@@ -263,11 +287,16 @@
             Promise.resolve()
                 .then(() => {
                     ensureCreateActive();
-                    return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 });
+                    return apiGet('/api/peripherals', { pageSize: 100, compact: 1 });
                 })
                 .then((periphRes) => {
                     ensureCreateActive();
                     createResults.periphRes = periphRes;
+                    return apiGet('/api/peripherals/types');
+                })
+                .then((typeRes) => {
+                    ensureCreateActive();
+                    this._storePeriphExecTypeCatalog(typeRes);
                     return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' });
                 })
                 .then((protoRes) => {
@@ -277,8 +306,14 @@
                 })
                 .then((rulesRes) => {
                     ensureCreateActive();
+                    createResults.rulesRes = rulesRes;
+                    return this._loadPeriphExecRemoteChoices(ensureCreateActive);
+                })
+                .then(() => {
+                    ensureCreateActive();
                     const periphRes = createResults.periphRes;
                     const protoRes = createResults.protoRes;
+                    const rulesRes = createResults.rulesRes;
                     if (periphRes && periphRes.success && periphRes.data) this._pePeripherals = periphRes.data;
                     if (protoRes && protoRes.success && protoRes.data) {
                         const protoData = protoRes.data;
@@ -314,6 +349,9 @@
             this._pePeripherals = [];
             this._peDataSources = [];
             this._peSensorSources = [];
+            this._peRemoteChannels = [];
+            this._peWeatherSources = [];
+            this._peRemoteResourcesAvailable = false;
             if (typeof this._clearPeriphExecRiskNotice === 'function') {
                 this._clearPeriphExecRiskNotice();
             }
@@ -323,6 +361,34 @@
 
         _hiddenClass(visible) {
             return visible ? '' : ' is-hidden';
+        },
+
+        _storePeriphExecTypeCatalog(response) {
+            var groups = response?.success && response.data ? response.data : {};
+            this._peTypeCatalog = Array.isArray(groups) ? groups : Object.keys(groups).reduce(function(list, key) {
+                return Array.isArray(groups[key]) ? list.concat(groups[key]) : list;
+            }, []);
+        },
+
+        _loadPeriphExecRemoteChoices(ensureActive) {
+            var self = this;
+            this._peRemoteChannels = [];
+            this._peWeatherSources = [];
+            this._peRemoteResourcesAvailable = false;
+            return apiGet('/api/remote-resources/config').then(function(response) {
+                if (ensureActive) ensureActive();
+                var data = response && response.success && response.data ? response.data : {};
+                self._peRemoteChannels = (Array.isArray(data.remoteChannels) ? data.remoteChannels : []).filter(function(item) {
+                    return item && item.enabled === true && (item.type === 'switch' || item.type === 'action') && item.id;
+                });
+                self._peWeatherSources = (Array.isArray(data.weatherSources) ? data.weatherSources : []).filter(function(item) {
+                    return item && item.enabled === true && item.id;
+                });
+                self._peRemoteResourcesAvailable = true;
+            }).catch(function(error) {
+                if (error && error._pageAborted) throw error;
+                console.warn('Remote resource choices unavailable:', error && error.message);
+            });
         },
 
         _setSectionVisible(ref, visible, displayValue) {
@@ -606,10 +672,19 @@
             if (!target) return;
             var index = this._getPeriphExecBlockIndex(target);
             if (index < 0) return;
-            if (target.classList.contains('pe-target-periph')) this._onTargetPeriphChange(target, index);
+            if (target.classList.contains('pe-target-periph')) {
+                this._onTargetPeriphChange(target, index);
+                if (typeof this._syncConfiguredSensorAction === 'function') {
+                    var block = this._getPeriphExecBlock('periph-exec-actions', index);
+                    var channel = block?.querySelector('.pe-sensor-channel-field');
+                    if (channel) channel.innerHTML = '';
+                    this._syncConfiguredSensorAction(block);
+                }
+            }
             else if (target.classList.contains('pe-action-type')) this.onPeriphExecActionTypeChangeInBlock(target.value, index);
             else if (target.classList.contains('pe-use-received-value')) this.onPeriphExecUseRecvChangeInBlock(target, index);
             else if (target.classList.contains('pe-sensor-category')) this.onSensorCategoryChange(target, index);
+            else if (target.classList.contains('pe-sensor-channel-field')) this._syncConfiguredSensorAction(this._getPeriphExecBlock('periph-exec-actions', index));
             else if (target.classList.contains('pe-modbus-device-select')) this._onPeriphDeviceSelect(target);
             else if (target.classList.contains('pe-modbus-channel-select')) this._onPeriphChannelSelect(target);
             else if (target.classList.contains('pe-neopixel-preset')) this._onNeoPixelPresetChange(target, index);
@@ -662,7 +737,13 @@
                 var actionType = parseInt(block.querySelector('.pe-action-type')?.value || '0');
                 // 仅 Modbus 轮询动作(18)限制为 Modbus 采集任务；传感器读取(19)、OLED显示(27)等本地动作显示全部外设
                 var effectivePollOnly = isPollMode && actionType === 18;
-                this._populatePeriphSelect(sel, sel.value, effectivePollOnly);
+                if (actionType === 19 && typeof this._populateSensorPeriphSelect === 'function') {
+                    this._populateSensorPeriphSelect(block, block.querySelector('.pe-sensor-category')?.value || 'analog', sel.value);
+                } else if ((actionType === 33 || actionType === 34) && typeof this._populateRemoteResourceSelect === 'function') {
+                    this._populateRemoteResourceSelect(sel, actionType, sel.value);
+                } else {
+                    this._populatePeriphSelect(sel, sel.value, effectivePollOnly);
+                }
             });
         },
 
@@ -680,24 +761,11 @@
                 } else if (actionType === 27) {
                     actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
                 } else if (actionType === 19) {
-                    // 传感器读取：从面板各字段收集完整传感器配置
-                    var sensorData = {
-                        periphId: item.querySelector('.pe-target-periph')?.value || '',
-                        sensorCategory: item.querySelector('.pe-sensor-category')?.value || 'analog',
-                        scaleFactor: parseFloat(item.querySelector('.pe-sensor-scale')?.value) || 1,
-                        offset: parseFloat(item.querySelector('.pe-sensor-offset')?.value) || 0,
-                        decimalPlaces: parseInt(item.querySelector('.pe-sensor-decimals')?.value) || 2,
-                        sensorLabel: item.querySelector('.pe-sensor-label')?.value?.trim() || '',
-                        unit: item.querySelector('.pe-sensor-unit')?.value?.trim() || '',
-                        dataField: item.querySelector('.pe-sensor-datafield')?.value || 'value'
-                    };
-                    var devIdx = item.querySelector('.pe-sensor-devindex');
-                    if (devIdx) sensorData.deviceIndex = parseInt(devIdx.value) || 0;
-                    var extraJson = item.querySelector('.pe-sensor-extra-json')?.value?.trim();
-                    if (extraJson) {
-                        try { var extraObj = JSON.parse(extraJson); if (extraObj && typeof extraObj === 'object') Object.assign(sensorData, extraObj); } catch(e) {}
+                    var sensorAction = {};
+                    if (typeof this._collectPeriphExecSensorAction === 'function') {
+                        this._collectPeriphExecSensorAction(item, sensorAction);
+                        actionValue = sensorAction.actionValue;
                     }
-                    actionValue = JSON.stringify(sensorData);
                 } else if (actionType === 21) {
                     // 触发设备事件：从事件下拉框取值
                     actionValue = item.querySelector('.pe-trigger-event-select')?.value || '';
@@ -861,13 +929,19 @@
             const loadRule = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
             return Promise.resolve()
                 .then(function() { ensureActive(); return loadRule('/api/periph-exec', { id: id }); })
-                .then(execRes => { ensureActive(); _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }); })
-                .then(periphRes => { ensureActive(); _editResults.periphRes = periphRes; return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
+                .then(execRes => { ensureActive(); _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1 }); })
+                .then(periphRes => { ensureActive(); _editResults.periphRes = periphRes; return apiGet('/api/peripherals/types'); })
+                .then(typeRes => { ensureActive(); this._storePeriphExecTypeCatalog(typeRes); return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
                 .then(protoRes => { ensureActive(); _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
                 .then(rulesRes => {
                     ensureActive();
                     _editResults.rulesRes = rulesRes;
+                    return this._loadPeriphExecRemoteChoices(ensureActive);
+                })
+                .then(() => {
+                    ensureActive();
                     const { execRes, periphRes, protoRes } = _editResults;
+                    const rulesRes = _editResults.rulesRes;
                     if (periphRes && periphRes.success && periphRes.data) {
                         this._pePeripherals = periphRes.data;
                     }
@@ -893,6 +967,10 @@
                     document.getElementById('periph-exec-name').value = rule.name || '';
                     document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
                     document.getElementById('periph-exec-report').checked = rule.reportAfterExec !== false;
+                    var panelControl = document.getElementById('periph-exec-panel-control');
+                    var recordHistory = document.getElementById('periph-exec-record-history');
+                    if (panelControl) panelControl.checked = rule.allowPanelControl === true;
+                    if (recordHistory) recordHistory.checked = rule.recordHistory === true;
 
                     let triggers = rule.triggers || [];
                     if (triggers.length === 0) {
@@ -924,6 +1002,9 @@
                     const actionsContainer = document.getElementById('periph-exec-actions');
                     if (actionsContainer) actionsContainer.innerHTML = '';
                     actions.forEach((a, i) => this._createPeriphExecActionElement(a, i));
+                    if (typeof this._updatePeriphExecPanelOptions === 'function') {
+                        this._updatePeriphExecPanelOptions();
+                    }
 
                     if (this._hasSetModeTrigger()) {
                         this._syncSetModeToActions(true);
@@ -1085,15 +1166,12 @@
 
             this.renderEmptyTableRow(tbody, 7, '加载中...');
 
-            const self = this;
             const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
 
-            // 串行化：先填充 filter（仅首次调用会发请求），再发主请求，
-            // 避免并发两个请求在 ESP32 低 heap 状态下触发 OOM TCP RST。
-            Promise.resolve()
-                .then(function () { return self._populatePeriphExecFilter(); })
-                .catch(function () { /* filter 失败静默，不阻塞主流程 */ })
-                .then(function () { return apiGet(apiUrl); })
+            // The dynamic filter options are secondary UI. Fetch the rules as
+            // the only first-screen API request; filter options load when the
+            // user focuses the selector, after the page is already usable.
+            apiGet(apiUrl)
                 .then(execRes => {
                     // /api/periph-exec exposes the runtime degradation snapshot
                     // in its chunked header. Keep the page-level warning and
@@ -1240,7 +1318,8 @@
         _populatePeriphExecFilter() {
             const sel = document.getElementById('periph-exec-filter-periph');
             if (!sel || sel._populated) return Promise.resolve();
-            return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }).then(res => {
+            if (sel._populatePromise) return sel._populatePromise;
+            sel._populatePromise = apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }).then(res => {
                 if (!res || !res.success || !res.data || res.data.length === 0) {
                     sel._populated = true;
                     return;
@@ -1258,7 +1337,10 @@
             }).catch(() => {
                 // 静默处理：ESP32 OOM 时 RST/超时会抛出 rejection，不能变成 unhandled；
                 // 保持 _populated=false 以便下一次重试
+            }).finally(() => {
+                sel._populatePromise = null;
             });
+            return sel._populatePromise;
         }
     });
 

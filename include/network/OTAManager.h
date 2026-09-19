@@ -23,6 +23,9 @@ class AsyncWebServerRequest;
  */
 class OTAManager {
 public:
+    using ProgressCallback = std::function<void(uint8_t)>;
+    using CompletionCallback = std::function<void(bool, const String&)>;
+
     /**
      * @brief 构造函数
      * @param webServer Web服务器指针（保留参数兼容性，路由已移交 OTARouteHandler）
@@ -115,14 +118,22 @@ public:
      * @param url 固件下载URL
      * @return 启动是否成功
      */
-    bool startOTA(const String& url);
+    bool startOTA(const String& url,
+                  ProgressCallback progressCallback = nullptr,
+                  bool rebootOnSuccess = true);
 
     /**
      * @brief 在独立后台任务中执行URL OTA下载（不阻塞 async_tcp）
      * @param url 固件下载URL
+     * @param progressCallback 下载进度回调（在 OTA 后台任务中执行）
+     * @param completionCallback 完成回调（在 OTA 后台任务中执行）
+     * @param rebootOnSuccess 成功后是否由 OTAManager 调度重启
      * @return 任务创建是否成功（已有OTA进行中时返回 false）
      */
-    bool startOTAAsync(const String& url);
+    bool startOTAAsync(const String& url,
+                       ProgressCallback progressCallback = nullptr,
+                       CompletionCallback completionCallback = nullptr,
+                       bool rebootOnSuccess = true);
     
     /**
      * @brief 检查并回收僵死的上传型 OTA（客户端中途断连后 otaInProgress 永久残留）
@@ -192,4 +203,4 @@ private:
     uint8_t progress;                 ///< 当前进度百分比（未知大小时保持 0）
 };
 
-#endif 
+#endif

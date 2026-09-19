@@ -14,6 +14,37 @@
 #include "ResourceProfile.h"
 #include "utils/StaticPoolAllocator.h"
 
+enum class ObservationQuality : uint8_t {
+    UNKNOWN = 0,
+    GOOD = 1,
+    STALE = 2,
+    OFFLINE = 3,
+    ERROR = 4
+};
+
+struct ObservationUpdate {
+    String sourceRef;
+    String label;
+    String value;
+    String unit;
+    String valueType = "number";
+    String sourceRevision;
+    String error;
+    String dataField;
+    String periphId;
+    ObservationQuality quality = ObservationQuality::GOOD;
+    uint32_t sampleTimestamp = 0;
+    uint32_t maxAgeMs = 0;
+    uint32_t sampleIdentity = 0;
+    bool recordable = false;
+    bool bindingValid = true;
+};
+
+struct ObservationSnapshot : public ObservationUpdate {
+    bool hasValue = false;
+    bool stale = false;
+};
+
 // 前向声明
 class PeriphExecExecutor;
 class PeriphExecScheduler;
@@ -159,8 +190,9 @@ public:
 
     // ========== 异步执行 ==========
 
-    // 记录异步执行结果（由异步任务完成时调用）
-    void recordResult(const AsyncExecResult& result);
+    // 新增或原位推进执行结果。已接纳 operation 的状态更新不再受低内存
+    // 记录门槛影响，确保 queued/running 最终收敛到唯一终态。
+    bool recordResult(const AsyncExecResult& result);
 
     // 获取最近的执行结果（最多保留 MAX_ASYNC_TASKS * 2 条）
     std::vector<AsyncExecResult> getRecentResults();
@@ -168,7 +200,9 @@ public:
     // ========== 手动执行 ==========
 
     // 手动执行规则（用于"执行一次"按钮，可携带用户输入值）
-    bool runOnce(const String& id, const String& receivedValue = "");
+    bool runOnce(const String& id, const String& receivedValue = "",
+                 String* rejectionReason = nullptr,
+                 AsyncExecResult* admittedOperation = nullptr);
 
     // ========== 动作执行后数据上报（委托给 Scheduler） ==========
 
@@ -257,7 +291,11 @@ public:
     bool shouldRunAsync() const;
 
     // 异步分发规则执行
-    void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
+    // 返回 true 仅表示本次请求已进入异步队列或已同步执行；资源不足、
+    // 正在运行和队列拒绝必须返回 false，避免 API 报告“已提交”假成功。
+    bool dispatchAsync(const PeriphExecRule& rule, const String& receivedValue,
+                       String* rejectionReason = nullptr,
+                       AsyncExecResult* admittedOperation = nullptr);
 
     // 单任务执行（由 WorkerPool 在 worker 线程内调用）
     // 包含执行规则、清理 _runningRuleIds、归还信号量、归还对象池等完整生命周期
@@ -269,10 +307,18 @@ public:
 
     // 执行规则的所有动作（供异步任务调用）
     // reportCountOut（可选）：回填本次实际上报的动作结果数量
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule,
+                                                    const String& receivedValue,
+                                                    bool suppressReport = false,
+                                                    size_t* reportCountOut = nullptr,
+                                                    bool* completedAllOut = nullptr,
+                                                    unsigned long deadlineAt = 0,
+                                                    AsyncExecResult* traceOut = nullptr);
 
     // 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
-    void executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue);
+    bool executeSyncWithCompletion(const PeriphExecRule& rule,
+                                   const String& receivedValue,
+                                   AsyncExecResult& operation);
 
     // 定时触发检查（内部使用）
     void checkTimerTriggers(unsigned long now, bool modbusAvailable);
@@ -327,6 +373,14 @@ private:
                                         String& errorMsg);
     bool restoreRuleMutationLocked(const RuleMutationSnapshot& snapshot,
                                    const String& resultId);
+    // Authoritative rule-action validation used by every Manager add/update
+    // path. Route/UI preflight is advisory and must not be the only guard.
+    bool validateRuleActionsLocked(const PeriphExecRule& rule,
+                                   String& errorMsg) const;
+    bool beginOperation(const PeriphExecRule& rule,
+                        bool asyncExecution,
+                        uint8_t queuePosition,
+                        AsyncExecResult& operation);
     void refreshRuleRuntimeIndexesLocked(bool validateScheduler = true);
     bool saveConfigurationLocked();
 
@@ -336,13 +390,20 @@ private:
     // 规则是否包含可作为物模型状态上报的动作（传感器读取 / Modbus 轮询 / 物理输出控制）
     bool ruleHasReportableStateAction(const PeriphExecRule& rule) const;
     bool shouldAvoidSyncFallback(const PeriphExecRule& rule) const;
-    void sanitizeTriggerForSafety(ExecTrigger& trigger, bool hasPollCollectionAction, const String& ruleName) const;
-    void sanitizeRuleForSafety(PeriphExecRule& rule) const;
+    bool sanitizeTriggerForSafety(ExecTrigger& trigger, bool hasPollCollectionAction, const String& ruleName) const;
+    bool sanitizeRuleForSafety(PeriphExecRule& rule) const;
     unsigned long getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const;
     bool shouldThrottlePollIngress(const String& source, unsigned long now);
 
     // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
-    void dispatchByRuleId(const String& ruleId, const String& receivedValue);
+    bool dispatchByRuleId(const String& ruleId, const String& receivedValue,
+                          String* rejectionReason = nullptr);
+    // Match paths must not consume cooldown/counters until dispatch admission
+    // succeeds. This helper centralizes that ordering and exact trigger commit.
+    bool dispatchAndCommitTrigger(const String& ruleId,
+                                  size_t triggerIndex,
+                                  const String& receivedValue,
+                                  const char* sourceLabel);
 
     std::unique_ptr<PeriphExecExecutor> _executor;
     std::unique_ptr<PeriphExecScheduler> _scheduler;
@@ -361,6 +422,7 @@ private:
 
     // ========== 异步执行结果 ==========
     std::vector<AsyncExecResult> executionResults;
+    uint32_t _nextOperationId = 0;
 
     // ========== Modbus 读取回调 ==========
     std::function<String(const String&)> _modbusReadCallback;
@@ -384,6 +446,7 @@ private:
              FastBee::SmallNodeAllocator<std::pair<const String, unsigned long>>> _runningStartTime;  // 规则进入运行集合的时间戳（自愈用）
     unsigned long _lastBackoffCleanupTime = 0;  // 上次 _failureBackoff 过期清理时间
     unsigned long _lastDiagLogTime = 0;         // 上次诊断日志输出时间
+    String _lastTimerDispatchRuleId;             // 定时任务轮转游标，避免 map 前部规则长期占满槽位
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
     SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
     std::map<String, unsigned long, std::less<String>,
@@ -410,13 +473,35 @@ public:
         String dataField;       // 显式配置的多字段名（temperature/humidity 等），实时监测上报时优先作为 id；
                                 // 未显式配置时为空，上报 id 回退为外设配置 id（与平台物模型标识符对应）
         String periphId;        // 外设配置 id：dataField 未显式配置时的上报 id 回退来源
-        unsigned long timestamp; // 更新时间 millis()
+        unsigned long timestamp = 0; // 实际采样时间 millis()
+        unsigned long maxAgeMs = 0;  // 0 使用兼容 TTL；非 0 时限制该读数的新鲜期
+        String valueType = "number";
+        String sourceRevision;
+        String error;
+        ObservationQuality quality = ObservationQuality::UNKNOWN;
+        uint32_t sampleIdentity = 0;
+        bool recordable = false;
+        bool bindingValid = true;
+        uint32_t configVersion = 0;
+        uint32_t publicationToken = 0;
+        bool pendingPublication = false;
     };
     static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = FastBee::ResourceProfile::SENSOR_CACHE_MAX_ENTRIES;   // 最大缓存条目数
     static constexpr unsigned long SENSOR_CACHE_TTL_MS = 120000; // 缓存 TTL: 120s
 
-    void updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit,
-                               const String& dataField = "", const String& periphId = "");
+    bool updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit,
+                               const String& dataField = "", const String& periphId = "",
+                               uint32_t sampleTimestamp = 0, uint32_t maxAgeMs = 0,
+                               bool recordable = false, uint32_t sampleIdentity = 0,
+                               const String& sourceRevision = "", uint32_t configVersion = 0);
+    void invalidateSensorReadCache(const String& periphId, const String& reason,
+                                    uint32_t configVersion = 0);
+    void invalidateAllSensorReadCache();
+    bool upsertObservation(const ObservationUpdate& update, uint32_t configVersion = 0);
+    bool invalidateObservation(const String& sourceRef, const String& reason,
+                               const String& nextSourceRevision = "");
+    bool getObservation(const String& sourceRef, ObservationSnapshot& out) const;
+    std::vector<ObservationSnapshot> getObservationSnapshots(size_t limit = SENSOR_CACHE_MAX_ENTRIES) const;
     std::map<String, SensorReadCache> getSensorReadCacheCopy() const;  // 线程安全的拷贝访问
     // 审计 P2-3：单条持锁查询，避免模板解析每次全量深拷贝整表
     bool lookupSensorCache(const String& key, SensorReadCache& out) const;
@@ -424,6 +509,8 @@ public:
 private:
     std::map<String, SensorReadCache> _sensorReadCache;  // key = periphId + "_" + dataField
     mutable SemaphoreHandle_t _sensorCacheMutex = nullptr; // 保护传感器缓存的互斥量
+    uint32_t _nextObservationIdentity = 0;
+    uint32_t _nextSensorPublication = 0; // protected by _sensorCacheMutex
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池

@@ -64,6 +64,9 @@ extern void test_rf_remote_group();
 extern void test_peripheral_manager_opt_group();
 extern void test_profile_consistency_group();
 extern void test_runtime_feature_manager_group();
+extern void test_remote_resources_group();
+extern void test_point_history_group();
+extern void test_screen_panel_manager_group();
 extern void test_feature_budget_group();
 extern void test_network_config_additional_group();  // Added: LittleFS & network.json config tests
 
@@ -273,6 +276,11 @@ void setup() {
 
     Serial.println("\n[TEST] Running RuntimeFeatureManager Tests...");
     test_runtime_feature_manager_group();
+    test_remote_resources_group();
+
+    Serial.println("\n[TEST] Running PointHistory and ScreenPanelManager Tests...");
+    test_point_history_group();
+    test_screen_panel_manager_group();
 
     Serial.println("\n[TEST] Running FeatureBudget Tests...");
     test_feature_budget_group();

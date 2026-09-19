@@ -1,6 +1,7 @@
 #include "./network/handlers/PeripheralRouteHandler.h"
 #include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
+#include "network/JsonFragmentsResponse.h"
 #include "./network/WebHandlerContext.h"
 #include "core/FeatureFlags.h"
 #include "core/AsyncExecTypes.h"
@@ -8,6 +9,10 @@
 #include "core/PeripheralManager.h"
 #include "core/ResourceProfile.h"
 #include "core/SensorDriverCache.h"
+#include "core/SensorConfigSupport.h"
+#include "core/DriverRegistry.h"
+#include "core/RuntimeFeatureManager.h"
+#include "core/I2CBusManager.h"
 #include "peripherals/SDCardManager.h"
 #if FASTBEE_ENABLE_DS1302
 #include "peripherals/drivers/DS1302Driver.h"
@@ -88,6 +93,16 @@ bool isDigitalInputPeripheral(PeripheralType type) {
            type == PeripheralType::GPIO_INTERRUPT_CHANGE;
 }
 
+const char* userConfigurablePeripheralTypeError(PeripheralType type) {
+    if (type == PeripheralType::MODBUS_DEVICE) {
+        return "EXTERNALLY_MANAGED_PERIPHERAL_TYPE: Modbus devices are managed by protocol.modbus";
+    }
+    if (!isPeripheralTypeImplemented(type)) {
+        return "UNSUPPORTED_PERIPHERAL_TYPE: current firmware does not implement this type";
+    }
+    return nullptr;
+}
+
 void addDigitalInputParams(JsonObject params, const PeripheralConfig& config) {
     params["inputMode"] = config.params.gpio.inputMode;
     params["invertLogic"] = config.params.gpio.invertLogic;
@@ -145,6 +160,45 @@ void addEncoderParams(JsonObject params, const PeripheralConfig& config) {
     params["useInterrupt"] = config.params.encoder.useInterrupt;
 }
 
+void addDisplayParams(JsonObject params, const PeripheralConfig& config);
+
+// These fields are required by both the editor and capability-based action
+// selectors, including compact lists on devices without PSRAM.
+void addGenericPeripheralFields(JsonObject object, const PeripheralConfig& config) {
+    const bool logicalIo = config.type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+        isDigitalInputPeripheral(config.type);
+    if (!logicalIo && config.type != PeripheralType::IO_EXPANDER &&
+        config.type != PeripheralType::SENSOR_GENERIC &&
+        config.type != PeripheralType::SCREEN_DISPLAY) return;
+    JsonObject params = object["params"].is<JsonObject>()
+        ? object["params"].as<JsonObject>() : object["params"].to<JsonObject>();
+    if (logicalIo) {
+        params["ioSource"] = config.params.gpio.ioSource;
+        params["providerId"] = config.params.gpio.providerId;
+        params["channel"] = config.params.gpio.channel;
+        params["initialState"] = static_cast<int>(config.params.gpio.initialState);
+        params["invertLogic"] = config.params.gpio.invertLogic;
+    } else if (config.type == PeripheralType::IO_EXPANDER) {
+        params["driver"] = config.params.ioExpander.driver;
+        params["busPeripheralId"] = config.params.ioExpander.busPeripheralId;
+        params["address"] = config.params.ioExpander.address;
+        params["sampleInterval"] = config.params.ioExpander.sampleInterval;
+    } else if (config.type == PeripheralType::SENSOR_GENERIC) {
+        FastBee::serializeSensorConfig(params, config);
+    } else {
+        addDisplayParams(params, config);
+    }
+    const char* feature = config.type == PeripheralType::SCREEN_DISPLAY
+        ? "screenPanel"
+        : config.type == PeripheralType::IO_EXPANDER || config.isExpanderChannel()
+        ? "ioExpander" : config.type == PeripheralType::SENSOR_GENERIC && config.params.sensor.driver[0]
+            ? "i2cSensors" : nullptr;
+    if (feature) {
+        object["feature"] = feature;
+        object["featureActive"] = FastBee::RuntimeFeatureManager::instance().shouldEnable(feature);
+    }
+}
+
 void addP1PeripheralParams(JsonObject params, const PeripheralConfig& config) {
     if (config.type == PeripheralType::SDIO) {
         params["interface"] = config.params.sdcard.interface;
@@ -160,16 +214,62 @@ void addP1PeripheralParams(JsonObject params, const PeripheralConfig& config) {
     } else if (config.type == PeripheralType::RFID_MFRC522) {
         params["frequency"] = config.params.rfid.frequency;
     } else if (config.type == PeripheralType::SENSOR_GENERIC) {
-        params["sensorType"] = config.params.sensor.sensorType;
-        params["sampleInterval"] = normalizeSensorSampleInterval(
-            static_cast<int>(config.params.sensor.sampleInterval));
-        if (config.params.sensor.driver[0] != '\0') {
-            params["driver"] = config.params.sensor.driver;
-            params["address"] = config.params.sensor.address;
-            params["mode"] = config.params.sensor.mode;
-            params["frequency"] = config.params.sensor.frequency;
-        }
+        FastBee::serializeSensorConfig(params, config);
     }
+}
+
+void addDisplayParams(JsonObject params, const PeripheralConfig& config) {
+    const DisplayConfigParams& display = config.params.display;
+    params["backend"] = display.backend;
+    params["driver"] = display.driver;
+    params["touchBackend"] = display.touchBackend;
+    params["width"] = display.width;
+    params["height"] = display.height;
+    params["rotation"] = display.rotation;
+    params["colorDepth"] = display.colorDepth;
+    params["bufferLines"] = display.bufferLines;
+    params["brightness"] = display.brightness;
+    params["backlightChannel"] = display.backlightChannel;
+    params["backlightActiveHigh"] = display.backlightActiveHigh;
+    params["spiFrequency"] = display.spiFrequency;
+    params["i2cFrequency"] = display.i2cFrequency;
+    params["rgbInitProfile"] = display.rgbInitProfile;
+    params["rgbFrequency"] = display.rgbFrequency;
+    params["hsyncFrontPorch"] = display.hsyncFrontPorch;
+    params["hsyncPulseWidth"] = display.hsyncPulseWidth;
+    params["hsyncBackPorch"] = display.hsyncBackPorch;
+    params["vsyncFrontPorch"] = display.vsyncFrontPorch;
+    params["vsyncPulseWidth"] = display.vsyncPulseWidth;
+    params["vsyncBackPorch"] = display.vsyncBackPorch;
+    params["hsyncIdleLow"] = display.hsyncIdleLow;
+    params["vsyncIdleLow"] = display.vsyncIdleLow;
+    params["pclkActiveNeg"] = display.pclkActiveNeg;
+    params["controlBackend"] = display.controlBackend;
+    params["controlAddress"] = display.controlAddress;
+    params["controlResetMask"] = display.controlResetMask;
+    params["controlBacklightMask"] = display.controlBacklightMask;
+    params["controlEnableMask"] = display.controlEnableMask;
+    params["controlInactiveMask"] = display.controlInactiveMask;
+    params["controlTouchIntMask"] = display.controlTouchIntMask;
+    JsonObject pins = params["pins"].to<JsonObject>();
+    pins["mosi"] = display.mosi;
+    pins["sclk"] = display.sclk;
+    pins["cs"] = display.cs;
+    pins["dc"] = display.dc;
+    pins["rst"] = display.rst;
+    pins["backlight"] = display.backlight;
+    pins["touchSda"] = display.touchSda;
+    pins["touchScl"] = display.touchScl;
+    pins["touchInt"] = display.touchInt;
+    pins["touchRst"] = display.touchRst;
+    JsonArray rgbPins = pins["rgbDataPins"].to<JsonArray>();
+    for (uint8_t i = 0; i < 16; ++i) rgbPins.add(display.rgbDataPins[i]);
+    pins["rgbDe"] = display.rgbDe;
+    pins["rgbVsync"] = display.rgbVsync;
+    pins["rgbHsync"] = display.rgbHsync;
+    pins["rgbPclk"] = display.rgbPclk;
+    pins["controlSda"] = display.controlSda;
+    pins["controlScl"] = display.controlScl;
 }
 
 void addUartRuntime(JsonObject target, const PeripheralRuntimeState& runtime) {
@@ -237,6 +337,8 @@ int mutationErrorStatus(const String& errorMsg) {
         errorMsg.startsWith("ROLLBACK_FAILED")) return 500;
     if (errorMsg.startsWith("UART_RESOURCE_EXHAUSTED") ||
         errorMsg.startsWith("ENCODER_RESOURCE_EXHAUSTED")) return 409;
+    if (errorMsg.startsWith("EXTERNALLY_MANAGED_PERIPHERAL_TYPE") ||
+        errorMsg.startsWith("UNSUPPORTED_PERIPHERAL_TYPE")) return 422;
     return 400;
 }
 
@@ -324,47 +426,18 @@ bool applyP1PeripheralParams(WebHandlerContext* ctx,
         config.params.rfid.frequency = RFID_DEFAULT_FREQUENCY;
     } else if (config.type == PeripheralType::SENSOR_GENERIC) {
         if (resetDefaults) initializeSensorDefaults(config);
-        int sensorType = ctx->getParamInt(request, "sensorType", config.params.sensor.sensorType);
-        if (sensorType < 0) sensorType = 0;
-        if (sensorType > 255) sensorType = 255;
-        config.params.sensor.sensorType = static_cast<uint8_t>(sensorType);
-        config.params.sensor.sampleInterval = normalizeSensorSampleInterval(
-            ctx->getParamInt(request, "sampleInterval",
-                             static_cast<int>(config.params.sensor.sampleInterval)));
-
-        String driver = ctx->getParamValue(
-            request, "driver", String(config.params.sensor.driver));
-        driver.trim();
-        driver.toUpperCase();
-        if (driver.length() >= sizeof(config.params.sensor.driver)) {
-            errorMsg = "INVALID_SENSOR_DRIVER: 驱动名过长";
-            return false;
+        JsonDocument sensorParams;
+        const char* const keys[] = {"sensorType", "sampleInterval", "driver", "driverName",
+            "address", "i2cAddress", "mode", "frequency", "busPeripheralId",
+            "shuntResistance", "maxCurrent", "conversionTimeUs", "averaging"};
+        for (const char* key : keys) {
+            if (request->hasParam(key, true) || request->hasParam(key)) {
+                sensorParams[key] = ctx->getParamValue(request, key, "");
+            }
         }
-        if (!driver.isEmpty() && driver != "BMP280" && driver != "MPU6050") {
-            errorMsg = "INVALID_SENSOR_DRIVER: 仅支持 BMP280 或 MPU6050";
-            return false;
-        }
-        strlcpy(config.params.sensor.driver, driver.c_str(),
-                sizeof(config.params.sensor.driver));
-        const int defaultAddress = driver == "MPU6050" ? 0x68 : 0x76;
-        const int address = ctx->getParamInt(
-            request, "address",
-            config.params.sensor.address ? config.params.sensor.address : defaultAddress);
-        const int mode = ctx->getParamInt(request, "mode", config.params.sensor.mode);
-        const int frequency = ctx->getParamInt(
-            request, "frequency",
-            config.params.sensor.frequency ? config.params.sensor.frequency : 100000);
-        if (!driver.isEmpty() && (address < 1 || address > 0x7F)) {
-            errorMsg = "INVALID_SENSOR_ADDRESS: I2C 地址必须为 1-127";
-            return false;
-        }
-        if (mode < 0 || mode > 1 || (frequency != 100000 && frequency != 400000)) {
-            errorMsg = "INVALID_SENSOR_CONFIG: 模式或 I2C 频率无效";
-            return false;
-        }
-        config.params.sensor.address = static_cast<uint8_t>(address);
-        config.params.sensor.mode = static_cast<uint8_t>(mode);
-        config.params.sensor.frequency = static_cast<uint32_t>(frequency);
+        if (sensorParams.overflowed()) { errorMsg = "SENSOR_PARAMS_MEMORY_UNAVAILABLE"; return false; }
+        if (!FastBee::parseSensorConfig(sensorParams.as<JsonObjectConst>(), config, errorMsg) ||
+            !FastBee::validateSensorConfig(config, errorMsg)) return false;
     }
     return true;
 }
@@ -533,12 +606,353 @@ bool parsePeripheralPins(const String& value, uint8_t* pins, uint8_t& count,
     return true;
 }
 
+bool hasPeripheralRequestField(AsyncWebServerRequest* request, const char* name) {
+    return request->hasParam(name, true) || request->hasParam(name);
+}
+
+bool readDisplayRequestInteger(WebHandlerContext* ctx,
+                               AsyncWebServerRequest* request,
+                               const char* name, int32_t fallback,
+                               int32_t minimum, int32_t maximum,
+                               int32_t& value, String& error) {
+    value = fallback;
+    if (!hasPeripheralRequestField(request, name)) {
+        if (value >= minimum && value <= maximum) return true;
+        error = String("DISPLAY_PARAMS_INVALID: invalid ") + name;
+        return false;
+    }
+
+    String text = ctx->getParamValue(request, name, "");
+    text.trim();
+    size_t offset = 0;
+    bool negative = false;
+    if (text.length() > 0 && (text[0] == '-' || text[0] == '+')) {
+        negative = text[0] == '-';
+        offset = 1;
+    }
+    uint64_t magnitude = 0;
+    bool valid = text.length() > offset;
+    for (size_t i = offset; valid && i < text.length(); ++i) {
+        const char c = text[i];
+        if (c < '0' || c > '9') {
+            valid = false;
+            break;
+        }
+        const uint8_t digit = static_cast<uint8_t>(c - '0');
+        if (magnitude > (static_cast<uint64_t>(INT32_MAX) + 1ULL - digit) / 10ULL) {
+            valid = false;
+            break;
+        }
+        magnitude = magnitude * 10ULL + digit;
+    }
+    const int64_t parsed = negative
+        ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
+    if (!valid || parsed < minimum || parsed > maximum) {
+        error = String("DISPLAY_PARAMS_INVALID: invalid ") + name;
+        return false;
+    }
+    value = static_cast<int32_t>(parsed);
+    return true;
+}
+
+bool applyDisplayRequestParameters(WebHandlerContext* ctx,
+                                   AsyncWebServerRequest* request,
+                                   PeripheralConfig& config,
+                                   bool resetDefaults, String& error) {
+    if (resetDefaults || config.params.display.backend[0] == '\0') {
+        initializeDisplayDefaults(config);
+    }
+    if (config.pinCount != 0) {
+        error = "DISPLAY_PINS_INVALID: use named display pins, not pins[]";
+        return false;
+    }
+
+    DisplayConfigParams params = config.params.display;
+    String backend = ctx->getParamValue(
+        request, "displayBackend", params.backend);
+    String driver = ctx->getParamValue(
+        request, "displayDriver", params.driver);
+    String touch = ctx->getParamValue(
+        request, "touchBackend", params.touchBackend);
+    backend.trim();
+    driver.trim();
+    touch.trim();
+    backend.toLowerCase();
+    driver.toLowerCase();
+    touch.toLowerCase();
+    const bool rgb = backend == "rgb" && driver == "st7701";
+    if ((!rgb && (backend != "spi_tft" ||
+        (driver != "st7789" && driver != "ili9341"))) ||
+        (touch != "none" && touch != "gt911")) {
+        error = "DISPLAY_BACKEND_UNSUPPORTED: expected spi_tft st7789/ili9341 or rgb st7701 and none/gt911";
+        return false;
+    }
+
+    int32_t width, height, rotation, colorDepth, bufferLines, brightness;
+    int32_t backlightChannel, spiFrequency, i2cFrequency;
+    int32_t mosi, sclk, cs, dc, rst, backlight;
+    int32_t touchSda, touchScl, touchInt, touchRst;
+    if (!readDisplayRequestInteger(ctx, request, "width", params.width,
+            rgb ? 480 : 128, rgb ? 480 : 320, width, error) ||
+        !readDisplayRequestInteger(ctx, request, "height", params.height,
+            rgb ? 480 : 128, rgb ? 480 : 320, height, error) ||
+        !readDisplayRequestInteger(ctx, request, "rotation", params.rotation,
+            0, 3, rotation, error) ||
+        !readDisplayRequestInteger(ctx, request, "colorDepth", params.colorDepth,
+            16, 16, colorDepth, error) ||
+        !readDisplayRequestInteger(ctx, request, "bufferLines", params.bufferLines,
+            1, 64, bufferLines, error) ||
+        !readDisplayRequestInteger(ctx, request, "brightness", params.brightness,
+            0, 100, brightness, error) ||
+        !readDisplayRequestInteger(ctx, request, "backlightChannel", params.backlightChannel,
+            0, CHIP_MAX_PWM_CH > 0 ? CHIP_MAX_PWM_CH - 1 : 0, backlightChannel, error) ||
+        !readDisplayRequestInteger(ctx, request, "spiFrequency",
+            static_cast<int32_t>(params.spiFrequency), 1000000, 80000000,
+            spiFrequency, error) ||
+        !readDisplayRequestInteger(ctx, request, "i2cFrequency",
+            static_cast<int32_t>(params.i2cFrequency), 100000, 400000,
+            i2cFrequency, error) ||
+        !readDisplayRequestInteger(ctx, request, "mosi", params.mosi,
+            -1, 127, mosi, error) ||
+        !readDisplayRequestInteger(ctx, request, "sclk", params.sclk,
+            -1, 127, sclk, error) ||
+        !readDisplayRequestInteger(ctx, request, "cs", params.cs,
+            -1, 127, cs, error) ||
+        !readDisplayRequestInteger(ctx, request, "dc", params.dc,
+            -1, 127, dc, error) ||
+        !readDisplayRequestInteger(ctx, request, "rst", params.rst,
+            -1, 127, rst, error) ||
+        !readDisplayRequestInteger(ctx, request, "backlight", params.backlight,
+            -1, 127, backlight, error) ||
+        !readDisplayRequestInteger(ctx, request, "touchSda", params.touchSda,
+            -1, 127, touchSda, error) ||
+        !readDisplayRequestInteger(ctx, request, "touchScl", params.touchScl,
+            -1, 127, touchScl, error) ||
+        !readDisplayRequestInteger(ctx, request, "touchInt", params.touchInt,
+            -1, 127, touchInt, error) ||
+        !readDisplayRequestInteger(ctx, request, "touchRst", params.touchRst,
+            -1, 127, touchRst, error)) {
+        return false;
+    }
+    if (i2cFrequency != 100000 && i2cFrequency != 400000) {
+        error = "DISPLAY_PARAMS_INVALID: i2cFrequency must be 100000 or 400000";
+        return false;
+    }
+
+    copyPeripheralConfigText(params.backend, backend.c_str());
+    copyPeripheralConfigText(params.driver, driver.c_str());
+    copyPeripheralConfigText(params.touchBackend, touch.c_str());
+    params.width = static_cast<uint16_t>(width);
+    params.height = static_cast<uint16_t>(height);
+    params.rotation = static_cast<uint8_t>(rotation);
+    params.colorDepth = static_cast<uint8_t>(colorDepth);
+    params.bufferLines = static_cast<uint8_t>(bufferLines);
+    params.brightness = static_cast<uint8_t>(brightness);
+    params.backlightChannel = static_cast<uint8_t>(backlightChannel);
+    params.backlightActiveHigh = ctx->getParamBool(
+        request, "backlightActiveHigh", params.backlightActiveHigh);
+    params.spiFrequency = static_cast<uint32_t>(spiFrequency);
+    params.i2cFrequency = static_cast<uint32_t>(i2cFrequency);
+    params.mosi = static_cast<int8_t>(mosi);
+    params.sclk = static_cast<int8_t>(sclk);
+    params.cs = static_cast<int8_t>(cs);
+    params.dc = static_cast<int8_t>(dc);
+    params.rst = static_cast<int8_t>(rst);
+    params.backlight = static_cast<int8_t>(backlight);
+    params.touchSda = static_cast<int8_t>(touchSda);
+    params.touchScl = static_cast<int8_t>(touchScl);
+    params.touchInt = static_cast<int8_t>(touchInt);
+    params.touchRst = static_cast<int8_t>(touchRst);
+    String control = ctx->getParamValue(request, "controlBackend", params.controlBackend);
+    String profile = ctx->getParamValue(request, "rgbInitProfile", params.rgbInitProfile);
+    control.trim(); profile.trim();
+    if ((control != "none" && control != "tca9554" && control != "ch32v003") ||
+        profile != "st7701_type1") {
+        error = "DISPLAY_PARAMS_INVALID: unsupported controlBackend or rgbInitProfile";
+        return false;
+    }
+    copyPeripheralConfigText(params.controlBackend, control.c_str());
+    copyPeripheralConfigText(params.rgbInitProfile, profile.c_str());
+    int32_t extra;
+#define READ_DISPLAY_EXTRA(field, minimum, maximum) \
+    if (!readDisplayRequestInteger(ctx, request, #field, params.field, minimum, maximum, extra, error)) return false; \
+    params.field = static_cast<decltype(params.field)>(extra)
+    READ_DISPLAY_EXTRA(rgbFrequency, 1000000, 16000000);
+    READ_DISPLAY_EXTRA(hsyncFrontPorch, 0, 1023);
+    READ_DISPLAY_EXTRA(hsyncPulseWidth, 1, 1023);
+    READ_DISPLAY_EXTRA(hsyncBackPorch, 0, 1023);
+    READ_DISPLAY_EXTRA(vsyncFrontPorch, 0, 1023);
+    READ_DISPLAY_EXTRA(vsyncPulseWidth, 1, 1023);
+    READ_DISPLAY_EXTRA(vsyncBackPorch, 0, 1023);
+    READ_DISPLAY_EXTRA(rgbDe, -1, 127);
+    READ_DISPLAY_EXTRA(rgbVsync, -1, 127);
+    READ_DISPLAY_EXTRA(rgbHsync, -1, 127);
+    READ_DISPLAY_EXTRA(rgbPclk, -1, 127);
+    READ_DISPLAY_EXTRA(controlSda, -1, 127);
+    READ_DISPLAY_EXTRA(controlScl, -1, 127);
+    READ_DISPLAY_EXTRA(controlAddress, 0, 127);
+    READ_DISPLAY_EXTRA(controlResetMask, 0, 255);
+    READ_DISPLAY_EXTRA(controlBacklightMask, 0, 255);
+    READ_DISPLAY_EXTRA(controlEnableMask, 0, 255);
+    READ_DISPLAY_EXTRA(controlInactiveMask, 0, 255);
+    READ_DISPLAY_EXTRA(controlTouchIntMask, 0, 255);
+#undef READ_DISPLAY_EXTRA
+    if (!params.controlMasksDisjoint()) {
+        error = "DISPLAY_CONTROL_INVALID: control masks must be disjoint";
+        return false;
+    }
+    if (!params.controlTouchSyncValid()) {
+        error = "DISPLAY_CONTROL_INVALID: invalid touch INT reset control";
+        return false;
+    }
+    params.hsyncIdleLow = ctx->getParamBool(request, "hsyncIdleLow", params.hsyncIdleLow);
+    params.vsyncIdleLow = ctx->getParamBool(request, "vsyncIdleLow", params.vsyncIdleLow);
+    params.pclkActiveNeg = ctx->getParamBool(request, "pclkActiveNeg", params.pclkActiveNeg);
+    for (uint8_t i = 0; i < 16; ++i) {
+        const String field = String("rgbData") + String(i);
+        if (!readDisplayRequestInteger(ctx, request, field.c_str(), params.rgbDataPins[i],
+                                       -1, 127, extra, error)) return false;
+        params.rgbDataPins[i] = static_cast<int8_t>(extra);
+    }
+    config.params.display = params;
+    return true;
+}
+
+bool readIoRequestInteger(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                         const char* name, uint32_t fallback, uint32_t minimum,
+                         uint32_t maximum, uint32_t& value, String& error,
+                         bool allowHex = false) {
+    value = fallback;
+    if (!hasPeripheralRequestField(request, name)) {
+        if (value >= minimum && value <= maximum) return true;
+        error = String("IO_CONFIG_INVALID: invalid ") + name;
+        return false;
+    }
+    String text = ctx->getParamValue(request, name, "");
+    text.trim();
+    size_t offset = 0;
+    uint32_t base = 10;
+    if (allowHex && text.length() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        base = 16;
+        offset = 2;
+    }
+    value = 0;
+    bool valid = text.length() > offset;
+    for (size_t i = offset; valid && i < text.length(); ++i) {
+        const char c = text[i];
+        uint32_t digit = c >= '0' && c <= '9' ? c - '0'
+            : c >= 'a' && c <= 'f' ? c - 'a' + 10
+            : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 16;
+        if (digit >= base || value > maximum / base ||
+            (value == maximum / base && digit > maximum % base)) valid = false;
+        else value = value * base + digit;
+    }
+    if (!valid || value < minimum || value > maximum) {
+        error = String("IO_CONFIG_INVALID: invalid ") + name;
+        return false;
+    }
+    return true;
+}
+
+bool applyIoPeripheralRequestParameters(WebHandlerContext* ctx,
+                                       AsyncWebServerRequest* request,
+                                       PeripheralConfig& config, bool resetDefaults,
+                                       String& error) {
+    if (config.type == PeripheralType::IO_EXPANDER) {
+        auto params = config.params.ioExpander;
+        String driver = ctx->getParamValue(request,
+            hasPeripheralRequestField(request, "driver") ? "driver" : "driverName",
+            !resetDefaults && params.driver[0] ? params.driver : "PCF8574");
+        driver.trim();
+        driver.toUpperCase();
+        if (driver != "PCF8574") {
+            error = "IO_PROVIDER_INVALID: only PCF8574 is supported"; return false;
+        }
+        String reference = ctx->getParamValue(request, "busPeripheralId",
+            resetDefaults ? "" : params.busPeripheralId);
+        reference.trim();
+        if (reference.length() >= sizeof(params.busPeripheralId)) {
+            error = "IO_PROVIDER_INVALID: bus reference is too long"; return false;
+        }
+        uint32_t address = 0, interval = 0;
+        if (!readIoRequestInteger(ctx, request,
+                hasPeripheralRequestField(request, "address") ? "address" : "i2cAddress",
+                !resetDefaults && params.address ? params.address : 0x20,
+                0x20, 0x27, address, error, true) ||
+            !readIoRequestInteger(ctx, request, "sampleInterval",
+                !resetDefaults && params.sampleInterval ? params.sampleInterval : 20,
+                20, 1000, interval, error)) return false;
+        if ((!reference.isEmpty() && config.pinCount != 0) ||
+            (reference.isEmpty() && (config.pinCount != 2 || config.pins[0] == config.pins[1]))) {
+            error = "I2C_REFERENCE_INVALID: choose a bus reference or two distinct SDA/SCL pins";
+            return false;
+        }
+        strlcpy(params.driver, "PCF8574", sizeof(params.driver));
+        strlcpy(params.busPeripheralId, reference.c_str(), sizeof(params.busPeripheralId));
+        params.address = static_cast<uint8_t>(address);
+        params.sampleInterval = static_cast<uint16_t>(interval);
+        config.params.ioExpander = params;
+    } else if (config.isGPIOPeripheral() && !isAnalogInputConfigType(config.type)) {
+        auto params = config.params.gpio;
+        String source = ctx->getParamValue(request, "ioSource",
+            !resetDefaults && params.ioSource == 1 ? "expander" : "gpio");
+        source.trim();
+        source.toLowerCase();
+        if (source != "gpio" && source != "0" && source != "expander" && source != "1") {
+            error = "IO_CHANNEL_INVALID: invalid ioSource"; return false;
+        }
+        params.ioSource = source == "expander" || source == "1" ? 1 : 0;
+        if (!params.ioSource) {
+            params.providerId[0] = '\0';
+            params.channel = 0;
+        } else {
+            if ((config.type != PeripheralType::GPIO_DIGITAL_INPUT &&
+                 config.type != PeripheralType::GPIO_DIGITAL_OUTPUT) || config.pinCount != 0) {
+                error = "IO_CHANNEL_INVALID: use plain digital input/output without MCU pins";
+                return false;
+            }
+            String provider = ctx->getParamValue(request, "providerId",
+                resetDefaults ? "" : params.providerId);
+            provider.trim();
+            if (provider.isEmpty() || provider.length() >= sizeof(params.providerId)) {
+                error = "IO_CHANNEL_INVALID: providerId is required and must fit 40 characters";
+                return false;
+            }
+            uint32_t channel = 0, initial = 0, inputMode = 0;
+            if (!readIoRequestInteger(ctx, request, "channel", resetDefaults ? 0 : params.channel,
+                    0, 7, channel, error) ||
+                !readIoRequestInteger(ctx, request, "initialState", static_cast<uint32_t>(params.initialState),
+                    0, 1, initial, error) ||
+                !readIoRequestInteger(ctx, request, "inputMode", params.inputMode,
+                    0, 0, inputMode, error)) return false;
+            String inverted = ctx->getParamValue(request, "invertLogic", params.invertLogic ? "true" : "false");
+            inverted.trim();
+            inverted.toLowerCase();
+            if (inverted != "true" && inverted != "false" && inverted != "1" && inverted != "0") {
+                error = "IO_CHANNEL_INVALID: invalid invertLogic"; return false;
+            }
+            strlcpy(params.providerId, provider.c_str(), sizeof(params.providerId));
+            params.channel = static_cast<uint8_t>(channel);
+            params.initialState = static_cast<GPIOState>(initial);
+            params.inputMode = static_cast<uint8_t>(inputMode);
+            params.invertLogic = inverted == "true" || inverted == "1";
+        }
+        config.params.gpio = params;
+    }
+    return true;
+}
+
 bool applyPeripheralRequestParameters(WebHandlerContext* ctx,
                                       AsyncWebServerRequest* request,
                                       PeripheralConfig& config,
                                       bool resetDefaults,
                                       String& errorMsg) {
-    if (config.type == PeripheralType::UART) {
+    if (config.type == PeripheralType::SCREEN_DISPLAY) {
+        if (!applyDisplayRequestParameters(ctx, request, config,
+                                           resetDefaults, errorMsg)) {
+            return false;
+        }
+    } else if (config.type == PeripheralType::UART) {
         if (resetDefaults) initializeUartDefaults(config);
         config.params.uart.baudRate = ctx->getParamInt(
             request, "baudRate", config.params.uart.baudRate ?
@@ -709,7 +1123,7 @@ bool applyPeripheralRequestParameters(WebHandlerContext* ctx,
         config.params.segment.brightness = static_cast<uint8_t>(
             clampParamInt(brightness, 0, 7));
     }
-    return true;
+    return applyIoPeripheralRequestParameters(ctx, request, config, resetDefaults, errorMsg);
 }
 
 bool isListMemoryCriticallyLow() {
@@ -747,8 +1161,98 @@ void addPassiveBuzzerFlag(TJson& doc, const PeripheralConfig& config) {
     }
 }
 
+void addSensorDriverDescriptors(JsonObject typeObj) {
+    const FastBee::DriverRegistry& registry = FastBee::DriverRegistry::getInstance();
+    JsonArray names = typeObj["drivers"].to<JsonArray>();
+    JsonArray descriptors = typeObj["driverDescriptors"].to<JsonArray>();
+    typeObj["featureActive"] =
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors");
+    typeObj["registrationFailures"] = registry.getRegistrationFailureCount();
+    for (size_t i = 0; i < registry.getDriverCount(); ++i) {
+        const FastBee::SensorDriverEntry* entry = registry.getDriverEntry(i);
+        if (!entry || !entry->metadata) continue;
+        const FastBee::SensorDriverMetadata& metadata = *entry->metadata;
+        names.add(metadata.name);
+        JsonObject descriptor = descriptors.add<JsonObject>();
+        descriptor["name"] = metadata.name;
+        descriptor["busType"] = "i2c";
+        descriptor["compiled"] = true;
+        descriptor["defaultAddress"] = metadata.defaultAddress;
+        descriptor["addressMin"] = metadata.addressMin;
+        descriptor["addressMax"] = metadata.addressMax;
+        descriptor["minIntervalMs"] = metadata.minIntervalMs;
+        descriptor["featureKey"] = metadata.featureKey;
+        descriptor["featureActive"] = !metadata.featureKey ||
+            FastBee::RuntimeFeatureManager::instance().shouldEnable(metadata.featureKey);
+        JsonArray addresses = descriptor["addresses"].to<JsonArray>();
+        for (uint8_t n = 0; n < metadata.addressCount; ++n) {
+            addresses.add(metadata.addresses[n]);
+        }
+        JsonArray channels = descriptor["channels"].to<JsonArray>();
+        for (uint8_t n = 0; n < metadata.channelCount; ++n) {
+            JsonObject channel = channels.add<JsonObject>();
+            channel["name"] = metadata.channels[n].name;
+            channel["unit"] = metadata.channels[n].unit;
+            channel["mode"] = metadata.channels[n].mode;
+        }
+        JsonArray params = descriptor["params"].to<JsonArray>();
+        for (uint8_t n = 0; n < metadata.paramCount; ++n) {
+            const FastBee::SensorParameterMetadata& parameter = metadata.params[n];
+            JsonObject param = params.add<JsonObject>();
+            param["key"] = parameter.name;
+            param["type"] = parameter.type;
+            param["unit"] = parameter.unit;
+            param["default"] = parameter.defaultValue;
+            param["min"] = parameter.minValue;
+            param["max"] = parameter.maxValue;
+            param["required"] = parameter.required;
+            JsonArray choices = param["choices"].to<JsonArray>();
+            for (uint8_t c = 0; c < parameter.choiceCount; ++c) {
+                choices.add(parameter.choices[c]);
+            }
+        }
+    }
+}
+
+void addIoExpanderDriverDescriptors(JsonObject typeObj) {
+    const bool active = FastBee::RuntimeFeatureManager::instance().shouldEnable("ioExpander");
+    typeObj["featureActive"] = active;
+    typeObj["channelCount"] = 8;
+    JsonArray names = typeObj["drivers"].to<JsonArray>();
+    JsonArray descriptors = typeObj["driverDescriptors"].to<JsonArray>();
+#if FASTBEE_ENABLE_IO_EXPANDER
+    names.add("PCF8574");
+    JsonObject descriptor = descriptors.add<JsonObject>();
+    descriptor["name"] = "PCF8574";
+    descriptor["busType"] = "i2c";
+    descriptor["compiled"] = true;
+    descriptor["defaultAddress"] = 0x20;
+    descriptor["addressMin"] = 0x20;
+    descriptor["addressMax"] = 0x27;
+    descriptor["minIntervalMs"] = 20;
+    descriptor["channelCount"] = 8;
+    descriptor["featureKey"] = "ioExpander";
+    descriptor["featureActive"] = active;
+    descriptor["addresses"].to<JsonArray>();
+    descriptor["channels"].to<JsonArray>();
+    descriptor["params"].to<JsonArray>();
+#else
+    (void)names;
+    (void)descriptors;
+#endif
+}
+
 void addPeripheralTypeDescriptorDetails(JsonObject typeObj,
                                         PeripheralType type) {
+    typeObj["configurable"] = isPeripheralTypeUserConfigurable(type);
+    if (type == PeripheralType::MODBUS_DEVICE) {
+        typeObj["runtimeImplemented"] = isPeripheralTypeImplemented(type);
+        // Existing Web clients use `implemented` to decide whether a type can
+        // be selected, so keep this protocol-owned target out of ordinary CRUD.
+        typeObj["implemented"] = false;
+        typeObj["runtimeManaged"] = true;
+        typeObj["owner"] = "protocol.modbus";
+    }
     JsonArray roles = typeObj["pinRoles"].to<JsonArray>();
     auto addRoles = [&roles](std::initializer_list<const char*> values) {
         for (const char* value : values) roles.add(value);
@@ -757,6 +1261,12 @@ void addPeripheralTypeDescriptorDetails(JsonObject typeObj,
     switch (type) {
         case PeripheralType::UART: addRoles({"RX", "TX"}); break;
         case PeripheralType::I2C: addRoles({"SDA", "SCL"}); break;
+        case PeripheralType::IO_EXPANDER:
+            addRoles({"SDA", "SCL"});
+            typeObj["minPinCount"] = 0;
+            typeObj["maxPinCount"] = 2;
+            addIoExpanderDriverDescriptors(typeObj);
+            break;
         case PeripheralType::SPI: addRoles({"MISO", "MOSI", "SCK", "CS"}); break;
         case PeripheralType::SDIO: addRoles({"SCK", "MOSI", "MISO", "CS"}); break;
         case PeripheralType::SENSOR_GENERIC:
@@ -780,13 +1290,101 @@ void addPeripheralTypeDescriptorDetails(JsonObject typeObj,
                 JsonObject i2cDriver = variants.add<JsonObject>();
                 i2cDriver["key"] = "i2c-driver";
                 JsonArray drivers = i2cDriver["drivers"].to<JsonArray>();
-                drivers.add("BMP280");
-                drivers.add("MPU6050");
+                const FastBee::DriverRegistry& registry = FastBee::DriverRegistry::getInstance();
+                for (size_t i = 0; i < registry.getDriverCount(); ++i) {
+                    const FastBee::SensorDriverEntry* entry = registry.getDriverEntry(i);
+                    if (entry && entry->metadata) drivers.add(entry->metadata->name);
+                }
                 JsonArray i2cRoles = i2cDriver["pinRoles"].to<JsonArray>();
                 i2cRoles.add("SDA");
                 i2cRoles.add("SCL");
             }
             break;
+        case PeripheralType::SCREEN_DISPLAY: {
+            typeObj["minPinCount"] = 0;
+            typeObj["maxPinCount"] = 0;
+            typeObj["usesNamedPins"] = true;
+            typeObj["featureKey"] = "screenPanel";
+            typeObj["uiRuntimeCompiled"] = FASTBEE_ENABLE_SCREEN_UI != 0;
+            JsonArray drivers = typeObj["driverOptions"].to<JsonArray>();
+            JsonObject st7789 = drivers.add<JsonObject>();
+            st7789["backend"] = "spi_tft";
+            st7789["driver"] = "st7789";
+            st7789["label"] = "ST7789 SPI TFT";
+            st7789["minWidth"] = 128;
+            st7789["maxWidth"] = 320;
+            st7789["minHeight"] = 128;
+            st7789["maxHeight"] = 320;
+            JsonObject ili9341 = drivers.add<JsonObject>();
+            ili9341["backend"] = "spi_tft";
+            ili9341["driver"] = "ili9341";
+            ili9341["label"] = "ILI9341 SPI TFT";
+            ili9341["minWidth"] = 128;
+            ili9341["maxWidth"] = 320;
+            ili9341["minHeight"] = 128;
+            ili9341["maxHeight"] = 320;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+            JsonObject st7701 = drivers.add<JsonObject>();
+            st7701["backend"] = "rgb";
+            st7701["driver"] = "st7701";
+            st7701["label"] = "ST7701 RGB565 (type1)";
+            st7701["minWidth"] = 480;
+            st7701["maxWidth"] = 480;
+            st7701["minHeight"] = 480;
+            st7701["maxHeight"] = 480;
+            st7701["rgbInitProfile"] = "st7701_type1";
+            st7701["requiresPsram"] = true;
+#endif
+            JsonArray touchOptions = typeObj["touchOptions"].to<JsonArray>();
+            JsonObject noTouch = touchOptions.add<JsonObject>();
+            noTouch["backend"] = "none";
+            noTouch["label"] = "No touch";
+            JsonObject gt911 = touchOptions.add<JsonObject>();
+            gt911["backend"] = "gt911";
+            gt911["label"] = "GT911 I2C";
+            JsonArray addresses = gt911["addresses"].to<JsonArray>();
+            addresses.add(0x5D);
+            addresses.add(0x14);
+            JsonArray requiredPins = typeObj["requiredNamedPins"].to<JsonArray>();
+            requiredPins.add("mosi");
+            requiredPins.add("sclk");
+            requiredPins.add("cs");
+            requiredPins.add("dc");
+            JsonArray optionalPins = typeObj["optionalNamedPins"].to<JsonArray>();
+            optionalPins.add("rst");
+            optionalPins.add("backlight");
+            optionalPins.add("touchSda");
+            optionalPins.add("touchScl");
+            optionalPins.add("touchInt");
+            optionalPins.add("touchRst");
+            JsonObject capabilities = typeObj["capabilities"].to<JsonObject>();
+            capabilities["colorDepth"] = 16;
+            capabilities["partialFlush"] = true;
+            capabilities["brightness"] = true;
+            capabilities["sleep"] = true;
+            capabilities["touch"] = true;
+            capabilities["singleActiveDisplay"] = true;
+            JsonObject limits = typeObj["configLimits"].to<JsonObject>();
+            limits["widthMin"] = 128;
+            limits["widthMax"] = 320;
+            limits["heightMin"] = 128;
+            limits["heightMax"] = 320;
+            limits["rotationMin"] = 0;
+            limits["rotationMax"] = 3;
+            limits["colorDepth"] = 16;
+            limits["bufferLinesMin"] = 1;
+            limits["bufferLinesMax"] = 64;
+            limits["brightnessMin"] = 0;
+            limits["brightnessMax"] = 100;
+            limits["spiFrequencyMin"] = 1000000;
+            limits["spiFrequencyMax"] = 80000000;
+            limits["rgbFrequencyMin"] = 1000000;
+            limits["rgbFrequencyMax"] = 16000000;
+            JsonArray i2cFrequencies = limits["i2cFrequencies"].to<JsonArray>();
+            i2cFrequencies.add(100000);
+            i2cFrequencies.add(400000);
+            break;
+        }
         case PeripheralType::PWM_SERVO: addRoles({"PWM"}); break;
         case PeripheralType::STEPPER_MOTOR:
             addRoles({"IN1", "IN2", "IN3", "IN4"});
@@ -827,11 +1425,7 @@ void addPeripheralTypeDescriptorDetails(JsonObject typeObj,
                            "write-file", "delete-file"});
             break;
         case PeripheralType::SENSOR_GENERIC:
-            {
-                JsonArray drivers = typeObj["drivers"].to<JsonArray>();
-                drivers.add("BMP280");
-                drivers.add("MPU6050");
-            }
+            addSensorDriverDescriptors(typeObj);
             addOperations({"scan", "probe", "read", "release"});
             break;
         case PeripheralType::DS1302_RTC:
@@ -866,7 +1460,7 @@ bool sameText(const char* left, const char* right) {
 }
 
 bool compiledBoardProfileSupported() {
-#if CHIP_IS_CLASSIC_ESP32 || CHIP_IS_ESP32C6
+#if CHIP_IS_CLASSIC_ESP32 || CHIP_IS_ESP32C6 || CHIP_IS_ESP32S3
     return true;
 #else
     return false;
@@ -882,10 +1476,15 @@ const FastBee::BoardProfile* resolveBoardProfile(const String& profileId) {
     const FastBee::BoardProfile& c6 = FastBee::getEsp32C6DevKitC1Profile();
     if (profileId == pz.key || profileId == "0") return &pz;
     if (profileId == c6.key || profileId == "1") return &c6;
+    const FastBee::BoardProfile& s3Octal = FastBee::getEsp32S3Profile(true);
+    const FastBee::BoardProfile& s3 = FastBee::getEsp32S3Profile(false);
+    if (profileId == s3Octal.key || profileId == "2") return &s3Octal;
+    if (profileId == s3.key) return &s3;
     return nullptr;
 }
 
 const char* boardProfileChip(const FastBee::BoardProfile& profile) {
+    if (profile.id == FastBee::BoardProfileId::ESP32_S3_GENERIC) return "ESP32-S3";
     return profile.id == FastBee::BoardProfileId::ESP32_C6_DEVKITC_1
         ? "ESP32-C6" : "ESP32";
 }
@@ -1361,6 +1960,8 @@ void resetPeripheralTypeDefaults(PeripheralConfig& config) {
         initializeRfidDefaults(config);
     } else if (config.type == PeripheralType::SENSOR_GENERIC) {
         initializeSensorDefaults(config);
+    } else if (config.type == PeripheralType::SCREEN_DISPLAY) {
+        initializeDisplayDefaults(config);
     }
 }
 
@@ -1391,6 +1992,11 @@ bool buildPreflightCandidate(WebHandlerContext* ctx,
             errorStatus = 404;
             return false;
         }
+        if (candidate.type == PeripheralType::MODBUS_DEVICE) {
+            errorMsg = userConfigurablePeripheralTypeError(candidate.type);
+            errorStatus = 422;
+            return false;
+        }
         if (operation == FastBee::PreflightOperation::ENABLE) {
             candidate.enabled = true;
         } else {
@@ -1411,9 +2017,9 @@ bool buildPreflightCandidate(WebHandlerContext* ctx,
         }
     }
 
-    if (!isPeripheralTypeImplemented(candidate.type)) {
-        errorMsg =
-            "UNSUPPORTED_PERIPHERAL_TYPE: current firmware does not implement this type";
+    const char* typeError = userConfigurablePeripheralTypeError(candidate.type);
+    if (typeError) {
+        errorMsg = typeError;
         errorStatus = 422;
         return false;
     }
@@ -1579,6 +2185,12 @@ void PeripheralRouteHandler::handleGetBoardProfiles(
                         active && active->id == pz.id);
     addBoardProfileJson(profiles.add<JsonObject>(), c6,
                         active && active->id == c6.id);
+    const FastBee::BoardProfile& s3Octal = FastBee::getEsp32S3Profile(true);
+    const FastBee::BoardProfile& s3 = FastBee::getEsp32S3Profile(false);
+    addBoardProfileJson(profiles.add<JsonObject>(), s3Octal,
+                        active && sameText(active->key, s3Octal.key));
+    addBoardProfileJson(profiles.add<JsonObject>(), s3,
+                        active && sameText(active->key, s3.key));
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -1606,7 +2218,7 @@ void PeripheralRouteHandler::handleGetPeripheralResources(
         PeripheralManager::getInstance().getAllPeripherals();
     FastBee::PeripheralResourcePlanner planner(
         *profile, makePreflightContext(*profile, FastBee::ACK_NONE),
-        preflightResult);
+        preflightResult, existing.data(), existing.size());
     for (const PeripheralConfig& config : existing) {
         planner.addPeripheral(
             config, config.enabled ? FastBee::ClaimState::ACTIVE
@@ -1739,6 +2351,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
             JsonObject params = doc["params"].to<JsonObject>();
             addP1PeripheralParams(params, config);
         }
+        addGenericPeripheralFields(doc.as<JsonObject>(), config);
 
         JsonArray pins = doc["pins"].to<JsonArray>();
         for (int i = 0; i < config.pinCount && i < 8; i++) {
@@ -1931,6 +2544,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
             }
         }
 
+        addGenericPeripheralFields(itemDoc.as<JsonObject>(), config);
         String itemStr;
         serializeJson(itemDoc, itemStr);
         totalItemsSize += itemStr.length();
@@ -1985,20 +2599,41 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
 
 void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (HandlerUtils::checkLowMemory(request, 16384)) return;
 
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject profile = doc["profile"].to<JsonObject>();
+    // Keep full descriptors, but never construct the complete catalog DOM.
+    // The two largest records are built first, before accumulated serialized
+    // records consume the remaining heap on devices without PSRAM.
+    static constexpr uint8_t types[] = {
+        1, 2, 3, 4, 5, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+        26, 27, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+        47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 60
+    };
+    constexpr size_t typeCount = sizeof(types) / sizeof(types[0]);
+    std::unique_ptr<FastBee::JsonFragmentsResponse> response(
+        new (std::nothrow) FastBee::JsonFragmentsResponse(typeCount + 2));
+    auto doc = FastBee::makeJsonDocument();
+    auto fail = [&]() {
+        doc.clear();
+        response.reset();
+        HandlerUtils::sendJsonError(request, 503, "Peripheral catalog memory unavailable", 5);
+    };
+    if (!response || !response->allocated()) { fail(); return; }
+
+    JsonObject profile = doc.to<JsonObject>();
     const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPHERALS);
     const int profileUsed = static_cast<int>(PeripheralManager::getInstance().getPeripheralCount());
     profile["name"] = FastBee::ResourceProfile::NAME;
     profile["max"] = profileMax;
     profile["used"] = profileUsed;
     profile["remaining"] = std::max(0, profileMax - profileUsed);
-    JsonObject data = doc["data"].to<JsonObject>();
+    if (!response->set(0, doc, "{\"success\":true,\"profile\":", ",\"hardware\":")) {
+        fail(); return;
+    }
+    doc.clear();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    JsonObject hardware = doc["hardware"].to<JsonObject>();
+    JsonObject hardware = doc.to<JsonObject>();
     hardware["chip"] = CHIP_NAME;
     hardware["maxGpio"] = CHIP_MAX_GPIO;
     hardware["pwmChannels"] = CHIP_MAX_PWM_CH;
@@ -2024,75 +2659,35 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         if (pm.validatePinForType(pin, PeripheralType::GPIO_TOUCH, pinError)) touchPins.add(pin);
     }
 
-    // 通信接口
-    JsonArray commTypes = data["communication"].to<JsonArray>();
-    for (int i = 1; i <= 5; i++) {
-        PeripheralType type = static_cast<PeripheralType>(i);
-        JsonObject typeObj = commTypes.add<JsonObject>();
-        typeObj["value"] = i;
-        typeObj["name"] = getPeripheralTypeName(type);
-        typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = isPeripheralTypeImplemented(type);
-        addPeripheralTypeDescriptorDetails(typeObj, type);
+    if (!response->set(1, doc, "", ",\"data\":{\"communication\":[")) {
+        fail(); return;
     }
-
-    // GPIO接口
-    JsonArray gpioTypes = data["gpio"].to<JsonArray>();
-    for (int i = 11; i <= 21; i++) {
-        PeripheralType type = static_cast<PeripheralType>(i);
-        JsonObject typeObj = gpioTypes.add<JsonObject>();
-        typeObj["value"] = i;
-        typeObj["name"] = getPeripheralTypeName(type);
-        typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = isPeripheralTypeImplemented(type);
-        addPeripheralTypeDescriptorDetails(typeObj, type);
-    }
-
-    // 模拟信号
-    JsonArray analogTypes = data["analog"].to<JsonArray>();
-    for (int i = 26; i <= 27; i++) {
-        PeripheralType type = static_cast<PeripheralType>(i);
-        JsonObject typeObj = analogTypes.add<JsonObject>();
-        typeObj["value"] = i;
-        typeObj["name"] = getPeripheralTypeName(type);
-        typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = isPeripheralTypeImplemented(type);
-        addPeripheralTypeDescriptorDetails(typeObj, type);
-    }
-
-    // 调试接口（已隐藏，JTAG/SWD未实现驱动）
-    // JsonArray debugTypes = data["debug"].to<JsonArray>();
-    // for (int i = 31; i <= 32; i++) {
-    //     PeripheralType type = static_cast<PeripheralType>(i);
-    //     JsonObject typeObj = debugTypes.add<JsonObject>();
-    //     typeObj["value"] = i;
-    //     typeObj["name"] = getPeripheralTypeName(type);
-    //     typeObj["pinCount"] = getPeripheralPinCount(type);
-    // }
-
-    // 专用外设
-    JsonArray specialTypes = data["special"].to<JsonArray>();
-    for (int i = 36; i <= 45; i++) {
-        PeripheralType type = static_cast<PeripheralType>(i);
-        JsonObject typeObj = specialTypes.add<JsonObject>();
-        typeObj["value"] = i;
-        typeObj["name"] = getPeripheralTypeName(type);
-        typeObj["pinCount"] = getPeripheralPinCount(type);
-        typeObj["implemented"] = isPeripheralTypeImplemented(type);
-        addPeripheralTypeDescriptorDetails(typeObj, type);
-    }
-    const int extraSpecialTypes[] = {47, 48, 49, 50, 51, 52, 53, 54, 60};
-    for (int value : extraSpecialTypes) {
-        PeripheralType type = static_cast<PeripheralType>(value);
-        JsonObject typeObj = specialTypes.add<JsonObject>();
+    doc.clear();
+    auto addType = [&](size_t index) -> bool {
+        const int value = types[index];
+        const PeripheralType type = static_cast<PeripheralType>(value);
+        JsonObject typeObj = doc.to<JsonObject>();
         typeObj["value"] = value;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
         typeObj["implemented"] = isPeripheralTypeImplemented(type);
         addPeripheralTypeDescriptorDetails(typeObj, type);
+        const char* prefix = index == 0 ? "" : index == 5 ? "],\"gpio\":["
+            : index == 16 ? "],\"analog\":[" : index == 18 ? "],\"special\":[" : ",";
+        const bool ok = response->set(index + 2, doc, prefix,
+                                      index + 1 == typeCount ? "]}}" : "");
+        doc.clear();
+        return ok && (HandlerUtils::psramCanServeJson() ||
+            (FastBee::MemoryBudget::dramFree() >= 8192 &&
+             FastBee::MemoryBudget::dramLargest() >= 4096));
+    };
+    // SENSOR_GENERIC and SCREEN_DISPLAY contain nested driver metadata.
+    if (!addType(20) || !addType(37)) { fail(); return; }
+    for (size_t index = 0; index < typeCount; ++index) {
+        if (index == 20 || index == 37) continue;
+        if (!addType(index)) { fail(); return; }
     }
-
-    HandlerUtils::sendJsonStream(request, doc);
+    HandlerUtils::sendWithClose(request, response.release());
 }
 
 void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request) {
@@ -2191,6 +2786,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
                config->type == PeripheralType::RFID_MFRC522) {
         addP1PeripheralParams(params, *config);
     }
+    addGenericPeripheralFields(data, *config);
 
     PeripheralRuntimeState runtimeSnapshot;
     const PeripheralRuntimeState* runtimeState =
@@ -2224,8 +2820,9 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     config.type = static_cast<PeripheralType>(ctx->getParamInt(request, "type", 0));
     config.enabled = ctx->getParamBool(request, "enabled", false);
 
-    if (!isPeripheralTypeImplemented(config.type)) {
-        ctx->sendError(request, 422, "UNSUPPORTED_PERIPHERAL_TYPE: 当前固件未实现该外设类型");
+    const char* typeError = userConfigurablePeripheralTypeError(config.type);
+    if (typeError) {
+        ctx->sendError(request, 422, typeError);
         return;
     }
 
@@ -2425,6 +3022,11 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
+    if (config.type == PeripheralType::MODBUS_DEVICE) {
+        ctx->sendError(request, 422,
+                       userConfigurablePeripheralTypeError(config.type));
+        return;
+    }
 
     String name = ctx->getParamValue(request, "name", "");
     if (!name.isEmpty()) config.name = name;
@@ -2457,8 +3059,9 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         }
     }
 
-    if (!isPeripheralTypeImplemented(config.type)) {
-        ctx->sendError(request, 422, "UNSUPPORTED_PERIPHERAL_TYPE: 当前固件未实现该外设类型");
+    const char* typeError = userConfigurablePeripheralTypeError(config.type);
+    if (typeError) {
+        ctx->sendError(request, 422, typeError);
         return;
     }
 
@@ -2632,11 +3235,23 @@ void PeripheralRouteHandler::handleDeletePeripheral(AsyncWebServerRequest* reque
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig config;
+    if (!pm.getPeripheralSnapshot(id, config)) {
+        ctx->sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    if (config.type == PeripheralType::MODBUS_DEVICE) {
+        ctx->sendError(request, 422,
+                       userConfigurablePeripheralTypeError(config.type));
+        return;
+    }
     String errorMsg;
     if (pm.removePeripheralAndSave(id, errorMsg)) {
         ctx->sendSuccess(request, "Peripheral deleted");
     } else {
-        ctx->sendError(request, errorMsg.startsWith("PERSISTENCE_") ? 500 : 404,
+        const int status = errorMsg.startsWith("外设 '")
+            ? 404 : mutationErrorStatus(errorMsg);
+        ctx->sendError(request, status,
                        errorMsg.isEmpty() ? "Peripheral not found" : errorMsg);
     }
 }
@@ -2667,9 +3282,9 @@ void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* reque
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
-    if (!isPeripheralTypeImplemented(config.type)) {
-        ctx->sendError(request, 422,
-                       "UNSUPPORTED_PERIPHERAL_TYPE: current firmware does not implement this type");
+    const char* typeError = userConfigurablePeripheralTypeError(config.type);
+    if (typeError) {
+        ctx->sendError(request, 422, typeError);
         return;
     }
     config.enabled = true;
@@ -2710,6 +3325,16 @@ void PeripheralRouteHandler::handleDisablePeripheral(AsyncWebServerRequest* requ
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig config;
+    if (!pm.getPeripheralSnapshot(id, config)) {
+        ctx->sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    if (config.type == PeripheralType::MODBUS_DEVICE) {
+        ctx->sendError(request, 422,
+                       userConfigurablePeripheralTypeError(config.type));
+        return;
+    }
     String errorMsg;
     if (pm.disablePeripheralAndSave(id, errorMsg)) {
         ctx->sendSuccess(request, "Peripheral disabled");
@@ -2808,6 +3433,27 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
         data["driver"] = config.params.sensor.driver;
         data["address"] = config.params.sensor.address;
         data["mode"] = config.params.sensor.mode;
+        SensorReading sample;
+        bool stale = true;
+        String sampleError;
+        const bool sampled = FastBee::SensorDriverCache::instance().getSnapshot(id, sample, stale, sampleError);
+        data["sampled"] = sampled;
+        data["stale"] = stale;
+        data["timestamp"] = sampled ? sample.timestamp : 0;
+        if (!sampleError.isEmpty()) data["driverError"] = sampleError;
+        if (sampled) {
+            const auto* metadata = FastBee::DriverRegistry::getInstance().getMetadata(config.params.sensor.driver);
+            JsonArray channels = data["channels"].to<JsonArray>();
+            for (uint8_t i = 0; metadata && i < sample.channelCount && i < 4; ++i) {
+                const auto* descriptor = metadata->getChannel(i, config.params.sensor.mode);
+                if (!descriptor) break;
+                JsonObject channel = channels.add<JsonObject>();
+                channel["name"] = descriptor->name;
+                channel["unit"] = descriptor->unit;
+                channel["value"] = sample.values[i];
+                channel["valid"] = !stale;
+            }
+        }
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -2824,7 +3470,8 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     PeripheralConfig config;
-    if (!pm.getPeripheralSnapshot(id, config)) {
+    uint32_t sensorConfigVersion = 0;
+    if (!pm.getPeripheralSnapshot(id, config, &sensorConfigVersion)) {
         ctx->sendError(request, 404, "Peripheral not found");
         return;
     }
@@ -2842,21 +3489,68 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
         config.type == PeripheralType::SENSOR_GENERIC &&
         config.params.sensor.driver[0] != '\0';
 
+    if (localI2cSensor && !FastBee::RuntimeFeatureManager::instance().shouldEnable("i2cSensors")) {
+        ctx->sendError(request, 409, "I2C_SENSORS_UNAVAILABLE: enable the feature and reboot");
+        return;
+    }
+
     if ((config.type == PeripheralType::I2C || localI2cSensor) &&
         requestedAction.equalsIgnoreCase("scan")) {
-        if (!config.enabled || config.pinCount < 2) {
+        if (!config.enabled || (config.type == PeripheralType::I2C &&
+                               (!config.params.i2c.isMaster || config.params.i2c.address != 0))) {
             ctx->sendError(request, 409,
                            "I2C_NOT_READY: enable an I2C peripheral with SDA/SCL first");
             return;
         }
-        JsonArray addresses = data["addresses"].to<JsonArray>();
-        for (uint8_t address = 1; address < 0x7F; ++address) {
-            Wire.beginTransmission(address);
-            if (Wire.endTransmission() == 0) addresses.add(address);
+        uint8_t sda = 255, scl = 255;
+        uint32_t frequency = 0;
+        String error;
+        if (!pm.resolveI2cConfig(config, sda, scl, frequency, error)) {
+            ctx->sendError(request, 409, error);
+            return;
         }
+        struct ScanLease {
+            bool acquired = false;
+            ~ScanLease() {
+                if (!acquired) return;
+                auto& bus = FastBee::I2CBusManager::instance();
+                if (!bus.release(this, 2)) bus.deferRelease(this);
+            }
+        } lease;
+        auto& bus = FastBee::I2CBusManager::instance();
+        {
+            FastBee::I2CBusLock lock(2);
+            if (!lock.locked() || !bus.acquire(&lease, sda, scl, frequency, error)) {
+                ctx->sendError(request, 409, error.isEmpty() ? String("I2C_BUSY") : error);
+                return;
+            }
+            lease.acquired = true;
+        }
+        TwoWire* wire = bus.wire(&lease);
+        if (!wire) { ctx->sendError(request, 409, "I2C_NOT_READY"); return; }
+        int firstAddress = ctx->getParamInt(request, "startAddress", 1);
+        if (firstAddress < 1 || firstAddress > 126) {
+            ctx->sendError(request, 400, "I2C_SCAN_ADDRESS_INVALID"); return;
+        }
+        JsonArray addresses = data["addresses"].to<JsonArray>();
+        const uint32_t started = static_cast<uint32_t>(millis());
+        uint8_t address = static_cast<uint8_t>(firstAddress);
+        for (; address < 0x7F; ++address) {
+            if (static_cast<uint32_t>(millis() - started) >= 150) break;
+            {
+                // Release between every probe so IO sampling can continue.
+                FastBee::I2CBusLock lock(2);
+                if (!lock.locked()) break;
+                wire->beginTransmission(address);
+                if (wire->endTransmission() == 0) addresses.add(address);
+            }
+            delay(0);
+        }
+        data["truncated"] = address < 0x7F;
+        if (address < 0x7F) data["nextAddress"] = address;
         data["count"] = addresses.size();
-        data["sda"] = config.pins[0];
-        data["scl"] = config.pins[1];
+        data["sda"] = sda;
+        data["scl"] = scl;
     } else if (config.type == PeripheralType::SDIO) {
         if (!config.enabled) {
             ctx->sendError(request, 409, "SD_NOT_READY: enable and mount the SD peripheral first");
@@ -2977,41 +3671,46 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
                            "SENSOR_ACTION_INVALID: expected scan, probe or read");
             return;
         }
-        String channel = ctx->getParamValue(request, "channel", "");
-        if (channel == "accel_x") channel = "accelX";
-        else if (channel == "accel_y") channel = "accelY";
-        else if (channel == "accel_z") channel = "accelZ";
-        else if (channel == "gyro_x") channel = "gyroX";
-        else if (channel == "gyro_y") channel = "gyroY";
-        else if (channel == "gyro_z") channel = "gyroZ";
-        if (channel.isEmpty()) {
-            channel = String(config.params.sensor.driver).equalsIgnoreCase("MPU6050")
-                ? (config.params.sensor.mode == 1 ? "gyroX" : "accelX")
-                : "temperature";
-        }
-        JsonDocument driverDoc;
-        driverDoc["addr"] = config.params.sensor.address;
-        if (String(config.params.sensor.driver).equalsIgnoreCase("MPU6050") &&
-            config.params.sensor.mode == 1) {
-            driverDoc["mode"] = "gyro";
-        }
-        String driverParams;
-        serializeJson(driverDoc, driverParams);
-        float value = 0.0f;
-        String unit;
-        String errorMsg;
-        if (!FastBee::SensorDriverCache::instance().readChannel(
-                id, config.params.sensor.driver, config.getPrimaryPin(),
-                driverParams.c_str(), channel.c_str(), value, unit, errorMsg)) {
-            ctx->sendError(request, 502, errorMsg);
+        const String requestedChannel = ctx->getParamValue(request, "channel", "");
+        String channel, errorMsg;
+        uint8_t sda = 255, scl = 255;
+        uint32_t frequency = 0;
+        if (!FastBee::validateSensorConfig(config, errorMsg) ||
+            !pm.resolveI2cConfig(config, sda, scl, frequency, errorMsg) ||
+            !FastBee::resolveSensorChannel(config.params.sensor.driver, config.params.sensor.mode,
+                                           requestedChannel.c_str(), channel, errorMsg)) {
+            ctx->sendError(request, 409, errorMsg);
             return;
         }
-        data["driver"] = config.params.sensor.driver;
-        data["channel"] = channel;
-        data["value"] = value;
-        data["unit"] = unit;
-        data["timestamp"] = millis();
-        data["probed"] = requestedAction.equalsIgnoreCase("probe");
+        JsonDocument driverDoc;
+        FastBee::buildSensorDriverParams(driverDoc, config, sda, scl, frequency);
+        if (driverDoc.overflowed()) { ctx->sendError(request, 503, "SENSOR_PARAMS_MEMORY_UNAVAILABLE"); return; }
+        String driverParams;
+        serializeJson(driverDoc, driverParams);
+        float value = NAN;
+        String unit;
+        uint32_t sampleTimestamp = 0;
+        if (!FastBee::SensorDriverCache::instance().readChannel(
+                id, config.params.sensor.driver, sda,
+                driverParams.c_str(), channel.c_str(), value, unit, errorMsg,
+                FastBee::sensorSampleIntervalMs(config), &sampleTimestamp, sensorConfigVersion)) {
+            ctx->sendError(request, errorMsg == "SENSOR_CONFIG_CHANGED" ? 409 : 502, errorMsg);
+            return;
+        }
+        const bool committed = pm.commitSensorRead(sensorConfigVersion, [&]() {
+            data["driver"] = config.params.sensor.driver;
+            data["channel"] = channel;
+            data["value"] = value;
+            data["unit"] = unit;
+            data["timestamp"] = sampleTimestamp;
+            data["sampleInterval"] = FastBee::sensorSampleIntervalMs(config);
+            data["probed"] = requestedAction.equalsIgnoreCase("probe");
+            return !doc.overflowed();
+        });
+        if (!committed) {
+            ctx->sendError(request, 409, "SENSOR_CONFIG_CHANGED: retry with the current configuration");
+            return;
+        }
     } else if (config.type == PeripheralType::ENCODER) {
         EncoderReading reading;
         if (!pm.getEncoderReading(id, reading)) {
@@ -3164,8 +3863,9 @@ void PeripheralRouteHandler::handleValidatePins(AsyncWebServerRequest* request) 
         }
     }
     PeripheralType type = static_cast<PeripheralType>(typeStr.toInt());
-    if (!isPeripheralTypeImplemented(type)) {
-        ctx->sendError(request, 422, "UNSUPPORTED_PERIPHERAL_TYPE: 当前固件未实现该外设类型");
+    const char* typeError = userConfigurablePeripheralTypeError(type);
+    if (typeError) {
+        ctx->sendError(request, 422, typeError);
         return;
     }
     PeripheralManager& pm = PeripheralManager::getInstance();
@@ -3250,9 +3950,8 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
     if (config.type == PeripheralType::SENSOR_GENERIC &&
         config.params.sensor.driver[0] != '\0' &&
         ctx->getParamValue(request, "action", "").equalsIgnoreCase("release")) {
-        FastBee::SensorDriverCache::instance().release(id);
-        success = true;
-        message = "Sensor driver cache released";
+        success = pm.releaseSensorCache(id);
+        message = success ? "Sensor driver cache released" : "SENSOR_CONFIG_BUSY: retry release";
     } else if (config.type == PeripheralType::SDIO) {
         if (!config.enabled) {
             ctx->sendError(request, 409, "SD_NOT_READY: enable the SD peripheral first");

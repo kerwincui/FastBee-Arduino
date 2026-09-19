@@ -367,14 +367,25 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
   }
 
   if (_chunked || !_sendContentLength || (_sentLength > CONFIG_LWIP_TCP_WND_DEFAULT)) {
-    // FastBee patch: use the actual fallback buffer capacity for the in-flight
-    // guard. The upstream fixed 2*MSS check can defer forever after a
-    // low-memory allocation falls back to a smaller buffer.
+    // FastBee patch: use the actual fallback buffer capacity for new reads,
+    // but always let an already-staged tail drain when TCP has room. Requiring
+    // the full allocation size here can strand a partial add after its last ACK.
     const size_t tcpWindow = request->client()->space();
     const size_t responseBufferCap = _send_buffer_cap
       ? _send_buffer_cap
       : std::min<size_t>(ASYNC_RESPONCE_BUFF_SIZE, tcpWindow);
-    if (!_in_flight_credit || (responseBufferCap > tcpWindow)) {
+    const bool hasPendingSendBuffer =
+      _send_buffer && (_send_buffer_len > _send_buffer_offset);
+
+    // FastBee patch: writable TCP space is authoritative liveness evidence.
+    // Recover one credit on a poll when an ACK event was lost/coalesced; the
+    // real socket window still bounds every add(), so this cannot overfill it.
+    if (!len && !_in_flight_credit && tcpWindow > 0) {
+      _in_flight_credit = 1;
+    }
+
+    if (!_in_flight_credit ||
+        (!hasPendingSendBuffer && responseBufferCap > tcpWindow)) {
       // async_ws_log_d("defer user call in_flight:%u, tcpwin:%u", _in_flight, request->client()->space());
       // take the credit back since we are ignoring this ack and rely on other inflight data acks
       if (len) {

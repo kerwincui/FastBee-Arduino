@@ -118,6 +118,8 @@
                                         <option value="52" disabled data-implemented="false">LCD1602 字符液晶（待驱动）</option>
                                         <option value="53">红外接收头</option>
                                         <option value="54" disabled data-implemented="false">MFRC522 RFID（待驱动）</option>
+                                        <option value="55" disabled data-implemented="false">通用 IO 扩展器</option>
+                                        <option value="56" disabled data-implemented="false">彩色显示与触摸</option>
                                         <option value="60">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -149,9 +151,9 @@
                             <div id="generic-sensor-hint" class="u-hint-bar u-hint-bar-info-alt" style="display:none">
                                 <div class="u-hint-bar-title">🔌 通用传感器容器说明</div>
                                 <ul>
-                                    <li>逻辑数据源，用于外部传感器或虚拟传感器</li>
-                                    <li>不代表具体物理传感器驱动</li>
-                                    <li>具体传感器请使用专用类型（DHT11/DS18B20/SHT31等）</li>
+                                    <li>选择本地驱动后，配置一次接线和校准参数</li>
+                                    <li>多个测量通道共享同一设备和采样结果</li>
+                                    <li>不选驱动时，可用作逻辑或外部数据源</li>
                                     <li>可在"外设执行"中配置数据读取和上报规则</li>
                                 </ul>
                             </div>
@@ -193,6 +195,17 @@
                                 <!-- GPIO参数 -->
                                 <div id="gpio-params" class="peripheral-params-group is-hidden">
                                     <h4 class="u-mb-10">GPIO参数</h4>
+                                    <div id="gpio-source-fields" class="is-hidden">
+                                        <div class="fb-form-group">
+                                            <label for="gpio-io-source">数字 IO 来源</label>
+                                            <select id="gpio-io-source"><option value="gpio">MCU 原生 GPIO</option><option value="expander">IO 扩展器通道</option></select>
+                                        </div>
+                                        <div id="gpio-expander-fields" class="fb-grid-2 is-hidden">
+                                            <div class="fb-form-group"><label for="gpio-provider-id">父扩展器</label><select id="gpio-provider-id"><option value="">请选择已配置的扩展器</option></select></div>
+                                            <div class="fb-form-group"><label for="gpio-provider-channel">逻辑通道</label><select id="gpio-provider-channel"></select></div>
+                                        </div>
+                                        <small id="gpio-source-status" class="field-hint" role="status"></small>
+                                    </div>
                                     <div class="fb-form-group">
                                         <label for="gpio-initial-state">初始状态</label>
                                         <select id="gpio-initial-state" class="">
@@ -235,7 +248,7 @@
                                         <input type="number" id="gpio-ao-max-pct" class="" value="100"
                                             min="0" max="100">
                                     </div>
-                                    <div class="fb-form-group input-only is-hidden">
+                                    <div class="fb-form-group input-only is-hidden" id="gpio-input-mode-group">
                                         <label for="gpio-input-mode">输入电气模式</label>
                                         <select id="gpio-input-mode" class="">
                                             <option value="0" selected>自动（按外设类型）</option>
@@ -245,12 +258,12 @@
                                         </select>
                                         <small>需要外部电阻时选择浮空；按钮通常选上拉或下拉。</small>
                                     </div>
-                                    <div class="fb-form-group input-only is-hidden">
+                                    <div class="fb-form-group input-only is-hidden" id="gpio-invert-logic-group">
                                         <label class="fb-checkbox fb-m-0">
                                             <input type="checkbox" id="gpio-invert-logic">
                                             <span>反相逻辑</span>
                                         </label>
-                                        <small>启用后，上报的 0/1 与物理电平相反。</small>
+                                        <small>启用后，读写逻辑值与物理电平相反。</small>
                                     </div>
                                     <div class="fb-form-group input-only is-hidden">
                                         <label for="gpio-debounce-ms">去抖时间 (ms)</label>
@@ -484,18 +497,13 @@
                                         <label for="generic-sensor-driver">本地 I2C 驱动</label>
                                         <select id="generic-sensor-driver">
                                             <option value="" selected>逻辑数据源（不初始化驱动）</option>
-                                            <option value="bmp280">BMP280</option>
-                                            <option value="mpu6050">MPU6050</option>
-                                            <option value="sht30">SHT30</option>
-                                            <option value="sht31">SHT31</option>
-                                            <option value="aht20">AHT20</option>
                                         </select>
-                                        <small>只有设备 descriptor 声明对应驱动可用时才会启用本地探测。</small>
+                                        <small id="generic-sensor-feature-status" role="status">正在加载设备支持的驱动。</small>
                                     </div>
                                     <div id="generic-sensor-i2c-fields" class="fb-grid-2 is-hidden">
                                         <div class="fb-form-group">
                                             <label for="generic-sensor-bus-id">I2C 总线外设 ID</label>
-                                            <input type="text" id="generic-sensor-bus-id" placeholder="例如: i2c_bus_1">
+                                            <select id="generic-sensor-bus-id"><option value="">直接配置 SDA、SCL</option></select>
                                         </div>
                                         <div class="fb-form-group">
                                             <label for="generic-sensor-address">I2C 地址</label>
@@ -503,17 +511,12 @@
                                                 pattern="^0[xX][0-9a-fA-F]{2}$" placeholder="0x76">
                                         </div>
                                         <div class="fb-form-group">
-                                            <label for="generic-sensor-channel">默认通道</label>
-                                            <select id="generic-sensor-channel">
-                                                <option value="temperature">温度</option>
-                                                <option value="humidity">湿度</option>
-                                                <option value="pressure">气压</option>
-                                                <option value="altitude">海拔</option>
-                                                <option value="accel_x">加速度 X</option>
-                                                <option value="gyro_x">角速度 X</option>
-                                            </select>
+                                            <label for="generic-sensor-channel">测量通道预览</label>
+                                            <select id="generic-sensor-channel"></select>
+                                            <small>通道在外设执行或诊断中选择。MPU6050 会保存此处对应的加速度或陀螺仪模式。</small>
                                         </div>
                                     </div>
+                                    <div id="generic-sensor-driver-params" class="fb-grid-2"></div>
                                     <div class="fb-form-group">
                                         <label for="generic-sensor-type">传感器类型 ID</label>
                                         <input type="number" id="generic-sensor-type" value="0" min="0" max="255">
@@ -524,6 +527,80 @@
                                         <input type="number" id="generic-sensor-interval" value="1000" min="100" max="86400000" step="100">
                                         <small>允许 100ms 至 24h；无本地引脚时仍可作为逻辑数据源</small>
                                     </div>
+                                </div>
+
+                                <div id="io-expander-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">IO 扩展器</h4>
+                                    <div class="fb-form-group"><label for="io-expander-driver">驱动型号</label><select id="io-expander-driver"></select></div>
+                                    <small id="io-expander-feature-status" class="field-hint" role="status"></small>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group"><label for="io-expander-bus-id">I2C 总线</label><select id="io-expander-bus-id"><option value="">直接配置 SDA、SCL</option></select></div>
+                                        <div class="fb-form-group"><label for="io-expander-address">I2C 地址</label><input id="io-expander-address" type="text" value="0x20" placeholder="0x20"></div>
+                                        <div class="fb-form-group"><label for="io-expander-interval">采样间隔 (ms)</label><input id="io-expander-interval" type="number" min="20" max="1000" step="1" value="20"></div>
+                                    </div>
+                                    <small>先保存父设备，再添加数字输入或输出并选择其通道。PCF8574 为准双向 IO，输入释放为高；不支持 PWM 或呼吸效果。</small>
+                                </div>
+
+                                <!-- 彩色显示与触摸参数。引脚在此处按角色保存，通用 pins 数组保持为空。 -->
+                                <div id="display-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10">彩色显示与触摸</h4>
+                                    <div class="u-hint-bar u-hint-bar-info">
+                                        仅列出当前固件支持的通用后端。显示与触摸接线会参与保存前资源预检；页面内容在“屏幕面板”中配置。
+                                    </div>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group">
+                                            <label for="display-backend">显示后端</label>
+                                            <select id="display-backend"><option value="spi_tft">SPI TFT</option></select>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="display-driver">显示驱动</label>
+                                            <select id="display-driver"><option value="st7789">ST7789</option><option value="ili9341">ILI9341</option></select>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="display-touch-backend">触摸驱动</label>
+                                            <select id="display-touch-backend"><option value="none">无触摸</option><option value="gt911">GT911</option></select>
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="display-rotation">旋转</label>
+                                            <select id="display-rotation"><option value="0">0°</option><option value="1">90°</option><option value="2">180°</option><option value="3">270°</option></select>
+                                        </div>
+                                        <div class="fb-form-group"><label for="display-width">逻辑宽度</label><input id="display-width" type="number" min="128" max="320" value="320"></div>
+                                        <div class="fb-form-group"><label for="display-height">逻辑高度</label><input id="display-height" type="number" min="128" max="320" value="240"></div>
+                                        <div class="fb-form-group"><label for="display-color-depth">色深</label><select id="display-color-depth"><option value="16">RGB565（16 位）</option></select></div>
+                                        <div class="fb-form-group"><label for="display-buffer-lines">绘制缓冲行数</label><input id="display-buffer-lines" type="number" min="1" max="64" value="20"></div>
+                                        <div class="fb-form-group"><label for="display-brightness">默认亮度（%）</label><input id="display-brightness" type="number" min="0" max="100" value="70"></div>
+                                        <div class="fb-form-group"><label for="display-spi-frequency">SPI 频率（Hz）</label><input id="display-spi-frequency" type="number" min="1000000" max="80000000" step="1000000" value="40000000"></div>
+                                    </div>
+                                    <details class="adc-advanced-params" open>
+                                        <summary>显示接线</summary>
+                                        <div class="fb-grid-2">
+                                            <div class="fb-form-group"><label for="display-mosi">MOSI</label><input id="display-mosi" type="number" min="-1" max="63" value="11"></div>
+                                            <div class="fb-form-group"><label for="display-sclk">SCLK</label><input id="display-sclk" type="number" min="-1" max="63" value="12"></div>
+                                            <div class="fb-form-group"><label for="display-cs">CS</label><input id="display-cs" type="number" min="-1" max="63" value="10"></div>
+                                            <div class="fb-form-group"><label for="display-dc">DC</label><input id="display-dc" type="number" min="-1" max="63" value="9"></div>
+                                            <div class="fb-form-group"><label for="display-rst">RST（可选，-1 表示未接）</label><input id="display-rst" type="number" min="-1" max="63" value="-1"></div>
+                                            <div class="fb-form-group"><label for="display-backlight">背光（可选，-1 表示未接）</label><input id="display-backlight" type="number" min="-1" max="63" value="-1"></div>
+                                        </div>
+                                        <div id="display-backlight-fields" class="fb-grid-2 is-hidden">
+                                            <div class="fb-form-group"><label for="display-backlight-channel">LEDC 通道</label><input id="display-backlight-channel" type="number" min="0" max="15" value="0"></div>
+                                            <div class="fb-form-group"><label class="fb-checkbox"><input id="display-backlight-active-high" type="checkbox" checked><span>背光高电平有效</span></label></div>
+                                        </div>
+                                    </details>
+                                    <details id="display-rgb-fields" class="adc-advanced-params is-hidden">
+                                        <summary>RGB 时序与控制器</summary>
+                                        <p class="u-hint">按屏幕数据手册填写 D0-D15、时序和控制器参数。初始化序列仅支持 ST7701 type1；不自动选择开发板接线。</p>
+                                        <div id="display-rgb-inputs" class="fb-grid-2"></div>
+                                    </details>
+                                    <details id="display-touch-fields" class="adc-advanced-params is-hidden">
+                                        <summary>GT911 触摸接线</summary>
+                                        <div class="fb-grid-2">
+                                            <div class="fb-form-group"><label for="display-i2c-frequency">I2C 频率（Hz）</label><select id="display-i2c-frequency"><option value="100000">100 kHz</option><option value="400000" selected>400 kHz</option></select></div>
+                                            <div class="fb-form-group"><label for="display-touch-sda">SDA</label><input id="display-touch-sda" type="number" min="-1" max="63" value="7"></div>
+                                            <div class="fb-form-group"><label for="display-touch-scl">SCL</label><input id="display-touch-scl" type="number" min="-1" max="63" value="8"></div>
+                                            <div class="fb-form-group"><label for="display-touch-int">INT（可选）</label><input id="display-touch-int" type="number" min="-1" max="63" value="-1"></div>
+                                            <div class="fb-form-group"><label for="display-touch-rst">RST（可选）</label><input id="display-touch-rst" type="number" min="-1" max="63" value="-1"></div>
+                                        </div>
+                                    </details>
                                 </div>
 
                                 <!-- DAC参数 -->
@@ -989,6 +1066,21 @@
                                     <span>启用</span>
                                 </label>
                             </div>
+                            <div class="fb-form-group fb-mb-0">
+                                <label class="fb-checkbox fb-m-0 fb-font-medium" title="仅允许屏幕面板调用后端判定为安全的动作">
+                                    <input type="checkbox" id="periph-exec-panel-control">
+                                    <span>允许面板控制</span>
+                                </label>
+                            </div>
+                            <div class="fb-form-group fb-mb-0">
+                                <label class="fb-checkbox fb-m-0 fb-font-medium" title="仅适用于 Modbus 采集、传感器读取或远程读取动作">
+                                    <input type="checkbox" id="periph-exec-record-history" disabled>
+                                    <span>记录最近 10 条</span>
+                                </label>
+                            </div>
+                            <button id="periph-exec-history-settings-link" type="button" class="fb-btn fb-btn-sm fb-hidden">
+                                管理最近记录
+                            </button>
                         </div>
                     </div>
 

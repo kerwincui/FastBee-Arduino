@@ -13,7 +13,9 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "mocks/MockOTA.h"
+#include "protocols/FastBeeOTAProtocol.h"
 
 void test_ota_manager_group();
 
@@ -172,6 +174,97 @@ static void test_ota_reset() {
     TEST_ASSERT_EQUAL((int)OTAState::OTA_IDLE, (int)ota.getState());
 }
 
+static void test_fastbee_ota_parses_https_upgrade_command() {
+    FastBeeOtaProtocol::Command command;
+    String error;
+
+    bool ok = FastBeeOtaProtocol::parseCommand(
+        "{\"taskId\":26,\"url\":\"/profile/iot/1/fw.bin\",\"version\":1.2,\"status\":1}",
+        command, error);
+
+    TEST_ASSERT_TRUE_MESSAGE(ok, error.c_str());
+    TEST_ASSERT_EQUAL_INT32(26, command.taskId);
+    TEST_ASSERT_EQUAL_STRING("/profile/iot/1/fw.bin", command.url.c_str());
+    TEST_ASSERT_EQUAL_STRING("1.2", command.version.c_str());
+}
+
+static void test_fastbee_ota_rejects_invalid_commands() {
+    const char* invalidPayloads[] = {
+        "not-json",
+        "[]",
+        "{\"taskId\":0,\"url\":\"/fw.bin\",\"version\":\"1.0\",\"status\":1}",
+        "{\"taskId\":26,\"url\":\"/fw.bin\",\"version\":\"1.0\",\"status\":2}",
+        "{\"taskId\":26,\"version\":\"1.0\",\"status\":1}",
+        "{\"taskId\":26,\"url\":\"/fw.bin\",\"status\":1}"
+    };
+
+    for (const char* payload : invalidPayloads) {
+        FastBeeOtaProtocol::Command command;
+        String error;
+        TEST_ASSERT_FALSE_MESSAGE(
+            FastBeeOtaProtocol::parseCommand(payload, command, error), payload);
+        TEST_ASSERT_FALSE_MESSAGE(error.isEmpty(), payload);
+    }
+}
+
+static void test_fastbee_ota_resolves_https_and_relative_urls() {
+    String resolved;
+    String error;
+
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "https://cdn.fastbee.cn/firmware/fw.bin", "https://fastbee.cn", "unused",
+        resolved, error));
+    TEST_ASSERT_EQUAL_STRING("https://cdn.fastbee.cn/firmware/fw.bin", resolved.c_str());
+
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "/profile/iot/1/fw.bin", "https://fastbee.cn/", "unused",
+        resolved, error));
+    TEST_ASSERT_EQUAL_STRING("https://fastbee.cn/profile/iot/1/fw.bin", resolved.c_str());
+
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "profile/iot/1/fw.bin", "", "mqtt.fastbee.cn", resolved, error));
+    TEST_ASSERT_EQUAL_STRING("https://mqtt.fastbee.cn/profile/iot/1/fw.bin", resolved.c_str());
+}
+
+static void test_fastbee_ota_rejects_non_https_urls() {
+    String resolved;
+    String error;
+
+    TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "http://fastbee.cn/fw.bin", "https://fastbee.cn", "mqtt.fastbee.cn",
+        resolved, error));
+    TEST_ASSERT_TRUE(error.indexOf("HTTPS") >= 0);
+
+    TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "/fw.bin", "http://fastbee.cn", "mqtt.fastbee.cn", resolved, error));
+    TEST_ASSERT_TRUE(error.indexOf("https://") >= 0);
+
+    TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "//untrusted.example/fw.bin", "https://fastbee.cn", "mqtt.fastbee.cn",
+        resolved, error));
+}
+
+static void test_fastbee_ota_reply_matches_platform_schema() {
+    String upgrading = FastBeeOtaProtocol::buildReply(
+        26, "1.2", FastBeeOtaProtocol::STATUS_UPGRADING, 37);
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, upgrading.c_str(), upgrading.length()));
+    TEST_ASSERT_EQUAL_INT32(26, doc["taskId"].as<int32_t>());
+    TEST_ASSERT_EQUAL_STRING("1.2", doc["version"].as<const char*>());
+    TEST_ASSERT_EQUAL_UINT8(FastBeeOtaProtocol::STATUS_UPGRADING,
+                            doc["status"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(37, doc["progress"].as<uint8_t>());
+
+    String completed = FastBeeOtaProtocol::buildReply(
+        26, "1.2", FastBeeOtaProtocol::STATUS_SUCCESS, 100);
+    doc.clear();
+    TEST_ASSERT_FALSE(deserializeJson(doc, completed.c_str(), completed.length()));
+    TEST_ASSERT_EQUAL_UINT8(FastBeeOtaProtocol::STATUS_SUCCESS,
+                            doc["status"].as<uint8_t>());
+    TEST_ASSERT_TRUE_MESSAGE(doc["progress"].isNull(),
+                             "FastBee success reply must omit progress");
+}
+
 // ========== 测试组入口 ==========
 
 void test_ota_manager_group() {
@@ -187,4 +280,9 @@ void test_ota_manager_group() {
     RUN_TEST(test_ota_url_fail);
     RUN_TEST(test_ota_status_json);
     RUN_TEST(test_ota_reset);
+    RUN_TEST(test_fastbee_ota_parses_https_upgrade_command);
+    RUN_TEST(test_fastbee_ota_rejects_invalid_commands);
+    RUN_TEST(test_fastbee_ota_resolves_https_and_relative_urls);
+    RUN_TEST(test_fastbee_ota_rejects_non_https_urls);
+    RUN_TEST(test_fastbee_ota_reply_matches_platform_schema);
 }

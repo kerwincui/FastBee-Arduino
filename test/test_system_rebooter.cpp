@@ -468,23 +468,41 @@ static void test_source_mqtt_reconnect_uses_system_rebooter() {
 }
 
 static void test_source_periph_exec_restarts_use_system_rebooter() {
-    std::string content = readSourceFile("src/core/PeriphExecExecutor.cpp");
-    if (content.empty()) {
+    std::string executor = readSourceFile("src/core/PeriphExecExecutor.cpp");
+    if (executor.empty()) {
         TEST_IGNORE_MESSAGE("PeriphExecExecutor.cpp not readable, skipping source check");
         return;
     }
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("SystemRebooter::scheduleReboot(\"PeriphExec system restart\"") != std::string::npos &&
-        content.find("RestartReason::USER_COMMAND") != std::string::npos,
+        executor.find("SystemRebooter::scheduleReboot(\"PeriphExec system restart\"") != std::string::npos &&
+        executor.find("RestartReason::USER_COMMAND") != std::string::npos,
         "PeriphExec system restart action must schedule USER_COMMAND reboot");
+
+    const size_t factoryCase = executor.find("case ExecActionType::ACTION_SYS_FACTORY_RESET");
+    const size_t nextCase = executor.find("case ExecActionType::", factoryCase + 1);
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("SystemRebooter::scheduleReboot(\"PeriphExec factory reset\"") != std::string::npos &&
-        content.find("RestartReason::FACTORY_RESET") != std::string::npos,
-        "PeriphExec factory reset action must schedule FACTORY_RESET reboot");
+        factoryCase != std::string::npos && nextCase != std::string::npos,
+        "PeriphExec factory-reset rejection block must exist");
+    const std::string factoryBlock = executor.substr(factoryCase, nextCase - factoryCase);
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("ESP.restart();") == std::string::npos,
+        factoryBlock.find("return false;") != std::string::npos &&
+        factoryBlock.find("scheduleReboot") == std::string::npos &&
+        executor.find("PeriphExec factory reset") == std::string::npos,
+        "Rule automation must reject factory reset instead of scheduling it");
+    TEST_ASSERT_TRUE_MESSAGE(
+        executor.find("ESP.restart();") == std::string::npos,
         "PeriphExecExecutor must not directly call ESP.restart(); use SystemRebooter for diagnostics");
+
+    const std::string manager = readSourceFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!manager.empty(),
+                             "PeriphExecManager.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("validateRuleActionsLocked(newRule, errorMsg)") != std::string::npos &&
+        manager.find("validateRuleActionsLocked(rule, errorMsg)") != std::string::npos &&
+        manager.find("ACTION_NOT_AUTOMATABLE: factory reset cannot be saved in a rule") != std::string::npos &&
+        manager.find("*rejectionReason = \"action_not_automatable\"") != std::string::npos,
+        "Factory reset must be rejected on rule add, update, and legacy dispatch paths");
 }
 
 static void test_source_all_restart_points_have_diagnostics() {

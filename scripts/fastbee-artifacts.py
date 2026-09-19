@@ -11,6 +11,7 @@ Responsibilities:
 import csv
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,12 @@ def project_dir():
 
 def pio_env_name():
     return env.subst("$PIOENV")
+
+
+def configured_flash_size():
+    """Return the flash size PlatformIO encodes into bootable image headers."""
+    value = env.BoardConfig().get("upload.flash_size", "4MB")
+    return str(value).strip() or "4MB"
 
 
 
@@ -178,7 +185,12 @@ def prepare_filesystem_staging():
         project_dir(),
         ".pio",
         "fs-staging",
-        "{}-{}".format(pio_env_name(), stamp),
+        "{}-{}-{}-{}".format(
+            pio_env_name(),
+            stamp,
+            os.getpid(),
+            secrets.token_hex(4),
+        ),
     )
     script = os.path.join(project_dir(), "scripts", "gzip-www.js")
     capability_input = write_web_capability_input()
@@ -209,6 +221,34 @@ def build_dist_dir():
     out_dir = os.path.join(project_dir(), "dist", "firmware", pio_env_name())
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
+
+
+def archive_web_assets(out_dir):
+    """Archive the exact target-specific Web tree used by the filesystem build."""
+    stage_root = normalize_path(env.subst("$PROJECT_DATA_DIR"))
+    source_www = os.path.join(stage_root, "www")
+    if not os.path.isdir(source_www):
+        raise RuntimeError("Missing staged Web assets for {}: {}".format(pio_env_name(), source_www))
+
+    verifier = os.path.join(project_dir(), "scripts", "verify-web-release-assets.js")
+    subprocess.check_call(
+        ["node", verifier, "--env={}".format(pio_env_name()), "--www-dir={}".format(source_www)],
+        cwd=project_dir(),
+    )
+
+    destination_www = os.path.join(out_dir, "www")
+    temp_parent = tempfile.mkdtemp(prefix=".www-archive-", dir=out_dir)
+    temp_www = os.path.join(temp_parent, "www")
+    try:
+        shutil.copytree(source_www, temp_www)
+        if os.path.isdir(destination_www):
+            shutil.rmtree(destination_www)
+        elif os.path.exists(destination_www):
+            os.remove(destination_www)
+        os.replace(temp_www, destination_www)
+    finally:
+        shutil.rmtree(temp_parent, ignore_errors=True)
+    print("[FastBee] Archived target Web assets: {}".format(destination_www))
 
 
 def collect_flash_images(firmware_path, include_fs=False, out_dir=None):
@@ -297,7 +337,7 @@ def merge_factory(output_path, firmware_path, include_fs=False):
         "--flash-freq",
         "keep",
         "--flash-size",
-        "keep",
+        configured_flash_size(),
     ]
     for offset, image_path in images:
         cmd.extend([hex(offset), image_path])
@@ -353,6 +393,7 @@ def archive_filesystem(target, source, env):
     archive_common_outputs(out_dir)
     copy_if_exists(fs_path, out_dir, "littlefs.bin")
     copy_if_exists(fs_path, out_dir, "factory-littlefs.bin")
+    archive_web_assets(out_dir)
     firmware_path = os.path.join(normalize_path(env.subst("$BUILD_DIR")), "{}.bin".format(env.subst("$PROGNAME")))
     write_manifest(out_dir, firmware_path, include_fs=True)
     factory_fs_path = os.path.join(out_dir, "factory-with-fs.bin")

@@ -42,6 +42,10 @@ function hasSendProgressContract(source) {
     return source.includes('account bytes accepted by AsyncTCP before a partial') &&
         source.includes('payloadlen += added_len;\n        if (added_len !=') &&
         source.includes('zero progress must not consume the finite send credit') &&
+        source.includes('hasPendingSendBuffer') &&
+        source.includes('writable TCP space is authoritative liveness evidence') &&
+        source.includes('if (!len && !_in_flight_credit && tcpWindow > 0)') &&
+        source.includes('(!hasPendingSendBuffer && responseBufferCap > tcpWindow)') &&
         source.includes('if (pcb_written) {') &&
         source.includes('if (payloadlen) {') &&
         !source.includes('_in_flight += payloadlen;\n    --_in_flight_credit');
@@ -57,16 +61,30 @@ function hasFinalBufferDrainContract(source) {
 function hasAsyncTcpAdmissionContract(header, source) {
     const increment = source.indexOf('__atomic_fetch_add(&AsyncClient::_fastbee_accepted_count');
     const eventAllocation = source.indexOf('lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ACCEPT, c}');
-    const rollback = source.indexOf('__atomic_fetch_sub(&AsyncClient::_fastbee_accepted_count', increment);
+    const rollback = source.indexOf('c->_fastbee_release_accepted();', eventAllocation);
     const cleanup = source.indexOf('delete c;', rollback);
+    const tcpError = source.indexOf('void AsyncTCP_detail::tcp_error');
+    const tcpErrorRelease = source.indexOf('client->_fastbee_release_accepted();', tcpError);
+    const tcpErrorAllocation = source.indexOf(
+        'lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ERROR, client}',
+        tcpError
+    );
+    const close = source.indexOf('int8_t AsyncClient::_close()');
+    const closeRelease = source.indexOf('_fastbee_release_accepted();', close);
     return header.includes('_fastbee_accepted_count') &&
         header.includes('_fastbee_server_accepted') &&
+        header.includes('void _fastbee_release_accepted();') &&
         source.includes('FastBee patch: reject a connection before allocating AsyncClient') &&
         source.includes('heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)') &&
         source.includes('heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)') &&
         source.includes('accepted >= CONFIG_ASYNC_TCP_MAX_CONNECTIONS') &&
+        source.includes('void AsyncClient::_fastbee_release_accepted()') &&
+        source.includes('__atomic_exchange_n(') &&
         increment >= 0 && eventAllocation > increment &&
-        rollback > eventAllocation && cleanup > rollback;
+        rollback > eventAllocation && cleanup > rollback &&
+        tcpError >= 0 && tcpErrorRelease > tcpError &&
+        tcpErrorAllocation > tcpErrorRelease &&
+        close >= 0 && closeRelease > close;
 }
 
 function checkPatchDir(patchName) {
@@ -138,6 +156,13 @@ function checkPlatformioOverrides() {
         } else {
             console.log('  ✓ ESPAsyncWebServer patch: window size derives from CONFIG_LWIP_TCP_WND_DEFAULT');
         }
+
+        const c6Flags = text.match(/\[esp32c6_runtime_flags\][\s\S]*?(?=\r?\n\[|$)/);
+        if (!c6Flags || !c6Flags[0].includes('-DCONFIG_ASYNC_TCP_MAX_ACK_TIME=10000')) {
+            ISSUES.push('platformio.ini: C6 runtime must allow a 10s ACK recovery window');
+        } else {
+            console.log('  ✓ platformio.ini: C6 ACK recovery window is 10s');
+        }
         if (!hasFileRetryContract(responsesCpp)) {
             ISSUES.push('ESPAsyncWebServer legacy snapshot: incomplete AsyncFileResponse zero-read retry contract');
         } else {
@@ -183,8 +208,12 @@ function checkRuntimePatchHook() {
         'return RESPONSE_TRY_AGAIN;', 'MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT',
         'zero progress must not consume the finite send credit',
         'account bytes accepted by AsyncTCP before a partial',
+        'hasPendingSendBuffer',
+        'writable TCP space is authoritative liveness evidence',
         'ERR_CONTENT_LENGTH_MISMATCH under memory pressure',
-        'CONFIG_ASYNC_TCP_MAX_CONNECTIONS', 'delete c;']) {
+        'CONFIG_ASYNC_TCP_MAX_CONNECTIONS', '__atomic_exchange_n(',
+        'client->_fastbee_release_accepted();', 'c->_fastbee_release_accepted();',
+        'delete c;']) {
         if (!hook.includes(marker)) {
             ISSUES.push(`apply-libdeps-patches.py: missing marker ${marker}`);
         }

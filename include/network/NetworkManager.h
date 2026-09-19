@@ -18,6 +18,7 @@
 #include "core/interfaces/INetworkAdapter.h"
 #include "core/FeatureFlags.h"
 #include "network/WiFiManager.h"
+#include "network/WiFiRetryPolicy.h"
 #include "network/IPManager.h"
 #include "network/DNSManager.h"
 #if FASTBEE_ENABLE_ETHERNET
@@ -423,6 +424,7 @@ private:
     bool _bootStaRetryScanInProgress;
     enum class BootStaRetryScanState : uint8_t {
         IDLE,
+        AUTH_COOLDOWN,
         DRIVER_NULL_SETTLE,
         DRIVER_STA_SETTLE,
         SCANNING
@@ -431,11 +433,15 @@ private:
     unsigned long _bootStaRetryScanStartedAt;
     uint8_t _bootStaRetryCandidateCount;
     BootStaCandidate _bootStaRetryCandidates[3];
+    uint8_t _consecutiveAuthFailures;
+    unsigned long _authRetryCooldownMs;
     static constexpr unsigned long BOOT_STA_SCAN_TIMEOUT_MS = 10000;
     void startBootStaRetryScan();
     void handleBootStaRetryScan();
     void resetBootStaRetryScan();
     void launchBootStaRetryConnection();
+    void updateStaAuthBackoff();
+    void resetStaAuthBackoff();
 
     // ── AP 回退滞留看门狗 ──────────────────────────────────────────────
     // 自动回退后探测可能因认证失败/弱信号持续不恢复（且退避到 5min 间隔），

@@ -2,6 +2,8 @@
 # Target: ESP32-C6 (COM11, Hostname: fastbee.local)
 
 $ErrorActionPreference = "Continue"
+$ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 Write-Output "`n=========================================" -ForegroundColor Cyan
 Write-Output "  FastBee C6 Device Full Recovery" -ForegroundColor Cyan
@@ -126,7 +128,13 @@ if ($isRecoveredNeeded -or $args.Contains("--force-recover")) {
     Write-Output "`n=========================================" -ForegroundColor Red
     Write-Output "  INITIATING RECOVERY PROCEDURE" -ForegroundColor Red
     Write-Host "=========================================\n" -ForegroundColor Red
-    
+
+    $firmwareLock = Enter-FastBeeFirmwareBuildLock `
+        -ProjectRoot $ProjectDir `
+        -Label "diagnose-and-recover-c6" `
+        -Environment "esp32c6-F4R0" `
+        -Port "COM11"
+    try {
     # Generate full filesystem image (Unified Architecture v2.0)
     Write-Output "Step 6.1: Generating clean full filesystem (Unified)..." -ForegroundColor Yellow
     Write-Output "Command: node scripts/gzip-www.js --no-upload --no-monitor" -ForegroundColor Gray
@@ -169,7 +177,11 @@ if ($isRecoveredNeeded -or $args.Contains("--force-recover")) {
         Write-Output "✗ Firmware flash failed" -ForegroundColor Red
         Write-Output "$flashResult" -ForegroundColor Gray
     }
-    
+    }
+    finally {
+        Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+    }
+
     Start-Sleep -Seconds 5
     
     # Wait for device reboot

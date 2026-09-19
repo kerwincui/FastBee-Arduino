@@ -36,12 +36,15 @@ const CAPABILITY_MACROS = Object.freeze({
     sevenSegment: 'FASTBEE_ENABLE_SEVEN_SEGMENT',
     rfid: 'FASTBEE_ENABLE_RFID',
     i2cSensors: 'FASTBEE_ENABLE_I2C_SENSORS',
+    ioExpander: 'FASTBEE_ENABLE_IO_EXPANDER',
     irRemote: 'FASTBEE_ENABLE_IR_REMOTE',
     rfLearn: 'FASTBEE_ENABLE_RF_LEARN',
     ds1302: 'FASTBEE_ENABLE_DS1302',
     lcd1602: 'FASTBEE_ENABLE_LCD1602',
     ruleScript: 'FASTBEE_ENABLE_RULE_SCRIPT',
     deviceControl: 'FASTBEE_ENABLE_DEVICE_CONTROL',
+    screenPanel: 'FASTBEE_ENABLE_SCREEN_PANEL',
+    remoteResources: 'FASTBEE_ENABLE_REMOTE_RESOURCES',
     ota: 'FASTBEE_ENABLE_OTA',
     otaFs: 'FASTBEE_ENABLE_OTA_FS',
     logViewer: 'FASTBEE_ENABLE_LOG_VIEWER',
@@ -72,9 +75,15 @@ const ASSET_CAPABILITY_REQUIREMENTS = Object.freeze({
     'js/modules/protocol-full-config.js': ['modbus'],
     'pages/fragments/protocol-modbus-rtu.html': ['modbus'],
 
-    'js/modules/protocol.js': { anyOf: ['mqtt', 'modbus'] },
-    'pages/protocol.html': { anyOf: ['mqtt', 'modbus'] },
+    'js/modules/protocol.js': { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
+    'pages/protocol.html': { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
     'pages/fragments/protocol-mqtt.html': ['mqtt'],
+    'pages/fragments/protocol-remote-resources.html': ['remoteResources'],
+
+    'js/modules/screen-panel-model.js': ['screenPanel'],
+    'js/modules/screen-panel.js': ['screenPanel'],
+    'pages/screen-panel.html': ['screenPanel'],
+    'css/screen-panel.css': ['screenPanel'],
 
     'js/modules/periph-exec.js': ['periphExec'],
     'js/modules/periph-exec-form.js': ['periphExec'],
@@ -104,7 +113,8 @@ const MENU_CAPABILITY_REQUIREMENTS = Object.freeze({
     network: [],
     peripheral: [],
     'periph-exec': ['periphExec'],
-    protocol: { anyOf: ['mqtt', 'modbus'] },
+    'screen-panel': ['screenPanel'],
+    protocol: { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
     'device-control': ['deviceControl'],
     'rule-script': ['ruleScript'],
     logs: ['logViewer'],
@@ -128,7 +138,8 @@ const MODAL_CAPABILITY_REQUIREMENTS = Object.freeze({
 
 const PROTOCOL_TAB_CAPABILITY_REQUIREMENTS = Object.freeze({
     mqtt: ['mqtt'],
-    'modbus-rtu': ['modbus']
+    'modbus-rtu': ['modbus'],
+    'remote-resources': ['remoteResources']
 });
 
 function stripIniComment(value) {
@@ -345,6 +356,18 @@ function hasDeviceControl(context = resolveWebBuildContext()) {
     return hasCapability('deviceControl', context);
 }
 
+function resolveRequestGovernorLimits(context = resolveWebBuildContext()) {
+    const definitions = context && context.definitions ? context.definitions : {};
+    const psramEnabled = defineEnabled(definitions.FASTBEE_USE_PSRAM);
+    const maxConcurrent = psramEnabled ? 2 : 1;
+    return Object.freeze({
+        maxConcurrent,
+        maxWeight: maxConcurrent,
+        maxHeavy: 1,
+        memoryProfile: psramEnabled ? 'psram' : 'internal-dram'
+    });
+}
+
 // Compatibility helpers retained for scripts that still print a profile label.
 // The selection itself is capability-driven and has no lite/full user switch.
 function getWebProfile(context = resolveWebBuildContext()) {
@@ -380,6 +403,7 @@ function writeWebResourceManifest(wwwDir, context = resolveWebBuildContext()) {
         capabilityFingerprint: context.capabilityFingerprint,
         runtimeConfigurationAffectsResources: false,
         compiledCapabilities: context.compiledCapabilities,
+        requestGovernor: resolveRequestGovernorLimits(context),
         resources
     };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
@@ -410,6 +434,7 @@ module.exports = {
     parseIni,
     readWebResourceManifest,
     resolveBuildFlagsFromIni,
+    resolveRequestGovernorLimits,
     resolveWebBuildContext,
     shouldIncludeAsset,
     shouldIncludeMenu,

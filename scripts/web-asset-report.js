@@ -28,6 +28,8 @@ const PAGE_BUNDLES = [
     'js/modules/periph-exec-sensor.js',
     'js/modules/periph-exec-effects.js',
     'js/modules/periph-exec-modbus.js',
+    'js/modules/screen-panel-model.js',
+    'js/modules/screen-panel.js',
     'js/modules/device-control.js',
     'js/modules/device-control-view.js',
     'js/modules/device-control-modbus.js',

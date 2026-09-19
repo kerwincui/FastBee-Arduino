@@ -18,12 +18,14 @@ param(
     [string]$ClassicConfigPath = "",
     [string]$S3F16ConfigPath = "",
     [string]$S3F8ConfigPath = "",
+    [string]$PreserveConfigRoot = "",
     [string]$ReportDir = "artifacts\multi-device-deploy"
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $projectRoot
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 if ($DryRun -and $BuildOnly) { throw "DryRun and BuildOnly cannot be used together." }
 if ($SerialSeconds -lt 2) { throw "SerialSeconds must be at least 2." }
@@ -186,6 +188,16 @@ function Invoke-ConfigDeploy {
     if ($DryRun) { $args += "-DryRun" }
     if ($BuildOnly) { $args += "-BuildOnly" }
     if ($SkipFirmware) { $args += "-SkipFirmware" }
+    if (-not [string]::IsNullOrWhiteSpace($PreserveConfigRoot)) {
+        $preserveRootCandidate = if ([System.IO.Path]::IsPathRooted($PreserveConfigRoot)) {
+            $PreserveConfigRoot
+        } else { Join-Path $projectRoot $PreserveConfigRoot }
+        $preservePath = Join-Path ([System.IO.Path]::GetFullPath($preserveRootCandidate)) $Device.Env
+        if (-not (Test-Path -LiteralPath $preservePath -PathType Container)) {
+            throw "Preserved configuration directory was not found for $($Device.Env): $preservePath"
+        }
+        $args += @("-PreserveConfigPath", $preservePath)
+    }
     Write-Host ("powershell " + ($args -join " ")) -ForegroundColor DarkGray
     & powershell @args
     if ($LASTEXITCODE -ne 0) { throw "$($Device.Name) configuration deployment failed (exit $LASTEXITCODE)." }
@@ -196,13 +208,48 @@ function Invoke-SerialCheck {
     $args = @("scripts/test-device-health.js", "--ports", $Device.Port, "--seconds", $SerialSeconds, "--json", $OutputPath)
     Write-Host ("node " + ($args -join " ")) -ForegroundColor DarkGray
     & node @args 2>&1 | ForEach-Object { Write-Host $_ }
-    return ($LASTEXITCODE -eq 0)
+    $exitCode = $LASTEXITCODE
+    $snapshot = $null
+    if (Test-Path -LiteralPath $OutputPath) {
+        try { $snapshot = Get-Content -LiteralPath $OutputPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    }
+    $portResult = if ($null -ne $snapshot) {
+        @($snapshot.results | Where-Object { [string]$_.port -eq [string]$Device.Port }) | Select-Object -First 1
+    } else { $null }
+    $networkMode = if ($null -ne $portResult -and $null -ne $portResult.telemetry) {
+        [string]$portResult.telemetry.networkMode
+    } else { "" }
+    $observedIp = if ($networkMode -eq "STA" -and $null -ne $portResult.telemetry) {
+        [string]$portResult.telemetry.ip
+    } else { "" }
+    if (-not [string]::IsNullOrWhiteSpace($observedIp) -and
+        $observedIp -notmatch '^\d{1,3}(?:\.\d{1,3}){3}$') {
+        $observedIp = ""
+    }
+    return [pscustomobject]@{
+        path = $OutputPath
+        success = ($exitCode -eq 0 -and $null -ne $portResult -and [string]$portResult.status -eq "success")
+        exitCode = $exitCode
+        status = if ($null -ne $portResult) { [string]$portResult.status } else { "missing" }
+        networkMode = $networkMode
+        ip = $observedIp
+    }
 }
 
 function Test-StaEndpoint {
     param([object]$Device)
-    # This probe is deliberately limited to the known STA address. There is
+    # This probe is deliberately limited to the STA address observed after
+    # deployment. There is
     # no AP URL fallback and no request to 192.168.4.1.
+    if ([string]::IsNullOrWhiteSpace([string]$Device.StaIP)) {
+        return [pscustomobject]@{
+            success = $false
+            reachable = $false
+            status = 0
+            url = ""
+            error = "No post-deployment STA address was observed on $($Device.Port)."
+        }
+    }
     $url = "http://$($Device.StaIP)/api/system/status"
     try {
         # Invoke-WebRequest's DisableKeepAlive option already controls the
@@ -232,21 +279,30 @@ function Test-StaEndpoint {
 $resolvedReportDir = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $ReportDir))
 New-Item -ItemType Directory -Force -Path $resolvedReportDir | Out-Null
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
+$selectedDevices = @($devices | Where-Object { $selectedKeys -contains $_.Key })
+if ($selectedDevices.Count -ne $selectedKeys.Count) {
+    throw "One or more selected deployment targets are not present in the device catalog."
+}
+
 $summary = [ordered]@{
     runId = $runId
     startedAt = (Get-Date).ToUniversalTime().ToString("o")
     dryRun = [bool]$DryRun
     buildOnly = [bool]$BuildOnly
     skipFirmware = [bool]$SkipFirmware
-    order = @($devices | ForEach-Object { $_.Name })
+    order = @($selectedDevices | ForEach-Object { $_.Name })
     sourceSha256 = [ordered]@{}
     results = New-Object System.Collections.Generic.List[object]
 }
 
-# Verify all five source identities before touching data/config. This prevents
+$firmwareLock = Enter-FastBeeFirmwareBuildLock `
+    -ProjectRoot $projectRoot `
+    -Label "deploy-multi-device:$runId"
+try {
+# Verify all selected source identities before touching data/config. This prevents
 # an accidental copy of one board's JSON to another board.
 $hashOwners = @{}
-foreach ($device in $devices) {
+foreach ($device in $selectedDevices) {
     $sourcePath = Test-SourceFiles -Device $device
     $hash = Get-SourceHash -Path $sourcePath
     if ($hashOwners.ContainsKey($hash)) {
@@ -257,15 +313,14 @@ foreach ($device in $devices) {
 }
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "FastBee five-device deployment (isolated configuration)" -ForegroundColor Cyan
+Write-Host "FastBee $($selectedDevices.Count)-device deployment (isolated configuration)" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
-foreach ($device in $devices) {
+foreach ($device in $selectedDevices) {
     Write-Host ("{0}  {1}  {2}  source={3}" -f $device.Name, $device.Env, $device.Port, $summary.sourceSha256[$device.Name].sha256) -ForegroundColor Gray
 }
-Write-Host "Order: COM15 -> COM4 -> COM11 -> COM16 -> COM7" -ForegroundColor Yellow
+Write-Host ("Order: " + (($selectedDevices | ForEach-Object { $_.Port }) -join " -> ")) -ForegroundColor Yellow
 
-foreach ($device in $devices) {
-    if ($selectedKeys -notcontains $device.Key) { continue }
+foreach ($device in $selectedDevices) {
     $result = [ordered]@{
         device = $device.Name
         environment = $device.Env
@@ -294,8 +349,15 @@ foreach ($device in $devices) {
         if (-not $DryRun -and -not $BuildOnly) {
             if (-not $SkipSerialCheck) {
                 $serialPath = Join-Path $resolvedReportDir ("{0}-{1}-{2}-serial.json" -f $runId, $device.Key, $device.Port)
-                $result.serial = [ordered]@{ path = $serialPath; success = Invoke-SerialCheck -Device $device -OutputPath $serialPath }
+                $result.serial = Invoke-SerialCheck -Device $device -OutputPath $serialPath
                 if (-not $result.serial.success) { $result.status = "deployed-serial-warning" }
+                if (-not [string]::IsNullOrWhiteSpace([string]$result.serial.ip)) {
+                    $device.StaIP = [string]$result.serial.ip
+                } elseif (-not [string]::IsNullOrWhiteSpace([string]$result.serial.networkMode)) {
+                    # A disconnected/AP observation is authoritative. Do not
+                    # probe the stale pre-deployment DHCP reference address.
+                    $device.StaIP = ""
+                }
             }
             $result.sta = Test-StaEndpoint -Device $device
             if (-not $result.sta.success) {
@@ -317,6 +379,10 @@ foreach ($device in $devices) {
         continue
     }
     $summary.results.Add([pscustomobject]$result)
+}
+}
+finally {
+    Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
 }
 
 $summary.finishedAt = (Get-Date).ToUniversalTime().ToString("o")

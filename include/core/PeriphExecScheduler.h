@@ -25,6 +25,8 @@ struct ButtonEventConfig {
 
 // ========== 单个按键的运行时状态 ==========
 struct ButtonRuntimeState {
+    uint32_t sourceGeneration = 0; // reset edge baseline after provider recovery
+    bool awaitIdle = false;         // recovery while pressed cannot synthesize clicks
     String periphId;                // 外设ID
     bool idleLevel = true;          // 上拉空闲为高；下拉空闲为低
     bool lastState = true;          // 上一次已消抖电平
@@ -43,8 +45,10 @@ struct ButtonRuntimeState {
 class PeriphExecScheduler {
 public:
     // ========== 配置安全常量 ==========
-    static constexpr uint32_t MIN_POLL_INTERVAL_MS = 5000;       // 绝对最小轮询间隔 5s
-    static constexpr uint32_t SAFE_POLL_INTERVAL_MS = 30000;     // 安全轮询间隔 30s
+    static constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;        // 定时触发最小间隔 1s
+    static constexpr uint32_t MIN_POLL_INTERVAL_SEC = 5;         // 轮询触发最小间隔 5s
+    static constexpr uint32_t MAX_INTERVAL_SEC = 86400;          // 最长间隔 24h
+    static constexpr uint32_t AGGRESSIVE_INTERVAL_WARN_SEC = 10; // 高任务数下的风险提示阈值
     static constexpr uint8_t MAX_ACTIVE_TASKS = 12;              // 最大活跃任务数
     static constexpr uint8_t WARN_TASK_THRESHOLD = 8;            // 多任务告警阈值
 

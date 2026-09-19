@@ -6,6 +6,13 @@
 #include "systems/RestartDiagnostics.h"
 #include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
+#include "core/PeripheralManager.h"
+#if FASTBEE_ENABLE_POINT_HISTORY
+#include "core/PointHistory.h"
+#endif
+#if FASTBEE_ENABLE_SCREEN_PANEL
+#include "core/ScreenPanelManager.h"
+#endif
 #include <ESP.h>
 
 // ========== 静态成员初始化 ==========
@@ -54,6 +61,29 @@ void SystemRebooter::update() {
     if (now >= _rebootAt || (_rebootAt > now + 60000UL)) {
         _scheduled = false;  // 先清除标志，防止中断重入
 
+#if FASTBEE_ENABLE_POINT_HISTORY
+        // Prepare on the system loop, never in the touch callback/UI task.
+        // A failed user-requested panel restart remains on screen for a second,
+        // explicit confirmation; health/OTA restarts must remain available.
+        bool skipHistorySave = false;
+#if FASTBEE_ENABLE_SCREEN_PANEL
+        const bool panelRestart = strcmp(_reason, "Screen panel restart") == 0 ||
+                                  strcmp(_reason, "Panel restart without history") == 0;
+        if (strcmp(_reason, "Panel restart without history") == 0) {
+            skipHistorySave = ScreenPanelManager::instance().consumeRestartWithoutHistorySave();
+        }
+#endif
+        if (!skipHistorySave && !FastBee::PointHistory::instance().flushNow(2000)) {
+            Serial.println("[REBOOTER] Recent point history could not be saved");
+#if FASTBEE_ENABLE_SCREEN_PANEL
+            if (panelRestart) {
+                ScreenPanelManager::instance().notifyRestartSaveFailure();
+                return;
+            }
+#endif
+        }
+#endif
+
         Serial.println("[REBOOTER] ============================================");
         Serial.printf("[REBOOTER] Executing reboot: %s\n", _reason);
         Serial.println("[REBOOTER] ============================================");
@@ -65,6 +95,12 @@ void SystemRebooter::update() {
             ConfigStorage::getInstance().flushDirtyEntries(true);
         }
 #endif
+
+        // The expander stays powered across an MCU restart. Confirm configured
+        // startup levels before resetting, without waiting for a busy I2C bus.
+        if (!PeripheralManager::getInstance().shutdownIoExpanders()) {
+            Serial.println("[REBOOTER] IO_SHUTDOWN_UNCONFIRMED: physical output state not confirmed");
+        }
 
         // 保存重启前状态快照到 RTC 内存
         RestartDiagnostics::savePreRestartState(

@@ -337,6 +337,14 @@ public:
      * @details 允许在重新启用 STA 时使用 WiFi.begin() 而不是 reconnect()
      */
     void resetStaInitialized() { staInitialized = false; }
+
+    /**
+     * @brief Return the most recent ESP-IDF STA disconnect reason.
+     * @details Zero means that the current connection attempt has not emitted
+     *          a disconnect event. Credentials are never included.
+     */
+    uint8_t getLastDisconnectReason() const { return lastDisconnectReason; }
+    void clearLastDisconnectReason() { lastDisconnectReason = 0; }
     
     /**
      * @brief 获取配置
@@ -441,6 +449,7 @@ private:
     volatile bool pendingGotIPEvent = false;
     volatile bool pendingDisconnectEvent = false;
     volatile bool pendingConnFailedEvent = false;
+    volatile uint8_t lastDisconnectReason = 0;
     
     /**
      * @brief 触发网络事件

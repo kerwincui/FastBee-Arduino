@@ -42,8 +42,10 @@ void test_periph_exec_group();
 
 // ========== 调度器常量（镜像自 PeriphExecScheduler.h） ==========
 namespace SchedulerConstants {
-    constexpr uint32_t MIN_POLL_INTERVAL_MS = 5000;
-    constexpr uint32_t SAFE_POLL_INTERVAL_MS = 30000;
+    constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;
+    constexpr uint32_t MIN_POLL_INTERVAL_SEC = 5;
+    constexpr uint32_t MAX_INTERVAL_SEC = 86400;
+    constexpr uint32_t AGGRESSIVE_INTERVAL_WARN_SEC = 10;
     constexpr uint8_t MAX_ACTIVE_TASKS = 12;
     constexpr uint8_t WARN_TASK_THRESHOLD = 8;
     constexpr uint32_t CHECK_PERIOD_NORMAL_MS = 1000;
@@ -132,7 +134,7 @@ struct ButtonRuntimeState {
 
 // ========== 模拟轮询间隔校验逻辑 ==========
 struct MockTrigger {
-    uint8_t triggerType;   // 3=TIMER, 5=POLL
+    uint8_t triggerType;   // 1=TIMER, 5=POLL
     uint32_t intervalSec;
 };
 
@@ -143,116 +145,120 @@ struct MockRule {
     std::vector<MockTrigger> triggers;
 };
 
-static bool validatePollInterval(MockRule& rule, uint8_t activeTaskCount) {
-    bool modified = false;
-    for (auto& trigger : rule.triggers) {
-        if (trigger.triggerType != 3 && trigger.triggerType != 5) continue;
-        
-        uint32_t intervalMs = trigger.intervalSec * 1000UL;
-        
-        if (intervalMs < SchedulerConstants::MIN_POLL_INTERVAL_MS) {
-            trigger.intervalSec = SchedulerConstants::MIN_POLL_INTERVAL_MS / 1000;
-            modified = true;
-        } else if (activeTaskCount > SchedulerConstants::WARN_TASK_THRESHOLD && intervalMs < 10000) {
-            trigger.intervalSec = SchedulerConstants::SAFE_POLL_INTERVAL_MS / 1000;
-            modified = true;
+static bool detectScheduleIntervalRisk(const MockRule& rule,
+                                       uint8_t activeTaskCount) {
+    for (const auto& trigger : rule.triggers) {
+        const bool isTimer = trigger.triggerType == 1;
+        const bool isPoll = trigger.triggerType == 5;
+        if (!isTimer && !isPoll) continue;
+
+        const uint32_t minimumSec = isPoll
+            ? SchedulerConstants::MIN_POLL_INTERVAL_SEC
+            : SchedulerConstants::MIN_TIMER_INTERVAL_SEC;
+        if (trigger.intervalSec < minimumSec ||
+            trigger.intervalSec > SchedulerConstants::MAX_INTERVAL_SEC) {
+            return true;
+        }
+        if (activeTaskCount > SchedulerConstants::WARN_TASK_THRESHOLD &&
+            trigger.intervalSec < SchedulerConstants::AGGRESSIVE_INTERVAL_WARN_SEC) {
+            return true;
         }
     }
-    return modified;
+    return false;
 }
 
 // ============================================================
 //  TEST GROUP 1: 调度器配置校验测试（轮询间隔边界）
 // ============================================================
 
-void test_poll_interval_below_minimum_gets_corrected() {
+void test_timer_one_second_interval_is_valid_and_preserved() {
     MockRule rule;
     rule.id = "rule_1";
     rule.name = "Test Rule";
     rule.enabled = true;
-    rule.triggers.push_back({3, 2});  // 2s < 5s minimum
+    rule.triggers.push_back({1, 1});
     
-    bool modified = validatePollInterval(rule, 1);
+    bool warned = detectScheduleIntervalRisk(rule, 1);
     
-    TEST_ASSERT_TRUE(modified);
-    TEST_ASSERT_EQUAL_UINT32(5, rule.triggers[0].intervalSec);
+    TEST_ASSERT_FALSE(warned);
+    TEST_ASSERT_EQUAL_UINT32(1, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_at_minimum_not_modified() {
+void test_poll_interval_below_minimum_warned_without_mutation() {
     MockRule rule;
     rule.id = "rule_2";
     rule.name = "Boundary Rule";
     rule.enabled = true;
-    rule.triggers.push_back({3, 5});  // exactly 5s minimum
+    rule.triggers.push_back({5, 2});
     
-    bool modified = validatePollInterval(rule, 1);
+    bool warned = detectScheduleIntervalRisk(rule, 1);
     
-    TEST_ASSERT_FALSE(modified);
-    TEST_ASSERT_EQUAL_UINT32(5, rule.triggers[0].intervalSec);
+    TEST_ASSERT_TRUE(warned);
+    TEST_ASSERT_EQUAL_UINT32(2, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_above_minimum_not_modified() {
+void test_poll_interval_at_minimum_is_valid_and_preserved() {
     MockRule rule;
     rule.id = "rule_3";
     rule.name = "Safe Rule";
     rule.enabled = true;
-    rule.triggers.push_back({3, 60});  // 60s is well above minimum
+    rule.triggers.push_back({5, 5});
     
-    bool modified = validatePollInterval(rule, 1);
+    bool warned = detectScheduleIntervalRisk(rule, 1);
     
-    TEST_ASSERT_FALSE(modified);
-    TEST_ASSERT_EQUAL_UINT32(60, rule.triggers[0].intervalSec);
+    TEST_ASSERT_FALSE(warned);
+    TEST_ASSERT_EQUAL_UINT32(5, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_aggressive_with_many_tasks() {
+void test_aggressive_poll_interval_with_many_tasks_warned_without_mutation() {
     MockRule rule;
     rule.id = "rule_4";
     rule.name = "Aggressive Rule";
     rule.enabled = true;
     rule.triggers.push_back({5, 8});  // 8s < 10s and tasks > 8
     
-    bool modified = validatePollInterval(rule, 9);  // > WARN_TASK_THRESHOLD
+    bool warned = detectScheduleIntervalRisk(rule, 9);
     
-    TEST_ASSERT_TRUE(modified);
-    TEST_ASSERT_EQUAL_UINT32(30, rule.triggers[0].intervalSec);  // forced to SAFE (30s)
+    TEST_ASSERT_TRUE(warned);
+    TEST_ASSERT_EQUAL_UINT32(8, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_not_aggressive_with_few_tasks() {
+void test_poll_interval_with_few_tasks_has_no_load_warning() {
     MockRule rule;
     rule.id = "rule_5";
     rule.name = "Normal Load Rule";
     rule.enabled = true;
     rule.triggers.push_back({5, 8});  // 8s with only 4 tasks
     
-    bool modified = validatePollInterval(rule, 4);  // <= WARN_TASK_THRESHOLD
+    bool warned = detectScheduleIntervalRisk(rule, 4);
     
-    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_FALSE(warned);
     TEST_ASSERT_EQUAL_UINT32(8, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_zero_seconds_corrected() {
+void test_timer_zero_interval_warned_without_mutation() {
     MockRule rule;
     rule.id = "rule_6";
     rule.name = "Zero Interval";
     rule.enabled = true;
-    rule.triggers.push_back({3, 0});  // 0s is clearly invalid
+    rule.triggers.push_back({1, 0});
     
-    bool modified = validatePollInterval(rule, 1);
+    bool warned = detectScheduleIntervalRisk(rule, 1);
     
-    TEST_ASSERT_TRUE(modified);
-    TEST_ASSERT_EQUAL_UINT32(5, rule.triggers[0].intervalSec);
+    TEST_ASSERT_TRUE(warned);
+    TEST_ASSERT_EQUAL_UINT32(0, rule.triggers[0].intervalSec);
 }
 
-void test_poll_interval_non_timer_trigger_ignored() {
+void test_non_schedule_trigger_interval_ignored() {
     MockRule rule;
     rule.id = "rule_7";
     rule.name = "Event Rule";
     rule.enabled = true;
-    rule.triggers.push_back({1, 1});  // Event trigger type, interval irrelevant
+    rule.triggers.push_back({4, 1});
     
-    bool modified = validatePollInterval(rule, 10);
+    bool warned = detectScheduleIntervalRisk(rule, 10);
     
-    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_FALSE(warned);
     TEST_ASSERT_EQUAL_UINT32(1, rule.triggers[0].intervalSec);  // unchanged
 }
 
@@ -779,8 +785,9 @@ void test_gpio_toggle_source_locked() {
     TEST_ASSERT_TRUE(firstReportable != std::string::npos);
     TEST_ASSERT_TRUE_MESSAGE(exec.find("ACTION_GPIO_TOGGLE", firstReportable) != std::string::npos,
         "ACTION_GPIO_TOGGLE must be reportable output action");
-    TEST_ASSERT_TRUE_MESSAGE(exec.find("Execute TOGGLE on") != std::string::npos,
-        "executor must implement toggle via readPin -> invert -> writePin");
+    TEST_ASSERT_TRUE_MESSAGE(
+        exec.find("return pm.togglePin(action.targetPeriphId);") != std::string::npos,
+        "executor must delegate toggle to the manager's locked read-invert-write operation");
 
     // 3. 动作选项列表：输出类外设与未指定外设两个分支都要提供“电平翻转”
     std::string mgr = readPeriphExecSrcFile("src/core/PeriphExecManager.cpp");
@@ -864,28 +871,28 @@ void test_multiple_triggers_per_rule() {
     rule.id = "multi_trigger";
     rule.name = "Multi Trigger";
     rule.enabled = true;
-    rule.triggers.push_back({3, 10});  // Timer 10s
+    rule.triggers.push_back({1, 10});  // Timer 10s
     rule.triggers.push_back({5, 30});  // Poll 30s
-    rule.triggers.push_back({1, 0});   // Event trigger
+    rule.triggers.push_back({4, 0});   // Event trigger
     
-    bool modified = validatePollInterval(rule, 5);
+    bool warned = detectScheduleIntervalRisk(rule, 5);
     
-    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_FALSE(warned);
     TEST_ASSERT_EQUAL_UINT32(10, rule.triggers[0].intervalSec);
     TEST_ASSERT_EQUAL_UINT32(30, rule.triggers[1].intervalSec);
 }
 
 void test_poll_interval_uint32_overflow_protection() {
-    // Very large interval should not be modified
+    // Maximum persisted interval remains valid and is never modified by Scheduler.
     MockRule rule;
     rule.id = "large_interval";
     rule.name = "Large Interval";
     rule.enabled = true;
-    rule.triggers.push_back({3, 86400});  // 24 hours
+    rule.triggers.push_back({1, 86400});  // 24 hours
     
-    bool modified = validatePollInterval(rule, 10);
+    bool warned = detectScheduleIntervalRisk(rule, 10);
     
-    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_FALSE(warned);
     TEST_ASSERT_EQUAL_UINT32(86400, rule.triggers[0].intervalSec);
 }
 
@@ -1638,7 +1645,8 @@ struct MockSanitizeTrigger {
 };
 
 static constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;
-static constexpr uint32_t MAX_TIMER_INTERVAL_SEC = 86400UL;
+static constexpr uint32_t MIN_POLL_INTERVAL_SEC = 5;
+static constexpr uint32_t MAX_INTERVAL_SEC = 86400UL;
 static constexpr uint16_t MIN_POLL_TIMEOUT_MS = 100;
 static constexpr uint16_t MAX_POLL_TIMEOUT_MS = 5000;
 static constexpr uint16_t HEAVY_POLL_TIMEOUT_MS = 3000;
@@ -1658,12 +1666,16 @@ static bool mockSanitizeTrigger(MockSanitizeTrigger& t) {
     if (t.triggerType == 1) {  // TIMER_TRIGGER
         if (t.intervalSec < MIN_TIMER_INTERVAL_SEC)
             t.intervalSec = MIN_TIMER_INTERVAL_SEC;
-        else if (t.intervalSec > MAX_TIMER_INTERVAL_SEC)
-            t.intervalSec = MAX_TIMER_INTERVAL_SEC;
+        else if (t.intervalSec > MAX_INTERVAL_SEC)
+            t.intervalSec = MAX_INTERVAL_SEC;
     }
 
     // POLL_TRIGGER 参数修正
     if (t.triggerType == 5) {  // POLL_TRIGGER
+        if (t.intervalSec < MIN_POLL_INTERVAL_SEC)
+            t.intervalSec = MIN_POLL_INTERVAL_SEC;
+        else if (t.intervalSec > MAX_INTERVAL_SEC)
+            t.intervalSec = MAX_INTERVAL_SEC;
         if (t.pollResponseTimeout < MIN_POLL_TIMEOUT_MS)
             t.pollResponseTimeout = MIN_POLL_TIMEOUT_MS;
         else if (t.pollResponseTimeout > MAX_POLL_TIMEOUT_MS)
@@ -1724,6 +1736,24 @@ void test_sanitize_timer_boundary_max() {
     MockSanitizeTrigger t = {1, 86400, 1000, 2, 100, false};
     bool modified = mockSanitizeTrigger(t);
     TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(86400, t.intervalSec);
+}
+void test_sanitize_poll_interval_below_min() {
+    MockSanitizeTrigger t = {5, 1, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL_UINT32(5, t.intervalSec);
+}
+void test_sanitize_poll_interval_at_min() {
+    MockSanitizeTrigger t = {5, 5, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(5, t.intervalSec);
+}
+void test_sanitize_poll_interval_above_max() {
+    MockSanitizeTrigger t = {5, 100000, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
     TEST_ASSERT_EQUAL_UINT32(86400, t.intervalSec);
 }
 void test_exec_sanitize_poll_timeout_below_min() {
@@ -4309,13 +4339,13 @@ void test_channel_field_explicit_always_wins() {
 
 void test_periph_exec_group() {
     // Group 1: 调度器配置校验
-    RUN_TEST(test_poll_interval_below_minimum_gets_corrected);
-    RUN_TEST(test_poll_interval_at_minimum_not_modified);
-    RUN_TEST(test_poll_interval_above_minimum_not_modified);
-    RUN_TEST(test_poll_interval_aggressive_with_many_tasks);
-    RUN_TEST(test_poll_interval_not_aggressive_with_few_tasks);
-    RUN_TEST(test_poll_interval_zero_seconds_corrected);
-    RUN_TEST(test_poll_interval_non_timer_trigger_ignored);
+    RUN_TEST(test_timer_one_second_interval_is_valid_and_preserved);
+    RUN_TEST(test_poll_interval_below_minimum_warned_without_mutation);
+    RUN_TEST(test_poll_interval_at_minimum_is_valid_and_preserved);
+    RUN_TEST(test_aggressive_poll_interval_with_many_tasks_warned_without_mutation);
+    RUN_TEST(test_poll_interval_with_few_tasks_has_no_load_warning);
+    RUN_TEST(test_timer_zero_interval_warned_without_mutation);
+    RUN_TEST(test_non_schedule_trigger_interval_ignored);
     
     // Group 2: 动态降频
     RUN_TEST(test_dynamic_check_period_normal);
@@ -4470,6 +4500,9 @@ void test_periph_exec_group() {
     RUN_TEST(test_sanitize_timer_interval_valid_no_change);
     RUN_TEST(test_sanitize_timer_boundary_min);
     RUN_TEST(test_sanitize_timer_boundary_max);
+    RUN_TEST(test_sanitize_poll_interval_below_min);
+    RUN_TEST(test_sanitize_poll_interval_at_min);
+    RUN_TEST(test_sanitize_poll_interval_above_max);
     RUN_TEST(test_exec_sanitize_poll_timeout_below_min);
     RUN_TEST(test_exec_sanitize_poll_timeout_above_max);
     RUN_TEST(test_sanitize_poll_timeout_valid_no_change);

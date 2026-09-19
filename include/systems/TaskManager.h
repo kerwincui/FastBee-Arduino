@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <array>
 #include <functional>
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
@@ -17,6 +18,7 @@
 
 // 任务函数类型定义
 #include "core/interfaces/ITaskManager.h"
+#include "core/SystemConstants.h"
 
 // 任务优先级枚举
 enum class TaskPriority {
@@ -101,6 +103,18 @@ public:
     bool setTaskExecutionBudget(const String& name, unsigned long budgetMs);
 
 private:
+    // Keep only fields consumed by run(), not the full statistics record.
+    // Resident storage avoids both loop-time heap allocation and a large
+    // stack snapshot while callbacks run outside tasksMutex.
+    struct DueTask {
+        char name[32];
+        TaskFunction function;
+        void* parameter;
+        TaskPriority priority;
+        unsigned long executionBudget;
+    };
+    std::array<DueTask, TaskScheduler::MAX_TASKS> dueTasks;
+    bool runInProgress = false; // protected by tasksMutex
     std::vector<ScheduledTask> tasks;
     bool isRunning;
     SemaphoreHandle_t tasksMutex = nullptr;

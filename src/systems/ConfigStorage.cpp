@@ -139,7 +139,7 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 判断是否为关键配置（需立即写入）
-    bool isCritical = (filename.indexOf("protocol") >= 0 || filename.indexOf("network") >= 0 ||
+    bool isCritical = (filename.indexOf("device") >= 0 || filename.indexOf("protocol") >= 0 || filename.indexOf("network") >= 0 ||
                        filename.indexOf("users") >= 0 || filename.indexOf("auth") >= 0 ||
                        filename.indexOf("features") >= 0);
 

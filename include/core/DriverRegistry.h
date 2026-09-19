@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 #include "core/interfaces/ISensorDriver.h"
+#include "core/SensorDriverMetadata.h"
+#include <new>
 
 /**
  * @brief 驱动注册表（静态数组，零运行时分配）
@@ -22,6 +24,7 @@ using SensorDriverFactory = ISensorDriver* (*)();
 struct SensorDriverEntry {
     const char* name;            // 驱动名称（如 "SHT31", "BMP280"）
     SensorDriverFactory factory; // 工厂函数
+    const SensorDriverMetadata* metadata;
 };
 
 // 最大注册驱动数
@@ -43,14 +46,15 @@ public:
      * @param factory 工厂函数
      * @return 是否注册成功
      */
-    bool registerDriver(const char* name, SensorDriverFactory factory) {
-        if (!name || !factory) return false;
-        if (_count >= MAX_SENSOR_DRIVERS) return false;
+    bool registerDriver(const char* name, SensorDriverFactory factory,
+                        const SensorDriverMetadata* metadata = nullptr) {
+        if (!name || !name[0] || !factory) { ++_registrationFailures; return false; }
+        if (_count >= MAX_SENSOR_DRIVERS) { ++_registrationFailures; return false; }
         // 检查重名
         for (size_t i = 0; i < _count; i++) {
-            if (equalsName(_drivers[i].name, name)) return false;
+            if (equalsName(_drivers[i].name, name)) { ++_registrationFailures; return false; }
         }
-        _drivers[_count++] = {name, factory};
+        _drivers[_count++] = {name, factory, metadata ? metadata : sensorDriverMetadata(name)};
         return true;
     }
 
@@ -73,6 +77,15 @@ public:
      * @brief 获取已注册驱动数量
      */
     size_t getDriverCount() const { return _count; }
+
+    size_t getRegistrationFailureCount() const { return _registrationFailures; }
+
+    const SensorDriverMetadata* getMetadata(const char* name) const {
+        for (size_t i = 0; i < _count; ++i) {
+            if (equalsName(_drivers[i].name, name)) return _drivers[i].metadata;
+        }
+        return nullptr;
+    }
 
     /**
      * @brief 获取驱动条目（用于枚举）
@@ -109,6 +122,7 @@ private:
     }
     SensorDriverEntry _drivers[MAX_SENSOR_DRIVERS] = {};
     size_t _count = 0;
+    size_t _registrationFailures = 0;
 };
 
 /**
@@ -131,7 +145,7 @@ struct SensorDriverRegistrar {
  * 效果：编译链接后自动注册到 DriverRegistry，无需修改任何核心代码
  */
 #define FASTBEE_REGISTER_SENSOR(name, DriverClass) \
-    static ISensorDriver* _fastbee_create_##DriverClass() { return new DriverClass(); } \
+    static ISensorDriver* _fastbee_create_##DriverClass() { return new (std::nothrow) DriverClass(); } \
     static FastBee::SensorDriverRegistrar _fastbee_reg_##DriverClass(name, _fastbee_create_##DriverClass)
 
 #endif // DRIVER_REGISTRY_H

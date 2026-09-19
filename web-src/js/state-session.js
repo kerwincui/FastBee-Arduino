@@ -148,8 +148,7 @@
         var backgroundPreloadAllowance = null;
         var allowBackgroundPreload = function() {
             if (!backgroundPreloadAllowance) {
-                backgroundPreloadAllowance = fetch('/api/health', { cache: 'no-store' })
-                    .then(function(resp) { return resp.ok ? resp.json() : null; })
+                backgroundPreloadAllowance = apiGetSilent('/api/health')
                     .then(function(payload) {
                         var memory = payload && payload.data && payload.data.memory;
                         if (!memory) return false;

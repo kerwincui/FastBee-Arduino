@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
+#include <atomic>
 #include <memory>
 
 #include "core/FeatureFlags.h"
@@ -43,6 +44,12 @@ class RuleScriptRouteHandler;
 #endif
 class ProtocolRouteHandler;
 class FeatureRouteHandler;
+#if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
+class ScreenPanelRouteHandler;
+#endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+class RemoteResourceRouteHandler;
+#endif
 class SSERouteHandler;
 class BLEProvisioner;
 
@@ -132,10 +139,11 @@ public:
     void getTcpDiag(uint16_t& total, uint8_t& timeWait, unsigned long& lastReqAgeMs) const {
         timeWait = 0;
         total = countTcpConnections(&timeWait);
-        lastReqAgeMs = (lastRequestSeenMs > 0) ? (millis() - lastRequestSeenMs) : 0;
+        lastReqAgeMs = getLastWebRequestAgeMs();
     }
 
 private:
+    unsigned long getLastWebRequestAgeMs() const;
     static constexpr size_t MAX_RECOVERY_EVENTS = 8;
 
     AsyncWebServer* server;
@@ -177,6 +185,12 @@ private:
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
 #endif
     std::unique_ptr<FeatureRouteHandler>    featureHandler;
+#if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
+    std::unique_ptr<ScreenPanelRouteHandler> screenPanelHandler;
+#endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    std::unique_ptr<RemoteResourceRouteHandler> remoteResourceHandler;
+#endif
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
 #if FASTBEE_WEB_MEM_GUARD
@@ -275,7 +289,7 @@ private:
     uint8_t  burstWithPressureCount = 0;         // 连续检测到突增+内存压力的次数
 
     // ── Web 服务看门狗：检测 isRunning=true 但端口未监听的情况 ──
-    unsigned long lastRequestSeenMs = 0;           // 上次收到 HTTP 请求的时间
+    std::atomic<uint32_t> lastRequestSeenMs{0};    // AsyncTCP 写入，维护任务读取
     unsigned long lastListenCheckMs = 0;           // 上次端口监听检查时间
     uint8_t  listenCheckFailCount = 0;             // 连续检测到端口未监听的次数
     static constexpr unsigned long LISTEN_CHECK_INTERVAL_MS = 30000UL;  // 30s 检查一次

@@ -13,6 +13,15 @@
 #include "core/MemoryBudget.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
+#if FASTBEE_ENABLE_SCREEN_PANEL
+#include "core/ScreenPanelManager.h"
+#endif
+#if FASTBEE_ENABLE_SCREEN_UI
+#include "screen/ScreenRuntime.h"
+#endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "protocols/RemoteResourceManager.h"
+#endif
 #include "core/PeripheralManager.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
@@ -74,6 +83,12 @@ namespace {
 
 // 检查顺序按 DRAM 需求从大到小，确保重型功能优先获得内存
 const FastBee::FeatureBudget kFeatureBudgets[] = {
+#if FASTBEE_ENABLE_SCREEN_PANEL
+    // The task/backend retain at least 20KB internal DRAM. ScreenRuntime then
+    // admits snapshot + stripe from PSRAM, or requires their full contiguous
+    // internal allocation on targets without usable PSRAM.
+    {"screenPanel", 20},
+#endif
 #if FASTBEE_ENABLE_MQTT
     {"mqtts", 45},           // TLS 握手 ~42KB DRAM（无 PSRAM 准入需 ~52KB 空闲）
 #endif
@@ -109,6 +124,9 @@ const FastBee::FeatureBudget kFeatureBudgets[] = {
 #endif
 #if FASTBEE_ENABLE_ETHERNET
     {"ethernet", 15},      // W5500 SPI 缓冲
+#endif
+#if FASTBEE_ENABLE_IO_EXPANDER
+    {"ioExpander", 12},    // PCF8574 provider snapshots + bounded polling state
 #endif
 #if FASTBEE_ENABLE_OTA
     {"ota", 20},           // OTA 流式缓冲 1KB + 下载临时块
@@ -324,6 +342,13 @@ bool FastBeeFramework::initialize() {
     LOGGER.info("  FastBee IoT Platform Boot Log");
     LOGGER.info("========================================");
     LOGGER.infof("Boot started at %lu ms", startTime);
+    // USB CDC may enumerate after main.cpp's earliest diagnostics. Repeat the
+    // reset cause here so early boot failures remain diagnosable over USB.
+    LOGGER.infof("[BootReset] reason=%u (%s), PSRAM=%lu free=%lu",
+                 static_cast<unsigned>(esp_reset_reason()),
+                 RestartDiagnostics::getResetReasonString(esp_reset_reason()),
+                 static_cast<unsigned long>(ESP.getPsramSize()),
+                 static_cast<unsigned long>(ESP.getFreePsram()));
     LOGGER.infof("[Boot] ConfigStorage: %lu ms", configStorageMs);
     LOGGER.infof("[Boot] FileUtils: %lu ms", fileUtilsMs);
     LOGGER.infof("[Boot] Logger: %lu ms", loggerMs);
@@ -660,6 +685,9 @@ bool FastBeeFramework::initialize() {
     }
 
     // 步骤11.5: 初始化外设执行管理器
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    FastBee::RemoteResourceManager::instance().initialize();
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC
     stepStart = millis();
     Serial.println("[STEP11.5] Initializing PeriphExecManager...");
@@ -701,14 +729,16 @@ bool FastBeeFramework::initialize() {
 #if FASTBEE_ENABLE_MODBUS
         // Modbus sensorId 构建回调
         pem.setModbusBuildSensorIdCallback([pm](uint8_t deviceIndex, uint16_t channel) -> String {
-            ModbusHandler* modbus = pm->getModbusHandler();
+            auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(500));
+            ModbusHandler* modbus = modbusLease.get();
             if (!modbus) return String();
             return modbus->buildSensorId(deviceIndex, channel);
         });
 
         // Modbus 未匹配 sensorId 直接控制回调
         pem.setModbusDirectControlCallback([pm](const String& sensorId, const String& value, JsonArray& reportArr) -> bool {
-            ModbusHandler* modbus = pm->getModbusHandler();
+            auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
+            ModbusHandler* modbus = modbusLease.get();
             if (!modbus) return false;
 
             ModbusHandler::SensorIdMatch match;
@@ -857,7 +887,8 @@ bool FastBeeFramework::initialize() {
 
         // Modbus 动态事件列表回调
         pem.setModbusDynamicEventsCallback([pm](JsonArray& arr) {
-            ModbusHandler* modbus = pm->getModbusHandler();
+            auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(500));
+            ModbusHandler* modbus = modbusLease.get();
             if (!modbus || modbus->getMode() != MODBUS_MASTER) return;
             uint8_t devCount = modbus->getSubDeviceCount();
             for (uint8_t i = 0; i < devCount; i++) {
@@ -912,6 +943,19 @@ bool FastBeeFramework::initialize() {
             }
         });
     }
+
+#if FASTBEE_ENABLE_SCREEN_PANEL
+    if (!ScreenPanelManager::instance().initialize()) {
+        LOG_WARNING("Screen panel configuration could not be loaded");
+    }
+#endif
+#if FASTBEE_ENABLE_SCREEN_UI
+    if (FastBee::RuntimeFeatureManager::instance().shouldEnable("screenPanel")) {
+        String screenError;
+        const bool started=FastBee::Screen::ScreenRuntime::instance().start(screenError);
+        ScreenPanelManager::instance().reportApplication(started,false,screenError);
+    }
+#endif
 
     // 步骤12: 添加系统任务
     stepStart = millis();
@@ -1300,6 +1344,14 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add web maintenance task");
     }
 
+    // 外设采样与中断维护（每20ms）。该任务独立于规则、MQTT 和 Web 功能，
+    // 确保 IO 扩展器快照不会因其他功能停用而过期。
+    if (!taskManager->addTask("peripheral_io", [](void*) {
+        PeripheralManager::getInstance().performMaintenance();
+    }, nullptr, 20, TaskPriority::PRIORITY_HIGH)) {
+        LOG_WARNING("Failed to add peripheral IO maintenance task");
+    }
+
 #if FASTBEE_ENABLE_LCD
     // OLED/LCD 维护任务（每1秒）：开机初期重申显示参数，防上电瞬间电压波动导致黑屏
     if (!taskManager->addTask("lcd_maintenance", [](void* param) {
@@ -1316,6 +1368,9 @@ bool FastBeeFramework::addSystemTasks() {
     // SEVERE 下的内存保护由 checkTimers 内部多层门控负责（暂停/web预留/CRITICAL）
     if (!taskManager->addTask("periph_exec_timer", [](void* param) {
         PeriphExecManager::getInstance().checkTimers();
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+        FastBee::RemoteResourceManager::instance().tick();
+#endif
     }, nullptr, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add periph exec timer task");
     }
@@ -1569,6 +1624,14 @@ void FastBeeFramework::shutdown() {
 
     LOG_INFO("Shutting down FastBee IoT Platform...");
 
+#if FASTBEE_ENABLE_SCREEN_UI
+    String screenStopError;
+    if (!FastBee::Screen::ScreenRuntime::instance().stop(&screenStopError)) {
+        LOG_WARNINGF("Framework shutdown: screen task did not stop: %s",
+                     screenStopError.c_str());
+    }
+#endif
+
     // 关机前 flush 日志缓冲数据
 #if FASTBEE_ENABLE_LOGGER
     LOGGER.flushBuffer();
@@ -1577,6 +1640,10 @@ void FastBeeFramework::shutdown() {
     // 按依赖顺序反向关闭各子系统
     if (taskManager) {
         taskManager->stopAllTasks();
+    }
+
+    if (!PeripheralManager::getInstance().shutdownIoExpanders()) {
+        LOG_WARNING("Framework shutdown: IO_SHUTDOWN_UNCONFIRMED; physical output state not confirmed");
     }
 
     if (protocolManager) {

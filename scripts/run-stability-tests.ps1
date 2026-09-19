@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    FastBee 多设备并行长期稳定性测试脚本
+    FastBee 多设备长期稳定性测试脚本
 
 .DESCRIPTION
-    对多台设备同时执行多轮全量浏览器自动化测试，验证设备在长时间压力下的稳定性。
-    每台设备独立运行 Playwright 稳定性测试（2 workers），设备间完全并行。
+    对多台设备依次执行多轮全量浏览器自动化测试，验证设备在长时间压力下的稳定性。
+    每台设备独立运行 Playwright 稳定性测试（默认 2 workers），设备间串行以控制主机负载。
     每轮结束后自动检测设备健康状态（崩溃、内存泄漏、uptime 重置）。
 
 .PARAMETER Rounds
@@ -23,7 +23,7 @@
     任一轮失败率超过阈值时停止后续轮次
 
 .PARAMETER MaxFailureRatePercent
-    单轮最大允许失败率百分比（默认 10）
+    单轮最大允许失败率百分比（默认 0）；Playwright 非零退出码始终判定失败。
 
 .PARAMETER ReportDir
     报告输出目录（默认 .pio\test-results\stability）
@@ -33,7 +33,7 @@
     .\scripts\run-stability-tests.ps1 -Devices @(@{IP="192.168.1.100"; Serial="COM15"})
 
 .EXAMPLE
-    # 多设备并行测试
+    # 多设备串行测试
     .\scripts\run-stability-tests.ps1 -Devices @(
         @{IP="192.168.1.100"; Serial="COM15"},
         @{IP="192.168.1.101"; Serial="COM13"}
@@ -50,11 +50,15 @@ param(
 
     [int]$TestDelayMs = 3000,
 
+    [string]$Username = $env:AUTH_USERNAME,
+
+    [string]$Password = $env:AUTH_PASSWORD,
+
     [switch]$AutoReset,
 
     [switch]$StopOnFailure,
 
-    [double]$MaxFailureRatePercent = 10,
+    [double]$MaxFailureRatePercent = 0,
 
     [string]$ReportDir = ".pio\test-results\stability",
 
@@ -87,7 +91,7 @@ foreach ($dev in $Devices) {
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║     FastBee 多设备并行长期稳定性测试                ║" -ForegroundColor Cyan
+Write-Host "║       FastBee 多设备长期稳定性测试                  ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host "  设备数量    : $($Devices.Count)" -ForegroundColor White
 Write-Host "  测试轮数    : $Rounds" -ForegroundColor White
@@ -127,8 +131,20 @@ function Get-DeviceInfo {
     param([string]$BaseUrl, [int]$TimeoutSec = 10)
 
     try {
-        $resp = Invoke-RestMethod -Uri "$BaseUrl/api/system/info?probe=1" -TimeoutSec $TimeoutSec -ErrorAction Stop
-        return $resp
+        $resp = Invoke-RestMethod -Uri "$BaseUrl/api/system/status" -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $data = if ($resp.data) { $resp.data } else { $resp }
+        $memory = $data.memory
+        $heapFree = if ($memory -and $null -ne $memory.dram8Free) {
+            [int64]$memory.dram8Free
+        } elseif ($null -ne $data.freeHeap) {
+            [int64]$data.freeHeap
+        } else { $null }
+        $uptime = if ($data.uptime -and $data.uptime.PSObject.Properties.Name -contains "ms") {
+            [int64]$data.uptime.ms
+        } elseif ($null -ne $data.uptime) {
+            [int64]$data.uptime
+        } else { $null }
+        return @{ heapFree = $heapFree; uptime = $uptime }
     } catch {
         return $null
     }
@@ -169,10 +185,25 @@ function Invoke-DeviceStabilityTest {
 
     Write-Host "  [$label] 轮次 $Round/$TotalRounds 开始..." -ForegroundColor Cyan
 
+    $environmentNames = @(
+        "DEVICE_IP", "STABILITY_ROUNDS", "STABILITY_WORKERS", "TEST_DELAY_MS",
+        "DEVICE_SERIAL", "DEVICE_AUTO_RESET", "PLAYWRIGHT_JSON_OUTPUT_NAME",
+        "AUTH_USERNAME", "AUTH_PASSWORD", "STABILITY_MAX_FAILURE_RATE_PERCENT"
+    )
+    $previousEnvironment = @{}
+    foreach ($name in $environmentNames) {
+        $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process)
+    }
+
     $env:DEVICE_IP = $ip
     $env:STABILITY_ROUNDS = "1"  # 每轮由外部脚本控制
     $env:STABILITY_WORKERS = [string]$Workers
     $env:TEST_DELAY_MS = [string]$TestDelayMs
+    $env:AUTH_USERNAME = $Username
+    $env:AUTH_PASSWORD = $Password
+    $env:STABILITY_MAX_FAILURE_RATE_PERCENT = [string]$MaxFailureRatePercent
+    $env:DEVICE_SERIAL = $null
+    $env:DEVICE_AUTO_RESET = $null
 
     if ($serial -and $AutoReset) {
         $env:DEVICE_SERIAL = $serial
@@ -182,17 +213,25 @@ function Invoke-DeviceStabilityTest {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
+        $jsonOut = Join-Path $roundDir "results.json"
+        $artifactDir = Join-Path $roundDir "artifacts"
+        Remove-Item -LiteralPath $jsonOut -Force -ErrorAction SilentlyContinue
+        $env:PLAYWRIGHT_JSON_OUTPUT_NAME = $jsonOut
+
         $pwArgs = @(
             "test",
             "-c", $ConfigFile,
-            "--reporter", "json"
+            "--reporter", "json",
+            "--output", $artifactDir
         )
 
-        $jsonOut = Join-Path $roundDir "results.json"
-        $pwArgs += @("--output", $jsonOut)
-
         Set-Location $BrowserTestDir
-        $output = & npx @pwArgs 2>&1
+        $playwrightCli = Join-Path $BrowserTestDir "node_modules\@playwright\test\cli.js"
+        if (-not (Test-Path -LiteralPath $playwrightCli -PathType Leaf)) {
+            throw "Playwright CLI not found: $playwrightCli"
+        }
+        $output = & node $playwrightCli @pwArgs 2>&1
+        $playwrightExit = $LASTEXITCODE
         Set-Location $ProjectDir
 
         $sw.Stop()
@@ -201,9 +240,11 @@ function Invoke-DeviceStabilityTest {
         $result = @{
             Label = $label
             Round = $Round
-            Passed = $true
+            Passed = $false
+            PlaywrightExitCode = $playwrightExit
             DurationSec = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
             TotalTests = 0
+            ExecutedTests = 0
             PassedTests = 0
             FailedTests = 0
             SkippedTests = 0
@@ -211,59 +252,62 @@ function Invoke-DeviceStabilityTest {
             Error = ""
         }
 
-        if (Test-Path $jsonOut) {
+        $issues = New-Object System.Collections.Generic.List[string]
+        if ($playwrightExit -ne 0) {
+            $issues.Add("Playwright exited with code $playwrightExit")
+        }
+
+        if (Test-Path -LiteralPath $jsonOut -PathType Leaf) {
             try {
                 $jsonText = [System.IO.File]::ReadAllText($jsonOut, [System.Text.Encoding]::UTF8)
-                $report = $jsonText | ConvertFrom-Json
-                $suites = $report.suites
-                if ($suites) {
-                    # 递归统计测试结果
-                    $allTests = @()
-                    function Collect-Tests($suite) {
-                        if ($suite.specs) {
-                            foreach ($spec in $suite.specs) {
-                                foreach ($test in $spec.tests) {
-                                    $allTests += $test
-                                }
+                $report = $jsonText | ConvertFrom-Json -ErrorAction Stop
+
+                function Get-SuiteTests {
+                    param($SuiteNodes)
+                    foreach ($suite in @($SuiteNodes)) {
+                        foreach ($spec in @($suite.specs)) {
+                            foreach ($test in @($spec.tests)) {
+                                Write-Output $test
                             }
                         }
                         if ($suite.suites) {
-                            foreach ($child in $suite.suites) {
-                                Collect-Tests $child
-                            }
+                            Get-SuiteTests -SuiteNodes $suite.suites
                         }
                     }
-                    Collect-Tests $suites
-
-                    $result.TotalTests = $allTests.Count
-                    $result.PassedTests = @($allTests | Where-Object {
-                        $_.results | Where-Object { $_.status -eq "expected" -or $_.status -eq "flaky" }
-                    }).Count
-                    $result.FailedTests = @($allTests | Where-Object {
-                        $_.results | Where-Object { $_.status -eq "unexpected" }
-                    }).Count
-                    $result.SkippedTests = @($allTests | Where-Object {
-                        $_.results | Where-Object { $_.status -eq "skipped" }
-                    }).Count
                 }
+
+                $allTests = @(Get-SuiteTests -SuiteNodes $report.suites)
+                $result.TotalTests = $allTests.Count
+                $result.PassedTests = @($allTests | Where-Object { $_.status -in @("expected", "flaky") }).Count
+                $result.SkippedTests = @($allTests | Where-Object { $_.status -eq "skipped" }).Count
+                $result.FailedTests = @($allTests | Where-Object {
+                    $_.status -eq "unexpected" -or $_.status -notin @("expected", "flaky", "skipped")
+                }).Count
+                $result.ExecutedTests = $result.TotalTests - $result.SkippedTests
             } catch {
-                $result.Error = "JSON 解析失败: $_"
+                $issues.Add("JSON report parse failed: $($_.Exception.Message)")
             }
         } else {
-            # 没有 JSON 输出，从 stdout 解析
-            $passMatch = ($output | Out-String) -match '(\d+)\s+passed'
-            $failMatch = ($output | Out-String) -match '(\d+)\s+failed'
-            if ($passMatch) { $result.PassedTests = [int]$Matches[1] }
-            if ($failMatch) { $result.FailedTests = [int]$Matches[1] }
-            $result.TotalTests = $result.PassedTests + $result.FailedTests
+            $issues.Add("Playwright JSON report missing: $jsonOut")
         }
 
-        if ($result.TotalTests -gt 0) {
-            $result.FailureRate = [Math]::Round(($result.FailedTests / $result.TotalTests) * 100, 1)
+        if ($result.ExecutedTests -gt 0) {
+            $result.FailureRate = [Math]::Round(($result.FailedTests / $result.ExecutedTests) * 100, 1)
         }
+        else {
+            $result.FailureRate = 100
+        }
+        if ($result.TotalTests -eq 0) { $issues.Add("Playwright report contains zero tests") }
+        if ($result.ExecutedTests -eq 0) { $issues.Add("Playwright report contains zero executed tests") }
         if ($result.FailedTests -gt 0) {
-            $result.Passed = $false
+            $issues.Add("$($result.FailedTests) unexpected test result(s)")
         }
+        if ($result.FailureRate -gt $MaxFailureRatePercent) {
+            $issues.Add("failure rate $($result.FailureRate)% exceeds ${MaxFailureRatePercent}%")
+        }
+
+        $result.Error = $issues -join "; "
+        $result.Passed = ($issues.Count -eq 0)
 
         return $result
     }
@@ -274,8 +318,10 @@ function Invoke-DeviceStabilityTest {
             Label = $label
             Round = $Round
             Passed = $false
+            PlaywrightExitCode = $(if ($null -ne $playwrightExit) { $playwrightExit } else { -1 })
             DurationSec = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
             TotalTests = 0
+            ExecutedTests = 0
             PassedTests = 0
             FailedTests = 0
             SkippedTests = 0
@@ -284,17 +330,15 @@ function Invoke-DeviceStabilityTest {
         }
     }
     finally {
-        # 清理环境变量
-        $env:DEVICE_IP = $null
-        $env:STABILITY_ROUNDS = $null
-        $env:STABILITY_WORKERS = $null
-        $env:TEST_DELAY_MS = $null
-        $env:DEVICE_SERIAL = $null
-        $env:DEVICE_AUTO_RESET = $null
+        Set-Location $ProjectDir
+        foreach ($name in $environmentNames) {
+            [Environment]::SetEnvironmentVariable(
+                $name, $previousEnvironment[$name], [EnvironmentVariableTarget]::Process)
+        }
     }
 }
 
-# ─── 主流程：多设备并行 + 多轮循环 ────────────────────
+# ─── 主流程：多设备串行 + 多轮循环 ────────────────────
 
 $allResults = @()
 $deviceHealthLog = @{}
@@ -417,10 +461,12 @@ for ($round = 1; $round -le $Rounds; $round++) {
 
         # 检查失败率阈值
         if ($StopOnFailure) {
-            $failedDevices = @($roundResults | Where-Object { $_.FailureRate -gt $MaxFailureRatePercent })
+            $failedDevices = @($roundResults | Where-Object {
+                -not $_.Passed -or $_.FailureRate -gt $MaxFailureRatePercent
+            })
             if ($failedDevices.Count -gt 0) {
                 Write-Host ""
-                Write-Host "  ⚠ 设备失败率超过 ${MaxFailureRatePercent}% 阈值，停止后续轮次" -ForegroundColor Red
+                Write-Host "  ⚠ 设备未通过严格验收门禁，停止后续轮次" -ForegroundColor Red
                 foreach ($fd in $failedDevices) {
                     Write-Host "    - $($fd.Label): $($fd.FailureRate)%" -ForegroundColor Red
                 }
@@ -462,7 +508,7 @@ foreach ($dev in $Devices) {
     }
 
     $failRate = if ($totalTests -gt 0) { [Math]::Round(($failedTests / $totalTests) * 100, 1) } else { 0 }
-    $statusColor = if ($failRate -eq 0) { "Green" } elseif ($failRate -le $MaxFailureRatePercent) { "Yellow" } else { "Red" }
+    $statusColor = if ($passedRounds -eq $totalRoundsExec -and $totalRoundsExec -gt 0) { "Green" } else { "Red" }
 
     Write-Host "  [$($dev.Label)] $($dev.IP)" -ForegroundColor White
     Write-Host "    轮次: $passedRounds/$totalRoundsExec 通过  测试: $passedTests/$totalTests 通过  失败率: $failRate%" -ForegroundColor $statusColor
@@ -482,7 +528,9 @@ $allResults | ForEach-Object {
         Label = $_.Label
         Round = $_.Round
         Passed = $_.Passed
+        PlaywrightExitCode = $_.PlaywrightExitCode
         TotalTests = $_.TotalTests
+        ExecutedTests = $_.ExecutedTests
         PassedTests = $_.PassedTests
         FailedTests = $_.FailedTests
         FailureRate = $_.FailureRate
@@ -500,12 +548,9 @@ if ($failedAll.Count -gt 0) {
     $totalFailed = ($failedAll | Measure-Object -Property FailedTests -Sum).Sum
     $totalAll = ($allResults | Measure-Object -Property TotalTests -Sum).Sum
     $overallRate = if ($totalAll -gt 0) { [Math]::Round(($totalFailed / $totalAll) * 100, 1) } else { 100 }
-
-    if ($overallRate -gt $MaxFailureRatePercent) {
-        Write-Host ""
-        Write-Host "  ✗ 稳定性测试未通过: 总失败率 ${overallRate}% 超过阈值 ${MaxFailureRatePercent}%" -ForegroundColor Red
-        exit 1
-    }
+    Write-Host ""
+    Write-Host "  ✗ 稳定性测试未通过: $($failedAll.Count) 个设备轮次失败，总失败率 ${overallRate}%" -ForegroundColor Red
+    exit 1
 }
 
 Write-Host ""

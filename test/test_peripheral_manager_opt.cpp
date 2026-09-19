@@ -770,6 +770,22 @@ static std::string readOptSrcFile(const std::string& relativePath) {
     return "";
 }
 
+static std::string extractOptFunctionBody(const std::string& src, size_t signaturePos) {
+    if (signaturePos == std::string::npos) return "";
+    const size_t openBrace = src.find('{', signaturePos);
+    if (openBrace == std::string::npos) return "";
+
+    size_t depth = 0;
+    for (size_t i = openBrace; i < src.size(); ++i) {
+        if (src[i] == '{') {
+            ++depth;
+        } else if (src[i] == '}' && --depth == 0) {
+            return src.substr(signaturePos, i - signaturePos + 1);
+        }
+    }
+    return src.substr(signaturePos);
+}
+
 static void test_srclk_healthmonitor_exposes_isr_stats() {
     std::string src = readOptSrcFile("src/systems/HealthMonitor.cpp");
     if (src.empty()) {
@@ -812,14 +828,14 @@ static void test_srclk_periphmanager_isr_hardening() {
         fnBody.find("PeripheralType::IR_RECEIVER") != std::string::npos,
         "isrDebounceMsForType must bypass debounce for RF_MODULE and IR_RECEIVER");
     // handleInterrupt 必须持锁查找 + 快照回调后锁外执行
-    size_t hiPos = src.find("void PeripheralManager::handleInterrupt");
+    size_t hiPos = src.find("bool PeripheralManager::handleInterrupt");
     TEST_ASSERT_TRUE_MESSAGE(hiPos != std::string::npos, "handleInterrupt must exist");
     size_t hiEnd = src.find("\nbool PeripheralManager::", hiPos);
     std::string hiBody = src.substr(
         hiPos, hiEnd == std::string::npos ? std::string::npos : hiEnd - hiPos);
     TEST_ASSERT_TRUE_MESSAGE(
-        hiBody.find("RecursiveMutexGuard lock(_mutex)") != std::string::npos,
-        "handleInterrupt must hold recursive mutex during lookup/debounce");
+        hiBody.find("RecursiveMutexGuard lock(_mutex, pdMS_TO_TICKS(ISR_STATE_LOCK_TIMEOUT_MS))") != std::string::npos,
+        "handleInterrupt must use bounded recursive mutex admission before dequeue/lookup");
     TEST_ASSERT_TRUE_MESSAGE(
         hiBody.find("callback = config.params.gpio.interruptCallback") != std::string::npos,
         "handleInterrupt must snapshot callback before releasing the lock");
@@ -852,6 +868,7 @@ static void test_srclk_periphmanager_isr_hardening() {
 
 static void test_gpio_string_and_cstr_paths_share_core() {
     std::string src = readOptSrcFile("src/core/PeripheralManager.cpp");
+    src += readOptSrcFile("src/core/PeripheralManagerIo.cpp");
     if (src.empty()) {
         TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
         return;
@@ -888,7 +905,7 @@ static void test_gpio_string_and_cstr_paths_share_core() {
     TEST_ASSERT_TRUE_MESSAGE(readCorePos != std::string::npos && writeCorePos != std::string::npos,
                              "shared GPIO cores must be implemented");
     const std::string readCore = src.substr(readCorePos, writeCorePos - readCorePos);
-    const std::string writeCore = src.substr(writeCorePos, 3200);
+    const std::string writeCore = extractOptFunctionBody(src, writeCorePos);
     TEST_ASSERT_TRUE_MESSAGE(
         readCore.find("isReservedPin(pin)") != std::string::npos &&
         readCore.find("digitalRead(pin)") != std::string::npos &&

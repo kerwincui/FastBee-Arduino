@@ -324,13 +324,19 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
       pages.push(newPage);
     }
 
-    // 每个标签页访问不同页面
-    const menuPages = ['dashboard', 'device', 'network', 'protocol', 'logs'];
+    // 每个标签页访问不同的实际可见页面。可选菜单由功能配置控制，
+    // 不能假设低内存配置一定启用了日志页。
+    const menuPages = await pages[0].locator('.menu-item[data-page]:visible').evaluateAll(items =>
+      items.map(item => item.getAttribute('data-page')).filter((page): page is string => Boolean(page)));
+    expect(menuPages.length).toBeGreaterThanOrEqual(5);
     for (let i = 0; i < pages.length; i++) {
-      await pages[i].click(`.menu-item[data-page="${menuPages[i]}"]`);
+      const menuPage = menuPages[i];
+      const menuItem = pages[i].locator(`.menu-item[data-page="${menuPage}"]`);
+      await expect(menuItem).toBeVisible();
+      await menuItem.click();
       await pages[i].waitForLoadState('networkidle', { timeout: 10_000 });
       const visible = await pages[i].locator('#app-container').isVisible();
-      console.log(`标签页${i} (${menuPages[i]}): visible=${visible}`);
+      console.log(`标签页${i} (${menuPage}): visible=${visible}`);
       expect(visible).toBeTruthy();
     }
 

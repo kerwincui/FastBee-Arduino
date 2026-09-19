@@ -3,6 +3,7 @@
 #   .\run-browser-tests.ps1 -DeviceIP 192.168.1.100
 #   .\run-browser-tests.ps1 -SerialPort COM4 -Project smoke
 #   .\run-browser-tests.ps1 -DeviceIP 192.168.1.100 -Project smoke
+#   .\run-browser-tests.ps1 -DeviceIP 192.168.1.100 -Project smoke -OutputDir artifacts\browser-tests\c3
 #   .\run-browser-tests.ps1 -DeviceIP 192.168.1.100 -Project perf -Headed
 
 param(
@@ -11,6 +12,9 @@ param(
     [string]$SerialPort = "",
 
     [string]$DevicePort = "80",
+    [string]$OutputDir = "",
+    [string]$Username = $env:AUTH_USERNAME,
+    [string]$Password = $env:AUTH_PASSWORD,
     [string]$Project = "",          # smoke|core|features|auxiliary|regression|perf|linkage|web
     [string]$Grep = "",             # 可选用例筛选，例如 DEV-057|DEV-058|DEV-059
     [switch]$Headed,                # 有头模式（可视化）
@@ -28,6 +32,14 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $BrowserTestDir = Join-Path $ProjectRoot "test\browser"
+
+function ConvertTo-SafePathSegment {
+    param([string]$Value)
+
+    $safe = ([string]$Value -replace '[^A-Za-z0-9._-]', '-').Trim([char[]]@('-', '.', '_'))
+    if ([string]::IsNullOrWhiteSpace($safe)) { return "device" }
+    return $safe.ToLowerInvariant()
+}
 
 # An explicit grep can select a read-only case from a broad project (for
 # example a UI regression). Do not require credentials unless the selected
@@ -74,6 +86,23 @@ if (-not $DeviceIP) {
     }
 }
 
+$deviceIdentity = @($SerialPort, $DeviceIP) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+$deviceKey = ConvertTo-SafePathSegment -Value ($deviceIdentity -join '-')
+$runId = "{0}-p{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss-fff"), $PID
+$resolvedOutputDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    Join-Path $ProjectRoot (Join-Path "artifacts\browser-tests" (Join-Path $deviceKey $runId))
+} elseif ([System.IO.Path]::IsPathRooted($OutputDir)) {
+    [System.IO.Path]::GetFullPath($OutputDir)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $OutputDir))
+}
+$playwrightOutputDir = Join-Path $resolvedOutputDir "test-results"
+$playwrightReportDir = Join-Path $resolvedOutputDir "report"
+$htmlReportPath = Join-Path (Join-Path $playwrightReportDir "html") "index.html"
+$jsonReportPath = Join-Path $playwrightReportDir "results.json"
+New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
+
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host " FastBee-Arduino 浏览器自动化测试" -ForegroundColor Cyan
@@ -81,6 +110,12 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "设备地址: http://${DeviceIP}:${DevicePort}" -ForegroundColor Yellow
 Write-Host "测试目录: $BrowserTestDir" -ForegroundColor Yellow
+Write-Host "输出目录: $resolvedOutputDir" -ForegroundColor Yellow
+
+$originalAuthUsername = [Environment]::GetEnvironmentVariable("AUTH_USERNAME", [EnvironmentVariableTarget]::Process)
+$originalAuthPassword = [Environment]::GetEnvironmentVariable("AUTH_PASSWORD", [EnvironmentVariableTarget]::Process)
+$originalPlaywrightOutputDir = [Environment]::GetEnvironmentVariable("FASTBEE_PLAYWRIGHT_OUTPUT_DIR", [EnvironmentVariableTarget]::Process)
+$originalPlaywrightReportDir = [Environment]::GetEnvironmentVariable("FASTBEE_PLAYWRIGHT_REPORT_DIR", [EnvironmentVariableTarget]::Process)
 
 # 切换到测试目录
 Push-Location $BrowserTestDir
@@ -135,6 +170,10 @@ try {
     Write-Host "`n[3/4] 配置环境变量..." -ForegroundColor Green
     $env:DEVICE_IP = $DeviceIP
     $env:DEVICE_PORT = $DevicePort
+    $env:AUTH_USERNAME = $Username
+    $env:AUTH_PASSWORD = $Password
+    $env:FASTBEE_PLAYWRIGHT_OUTPUT_DIR = $playwrightOutputDir
+    $env:FASTBEE_PLAYWRIGHT_REPORT_DIR = $playwrightReportDir
     $env:WIFI_SSID = $WiFiSSID
     $env:WIFI_PASSWORD = $WiFiPassword
     $env:MQTT_BROKER = $MQTTBroker
@@ -189,8 +228,13 @@ try {
 
     Write-Host "`n--------------------------------------------" -ForegroundColor DarkGray
     Write-Host "测试完成！" -ForegroundColor Green
-    Write-Host "查看报告: cd test\browser; npx playwright show-report reports\html" -ForegroundColor Yellow
+    Write-Host "HTML 报告: $htmlReportPath" -ForegroundColor Yellow
+    Write-Host "JSON 报告: $jsonReportPath" -ForegroundColor Yellow
 
 } finally {
+    [Environment]::SetEnvironmentVariable("AUTH_USERNAME", $originalAuthUsername, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("AUTH_PASSWORD", $originalAuthPassword, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("FASTBEE_PLAYWRIGHT_OUTPUT_DIR", $originalPlaywrightOutputDir, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable("FASTBEE_PLAYWRIGHT_REPORT_DIR", $originalPlaywrightReportDir, [EnvironmentVariableTarget]::Process)
     Pop-Location
 }

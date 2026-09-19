@@ -1,22 +1,19 @@
 """
-PlatformIO pre-build hook: kill stale compiler processes & detect locked files.
+PlatformIO pre-build hook: prepare toolchains and report locked build files.
 
 On Windows, a failed/interrupted build can leave behind compiler processes
 (collect2, cc1, xtensa-esp32*-elf-g++, etc.) that hold locks on .o files
 in the build directory.  The next build then fails with:
   "另一个程序正在使用此文件，进程无法访问"
 
-This script runs as a ``pre:`` extra_scripts hook (outside the SCons sandbox),
-so ``subprocess`` calls are safe.  It performs two tasks:
-
-1. **Kill stale compiler processes** – terminate orphaned cross-compiler
-   toolchain processes that may be locking intermediate object files.
-2. **Check locked files** – detect .bin / .o files still held by other
-   processes and print actionable warnings.
+This script runs as a ``pre:`` extra_scripts hook. It prepares the toolchain
+PATH, applies the C6 OneWire compatibility patch, and checks .bin / .o files
+in the current build directory. Compiler names do not prove project ownership
+or that a process is orphaned, so this hook reports locks without terminating
+processes. Active builds and other projects may use the same executables.
 """
 import os
 import sys
-import subprocess
 
 Import("env")  # type: ignore[name-defined]
 
@@ -104,66 +101,6 @@ def _patch_onewire_for_esp32c6():
 
 _patch_onewire_for_esp32c6()
 
-# ---------------------------------------------------------------------------
-# Stale compiler process names that should be safe to kill unconditionally.
-# These are specific to the xtensa / esp-riscv cross-compilation toolchain
-# and are never legitimate long-running processes.
-# ---------------------------------------------------------------------------
-STALE_COMPILER_PROCESSES = [
-    # GCC compiler backend
-    "cc1.exe",
-    "cc1plus.exe",
-    # GCC driver (various chip prefixes)
-    "xtensa-esp-elf-gcc.exe",
-    "xtensa-esp-elf-g++.exe",
-    "xtensa-esp32-elf-gcc.exe",
-    "xtensa-esp32-elf-g++.exe",
-    "xtensa-esp32s2-elf-gcc.exe",
-    "xtensa-esp32s2-elf-g++.exe",
-    "xtensa-esp32s3-elf-gcc.exe",
-    "xtensa-esp32s3-elf-g++.exe",
-    "xtensa-esp32c3-elf-gcc.exe",
-    "xtensa-esp32c3-elf-g++.exe",
-    "xtensa-esp32c6-elf-gcc.exe",
-    "xtensa-esp32c6-elf-g++.exe",
-    "riscv32-esp-elf-gcc.exe",
-    "riscv32-esp-elf-g++.exe",
-    # Linker
-    "collect2.exe",
-    "ld.exe",
-]
-
-# Processes we deliberately do NOT kill:
-#   - python.exe   : PlatformIO's own runtime; killing it aborts the build
-#   - esptool.exe  : may be in use by Serial Monitor (handled by .bin lock check)
-#   - ar.exe       : generic archiver, could belong to another parallel build
-
-
-def _taskkill_on_windows(process_names):
-    """Kill stale compiler processes on Windows using taskkill /F /IM.
-
-    Uses subprocess.call (not Popen) to avoid any async complications.
-    Returns the list of process names that were actually terminated.
-    """
-    killed = []
-    for pname in process_names:
-        try:
-            # /F  = force kill
-            # /IM = image name (process name)
-            # stderr redirected to DEVNULL to suppress "not found" noise
-            rc = subprocess.call(
-                ["taskkill", "/F", "/IM", pname],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-            if rc == 0:
-                killed.append(pname)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return killed
-
-
 def _check_o_files_locked(build_dir):
     """Walk the lib* subdirectories and check if any .o file is locked.
 
@@ -203,27 +140,22 @@ def _check_bin_locked(build_dir):
 
 # ---------------------------------------------------------------------------
 # Phase 1 (runs at script load, before any build action):
-#   Kill stale compiler processes
+#   Diagnose locked objects in this build directory without stopping processes.
 # ---------------------------------------------------------------------------
 if sys.platform == "win32":
     build_dir = env.subst("$BUILD_DIR")  # type: ignore[name-defined]
 
-    killed = _taskkill_on_windows(STALE_COMPILER_PROCESSES)
-    if killed:
-        print(f"[FastBee] Killed {len(killed)} stale compiler process(es): {', '.join(killed)}")
-
-    # After killing, verify no .o files remain locked
     locked_o = _check_o_files_locked(build_dir)
     if locked_o:
         print("\n" + "=" * 60)
-        print(f"[FastBee] WARNING: {len(locked_o)} .o file(s) still locked after killing stale processes:")
+        print(f"[FastBee] WARNING: {len(locked_o)} .o file(s) locked in the current build directory:")
         for f in locked_o[:10]:
             print(f"  - {f}")
         if len(locked_o) > 10:
             print(f"  ... and {len(locked_o) - 10} more")
-        print("\nFix: Close any antivirus / indexer scanning the build directory,")
-        print("     then delete the build folder and rebuild:")
-        print(f"     Remove-Item -Recurse -Force \"{build_dir}\"")
+        print("\nFix: Wait for active builds using this build directory to finish.")
+        print("     Confirm a stale owner's PID and project before stopping it.")
+        print(f"     Build directory: {build_dir}")
         print("=" * 60 + "\n")
 
 # ---------------------------------------------------------------------------
@@ -239,8 +171,9 @@ def _pre_link_bin_check(source, target, env):
         print("[FastBee] WARNING: The following .bin files are locked:")
         for f in locked:
             print(f"  - {f}")
-        print("\nFix: Close Serial Monitor or run:")
-        print("     taskkill /F /IM esptool.exe")
+        print("\nFix: Close this project's Serial Monitor or wait for its upload to finish.")
+        print("     Confirm a stale owner's PID and project before stopping it.")
+        print(f"     Build directory: {build_dir}")
         print("=" * 60 + "\n")
 
 

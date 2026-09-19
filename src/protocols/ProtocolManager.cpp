@@ -17,6 +17,9 @@
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
 #include "protocols/FastBeeOTAProtocol.h"
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "protocols/RemoteResourceManager.h"
+#endif
 #if FASTBEE_ENABLE_OTA
 #include "network/OTAManager.h"
 #endif
@@ -27,6 +30,29 @@
 #include <esp_heap_caps.h>
 #include <memory>
 #include <new>
+
+#if FASTBEE_ENABLE_MODBUS
+namespace {
+class ModbusLifecycleGuard {
+public:
+    ModbusLifecycleGuard(SemaphoreHandle_t mutex, TickType_t timeout)
+        : _mutex(mutex), _locked(false) {
+        if (_mutex) _locked = xSemaphoreTakeRecursive(_mutex, timeout) == pdTRUE;
+    }
+    ~ModbusLifecycleGuard() {
+        if (_locked && _mutex) xSemaphoreGiveRecursive(_mutex);
+    }
+    bool isLocked() const { return _locked; }
+
+    ModbusLifecycleGuard(const ModbusLifecycleGuard&) = delete;
+    ModbusLifecycleGuard& operator=(const ModbusLifecycleGuard&) = delete;
+
+private:
+    SemaphoreHandle_t _mutex;
+    bool _locked;
+};
+}
+#endif
 
 #if FASTBEE_ENABLE_MQTT
 static bool configureMqttTransport(MQTTClient* mqttClient) {
@@ -107,23 +133,93 @@ ProtocolManager::ProtocolManager()
     , modbusRestartPending(false)
 #endif
 {
+#if FASTBEE_ENABLE_MODBUS
+    modbusLifecycleMutex = xSemaphoreCreateRecursiveMutex();
+    if (!modbusLifecycleMutex) {
+        LOG_ERROR("Protocol Manager: Failed to create Modbus lifecycle mutex");
+    }
+#endif
 #if FASTBEE_ENABLE_MQTT
+    fastBeeOtaActiveTerminalQueue = xQueueCreate(1, sizeof(FastBeeOtaReplyEvent));
+    if (!fastBeeOtaActiveTerminalQueue) {
+        LOG_WARNING("Protocol Manager: Failed to allocate active FastBee OTA terminal queue");
+    }
     fastBeeOtaReplyQueue = xQueueCreate(8, sizeof(FastBeeOtaReplyEvent));
     if (!fastBeeOtaReplyQueue) {
         LOG_WARNING("Protocol Manager: Failed to allocate FastBee OTA reply queue");
+    }
+    fastBeeOtaProgressQueue = xQueueCreate(1, sizeof(FastBeeOtaReplyEvent));
+    if (!fastBeeOtaProgressQueue) {
+        LOG_WARNING("Protocol Manager: Failed to allocate FastBee OTA progress queue");
     }
 #endif
 }
 
 ProtocolManager::~ProtocolManager() {
-    stopAll();
+    shutdown();
 #if FASTBEE_ENABLE_MQTT
+    if (fastBeeOtaActiveTerminalQueue) {
+        vQueueDelete(fastBeeOtaActiveTerminalQueue);
+        fastBeeOtaActiveTerminalQueue = nullptr;
+    }
     if (fastBeeOtaReplyQueue) {
         vQueueDelete(fastBeeOtaReplyQueue);
         fastBeeOtaReplyQueue = nullptr;
     }
+    if (fastBeeOtaProgressQueue) {
+        vQueueDelete(fastBeeOtaProgressQueue);
+        fastBeeOtaProgressQueue = nullptr;
+    }
+#endif
+#if FASTBEE_ENABLE_MODBUS
+    if (modbusLifecycleMutex) {
+        vSemaphoreDelete(modbusLifecycleMutex);
+        modbusLifecycleMutex = nullptr;
+    }
 #endif
 }
+
+#if FASTBEE_ENABLE_MODBUS
+void ProtocolManager::ModbusHandlerLease::release() {
+    if (_owner) _owner->releaseModbusHandlerLease();
+    _owner = nullptr;
+    _handler = nullptr;
+}
+
+ProtocolManager::ModbusHandlerLease ProtocolManager::acquireModbusHandler(
+    TickType_t timeout) const {
+    return acquireModbusHandlerInternal(timeout, false);
+}
+
+ProtocolManager::ModbusHandlerLease ProtocolManager::acquireModbusHandlerInternal(
+    TickType_t timeout, bool allowPending) const {
+    ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, timeout);
+    if (!lifecycle.isLocked() || !modbusHandler) return ModbusHandlerLease();
+    if (modbusShutdownPending) return ModbusHandlerLease();
+    if (!allowPending && (modbusRestartPending || modbusStopPending)) {
+        return ModbusHandlerLease();
+    }
+
+    portENTER_CRITICAL(&modbusLeaseMux);
+    ++modbusActiveLeases;
+    portEXIT_CRITICAL(&modbusLeaseMux);
+    return ModbusHandlerLease(const_cast<ProtocolManager*>(this),
+                              modbusHandler.get());
+}
+
+void ProtocolManager::releaseModbusHandlerLease() {
+    portENTER_CRITICAL(&modbusLeaseMux);
+    if (modbusActiveLeases > 0) --modbusActiveLeases;
+    portEXIT_CRITICAL(&modbusLeaseMux);
+}
+
+uint16_t ProtocolManager::getActiveModbusLeaseCount() const {
+    portENTER_CRITICAL(&modbusLeaseMux);
+    const uint16_t count = modbusActiveLeases;
+    portEXIT_CRITICAL(&modbusLeaseMux);
+    return count;
+}
+#endif
 
 bool ProtocolManager::initialize() {
     if (isInitialized) {
@@ -131,6 +227,10 @@ bool ProtocolManager::initialize() {
     }
 
     LOG_INFO("Protocol Manager: Initializing...");
+    shutdownComplete = false;
+#if FASTBEE_ENABLE_MODBUS
+    modbusShutdownPending = false;
+#endif
     isInitialized = true;
     return true;
 }
@@ -190,9 +290,12 @@ bool ProtocolManager::startAll() {
 #endif
 #if FASTBEE_ENABLE_MODBUS
             case ProtocolType::MODBUS:
-                started = modbusHandler && modbusHandler->begin();
+            {
+                auto lease = acquireModbusHandler(portMAX_DELAY);
+                started = lease && lease->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
+            }
 #endif
         }
 
@@ -213,20 +316,50 @@ void ProtocolManager::stopAll() {
     if (mqttClient)       mqttClient->disconnect();
 #endif
 #if FASTBEE_ENABLE_MODBUS
-    if (modbusHandler)    modbusHandler->end();
+    stopModbus();
 #endif
 }
 
 void ProtocolManager::shutdown() {
+    if (shutdownComplete) return;
     LOG_INFO("Protocol Manager: Shutting down...");
 
-    stopAll();
+#if FASTBEE_ENABLE_MODBUS
+    // Prevent new public operations, then let already admitted leases drain.
+    // Lease release uses a short critical section rather than this mutex, so
+    // waiting here cannot deadlock an in-flight worker.
+    {
+        ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, portMAX_DELAY);
+        if (!lifecycle.isLocked()) {
+            LOG_ERROR("Protocol Manager: Cannot lock Modbus lifecycle for shutdown");
+            return;
+        }
+        modbusShutdownPending = true;
+        modbusStopPending = true;
+        modbusRestartPending = false;
+    }
+    while (getActiveModbusLeaseCount() > 0) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+#endif
+
+#if FASTBEE_ENABLE_MQTT
+    if (mqttClient) mqttClient->disconnect();
+#endif
 
 #if FASTBEE_ENABLE_MQTT
     mqttClient.reset();
 #endif
 #if FASTBEE_ENABLE_MODBUS
-    modbusHandler.reset();
+    {
+        ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, portMAX_DELAY);
+        PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
+        PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
+        unregisterModbusSubDevices();
+        if (modbusHandler) modbusHandler->end();
+        modbusHandler.reset();
+        modbusStopPending = false;
+    }
 #endif
 
     protocols.clear();
@@ -235,6 +368,7 @@ void ProtocolManager::shutdown() {
     rxCallback = nullptr;
     sseCallback = nullptr;
     isInitialized   = false;
+    shutdownComplete = true;
 
     LOG_INFO("Protocol Manager: Shutdown complete");
 }
@@ -249,24 +383,27 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
 #endif
         case ProtocolType::MODBUS:
 #if FASTBEE_ENABLE_MODBUS
-            if (!modbusHandler) return false;
-            if (modbusHandler->getMode() == MODBUS_MASTER) {
+        {
+            auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
+            if (!lease) return false;
+            if (lease->getMode() == MODBUS_MASTER) {
                 // Master模式: topic格式 "slaveAddr:regAddr", data为写入值
                 int sepIdx = topic.indexOf(':');
                 if (sepIdx > 0) {
                     uint8_t slaveAddr = (uint8_t)topic.substring(0, sepIdx).toInt();
                     uint16_t regAddr = (uint16_t)topic.substring(sepIdx + 1).toInt();
                     uint16_t value = (uint16_t)data.toInt();
-                    return modbusHandler->masterWriteSingleRegister(slaveAddr, regAddr, value);
+                    return lease->masterWriteSingleRegister(slaveAddr, regAddr, value);
                 }
                 return false;
             }
             // Slave模式: topic为寄存器地址
 #if FASTBEE_MODBUS_SLAVE_ENABLE
-            return modbusHandler->writeData(topic.toInt(), data);
+            return lease->writeData(topic.toInt(), data);
 #else
             return false;
 #endif
+        }
 #else
             return false;
 #endif
@@ -289,7 +426,10 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 #endif
         case ProtocolType::MODBUS:
 #if FASTBEE_ENABLE_MODBUS
-            return modbusHandler ? modbusHandler->getStatus() : "Not initialized";
+        {
+            auto lease = acquireModbusHandler(pdMS_TO_TICKS(100));
+            return lease ? lease->getStatus() : "Not initialized or busy";
+        }
 #else
             return "Disabled";
 #endif
@@ -357,6 +497,9 @@ void ProtocolManager::handle() {
                 LOG_INFO("Protocol Manager: Network not connected, MQTT handle skipped");
             }
         }
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+        FastBee::RemoteResourceManager::instance().handleMqtt(mqttClient.get());
+#endif
         // 测试连接自动恢复检查：不依赖前端轮询，主循环自动检测并恢复原配置
         MqttRouteHandler::checkPendingTestRestore();
         // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
@@ -366,6 +509,10 @@ void ProtocolManager::handle() {
             ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
         }
     }
+
+    // OTA 下载在独立任务中运行，回调只写入定长队列。所有 MQTT 发布都在
+    // loopTask 中完成，避免跨任务并发访问 PubSubClient。
+    processFastBeeOtaReplies();
 
     // MQTT 热重建：保存协议配置后由 HTTP handler 置标志，在 loopTask 大栈中执行。
     // 故意放在 heapSufficient 早退之前：低内存时也要消费标志，
@@ -398,6 +545,10 @@ void ProtocolManager::handle() {
     // 30KB/16KB 的保守阈值，而 Modbus 重建只需受控的 JSON/UART 资源；
     // 在满足专用准入线时仍可安全重建，否则保留 pending 供下一轮重试。
 #if FASTBEE_ENABLE_MODBUS
+    if (modbusStopPending && getActiveModbusLeaseCount() == 0) {
+        stopModbus();
+    }
+
     if (modbusRestartPending) {
         const uint32_t modbusFree = FastBee::MemoryBudget::dram8Free();
         const uint32_t modbusLargest = FastBee::MemoryBudget::dram8Largest();
@@ -408,7 +559,9 @@ void ProtocolManager::handle() {
             modbusRestartPending = false;
             LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
             const ModbusRestartResult result = restartModbus();
-            if (result == ModbusRestartResult::Failed) {
+            if (result == ModbusRestartResult::DeferredBusy) {
+                LOG_INFO("[Modbus] Deferred restart waiting for active operation to finish");
+            } else if (result == ModbusRestartResult::Failed) {
                 // HealthMonitor will retain/requeue its recovery state when a
                 // configuration or runtime feature gate still rejects start.
                 LOG_WARNING("[Modbus] Deferred restart was rejected; recovery remains pending");
@@ -440,7 +593,13 @@ void ProtocolManager::handle() {
     }
 
 #if FASTBEE_ENABLE_MODBUS
-    if (modbusHandler) modbusHandler->handle();
+    {
+        // Maintenance remains available while a stop/restart is waiting for a
+        // long operation to drain. This keeps software-timed coil shutoffs and
+        // control-priority handling responsive during that window.
+        auto lease = acquireModbusHandlerInternal(0, true);
+        if (lease) lease->handle();
+    }
 #endif
 }
 
@@ -450,6 +609,375 @@ void ProtocolManager::handleMessage(ProtocolType type, const String& topic, cons
         messageCallback(type, topic, message);
     }
 }
+
+#if FASTBEE_ENABLE_MQTT
+void ProtocolManager::handleMqttMessage(const String& topic,
+                                        const String& message,
+                                        MqttTopicType topicType) {
+    if (topicType == MqttTopicType::OTA_UPGRADE ||
+        topicType == MqttTopicType::OTA_BINARY) {
+        handleFastBeeOtaCommand(message, topicType);
+        return;
+    }
+
+    handleMessage(ProtocolType::MQTT, topic, message);
+}
+
+void ProtocolManager::handleFastBeeOtaCommand(const String& message,
+                                              MqttTopicType topicType) {
+    if (topicType == MqttTopicType::OTA_BINARY) {
+        LOG_WARNING("FastBee OTA: Binary package protocol is not supported; command ignored");
+        return;
+    }
+
+    FastBeeOtaProtocol::Command command;
+    String error;
+    if (!FastBeeOtaProtocol::parseCommand(message, command, error)) {
+        LOG_WARNINGF("FastBee OTA: Invalid command (%s)", error.c_str());
+        return;
+    }
+
+    // Do not claim a task or write Flash unless its status channel is usable.
+    // A disconnected broker or disabled/misconfigured canonical reply topic
+    // would otherwise leave FastBee waiting forever for status 3/4.
+    if (!mqttClient) {
+        LOG_WARNING("FastBee OTA: MQTT client unavailable; command ignored before Flash write");
+        return;
+    }
+    if (!mqttClient->getIsConnected()) {
+        LOG_WARNING("FastBee OTA: MQTT disconnected; command ignored before Flash write");
+        return;
+    }
+    if (!fastBeeOtaReplyQueue || !fastBeeOtaProgressQueue) {
+        LOG_WARNING("FastBee OTA: Reply queues unavailable; command ignored before Flash write");
+        return;
+    }
+    if (!fastBeeOtaActiveTerminalQueue) {
+        LOG_WARNING("FastBee OTA: Active terminal queue unavailable; command ignored before Flash write");
+        return;
+    }
+    if (!mqttClient->hasUsableFastBeeOtaReplyTopic()) {
+        LOG_WARNING("FastBee OTA: Canonical reply topic disabled or missing; command ignored before Flash write");
+        return;
+    }
+    uint8_t cachedTerminalStatus = 0;
+    char cachedTerminalVersion[32] = {};
+    bool cachedTerminalStillActive = false;
+    bool duplicateActiveTask = false;
+    bool anotherTaskActive = false;
+    portENTER_CRITICAL(&fastBeeOtaStateMux);
+    if (fastBeeOtaLastTerminalTaskId == command.taskId) {
+        cachedTerminalStatus = fastBeeOtaLastTerminalStatus;
+        strlcpy(cachedTerminalVersion, fastBeeOtaLastTerminalVersion,
+                sizeof(cachedTerminalVersion));
+        cachedTerminalStillActive = fastBeeOtaActiveTaskId == command.taskId;
+        anotherTaskActive = fastBeeOtaActiveTaskId != 0 &&
+                            fastBeeOtaActiveTaskId != command.taskId;
+    } else if (fastBeeOtaActiveTaskId == command.taskId) {
+        duplicateActiveTask = true;
+    } else if (fastBeeOtaActiveTaskId != 0) {
+        anotherTaskActive = true;
+    } else {
+        fastBeeOtaActiveTaskId = command.taskId;
+    }
+    portEXIT_CRITICAL(&fastBeeOtaStateMux);
+
+    if (cachedTerminalStatus == FastBeeOtaProtocol::STATUS_SUCCESS ||
+        cachedTerminalStatus == FastBeeOtaProtocol::STATUS_FAILED) {
+        LOG_INFOF("FastBee OTA: Duplicate delivery for terminal task %ld, status=%u",
+                  static_cast<long>(command.taskId),
+                  static_cast<unsigned>(cachedTerminalStatus));
+        // While the task still owns the OTA slot, its original terminal event
+        // is queued or retained for retry. Enqueueing the same reply again can
+        // consume the slot reserved for that original event under redelivery.
+        if (cachedTerminalStillActive || anotherTaskActive) {
+            LOG_INFOF("FastBee OTA: Terminal replay for task %ld deferred while an OTA claim is active",
+                      static_cast<long>(command.taskId));
+            return;
+        }
+        queueFastBeeOtaReply(
+            command.taskId, String(cachedTerminalVersion), cachedTerminalStatus,
+            cachedTerminalStatus == FastBeeOtaProtocol::STATUS_SUCCESS ? 100 : 0);
+        return;
+    }
+    if (duplicateActiveTask) {
+        LOG_INFOF("FastBee OTA: Duplicate delivery for active task %ld ignored",
+                  static_cast<long>(command.taskId));
+        return;
+    }
+    if (anotherTaskActive) {
+        queueFastBeeOtaReply(command.taskId, command.version,
+                             FastBeeOtaProtocol::STATUS_FAILED, 0,
+                             "Another FastBee OTA task is active");
+        return;
+    }
+#if !FASTBEE_ENABLE_OTA
+    queueFastBeeOtaReply(command.taskId, command.version,
+                         FastBeeOtaProtocol::STATUS_FAILED, 0,
+                         "OTA feature is disabled in this firmware");
+    return;
+#else
+    const MQTTConfig& mqttConfig = mqttClient->getConfig();
+    String firmwareUrl;
+    if (!FastBeeOtaProtocol::resolveFirmwareUrl(
+            command.url, mqttConfig.otaBaseUrl, mqttConfig.server,
+            firmwareUrl, error)) {
+        LOG_WARNINGF("FastBee OTA: URL rejected (%s)", error.c_str());
+        queueFastBeeOtaReply(command.taskId, command.version,
+                             FastBeeOtaProtocol::STATUS_FAILED, 0, error);
+        return;
+    }
+
+    FastBeeFramework* framework = FastBeeFramework::getInstance();
+    OTAManager* otaManager = framework ? framework->getOTAManager() : nullptr;
+    if (!otaManager) {
+        queueFastBeeOtaReply(command.taskId, command.version,
+                             FastBeeOtaProtocol::STATUS_FAILED, 0,
+                             "OTA manager is unavailable");
+        return;
+    }
+
+    const int32_t taskId = command.taskId;
+    const String version = command.version;
+    queueFastBeeOtaReply(taskId, version,
+                         FastBeeOtaProtocol::STATUS_UPGRADING, 0);
+    const bool started = otaManager->startOTAAsync(
+        firmwareUrl,
+        [this, taskId, version](uint8_t progress) {
+            if (progress == 0) return;
+            queueFastBeeOtaReply(taskId, version,
+                                 FastBeeOtaProtocol::STATUS_UPGRADING,
+                                 progress);
+        },
+        [this, taskId, version](bool success, const String& completionError) {
+            queueFastBeeOtaReply(
+                taskId, version,
+                success ? FastBeeOtaProtocol::STATUS_SUCCESS
+                        : FastBeeOtaProtocol::STATUS_FAILED,
+                success ? 100 : 0,
+                completionError);
+        },
+        false);
+
+    if (!started) {
+        String startError = otaManager->getErrorMessage();
+        if (startError.isEmpty()) startError = "OTA is already in progress";
+        LOG_WARNINGF("FastBee OTA: Failed to start task %ld (%s)",
+                     static_cast<long>(taskId), startError.c_str());
+        queueFastBeeOtaReply(taskId, version,
+                             FastBeeOtaProtocol::STATUS_FAILED, 0,
+                             startError);
+        return;
+    }
+
+    LOG_INFOF("FastBee OTA: Task %ld accepted, version=%s",
+              static_cast<long>(taskId), version.c_str());
+#endif
+}
+
+void ProtocolManager::queueFastBeeOtaReply(int32_t taskId,
+                                           const String& version,
+                                           uint8_t status,
+                                           uint8_t progress,
+                                           const String& error) {
+    const bool terminal = status == FastBeeOtaProtocol::STATUS_SUCCESS ||
+                          status == FastBeeOtaProtocol::STATUS_FAILED;
+    bool staleProgress = false;
+    bool activeTerminal = false;
+    if (terminal || status == FastBeeOtaProtocol::STATUS_UPGRADING) {
+        // Cache only the terminal result of the task that actually claimed the
+        // OTA slot. A temporary busy rejection for another task must not erase
+        // the active task's result. Cache before enqueueing so a concurrent
+        // duplicate can never append status=2 after status=3/4.
+        portENTER_CRITICAL(&fastBeeOtaStateMux);
+        if (status == FastBeeOtaProtocol::STATUS_UPGRADING &&
+            fastBeeOtaLastTerminalTaskId == taskId &&
+            (fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_SUCCESS ||
+             fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_FAILED)) {
+            staleProgress = true;
+        } else if (terminal && fastBeeOtaActiveTaskId == taskId) {
+            activeTerminal = true;
+            fastBeeOtaLastTerminalTaskId = taskId;
+            fastBeeOtaLastTerminalStatus = status;
+            strlcpy(fastBeeOtaLastTerminalVersion, version.c_str(),
+                    sizeof(fastBeeOtaLastTerminalVersion));
+        }
+        portEXIT_CRITICAL(&fastBeeOtaStateMux);
+    }
+
+    if (staleProgress) {
+        LOG_DEBUGF("FastBee OTA: Late progress dropped for terminal task %ld",
+                   static_cast<long>(taskId));
+        return;
+    }
+
+    FastBeeOtaReplyEvent event{};
+    event.taskId = taskId;
+    event.status = status;
+    event.progress = progress > 100 ? 100 : progress;
+    strlcpy(event.version, version.c_str(), sizeof(event.version));
+    strlcpy(event.error, error.c_str(), sizeof(event.error));
+
+    if (!terminal) {
+        if (!fastBeeOtaProgressQueue ||
+            xQueueOverwrite(fastBeeOtaProgressQueue, &event) != pdTRUE) {
+            LOG_WARNING("FastBee OTA: Progress queue unavailable, event dropped");
+        }
+        return;
+    }
+
+    if (activeTerminal) {
+        // The active OTA owner's terminal result must not compete with busy or
+        // replay responses. A one-entry overwrite queue is safe because only
+        // one task can own the OTA slot, and repeated events are idempotent.
+        if (!fastBeeOtaActiveTerminalQueue ||
+            xQueueOverwrite(fastBeeOtaActiveTerminalQueue, &event) != pdTRUE) {
+            LOG_ERROR("FastBee OTA: Active terminal queue unavailable");
+            return;
+        }
+    } else {
+        if (!fastBeeOtaReplyQueue ||
+            xQueueSend(fastBeeOtaReplyQueue, &event, 0) != pdTRUE) {
+            LOG_WARNING("FastBee OTA: Non-owner terminal reply queue full, event dropped");
+            return;
+        }
+    }
+
+    // Progress has lossy/latest-value semantics. Once a terminal status is
+    // queued, discard an older progress event for the same task.
+    if (fastBeeOtaProgressQueue) {
+        FastBeeOtaReplyEvent queuedProgress{};
+        if (xQueuePeek(fastBeeOtaProgressQueue, &queuedProgress, 0) == pdTRUE &&
+            queuedProgress.taskId == taskId) {
+            xQueueReceive(fastBeeOtaProgressQueue, &queuedProgress, 0);
+        }
+    }
+}
+
+void ProtocolManager::processFastBeeOtaReplies() {
+    if (!fastBeeOtaActiveTerminalQueue || !fastBeeOtaReplyQueue || !mqttClient ||
+        !mqttClient->getIsConnected()) {
+        return;
+    }
+
+    // The active task's terminal result has absolute priority. It replaces a
+    // retained progress or non-owner reply, so a full/broken auxiliary queue
+    // can never delay status=3/4 or keep a failed owner claimed indefinitely.
+    FastBeeOtaReplyEvent activeTerminalEvent{};
+    if (xQueueReceive(fastBeeOtaActiveTerminalQueue,
+                      &activeTerminalEvent, 0) == pdTRUE) {
+        const bool samePendingTerminal =
+            fastBeeOtaHasPendingReply &&
+            fastBeeOtaPendingReply.taskId == activeTerminalEvent.taskId &&
+            fastBeeOtaPendingReply.status == activeTerminalEvent.status;
+        if (!samePendingTerminal) {
+            if (fastBeeOtaHasPendingReply) {
+                LOG_WARNINGF(
+                    "FastBee OTA: Active terminal task %ld preempted pending task %ld status=%u",
+                    static_cast<long>(activeTerminalEvent.taskId),
+                    static_cast<long>(fastBeeOtaPendingReply.taskId),
+                    static_cast<unsigned>(fastBeeOtaPendingReply.status));
+            }
+            fastBeeOtaPendingReply = activeTerminalEvent;
+            fastBeeOtaHasPendingReply = true;
+            fastBeeOtaLastPublishAttemptMs = 0;
+        }
+    }
+
+    // A terminal status must supersede a progress item that was retained after
+    // a failed publish. Otherwise a recovered connection could report stale
+    // status=2 before the already-completed status=3/4.
+    if (fastBeeOtaHasPendingReply &&
+        fastBeeOtaPendingReply.status == FastBeeOtaProtocol::STATUS_UPGRADING) {
+        FastBeeOtaReplyEvent terminalEvent{};
+        if (xQueueReceive(fastBeeOtaReplyQueue, &terminalEvent, 0) == pdTRUE) {
+            fastBeeOtaPendingReply = terminalEvent;
+            fastBeeOtaLastPublishAttemptMs = 0;
+        } else {
+            bool terminalAlreadyQueued = false;
+            portENTER_CRITICAL(&fastBeeOtaStateMux);
+            terminalAlreadyQueued =
+                fastBeeOtaLastTerminalTaskId == fastBeeOtaPendingReply.taskId &&
+                (fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_SUCCESS ||
+                 fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_FAILED);
+            portEXIT_CRITICAL(&fastBeeOtaStateMux);
+            if (terminalAlreadyQueued) {
+                fastBeeOtaHasPendingReply = false;
+                fastBeeOtaLastPublishAttemptMs = 0;
+                return;
+            }
+        }
+    }
+
+    if (!fastBeeOtaHasPendingReply) {
+        if (xQueueReceive(fastBeeOtaReplyQueue,
+                          &fastBeeOtaPendingReply, 0) != pdTRUE) {
+            if (!fastBeeOtaProgressQueue ||
+                xQueueReceive(fastBeeOtaProgressQueue,
+                              &fastBeeOtaPendingReply, 0) != pdTRUE) {
+                return;
+            }
+
+            bool terminalAlreadyQueued = false;
+            portENTER_CRITICAL(&fastBeeOtaStateMux);
+            terminalAlreadyQueued =
+                fastBeeOtaLastTerminalTaskId == fastBeeOtaPendingReply.taskId &&
+                (fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_SUCCESS ||
+                 fastBeeOtaLastTerminalStatus == FastBeeOtaProtocol::STATUS_FAILED);
+            portEXIT_CRITICAL(&fastBeeOtaStateMux);
+            if (terminalAlreadyQueued) {
+                return;
+            }
+        }
+        fastBeeOtaHasPendingReply = true;
+    }
+    const FastBeeOtaReplyEvent& event = fastBeeOtaPendingReply;
+
+    const unsigned long now = millis();
+    if (fastBeeOtaLastPublishAttemptMs != 0 &&
+        now - fastBeeOtaLastPublishAttemptMs < 1000UL) {
+        return;
+    }
+
+    const String payload = FastBeeOtaProtocol::buildReply(
+        event.taskId, String(event.version), event.status, event.progress);
+    fastBeeOtaLastPublishAttemptMs = now;
+    if (!mqttClient->publishOtaReply(payload)) {
+        LOG_WARNINGF("FastBee OTA: Reply publish deferred for task %ld",
+                     static_cast<long>(event.taskId));
+        return;
+    }
+
+    const bool otaSucceeded =
+        event.status == FastBeeOtaProtocol::STATUS_SUCCESS;
+    fastBeeOtaLastPublishAttemptMs = 0;
+    LOG_INFOF("FastBee OTA: Published task=%ld status=%u progress=%u",
+              static_cast<long>(event.taskId),
+              static_cast<unsigned>(event.status),
+              static_cast<unsigned>(event.progress));
+    if (event.status == FastBeeOtaProtocol::STATUS_FAILED && event.error[0]) {
+        LOG_WARNINGF("FastBee OTA: Task %ld failed (%s)",
+                     static_cast<long>(event.taskId), event.error);
+    }
+
+    // FastBee 必须先收到 status=3，设备才能重启。publish() 成功后仍留出
+    // 3 秒给 TCP/MQTT 发送缓冲完成传输。
+    fastBeeOtaHasPendingReply = false;
+    if (event.status == FastBeeOtaProtocol::STATUS_FAILED) {
+        // A failed task remains occupied until status=4 has actually reached
+        // the broker, preventing a later task from overwriting its final reply.
+        portENTER_CRITICAL(&fastBeeOtaStateMux);
+        if (fastBeeOtaActiveTaskId == event.taskId) {
+            fastBeeOtaActiveTaskId = 0;
+        }
+        portEXIT_CRITICAL(&fastBeeOtaStateMux);
+    }
+    if (otaSucceeded) {
+        SystemRebooter::scheduleReboot(
+            "FastBee MQTT OTA completed", 3000, RestartReason::OTA_UPDATE);
+    }
+}
+#endif
 
 void ProtocolManager::setTxCallback(CounterCallback cb) { txCallback = cb; }
 void ProtocolManager::setRxCallback(CounterCallback cb) { rxCallback = cb; }
@@ -461,13 +989,26 @@ void ProtocolManager::setModbusStatusSSECallback(SimpleSSECallback callback) { m
 
 void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& data, ModbusDataSource source) {
 #if FASTBEE_ENABLE_MODBUS
+    size_t firstPayloadByte = 0;
+    while (firstPayloadByte < data.length()) {
+        const char c = data[firstPayloadByte];
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n') break;
+        ++firstPayloadByte;
+    }
+    const bool structuredPayload = firstPayloadByte < data.length() &&
+        (data[firstPayloadByte] == '[' || data[firstPayloadByte] == '{');
+    // Snapshot the wire encoding while the producing Modbus handler is still
+    // alive. Queue consumers must not infer it again after a hot restart.
+    const bool rawRtuPayload = modbusHandler &&
+        modbusHandler->getConfig().transferType == 1 && !structuredPayload;
+
     // 1. MQTT 上报（所有来源都上报）
 #if FASTBEE_ENABLE_MQTT
     if (mqttClient && mqttClient->getIsConnected()) {
         // 统一上报日志：无论 transferType=0(JSON) 或 1(HEX) 都打印上报主题、格式、内容
         // 使用 Serial.printf 避免 LoggerSystem 文件 I/O 加剧异步任务栈压力
         const char* fmt = "JSON";
-        if (modbusHandler && modbusHandler->getConfig().transferType == 1) {
+        if (rawRtuPayload) {
             fmt = "HEX";
         }
         const char* srcName = (source == ModbusDataSource::PeriphExecPoll) ? "PeriphExecPoll"
@@ -478,9 +1019,11 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
         // PeriphExecPoll 来自异步任务栈，用 queueReportData 避免 TCP/IP 深栈调用导致栈溢出
         // LiveCallback 来自主循环，可直接 publish
         if (source == ModbusDataSource::PeriphExecPoll) {
-            mqttClient->queueReportData(data);
+            if (rawRtuPayload) mqttClient->queueModbusRtuReport(data);
+            else mqttClient->queueReportData(data);
         } else {
-            mqttClient->publishReportData(data);
+            if (rawRtuPayload) mqttClient->publishModbusRtuReport(data);
+            else mqttClient->publishReportData(data);
         }
     } else {
         Serial.printf("[Modbus] TX ▲ DROPPED (MQTT offline) slave=%d len=%u\n",
@@ -569,7 +1112,8 @@ bool ProtocolManager::restartMQTT() {
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
 #if FASTBEE_ENABLE_MODBUS
-        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        auto lease = acquireModbusHandler(pdMS_TO_TICKS(100));
+        String modbusData = lease ? lease->collectCachedPollData() : "[]";
 #else
         String modbusData = "[]";
 #endif
@@ -733,7 +1277,8 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
 #if FASTBEE_ENABLE_MODBUS
-        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        auto lease = acquireModbusHandler(pdMS_TO_TICKS(100));
+        String modbusData = lease ? lease->collectCachedPollData() : "[]";
 #else
         String modbusData = "[]";
 #endif
@@ -790,6 +1335,27 @@ ModbusRestartResult ProtocolManager::restartModbus() {
         return result;
     };
 
+    // Worker/HTTP Modbus operations retain an active lease without holding the
+    // lifecycle mutex. A hot restart therefore checks the lease count while
+    // holding the lifecycle lock and defers handler destruction until zero.
+    ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, pdMS_TO_TICKS(100));
+    if (!lifecycle.isLocked()) {
+        modbusRestartPending = true;
+        LOG_INFO("Protocol Manager: Modbus restart deferred; operation still active");
+        return ModbusRestartResult::DeferredBusy;
+    }
+    if (modbusShutdownPending) {
+        LOG_INFO("Protocol Manager: Modbus restart rejected during shutdown");
+        return completeRestart(ModbusRestartResult::Failed);
+    }
+    if (getActiveModbusLeaseCount() > 0) {
+        modbusRestartPending = true;
+        LOG_INFO("Protocol Manager: Modbus restart deferred; active handler lease");
+        return ModbusRestartResult::DeferredBusy;
+    }
+    modbusStopPending = false;
+    modbusRestartPending = false;
+
     // 运行时功能门控：用户可在 Web UI 禁用 modbus
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
         LOG_WARNING("Protocol Manager: Modbus disabled by runtime feature config, skipping");
@@ -815,6 +1381,12 @@ ModbusRestartResult ProtocolManager::restartModbus() {
 
     // 停止现有实例
     if (modbusHandler) {
+        // Remove every callback which can reach the old instance before its
+        // storage is released. New callbacks are installed only after the new
+        // handler has begun successfully.
+        PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
+        PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
+        unregisterModbusSubDevices();
         modbusHandler->end();
         modbusHandler.reset();
     }
@@ -992,13 +1564,11 @@ ModbusRestartResult ProtocolManager::restartModbus() {
         }
     }
 
-    // A master configuration can intentionally contain disabled templates
-    // (for example the S3 deployment ships Modbus sensor/relay templates
-    // before the installer knows the real slave addresses/register map). Do
-    // not open UART buffers or keep a polling handler alive in that state.
-    // The configuration remains available to the Web UI; enabling a task or
-    // sub-device later calls restartModbus() and starts the transport then.
+    // A structured-data master can intentionally contain only disabled
+    // templates. Raw passthrough is different: it still needs a live handler
+    // and UART even when there are no polling tasks or registered devices.
     if (modbusConfig.mode == MODBUS_MASTER &&
+        modbusConfig.transferType != 1 &&
         !hasEnabledPollTask && !hasEnabledSubDevice) {
         LOG_INFO("Protocol Manager: Modbus master has no enabled tasks/devices; keeping transport stopped");
         return completeRestart(ModbusRestartResult::IdleNoEnabledTargets);
@@ -1059,7 +1629,21 @@ ModbusRestartResult ProtocolManager::restartModbus() {
 
 void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
-    modbusRestartPending = false;  // 取消待执行的延迟重启
+    // Publish the stop intent before taking the lifecycle lock so new public
+    // operations stop entering while an existing lease drains.
+    modbusStopPending = true;
+    modbusRestartPending = false;
+    ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, pdMS_TO_TICKS(100));
+    if (!lifecycle.isLocked()) {
+        LOG_INFO("Protocol Manager: Modbus stop deferred; lifecycle busy");
+        return;
+    }
+    const uint16_t activeLeases = getActiveModbusLeaseCount();
+    if (activeLeases > 0) {
+        LOG_INFOF("Protocol Manager: Modbus stop deferred; %u active lease(s)",
+                  static_cast<unsigned int>(activeLeases));
+        return;
+    }
     modbusRestartResultAvailable = false;
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
     PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
@@ -1069,11 +1653,17 @@ void ProtocolManager::stopModbus() {
 
     if (modbusHandler) {
         modbusHandler->end();
+        modbusHandler.reset();
     }
+    modbusStopPending = false;
 }
 
 bool ProtocolManager::restartModbusDeferred() {
     LOG_INFO("Protocol Manager: Modbus restart deferred to loopTask");
+    ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, pdMS_TO_TICKS(100));
+    if (!lifecycle.isLocked()) return false;
+    if (modbusShutdownPending) return false;
+    modbusStopPending = false;
     modbusRestartResultAvailable = false;
     modbusRestartPending = true;
     return true;
@@ -1094,8 +1684,11 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
     FastBeeJsonDoc resultDoc;
     JsonArray resultArr = resultDoc.to<JsonArray>();
 
+    auto modbusLease = acquireModbusHandler(pdMS_TO_TICKS(2000));
+    ModbusHandler* activeModbus = modbusLease.get();
+
     // 检查 Modbus 是否可用
-    if (!modbusHandler) {
+    if (!activeModbus) {
         JsonObject err = resultArr.add<JsonObject>();
         err["id"] = "modbus_read";
         err["value"] = "0";
@@ -1105,7 +1698,7 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
         return out;
     }
 
-    if (modbusHandler->getMode() != MODBUS_MASTER) {
+    if (activeModbus->getMode() != MODBUS_MASTER) {
         JsonObject err = resultArr.add<JsonObject>();
         err["id"] = "modbus_read";
         err["value"] = "0";
@@ -1154,6 +1747,7 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
     }
 
     LOG_INFOF("[Modbus] OneShot: executing %d task(s) from MQTT command", tasks.size());
+    const bool rawTransfer = activeModbus->getConfig().transferType == 1;
 
     // 逐任务执行
     for (JsonVariant tv : tasks) {
@@ -1163,8 +1757,18 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
         uint16_t startAddr = t["startAddress"] | (uint16_t)0;
         uint16_t qty       = t["quantity"] | (uint16_t)1;
 
-        // 执行一次性读取
-        OneShotResult readResult = modbusHandler->readRegistersOnce(slaveAddr, fc, startAddr, qty);
+        // 执行一次性读取。RAW 模式同时保留事务层 CRC/地址校验后的原始 ADU，
+        // 避免后续寄存器解析和重新编码改变设备实际响应。
+        String rawResponseHex;
+        OneShotResult readResult = activeModbus->readRegistersOnce(
+            slaveAddr, fc, startAddr, qty, false, 0, 0xFF,
+            rawTransfer ? &rawResponseHex : nullptr);
+
+        if (rawTransfer && !rawResponseHex.isEmpty()) {
+            dispatchModbusData(
+                slaveAddr, rawResponseHex, ModbusDataSource::PeriphExecPoll);
+            continue;
+        }
 
         if (readResult.error != ONESHOT_SUCCESS) {
             // 生成错误响应
@@ -1195,17 +1799,9 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
         }
 
         // 读取成功，根据传输类型决定上报格式
-        uint8_t transferType = modbusHandler->getConfig().transferType;
-
-        if (transferType == 1) {
-            // 透传模式(RAW HEX)：重构响应帧为十六进制字符串
-            String hexStr = modbusHandler->formatRawHex(slaveAddr, fc, readResult.data, readResult.count);
-            JsonObject item = resultArr.add<JsonObject>();
-            char idBuf[20];
-            snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
-            item["id"] = idBuf;
-            item["value"] = hexStr;
-            item["remark"] = "";
+        if (rawTransfer) {
+            // 原始字符串分配失败时不能用解析值伪造一个响应帧。
+            LOG_WARNING("[Modbus] OneShot: validated raw ADU unavailable, report skipped");
         } else if (t.containsKey("mappings") && t["mappings"].is<JsonArray>()) {
             // JSON模式 + 有映射：应用映射转换
             JsonArray mappings = t["mappings"].as<JsonArray>();
@@ -1282,13 +1878,15 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
 // ========== MQTT触发的Modbus原始HEX帧透传 ==========
 
 String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
+    auto modbusLease = acquireModbusHandler(pdMS_TO_TICKS(2000));
+    ModbusHandler* activeModbus = modbusLease.get();
     // 检查 Modbus 是否可用
-    if (!modbusHandler) {
+    if (!activeModbus) {
         LOG_WARNING("[Modbus] RawSend: not initialized");
         return "";
     }
 
-    if (modbusHandler->getMode() != MODBUS_MASTER) {
+    if (activeModbus->getMode() != MODBUS_MASTER) {
         LOG_WARNING("[Modbus] RawSend: not master mode");
         return "";
     }
@@ -1296,15 +1894,16 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
     // 校验 HEX 字符串格式
     String hex = hexPayload;
     hex.trim();
-    if (hex.length() < 4 || (hex.length() % 2) != 0 || hex.length() > (Protocols::MODBUS_BUFFER_SIZE - 2) * 2) {
+    if (hex.length() < 8U || (hex.length() % 2U) != 0U ||
+        hex.length() > Protocols::MODBUS_BUFFER_SIZE * 2U) {
         LOG_WARNINGF("[Modbus] RawSend: invalid hex length=%d", hex.length());
         return "";
     }
 
     // HEX 字符串解码为字节数组
-    uint8_t byteLen = hex.length() / 2;
+    const size_t byteLen = hex.length() / 2U;
     uint8_t byteArray[Protocols::MODBUS_BUFFER_SIZE];
-    for (uint8_t i = 0; i < byteLen; i++) {
+    for (size_t i = 0; i < byteLen; i++) {
         char hi = hex.charAt(i * 2);
         char lo = hex.charAt(i * 2 + 1);
         auto hexVal = [](char c) -> int8_t {
@@ -1323,40 +1922,58 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
 
     uint8_t slaveAddr = byteArray[0];
 
-    // 自动检测末尾是否已含 CRC（平台透传下发的 Modbus 帧通常已包含 CRC）
-    // sendRawFrameOnce 期望 dataWithoutCRC，若输入已含 CRC 会被重复追加 CRC 导致帧无效
-    uint8_t effectiveLen = byteLen;
-    if (byteLen >= 4) {
-        uint16_t crcCalc = modbusHandler->calculateCRC(byteArray, byteLen - 2);
-        uint8_t crcLo = crcCalc & 0xFF;
-        uint8_t crcHi = (crcCalc >> 8) & 0xFF;
-        if (byteArray[byteLen - 2] == crcLo && byteArray[byteLen - 1] == crcHi) {
-            effectiveLen = byteLen - 2;
-            LOG_INFOF("[Modbus] RawSend: detected trailing CRC, stripping (origLen=%d, dataLen=%d)", byteLen, effectiveLen);
-        }
+    // FastBee MQTT Modbus passthrough carries a complete RTU ADU, including
+    // CRC. Never reinterpret a damaged CRC as payload and append another CRC:
+    // that would mutate the platform command before it reaches the UART.
+    const uint16_t crcCalc = activeModbus->calculateCRC(byteArray, byteLen - 2U);
+    const uint8_t crcLo = crcCalc & 0xFFU;
+    const uint8_t crcHi = (crcCalc >> 8) & 0xFFU;
+    if (byteArray[byteLen - 2U] != crcLo ||
+        byteArray[byteLen - 1U] != crcHi) {
+        LOG_WARNINGF("[Modbus] RawSend: invalid RTU CRC (len=%u), frame rejected",
+                     static_cast<unsigned>(byteLen));
+        return "";
     }
-    LOG_INFOF("[Modbus] RawSend: slave=%d, %d bytes (without CRC)", slaveAddr, effectiveLen);
+    const size_t effectiveLen = byteLen - 2U;
+    LOG_INFOF("[Modbus] RawSend: slave=%d, %u bytes (without CRC)", slaveAddr,
+              static_cast<unsigned>(effectiveLen));
 
-    // 发送原始帧（sendRawFrameOnce 自动追加 CRC）
-    OneShotResult rawResult = modbusHandler->sendRawFrameOnce(slaveAddr, byteArray, effectiveLen, false);
+    // 使用专用原始字节通道。OneShotResult 只有 32 个槽，不能承载最多
+    // 256 字节的 RTU 响应。
+    uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
+    size_t responseLength = 0;
+    uint8_t exceptionCode = 0;
+    const OneShotError rawError = activeModbus->sendRawFrameBytesOnce(
+        slaveAddr, byteArray, effectiveLen,
+        response, sizeof(response), responseLength, exceptionCode, false);
 
-    if (rawResult.error != ONESHOT_SUCCESS) {
-        LOG_WARNINGF("[Modbus] RawSend: failed, error=%d", rawResult.error);
+    // A slave exception is an error to structured/legacy callers, but it is
+    // also a valid RTU response frame that raw passthrough must preserve.
+    const bool forwardableException =
+        rawError == ONESHOT_EXCEPTION &&
+        responseLength >= 5U &&
+        (response[1] & 0x80U) != 0U;
+    if (rawError != ONESHOT_SUCCESS && !forwardableException) {
+        LOG_WARNINGF("[Modbus] RawSend: failed, error=%d exception=%u",
+                     rawError, static_cast<unsigned>(exceptionCode));
         return "";
     }
 
     // 成功：将原始响应字节格式化为 HEX 字符串
-    // rawResult.data[0..count-1] 存储原始响应帧字节（每个 uint16 槽存 1 字节）
     String respHex;
-    respHex.reserve(rawResult.count * 2);
-    for (uint16_t i = 0; i < rawResult.count; i++) {
+    respHex.reserve(responseLength * 2U);
+    for (size_t i = 0; i < responseLength; i++) {
         char buf[3];
-        snprintf(buf, sizeof(buf), "%02X", (uint8_t)rawResult.data[i]);
+        snprintf(buf, sizeof(buf), "%02X", response[i]);
         respHex += buf;
     }
 
     LOG_INFOF("[Modbus] RawSend: result hex=%s", respHex.c_str());
-    return respHex;
+    // Route the response through the typed asynchronous outlet. Returning the
+    // HEX string to processQueuedCommands would lose RAW metadata and could be
+    // published as text if the Modbus handler restarts before consumption.
+    dispatchModbusData(slaveAddr, respHex, ModbusDataSource::PeriphExecPoll);
+    return "[]";
 }
 #endif // FASTBEE_ENABLE_MODBUS (restartModbus + stopModbus + restartModbusDeferred + executeModbusRead + executeModbusRawSend)
 
@@ -1397,7 +2014,8 @@ bool ProtocolManager::initMQTT(void* config) {
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
 #if FASTBEE_ENABLE_MODBUS
-        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        auto lease = acquireModbusHandler(pdMS_TO_TICKS(100));
+        String modbusData = lease ? lease->collectCachedPollData() : "[]";
 #else
         String modbusData = "[]";
 #endif
@@ -1426,6 +2044,9 @@ bool ProtocolManager::initMQTT(void* config) {
 #if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::initModbus(void* config) {
     if (!config) return false;
+
+    ModbusLifecycleGuard lifecycle(modbusLifecycleMutex, portMAX_DELAY);
+    if (!lifecycle.isLocked()) return false;
 
     // 运行时功能门控：用户可在 Web UI 禁用 modbus
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("modbus")) {
@@ -1482,18 +2103,25 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         return;
     }
 
-    // 设置 Modbus 通信回调（通过闭包捕获 modbusHandler）
-    ModbusHandler* mb = modbusHandler.get();
-    if (mb) {
+    // Resolve the active handler for every operation. Capturing the current
+    // raw pointer would leave PeripheralManager holding a dangling callback
+    // after a protocol hot restart.
+    if (modbusHandler) {
         pm.setModbusCallbacks(
             // 线圈写入回调 (FC05) — 使用控制优先级通道，避免与轮询竞争
-            [mb](uint8_t slaveAddr, uint16_t coilAddr, bool value) -> bool {
-                OneShotResult result = mb->writeCoilOnce(slaveAddr, coilAddr, value, true);
+            [this](uint8_t slaveAddr, uint16_t coilAddr, bool value) -> bool {
+                auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
+                if (!lease) return false;
+                OneShotResult result = lease->writeCoilOnce(
+                    slaveAddr, coilAddr, value, true);
                 return result.error == ONESHOT_SUCCESS;
             },
             // 寄存器写入回调 (FC06) — 使用控制优先级通道
-            [mb](uint8_t slaveAddr, uint16_t regAddr, uint16_t value) -> bool {
-                OneShotResult result = mb->writeRegisterOnce(slaveAddr, regAddr, value, true);
+            [this](uint8_t slaveAddr, uint16_t regAddr, uint16_t value) -> bool {
+                auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
+                if (!lease) return false;
+                OneShotResult result = lease->writeRegisterOnce(
+                    slaveAddr, regAddr, value, true);
                 return result.error == ONESHOT_SUCCESS;
             }
         );

@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { minifyJS } = require('./minify-js');
+const { withWebPublishLock } = require('./web-publish-lock');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const JS_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'js');
@@ -204,7 +205,7 @@ function buildAppBundle(options = {}) {
 }
 
 if (require.main === module) {
-    const result = buildAppBundle();
+    const result = withWebPublishLock(() => buildAppBundle(), { label: 'build-app-bundle' });
     console.log(`Built ${result.chunks.length} app chunks (replacing legacy app-bundle.js):`);
     result.chunks.forEach((c) => {
         console.log(`  ${c.outName.padEnd(28)} ${String(c.size).padStart(7)} bytes`);

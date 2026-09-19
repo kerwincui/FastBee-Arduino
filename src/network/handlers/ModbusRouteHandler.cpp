@@ -122,22 +122,24 @@ static MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
     return d;
 }
 
-static ModbusHandler* getModbusMaster(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
+static ProtocolManager::ModbusHandlerLease getModbusMaster(
+    WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
         ctx->sendError(request, 500, "Protocol manager not available");
-        return nullptr;
+        return {};
     }
-    ModbusHandler* modbus = pm->getModbusHandler();
+    auto lease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
+    ModbusHandler* modbus = lease.get();
     if (!modbus) {
-        ctx->sendError(request, 503, "Modbus not started");
-        return nullptr;
+        ctx->sendError(request, 503, "Modbus not started or restarting");
+        return {};
     }
     if (modbus->getMode() != MODBUS_MASTER) {
         ctx->sendError(request, 400, "Modbus is not in Master mode");
-        return nullptr;
+        return {};
     }
-    return modbus;
+    return lease;
 }
 
 static bool rejectModbusHeavyRequest(AsyncWebServerRequest* request,
@@ -404,7 +406,8 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
         return;
     }
 
-    ModbusHandler* modbus = pm->getModbusHandler();
+    auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
+    ModbusHandler* modbus = modbusLease.get();
 
     // 鍐呭瓨妫€鏌ワ細Modbus 鐘舵€佸搷搴斿彲鑳藉寘鍚ぇ閲忎换鍔℃暟鎹?
     if (rejectModbusHeavyRequest(request, "Modbus status", compactStatus ? 4096 : 8192)) return;
@@ -607,7 +610,8 @@ void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
         return;
     }
 
-    ModbusHandler* modbus = pm->getModbusHandler();
+    auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) {
         ctx->sendError(request, 503, "Modbus not started");
         return;
@@ -647,7 +651,8 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -772,7 +777,8 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -990,7 +996,8 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
 void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1174,7 +1181,8 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
 void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1241,7 +1249,8 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
 void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1294,7 +1303,8 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
 void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1416,7 +1426,8 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
 void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1463,7 +1474,8 @@ void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* reque
 void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1513,7 +1525,8 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
 void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1602,7 +1615,8 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
 void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
@@ -1663,7 +1677,8 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
 void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     
-    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    auto modbusLease = getModbusMaster(ctx, request);
+    ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);

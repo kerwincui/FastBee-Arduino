@@ -1,4 +1,5 @@
 import { test, expect, env, waitForDeviceReady } from '../fixtures/base.fixture';
+import { enableOptionalUiFeatures } from '../fixtures/optional-features.fixture';
 
 /** 带重试的 page.goto（设备可能临时不可达） */
 async function gotoWithRetry(page: import('@playwright/test').Page, maxRetries = 3) {
@@ -808,6 +809,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
   test('UI-025A: 重复切页不累积隐藏 DOM 且回访按钮可用', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await navigateTo('peripheral');
+    await waitForPeripheralPageReady(authPage);
     const baseline = await authPage.locator('*').count();
     for (let round = 0; round < 10; round++) {
       await navigateTo('device');
@@ -815,6 +817,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     }
     await expect(authPage.locator('#peripheral-page')).toBeVisible();
     await expect(authPage.locator('#peripheral-refresh-btn')).toBeEnabled();
+    await waitForPeripheralPageReady(authPage);
 
     const metrics = await authPage.evaluate(() => ({
       directPageRoots: document.querySelectorAll('#content-area > .page').length,
@@ -1012,6 +1015,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
   });
 
   test('UI-027E: 日志、用户和规则脚本工具栏在桌面与窄屏均填满顶部空间', async ({ authPage }) => {
+    await enableOptionalUiFeatures(authPage, ['logViewer', 'userAdmin', 'ruleScript']);
     await authPage.route('**/api/rule-script*', async route => {
       await route.fulfill({
         json: {
@@ -1037,6 +1041,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
         const page = authPage.locator(`#${pageSpec.name}-page`);
         const summary = page.locator(pageSpec.summary);
         await expect(page).toBeVisible();
+        await expect(page.locator('[data-page-fallback]')).toHaveCount(0);
         await expect(summary).toContainText(pageSpec.readyText);
 
         for (const width of [1280, 390, 360]) {

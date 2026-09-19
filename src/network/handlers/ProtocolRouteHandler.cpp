@@ -13,6 +13,10 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./network/ProtocolSecret.h"
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "protocols/RemoteResourceManager.h"
+#endif
+#include "systems/ConfigStorage.h"
 #include "./protocols/ProtocolManager.h"
 #include "systems/SystemRebooter.h"
 #include "utils/PsramJsonDocument.h"
@@ -26,6 +30,12 @@ namespace {
 constexpr uint8_t PROTOCOL_CONFIG_VERSION = 2;
 constexpr uint16_t PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC = 2;
 constexpr uint16_t PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC = 3600;
+constexpr int MQTT_TOPIC_TYPE_OTA_UPGRADE = 5;
+constexpr int MQTT_TOPIC_TYPE_OTA_BINARY = 6;
+constexpr const char* MQTT_OTA_REPLY_TOPIC = "/{deviceNum}/http/upgrade/reply";
+constexpr const char* MQTT_OTA_COMMAND_TOPIC = "/{deviceNum}/http/upgrade/set";
+constexpr const char* MQTT_OTA_REPLY_TOPIC_LEGACY = "/http/upgrade/reply";
+constexpr const char* MQTT_OTA_COMMAND_TOPIC_LEGACY = "/http/upgrade/set";
 
 template <typename T>
 T clampProtocolValue(T value, T minVal, T maxVal) {
@@ -38,6 +48,121 @@ bool hasProtocolParam(AsyncWebServerRequest* request, const char* key) {
     return request && (request->hasParam(key, true) || request->hasParam(key, false));
 }
 
+void ensureFastBeeOtaTopic(JsonArray topics,
+                           const char* canonicalTopic,
+                           const char* legacyTopic,
+                           bool publishTopic) {
+    bool hasCanonical = false;
+    for (JsonObject topic : topics) {
+        String configured = topic["topic"] | "";
+        configured.trim();
+        if (configured != canonicalTopic) continue;
+
+        // A complete FastBee template must not receive the product/device
+        // prefix again. Preserve enabled=false as the user's OTA opt-out.
+        topic["topic"] = canonicalTopic;
+        topic["autoPrefix"] = false;
+        topic["topicType"] = MQTT_TOPIC_TYPE_OTA_UPGRADE;
+        hasCanonical = true;
+    }
+
+    if (!hasCanonical) {
+        for (JsonObject topic : topics) {
+            if ((topic["topicType"] | -1) != MQTT_TOPIC_TYPE_OTA_UPGRADE ||
+                !(topic["autoPrefix"] | true)) {
+                continue;
+            }
+
+            String configured = topic["topic"] | "";
+            configured.trim();
+            if (configured != legacyTopic) continue;
+
+            // Migrate the former suffix+autoPrefix representation in place so
+            // existing enabled/disabled intent and QoS/retain remain intact.
+            topic["topic"] = canonicalTopic;
+            topic["autoPrefix"] = false;
+            hasCanonical = true;
+            break;
+        }
+    }
+
+    if (hasCanonical) return;
+
+    JsonObject topic = topics.add<JsonObject>();
+    topic["topic"] = canonicalTopic;
+    topic["qos"] = 0;
+    if (publishTopic) topic["retain"] = false;
+    topic["enabled"] = true;
+    topic["autoPrefix"] = false;
+    topic["topicType"] = MQTT_TOPIC_TYPE_OTA_UPGRADE;
+}
+
+void ensureFastBeeOtaTopics(JsonObject mqtt) {
+#if FASTBEE_ENABLE_OTA
+    JsonArray publishTopics = mqtt["publishTopics"].as<JsonArray>();
+    if (publishTopics.isNull()) {
+        publishTopics = mqtt["publishTopics"].to<JsonArray>();
+    }
+    ensureFastBeeOtaTopic(publishTopics, MQTT_OTA_REPLY_TOPIC,
+                          MQTT_OTA_REPLY_TOPIC_LEGACY, true);
+
+    JsonArray subscribeTopics = mqtt["subscribeTopics"].as<JsonArray>();
+    if (subscribeTopics.isNull()) {
+        subscribeTopics = mqtt["subscribeTopics"].to<JsonArray>();
+    }
+    ensureFastBeeOtaTopic(subscribeTopics, MQTT_OTA_COMMAND_TOPIC,
+                          MQTT_OTA_COMMAND_TOPIC_LEGACY, false);
+#else
+    (void)mqtt;
+#endif
+}
+
+void disableUnsupportedBinaryOtaTopics(JsonObject mqtt) {
+    static const char* topicLists[] = {"publishTopics", "subscribeTopics"};
+    for (const char* listName : topicLists) {
+        JsonArray topics = mqtt[listName].as<JsonArray>();
+        if (topics.isNull()) continue;
+        for (JsonObject topic : topics) {
+            if ((topic["topicType"] | -1) == MQTT_TOPIC_TYPE_OTA_BINARY) {
+                topic["enabled"] = false;
+            }
+        }
+    }
+}
+
+bool validateOtaBaseUrl(const String& value, String& error) {
+    error = "";
+    if (value.isEmpty()) return true;
+    if (!value.startsWith("https://")) {
+        error = "MQTT OTA HTTPS base URL must start with https://";
+        return false;
+    }
+    if (value.indexOf('?') >= 0 || value.indexOf('#') >= 0) {
+        error = "MQTT OTA HTTPS base URL must not contain a query or fragment";
+        return false;
+    }
+    if (value.length() > 512U) {
+        error = "MQTT OTA HTTPS base URL is too long";
+        return false;
+    }
+
+    const int authorityStart = 8;
+    int authorityEnd = value.indexOf('/', authorityStart);
+    if (authorityEnd < 0) authorityEnd = value.length();
+    String authority = value.substring(authorityStart, authorityEnd);
+    if (authority.isEmpty() || authority.indexOf('@') >= 0) {
+        error = "MQTT OTA HTTPS base URL must include a valid host";
+        return false;
+    }
+    for (size_t i = 0; i < value.length(); ++i) {
+        if (value.charAt(i) <= ' ') {
+            error = "MQTT OTA HTTPS base URL must not contain whitespace";
+            return false;
+        }
+    }
+    return true;
+}
+
 void normalizeProtocolConfig(JsonDocument& doc) {
     if (!doc["version"].is<int>()) {
         doc["version"] = PROTOCOL_CONFIG_VERSION;
@@ -48,10 +173,16 @@ void normalizeProtocolConfig(JsonDocument& doc) {
     if (!doc["modbusRtu"]["mode"].is<const char*>()) {
         doc["modbusRtu"]["mode"] = "master";
     }
+    const int transferType = doc["modbusRtu"]["transferType"] | 0;
+    if (transferType != 0 && transferType != 1) {
+        doc["modbusRtu"]["transferType"] = 0;
+    }
     doc.as<JsonObject>().remove("modbusTcp");
     if (!doc["mqtt"]["enabled"].is<bool>()) {
         doc["mqtt"]["enabled"] = true;
     }
+    ensureFastBeeOtaTopics(doc["mqtt"].as<JsonObject>());
+    disableUnsupportedBinaryOtaTopics(doc["mqtt"].as<JsonObject>());
 }
 
 bool loadProtocolConfigDocument(JsonDocument& doc) {
@@ -94,12 +225,15 @@ void copyJsonMember(JsonObject dst, JsonObject src, const char* key) {
 
 void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
     for (JsonObject topicIn : src) {
+        const int topicType = topicIn["topicType"] | (publishList ? 0 : 1);
         JsonObject topicOut = dst.add<JsonObject>();
         topicOut["topic"] = topicIn["topic"] | "";
         topicOut["qos"] = topicIn["qos"] | 0;
-        topicOut["enabled"] = topicIn["enabled"] | true;
+        topicOut["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+            ? false
+            : (topicIn["enabled"] | true);
         topicOut["autoPrefix"] = topicIn["autoPrefix"] | true;
-        topicOut["topicType"] = topicIn["topicType"] | (publishList ? 0 : 1);
+        topicOut["topicType"] = topicType;
         if (publishList) {
             topicOut["retain"] = topicIn["retain"] | false;
         }
@@ -117,6 +251,11 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     JsonObject data = doc["data"].to<JsonObject>();
     JsonObject mqttOut = data["mqtt"].to<JsonObject>();
     JsonObject mqttIn = source["mqtt"].as<JsonObject>();
+    if (mqttIn.isNull()) {
+        mqttIn = source["mqtt"].to<JsonObject>();
+    }
+    ensureFastBeeOtaTopics(mqttIn);
+    disableUnsupportedBinaryOtaTopics(mqttIn);
 
     // 运行时检测 PSRAM：有 PSRAM 则 TLS 可用，比编译期 BOARD_HAS_PSRAM 更准确
     // esp32-F4R0 固件部署到带 PSRAM 的板子时也能正确报告 TLS 支持
@@ -124,6 +263,7 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     mqttOut["enabled"] = mqttIn["enabled"] | true;
     mqttOut["scheme"] = mqttIn["scheme"] | "mqtt";
     mqttOut["server"] = mqttIn["server"] | "iot.fastbee.cn";
+    mqttOut["otaBaseUrl"] = mqttIn["otaBaseUrl"] | "";
     mqttOut["port"] = mqttIn["port"] | 1883;
     mqttOut["clientId"] = mqttIn["clientId"] | "";
     mqttOut["username"] = mqttIn["username"] | "";
@@ -175,7 +315,14 @@ void sendRedactedProtocolConfigFromFile(AsyncWebServerRequest* request) {
     }
 
     JsonObject config = doc["data"].as<JsonObject>();
-    FastBee::ProtocolSecret::redactMqttConfig(config["mqtt"].as<JsonObject>());
+    JsonObject mqtt = config["mqtt"].as<JsonObject>();
+    if (mqtt.isNull()) {
+        mqtt = config["mqtt"].to<JsonObject>();
+    }
+    ensureFastBeeOtaTopics(mqtt);
+    disableUnsupportedBinaryOtaTopics(mqtt);
+    FastBee::ProtocolSecret::redactMqttConfig(mqtt);
+    FastBee::ProtocolSecret::redactRemoteConfig(config);
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -332,7 +479,10 @@ void sendCompactPeriphExecConfig(AsyncWebServerRequest* request, ProtocolManager
     JsonObject data = doc["data"].to<JsonObject>();
 
 #if FASTBEE_ENABLE_MODBUS
-    ModbusHandler* modbus = protocolManager ? protocolManager->getModbusHandler() : nullptr;
+    auto modbusLease = protocolManager
+        ? protocolManager->acquireModbusHandler(pdMS_TO_TICKS(500))
+        : ProtocolManager::ModbusHandlerLease();
+    ModbusHandler* modbus = modbusLease.get();
     if (modbus) {
         JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
         copyPeriphExecModbusSummary(rtuOut, modbus->getConfigRef(), modbus->isRunning());
@@ -385,7 +535,10 @@ void sendCompactRuntimeProtocolConfig(AsyncWebServerRequest* request,
 
     bool hasRuntimeData = false;
 #if FASTBEE_ENABLE_MODBUS
-    ModbusHandler* modbus = protocolManager ? protocolManager->getModbusHandler() : nullptr;
+    auto modbusLease = protocolManager
+        ? protocolManager->acquireModbusHandler(pdMS_TO_TICKS(500))
+        : ProtocolManager::ModbusHandlerLease();
+    ModbusHandler* modbus = modbusLease.get();
     if (modbus) {
         const ModbusConfig& cfg = modbus->getConfigRef();
         if (cfg.master.taskCount > 0 || cfg.master.deviceCount > 0) {
@@ -517,6 +670,26 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
 void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    struct RemoteConfigTransaction {
+        bool locked = FastBee::RemoteResourceManager::instance()
+                          .beginProtocolConfigTransaction();
+        ~RemoteConfigTransaction() {
+            if (locked) FastBee::RemoteResourceManager::instance()
+                            .endProtocolConfigTransaction();
+        }
+        void release() {
+            if (locked) FastBee::RemoteResourceManager::instance()
+                            .endProtocolConfigTransaction();
+            locked = false;
+        }
+    } remoteConfigTransaction;
+    if (!remoteConfigTransaction.locked) {
+        ctx->sendError(request, 503, "Protocol configuration is busy; retry shortly");
+        return;
+    }
+#endif
+
     // Task 3.3: 完整 protocol.json 加载使用 PSRAM 分配器（有 PSRAM 时），降低 DRAM 峰值
     JsonDocument doc = FastBee::makeJsonDocument(8192);
 
@@ -553,6 +726,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
                       hasProtocolParam(request, "mqtt_scheme") ||
                       hasProtocolParam(request, "mqtt_server") ||
+                      hasProtocolParam(request, "mqtt_otaBaseUrl") ||
                       hasProtocolParam(request, "mqtt_port") ||
                       hasProtocolParam(request, "mqtt_clientId") ||
                       hasProtocolParam(request, "mqtt_username") ||
@@ -588,11 +762,22 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     int currentDePin = doc["modbusRtu"]["dePin"] | -1;
     int currentTransferType = doc["modbusRtu"]["transferType"] | 0;
 
+    if (hasProtocolParam(request, "modbusRtu_transferType")) {
+        String requestedTransferType = GP("modbusRtu_transferType", "");
+        requestedTransferType.trim();
+        if (requestedTransferType != "0" && requestedTransferType != "1") {
+            ctx->sendError(request, 400,
+                           "modbusRtu_transferType must be 0 (JSON) or 1 (RAW RTU)");
+            return;
+        }
+        currentTransferType = requestedTransferType == "1" ? 1 : 0;
+    }
+
     doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", currentEnabled ? "true" : "false") == "true";
     doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", currentPeripheralId);
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", currentMode);
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", String(currentDePin));
-    doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", String(currentTransferType));
+    doc["modbusRtu"]["transferType"] = currentTransferType;
     // workMode 已移除：由轮询任务配置自动推导，不再保存
 
     // Modbus RTU Master 通信参数（responseTimeout/maxRetries/interPollDelay）已从构造函数硬编码，
@@ -699,6 +884,16 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     String requestedScheme = GP("mqtt_scheme", "mqtt");
     doc["mqtt"]["scheme"] = requestedScheme;
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
+    if (hasProtocolParam(request, "mqtt_otaBaseUrl")) {
+        String otaBaseUrl = GP("mqtt_otaBaseUrl", "");
+        otaBaseUrl.trim();
+        String otaBaseUrlError;
+        if (!validateOtaBaseUrl(otaBaseUrl, otaBaseUrlError)) {
+            ctx->sendError(request, 400, otaBaseUrlError);
+            return;
+        }
+        doc["mqtt"]["otaBaseUrl"] = otaBaseUrl;
+    }
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 
     // Any successful Web save is an explicit user decision.  Do not leave
@@ -796,13 +991,16 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         if (!err && topicsDoc.is<JsonArray>()) {
             JsonArray arr = topicsDoc.as<JsonArray>();
             for (JsonVariant v : arr) {
+                const int topicType = v["topicType"] | 0;
                 JsonObject topicObj = publishTopics.add<JsonObject>();
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["retain"] = v["retain"] | false;
-                topicObj["enabled"] = v["enabled"] | true;
+                topicObj["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+                    ? false
+                    : (v["enabled"] | true);
                 topicObj["autoPrefix"] = v["autoPrefix"] | true;
-                topicObj["topicType"] = v["topicType"] | 0;
+                topicObj["topicType"] = topicType;
             }
         }
     }
@@ -820,18 +1018,26 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         if (!err && subTopicsDoc.is<JsonArray>()) {
             JsonArray arr = subTopicsDoc.as<JsonArray>();
             for (JsonVariant v : arr) {
+                const int topicType = v["topicType"] | 1;
                 JsonObject topicObj = subscribeTopics.add<JsonObject>();
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
-                topicObj["enabled"] = v["enabled"] | true;
+                topicObj["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+                    ? false
+                    : (v["enabled"] | true);
                 topicObj["autoPrefix"] = v["autoPrefix"] | true;
-                topicObj["topicType"] = v["topicType"] | 1;
+                topicObj["topicType"] = topicType;
             }
         }
     }
     if (doc["mqtt"]["subscribeTopics"].isNull()) {
         doc["mqtt"]["subscribeTopics"].to<JsonArray>();
     }
+    // Normalize the arrays after rebuilding them from the submitted form.
+    // Otherwise an empty/unrelated type=5 row can suppress the FastBee pair
+    // until the next GET/restart, while the just-saved runtime config is wrong.
+    ensureFastBeeOtaTopics(doc["mqtt"].as<JsonObject>());
+    disableUnsupportedBinaryOtaTopics(doc["mqtt"].as<JsonObject>());
     } // end: updateMqtt
 
     #undef GP
@@ -840,14 +1046,15 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // 让出 CPU 时间，避免文件写入阻塞 async_tcp 任务太久
     yield();
 
-    File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "w");
-    if (!f) {
+    if (!ConfigStorage::getInstance().saveProtocolConfig(doc)) {
         ctx->sendError(request, 500, "Failed to save protocol config");
         return;
     }
-
-    serializeJsonPretty(doc, f);
-    f.close();
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    // MQTT callbacks take the source mutex while holding the transport mutex.
+    // Release the configuration transaction before any protocol lifecycle call.
+    remoteConfigTransaction.release();
+#endif
 
     // 让出 CPU 时间，避免文件 I/O + 后续协议重启累计阻塞太久
     yield();

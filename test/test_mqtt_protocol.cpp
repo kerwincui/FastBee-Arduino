@@ -4540,6 +4540,18 @@ void test_mqtts_buffer_size_unified_1024() {
     TEST_ASSERT_TRUE_MESSAGE(
         mqtt.find("uint16_t mqttBufferSize = 1024;") != std::string::npos,
         "MQTTS buffer must be unified to 1024 (not 512)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("if (!mqttClient.setBufferSize(mqttBufferSize))") != std::string::npos &&
+        mqtt.find("lastErrorCode = -11;") != std::string::npos,
+        "MQTT begin must fail explicitly when the 1024-byte packet buffer cannot be allocated");
+
+    // PubSubClient reserves five bytes for the fixed/remaining-length header
+    // and two bytes for the topic length. The longest expanded factory topic
+    // is 35 bytes; use the conservative 512-character HEX form here even
+    // though production decodes it to a 256-byte binary MQTT payload.
+    constexpr size_t conservativePacketBytes = 5U + 2U + 35U + 512U;
+    TEST_ASSERT_LESS_OR_EQUAL(1024U, conservativePacketBytes);
+    TestLog::step("1024-byte buffer covers 554-byte conservative Modbus packet budget");
 
     TestLog::testEnd(true);
 }
@@ -4951,11 +4963,71 @@ void test_topic_match_raw_topic_without_prefix() {
 }
 
 void test_topic_match_ota_upgrade_topic() {
-    // OTA 主题只用 deviceNum 前缀
-    MockSubTopic subs[] = {{"/upgrade/set", true, 5}};
+    // The configured template resolves to this complete device-scoped topic.
+    MockSubTopic subs[] = {{"/DEV001/http/upgrade/set", false, 5}};
     MockPubTopic pubs[] = {};
-    int result = mockGetTopicTypeByPath("/DEV001/upgrade/set", subs, 1, pubs, 0, "1835", "DEV001");
+    int result = mockGetTopicTypeByPath(
+        "/DEV001/http/upgrade/set", subs, 1, pubs, 0, "1835", "DEV001");
     TEST_ASSERT_EQUAL(5, result); // OTA_UPGRADE
+}
+
+static bool mockRejectNoncanonicalFastBeeOtaTopic(
+        const String& topicPath, int resolvedType, int matchedSubscriptionType,
+        const String& deviceNum) {
+    const bool otaTyped = resolvedType == 5 || matchedSubscriptionType == 5;
+    return otaTyped && topicPath != "/" + deviceNum + "/http/upgrade/set";
+}
+
+void test_mqtt_callback_rejects_noncanonical_ota_topic() {
+    TestLog::testStart("MQTT callback rejects non-canonical FastBee OTA topics");
+
+    TEST_ASSERT_FALSE(mockRejectNoncanonicalFastBeeOtaTopic(
+        "/DEV001/http/upgrade/set", 5, 5, "DEV001"));
+    TEST_ASSERT_TRUE(mockRejectNoncanonicalFastBeeOtaTopic(
+        "/DEV001/upgrade/set", 5, 5, "DEV001"));
+    TEST_ASSERT_TRUE(mockRejectNoncanonicalFastBeeOtaTopic(
+        "/DEV001/http/upgrade/reply", 1, 5, "DEV001"));
+    TEST_ASSERT_FALSE(mockRejectNoncanonicalFastBeeOtaTopic(
+        "/1835/DEV001/function/get", 1, 1, "DEV001"));
+
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+    const size_t callbackStart = mqtt.find("void MQTTClient::mqttCallback");
+    const size_t callbackEnd = mqtt.find("bool MQTTClient::reconnect", callbackStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        callbackStart != std::string::npos && callbackEnd != std::string::npos,
+        "mqttCallback source block must exist");
+    const std::string callback = mqtt.substr(callbackStart, callbackEnd - callbackStart);
+
+    const size_t matchedIndex = callback.find("int8_t matchedSubIndex = -1");
+    const size_t typedLookup = callback.find(
+        "getTopicTypeByPath(topicStr, &matchedSubIndex)", matchedIndex);
+    const size_t canonicalTopic = callback.find(
+        "FASTBEE_OTA_COMMAND_TOPIC, false, MqttTopicType::OTA_UPGRADE", typedLookup);
+    const size_t configuredOta = callback.find(
+        "MqttTopicType::OTA_UPGRADE;", canonicalTopic);
+    const size_t strictGuard = callback.find(
+        "matchedOtaSubscription || tType == MqttTopicType::OTA_UPGRADE", configuredOta);
+    const size_t exactMatch = callback.find(
+        "topicStr != fastBeeOtaCommandTopic", strictGuard);
+    const size_t warning = callback.find(
+        "Rejected non-canonical FastBee OTA topic", exactMatch);
+    const size_t dropReturn = callback.find("return;", warning);
+    const size_t dataCommandPath = callback.find(
+        "if (tType == MqttTopicType::DATA_COMMAND)", dropReturn);
+    TEST_ASSERT_TRUE_MESSAGE(
+        matchedIndex != std::string::npos && typedLookup != std::string::npos &&
+        canonicalTopic != std::string::npos && configuredOta != std::string::npos &&
+        strictGuard != std::string::npos && exactMatch != std::string::npos &&
+        warning != std::string::npos && dropReturn != std::string::npos &&
+        dataCommandPath != std::string::npos && matchedIndex < typedLookup &&
+        typedLookup < canonicalTopic && canonicalTopic < configuredOta &&
+        configuredOta < strictGuard && strictGuard < exactMatch &&
+        exactMatch < warning && warning < dropReturn &&
+        dropReturn < dataCommandPath,
+        "Only /{deviceNum}/http/upgrade/set may reach OTA handling; mislabeled routes must drop before DATA_COMMAND");
+
+    TestLog::testEnd(true);
 }
 
 void test_topic_match_no_match_defaults_to_data_command() {
@@ -4978,6 +5050,91 @@ void test_topic_match_platform_publish_to_device_subscribe() {
     MockPubTopic pubs[] = {};
     int result = mockGetTopicTypeByPath(platformPublishTopic, subs, 1, pubs, 0, "1835", "DEV001");
     TEST_ASSERT_EQUAL(1, result);
+}
+
+enum class MockTransparentReportWireMode : uint8_t {
+    TEXT_JSON,
+    BINARY_HEX,
+    REJECT
+};
+
+static MockTransparentReportWireMode classifyTransparentReportPayload(
+        const String& payload) {
+    JsonDocument doc;
+    DeserializationError error =
+        deserializeJson(doc, payload.c_str(), payload.length());
+    if (!error && (doc.is<JsonArray>() || doc.is<JsonObject>())) {
+        return MockTransparentReportWireMode::TEXT_JSON;
+    }
+
+    const size_t hexLength = payload.length();
+    if (hexLength < 8U || (hexLength % 2U) != 0U) {
+        return MockTransparentReportWireMode::REJECT;
+    }
+    for (size_t i = 0; i < hexLength; ++i) {
+        const char c = payload.charAt(i);
+        const bool isHex = (c >= '0' && c <= '9') ||
+                           (c >= 'a' && c <= 'f') ||
+                           (c >= 'A' && c <= 'F');
+        if (!isHex) return MockTransparentReportWireMode::REJECT;
+    }
+    if (hexLength / 2U > 256U) {
+        return MockTransparentReportWireMode::REJECT;
+    }
+    return MockTransparentReportWireMode::BINARY_HEX;
+}
+
+void test_modbus_transparent_report_json_hex_coexistence() {
+    TestLog::testStart("MQTT Modbus transparent report JSON/HEX coexistence");
+
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::TEXT_JSON),
+        static_cast<int>(classifyTransparentReportPayload(
+            "[{\"id\":\"temperature\",\"value\":\"23.5\"}]")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::TEXT_JSON),
+        static_cast<int>(classifyTransparentReportPayload(
+            "  {\"id\":\"relay\",\"value\":1}")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::BINARY_HEX),
+        static_cast<int>(classifyTransparentReportPayload("010300000002C40B")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::REJECT),
+        static_cast<int>(classifyTransparentReportPayload("temperature=23.5")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::REJECT),
+        static_cast<int>(classifyTransparentReportPayload("[{invalid-json}]")));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(MockTransparentReportWireMode::REJECT),
+        static_cast<int>(classifyTransparentReportPayload("01030")));
+
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+    const size_t functionStart = mqtt.find("bool MQTTClient::publishReportData");
+    const size_t functionEnd = mqtt.find("bool MQTTClient::publishOtaReply", functionStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        functionStart != std::string::npos && functionEnd != std::string::npos,
+        "publishReportData source block must exist");
+    const std::string functionBody =
+        mqtt.substr(functionStart, functionEnd - functionStart);
+    const size_t jsonCheck = functionBody.find(
+        "payloadIsStructuredJson = mqttPayloadIsStructuredJson");
+    const size_t jsonTextBypass = functionBody.find(
+        "if (payloadIsStructuredJson) break;", jsonCheck);
+    const size_t hexValidation = functionBody.find("if (hexLen < 8", jsonTextBypass);
+    const size_t binaryPublish = functionBody.find(
+        "mqttClient.publish(fullTopic.c_str(), buf, byteLen", hexValidation);
+    const size_t textPublish = functionBody.find(
+        "publishToTopic((size_t)reportTopicIdx, payload)", binaryPublish);
+    TEST_ASSERT_TRUE_MESSAGE(
+        jsonCheck != std::string::npos && jsonTextBypass != std::string::npos &&
+        hexValidation != std::string::npos && binaryPublish != std::string::npos &&
+        textPublish != std::string::npos &&
+        jsonCheck < jsonTextBypass && jsonTextBypass < hexValidation &&
+        hexValidation < binaryPublish && binaryPublish < textPublish,
+        "transferType=1 must publish structured JSON as text, decode only valid HEX, and reject other text");
+
+    TestLog::testEnd(true);
 }
 
 // ============================================================
@@ -7064,10 +7221,12 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_topic_match_data_report_with_auto_prefix);
     RUN_TEST(test_topic_match_raw_topic_without_prefix);
     RUN_TEST(test_topic_match_ota_upgrade_topic);
+    RUN_TEST(test_mqtt_callback_rejects_noncanonical_ota_topic);
     RUN_TEST(test_topic_match_no_match_defaults_to_data_command);
     RUN_TEST(test_topic_match_platform_publish_to_device_subscribe);
 
     // Callback Payload Processing 回归测试
+    RUN_TEST(test_modbus_transparent_report_json_hex_coexistence);
     RUN_TEST(test_callback_json_detect_array);
     RUN_TEST(test_callback_json_detect_object);
     RUN_TEST(test_callback_json_detect_with_leading_whitespace);

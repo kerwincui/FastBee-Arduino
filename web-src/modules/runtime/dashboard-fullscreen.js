@@ -13,10 +13,15 @@
         _networkLoadPromise: null,
         _lastMonitorRefreshAt: 0,
         _lastNetworkRefreshAt: 0,
+        _initialized: false,
+        _destroyed: false,
         REFRESH_INTERVAL: 30000,  // 30 秒自动刷新
 
         // ============ 初始化 ============
         init: function() {
+            if (this._initialized) return;
+            this._initialized = true;
+            this._destroyed = false;
             // 绑定按钮事件
             var refreshBtn = document.getElementById('fullscreen-refresh-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', function() { FS.loadAll({ noCache: true, force: true }); });
@@ -32,6 +37,17 @@
 
             // 启动自动刷新
             this._setupAutoRefresh();
+
+            document.addEventListener('visibilitychange', function() {
+                if (document.hidden) {
+                    FS._suspend();
+                } else if (!FS._destroyed) {
+                    FS._setupSSE();
+                    FS.loadAll({ noCache: true, force: true });
+                }
+            });
+            window.addEventListener('pagehide', function() { FS.destroy(); });
+            window.addEventListener('beforeunload', function() { FS.destroy(); });
         },
 
         // ============ 数据加载 ============
@@ -87,10 +103,11 @@
 
                     // 网络状态
                     var network = data.network || {};
-                    var netStatus = network.connected
-                        ? '<span class="u-text-success">●</span> 已连接 (' + (network.ssid || 'N/A') + ')'
-                        : '<span class="u-text-danger">●</span> 未连接';
-                    self._setHtml('monitor-network-status', netStatus);
+                    self._renderConnectionStatus(
+                        'monitor-network-status',
+                        network.connected === true,
+                        network.ssid || 'N/A'
+                    );
                     self._setText('monitor-ip', network.ipAddress || '--');
 
                     // Flash 存储
@@ -181,20 +198,16 @@
                 var el = document.getElementById(id);
                 if (el) el.textContent = (val !== undefined && val !== null && val !== '') ? val : '--';
             };
-            var setHtml = function(id, html) {
-                var el = document.getElementById(id);
-                if (el) el.innerHTML = html;
-            };
-
             // 状态徽章
             var statusMap = {
-                connected:    '<span class="badge badge-success">已连接</span>',
-                disconnected: '<span class="badge badge-danger">未连接</span>',
-                connecting:   '<span class="badge badge-warning">连接中...</span>',
-                ap_mode:      '<span class="badge badge-primary">AP模式</span>',
-                failed:       '<span class="badge badge-danger">连接失败</span>'
+                connected:    { tone: 'success', text: '已连接' },
+                disconnected: { tone: 'danger', text: '未连接' },
+                connecting:   { tone: 'warning', text: '连接中...' },
+                ap_mode:      { tone: 'primary', text: 'AP模式' },
+                failed:       { tone: 'danger', text: '连接失败' }
             };
-            setHtml('ns-status', statusMap[d.status] || '<span class="badge badge-info">' + (d.status || '--') + '</span>');
+            var status = statusMap[d.status] || { tone: 'info', text: d.status || '--' };
+            this._renderBadge('ns-status', status.tone, status.text);
 
             // STA 信息
             setText('ns-ssid', d.ssid);
@@ -221,8 +234,14 @@
             if (rssi !== undefined && rssi !== null && rssi !== '') {
                 var pct = d.signalStrength || 0;
                 var toneClass = pct >= 70 ? 'u-text-success' : pct >= 40 ? 'u-text-warning' : 'u-text-danger';
-                setHtml('ns-rssi', '<span class="' + toneClass + '">' + rssi + ' dBm (' + pct + '%)</span>');
+                var rssiEl = document.getElementById('ns-rssi');
+                if (rssiEl) {
+                    rssiEl.className = toneClass;
+                    rssiEl.textContent = String(rssi) + ' dBm (' + String(pct) + '%)';
+                }
             } else {
+                var emptyRssiEl = document.getElementById('ns-rssi');
+                if (emptyRssiEl) emptyRssiEl.className = '';
                 setText('ns-rssi', '--');
             }
 
@@ -243,12 +262,16 @@
             setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
             setText('ns-tx-count', d.txCount !== undefined ? d.txCount + ' 条' : '--');
             setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + ' 条' : '--');
-            setHtml('ns-internet', d.internetAvailable
-                ? '<span class="badge badge-success">可访问</span>'
-                : '<span class="badge badge-danger">不可访问</span>');
-            setHtml('ns-conflict', d.conflictDetected
-                ? '<span class="badge badge-danger">已检测到冲突</span>'
-                : '<span class="badge badge-success">无冲突</span>');
+            this._renderBadge(
+                'ns-internet',
+                d.internetAvailable ? 'success' : 'danger',
+                d.internetAvailable ? '可访问' : '不可访问'
+            );
+            this._renderBadge(
+                'ns-conflict',
+                d.conflictDetected ? 'danger' : 'success',
+                d.conflictDetected ? '已检测到冲突' : '无冲突'
+            );
             setText('ns-uptime', d.uptimeFormatted || '--');
         },
 
@@ -290,7 +313,10 @@
             if (this._refreshTimer) {
                 clearTimeout(this._refreshTimer);
             }
+            if (this._destroyed || document.hidden) return;
             this._refreshTimer = setTimeout(function() {
+                self._refreshTimer = null;
+                if (self._destroyed || document.hidden) return;
                 self.loadAll();
             }, this._getAutoRefreshIntervalMs());
         },
@@ -312,6 +338,7 @@
         },
 
         _setupSSE: function() {
+            if (this._destroyed || document.hidden || this._sseSource) return;
             try {
                 this._sseSource = new EventSource('/api/events');
                 var self = this;
@@ -355,17 +382,25 @@
         },
 
         // ============ 关闭窗口 ============
-        closeWindow: function() {
-            // 清理 SSE 连接
-            if (this._sseSource) {
-                this._sseSource.close();
-                this._sseSource = null;
-            }
-            // 清理定时器
+        _suspend: function() {
             if (this._refreshTimer) {
                 clearTimeout(this._refreshTimer);
                 this._refreshTimer = null;
             }
+            if (this._sseSource) {
+                this._sseSource.close();
+                this._sseSource = null;
+            }
+        },
+
+        destroy: function() {
+            if (this._destroyed) return;
+            this._destroyed = true;
+            this._suspend();
+        },
+
+        closeWindow: function() {
+            this.destroy();
             // 尝试关闭窗口（仅对脚本打开的窗口有效）
             window.close();
             // 如果 window.close() 被浏览器阻止，显示提示
@@ -381,9 +416,27 @@
             if (el) el.textContent = val;
         },
 
-        _setHtml: function(id, html) {
+        _renderConnectionStatus: function(id, connected, ssid) {
             var el = document.getElementById(id);
-            if (el) el.innerHTML = html;
+            if (!el) return;
+            el.textContent = '';
+            var dot = document.createElement('span');
+            dot.className = connected ? 'u-text-success' : 'u-text-danger';
+            dot.textContent = '●';
+            el.appendChild(dot);
+            el.appendChild(document.createTextNode(
+                connected ? ' 已连接 (' + String(ssid || 'N/A') + ')' : ' 未连接'
+            ));
+        },
+
+        _renderBadge: function(id, tone, text) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = '';
+            var badge = document.createElement('span');
+            badge.className = 'badge badge-' + tone;
+            badge.textContent = String(text == null || text === '' ? '--' : text);
+            el.appendChild(badge);
         },
 
         _setBar: function(id, pct) {

@@ -2,6 +2,7 @@
 #define PERIPHERAL_TYPES_H
 
 #include <Arduino.h>
+#include "core/FeatureFlags.h"
 
 // 外设接口类型枚举
 enum class PeripheralType {
@@ -54,6 +55,8 @@ enum class PeripheralType {
     LCD1602 = 52,       // LCD1602 I2C 字符液晶（通过 PCF8574 扩展板）
     IR_RECEIVER = 53,   // 红外接收头（VS1838B/HS0038 等，1个数据引脚，IRremoteESP8266 解码）
     RFID_MFRC522 = 54,  // MFRC522 RFID（SPI：SCK/MOSI/MISO/SS/RST）
+    IO_EXPANDER = 55,   // Shared I2C GPIO provider; logical children retain GPIO types
+    SCREEN_DISPLAY = 56, // Graphical display with optional external touch controller
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -101,7 +104,7 @@ inline PeripheralCategory getPeripheralCategory(PeripheralType type) {
     if (typeValue >= 26 && typeValue <= 30) return PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
     if (typeValue >= 31 && typeValue <= 35) return PeripheralCategory::CATEGORY_DEBUG;
     if (typeValue >= 36 && typeValue <= 50) return PeripheralCategory::CATEGORY_SPECIAL;
-    if (typeValue >= 51 && typeValue <= 55) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue >= 51 && typeValue <= 56) return PeripheralCategory::CATEGORY_SPECIAL;
     if (typeValue == 60) return PeripheralCategory::CATEGORY_SPECIAL;
     return PeripheralCategory::CATEGORY_GPIO;
 }
@@ -112,6 +115,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         // 通信接口
         case PeripheralType::UART: return "UART";
         case PeripheralType::I2C: return "I2C";
+        case PeripheralType::IO_EXPANDER: return "IO Expander";
         case PeripheralType::SPI: return "SPI";
         case PeripheralType::CAN: return "CAN";
         case PeripheralType::USB: return "USB";
@@ -156,6 +160,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::LCD1602: return "LCD1602";
         case PeripheralType::IR_RECEIVER: return "IR Receiver";
         case PeripheralType::RFID_MFRC522: return "MFRC522 RFID";
+        case PeripheralType::SCREEN_DISPLAY: return "Display";
 
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
@@ -199,6 +204,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::SEVEN_SEGMENT_TM1637:  // CLK + DIO
         case PeripheralType::LCD1602:               // SDA + SCL
         case PeripheralType::SENSOR_GENERIC:        // Local BMP280/MPU6050: SDA + SCL
+        case PeripheralType::IO_EXPANDER:
             return 2;
             
         // 三引脚
@@ -230,6 +236,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         
         // Modbus外设不使用GPIO引脚
         case PeripheralType::MODBUS_DEVICE:
+        case PeripheralType::SCREEN_DISPLAY:
             return 0;
 
         // 设备事件虚拟外设不使用GPIO引脚
@@ -248,6 +255,7 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     // 通信接口
     if (strcasecmp(typeStr, "UART") == 0) return PeripheralType::UART;
     if (strcasecmp(typeStr, "I2C") == 0) return PeripheralType::I2C;
+    if (strcasecmp(typeStr, "IO_EXPANDER") == 0) return PeripheralType::IO_EXPANDER;
     if (strcasecmp(typeStr, "SPI") == 0) return PeripheralType::SPI;
     if (strcasecmp(typeStr, "CAN") == 0) return PeripheralType::CAN;
     if (strcasecmp(typeStr, "USB") == 0) return PeripheralType::USB;
@@ -302,6 +310,10 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "RFID_MFRC522") == 0 ||
         strcasecmp(typeStr, "MFRC522") == 0 ||
         strcasecmp(typeStr, "RFID") == 0) return PeripheralType::RFID_MFRC522;
+    if (strcasecmp(typeStr, "IR_RECEIVER") == 0 ||
+        strcasecmp(typeStr, "IR") == 0) return PeripheralType::IR_RECEIVER;
+    if (strcasecmp(typeStr, "DISPLAY") == 0 ||
+        strcasecmp(typeStr, "SCREEN") == 0) return PeripheralType::SCREEN_DISPLAY;
 
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
@@ -314,10 +326,54 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
 
 // 从整数值解析外设类型
 inline PeripheralType peripheralTypeFromInt(int value) {
-    if ((value >= 0 && value <= 55) || value == 60) {
-        return static_cast<PeripheralType>(value);
+    switch (value) {
+        case static_cast<int>(PeripheralType::UNCONFIGURED):
+        case static_cast<int>(PeripheralType::UART):
+        case static_cast<int>(PeripheralType::I2C):
+        case static_cast<int>(PeripheralType::IO_EXPANDER):
+        case static_cast<int>(PeripheralType::SPI):
+        case static_cast<int>(PeripheralType::CAN):
+        case static_cast<int>(PeripheralType::USB):
+        case static_cast<int>(PeripheralType::GPIO_DIGITAL_INPUT):
+        case static_cast<int>(PeripheralType::GPIO_DIGITAL_OUTPUT):
+        case static_cast<int>(PeripheralType::GPIO_DIGITAL_INPUT_PULLUP):
+        case static_cast<int>(PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN):
+        case static_cast<int>(PeripheralType::GPIO_ANALOG_INPUT):
+        case static_cast<int>(PeripheralType::GPIO_ANALOG_OUTPUT):
+        case static_cast<int>(PeripheralType::GPIO_PWM_OUTPUT):
+        case static_cast<int>(PeripheralType::GPIO_INTERRUPT_RISING):
+        case static_cast<int>(PeripheralType::GPIO_INTERRUPT_FALLING):
+        case static_cast<int>(PeripheralType::GPIO_INTERRUPT_CHANGE):
+        case static_cast<int>(PeripheralType::GPIO_TOUCH):
+        case static_cast<int>(PeripheralType::ADC):
+        case static_cast<int>(PeripheralType::DAC):
+        case static_cast<int>(PeripheralType::JTAG):
+        case static_cast<int>(PeripheralType::SWD):
+        case static_cast<int>(PeripheralType::LCD):
+        case static_cast<int>(PeripheralType::SDIO):
+        case static_cast<int>(PeripheralType::SENSOR_GENERIC):
+        case static_cast<int>(PeripheralType::CAMERA):
+        case static_cast<int>(PeripheralType::ETHERNET):
+        case static_cast<int>(PeripheralType::PWM_SERVO):
+        case static_cast<int>(PeripheralType::STEPPER_MOTOR):
+        case static_cast<int>(PeripheralType::ENCODER):
+        case static_cast<int>(PeripheralType::ONE_WIRE):
+        case static_cast<int>(PeripheralType::NEO_PIXEL):
+        case static_cast<int>(PeripheralType::SEVEN_SEGMENT_TM1637):
+        case static_cast<int>(PeripheralType::RF_MODULE):
+        case static_cast<int>(PeripheralType::RADAR_SENSOR):
+        case static_cast<int>(PeripheralType::DS1302_RTC):
+        case static_cast<int>(PeripheralType::MODBUS_DEVICE):
+        case static_cast<int>(PeripheralType::LCD1602):
+        case static_cast<int>(PeripheralType::IR_RECEIVER):
+        case static_cast<int>(PeripheralType::RFID_MFRC522):
+        case static_cast<int>(PeripheralType::SCREEN_DISPLAY):
+        case static_cast<int>(PeripheralType::DEVICE_EVENT):
+            return static_cast<PeripheralType>(value);
+        // RESERVED_46 and numeric gaps are not valid serialized types.
+        default:
+            return PeripheralType::UNCONFIGURED;
     }
-    return PeripheralType::UNCONFIGURED;
 }
 
 // ========== 外设类型分类辅助方法 ==========
@@ -407,30 +463,48 @@ inline bool isPeripheralTypeImplemented(PeripheralType type) {
         case PeripheralType::GPIO_INTERRUPT_RISING:
         case PeripheralType::GPIO_INTERRUPT_FALLING:
         case PeripheralType::GPIO_INTERRUPT_CHANGE:
-        case PeripheralType::GPIO_TOUCH:
         case PeripheralType::ADC:
         case PeripheralType::DAC:
-        case PeripheralType::LCD:
         case PeripheralType::SDIO:
         case PeripheralType::SENSOR_GENERIC:
         case PeripheralType::PWM_SERVO:
         case PeripheralType::STEPPER_MOTOR:
         case PeripheralType::ENCODER:
         case PeripheralType::ONE_WIRE:
-        case PeripheralType::NEO_PIXEL:
-        case PeripheralType::SEVEN_SEGMENT_TM1637:
         case PeripheralType::RF_MODULE:
         case PeripheralType::RADAR_SENSOR:
-        case PeripheralType::DS1302_RTC:
-        case PeripheralType::LCD1602:
-        case PeripheralType::RFID_MFRC522:
-        case PeripheralType::MODBUS_DEVICE:
-        case PeripheralType::IR_RECEIVER:
         case PeripheralType::DEVICE_EVENT:
             return true;
+        case PeripheralType::IO_EXPANDER:
+            return FASTBEE_ENABLE_IO_EXPANDER != 0;
+        case PeripheralType::LCD:
+            return FASTBEE_ENABLE_LCD != 0;
+        case PeripheralType::NEO_PIXEL:
+            return FASTBEE_ENABLE_NEOPIXEL != 0;
+        case PeripheralType::SEVEN_SEGMENT_TM1637:
+            return FASTBEE_ENABLE_SEVEN_SEGMENT != 0;
+        case PeripheralType::DS1302_RTC:
+            return FASTBEE_ENABLE_DS1302 != 0;
+        case PeripheralType::LCD1602:
+            return FASTBEE_ENABLE_LCD1602 != 0;
+        case PeripheralType::RFID_MFRC522:
+            return FASTBEE_ENABLE_RFID != 0;
+        case PeripheralType::MODBUS_DEVICE:
+            return FASTBEE_ENABLE_MODBUS != 0;
+        case PeripheralType::IR_RECEIVER:
+            return FASTBEE_ENABLE_IR_REMOTE != 0;
+        case PeripheralType::SCREEN_DISPLAY:
+            return FASTBEE_ENABLE_SCREEN_UI != 0;
         default:
             return false;
     }
+}
+
+// Protocol-owned targets may be executable at runtime but must not be created
+// or mutated through the ordinary peripheral configuration surface.
+inline bool isPeripheralTypeUserConfigurable(PeripheralType type) {
+    return type != PeripheralType::MODBUS_DEVICE &&
+           isPeripheralTypeImplemented(type);
 }
 
 #endif // PERIPHERAL_TYPES_H

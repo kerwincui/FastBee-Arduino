@@ -13,19 +13,24 @@
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecScheduler.h"
 #include "core/PeriphExecWorkerPool.h"
+#include "core/PointHistory.h"
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
+#include "core/SensorConfigEpoch.h"
 #include "utils/StringUtils.h"
 #include "utils/FileUtils.h"
+#include <cmath>
+#include <cstdlib>
 #include <new>
 
 namespace {
 constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC = 1;
-constexpr uint32_t PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC = 86400UL;
+constexpr uint32_t PERIPH_EXEC_MIN_POLL_INTERVAL_SEC = 5;
+constexpr uint32_t PERIPH_EXEC_MAX_INTERVAL_SEC = 86400UL;
 constexpr uint16_t PERIPH_EXEC_MIN_POLL_TIMEOUT_MS = 100;
 constexpr uint16_t PERIPH_EXEC_MAX_POLL_TIMEOUT_MS = 5000;
 constexpr uint16_t PERIPH_EXEC_HEAVY_POLL_TIMEOUT_MS = 3000;
@@ -116,6 +121,147 @@ static bool validateRuleProfileLimits(const PeriphExecRule& rule, const char* op
         }
     }
     return true;
+}
+
+static bool actionRequiresPeripheralTarget(uint8_t actionType) {
+    switch (static_cast<ExecActionType>(actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_BLINK:
+        case ExecActionType::ACTION_BREATHE:
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+        case ExecActionType::ACTION_CALL_PERIPHERAL:
+        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
+        case ExecActionType::ACTION_STEPPER_CONTROL:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
+        case ExecActionType::ACTION_MODBUS_REG_WRITE:
+        case ExecActionType::ACTION_SENSOR_READ:
+        case ExecActionType::ACTION_DISPLAY_NUMBER:
+        case ExecActionType::ACTION_DISPLAY_TEXT:
+        case ExecActionType::ACTION_DISPLAY_CLEAR:
+        case ExecActionType::ACTION_OLED_DISPLAY:
+        case ExecActionType::ACTION_RF_SEND:
+        case ExecActionType::ACTION_UART_SEND:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool isTerminalSystemAction(uint8_t actionType) {
+    return actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
+           actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE) ||
+           actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE);
+}
+
+static bool isPanelSafeAction(uint8_t actionType) {
+    switch (static_cast<ExecActionType>(actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_BLINK:
+        case ExecActionType::ACTION_BREATHE:
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
+        case ExecActionType::ACTION_STEPPER_CONTROL:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
+        case ExecActionType::ACTION_MODBUS_REG_WRITE:
+        case ExecActionType::ACTION_SENSOR_READ:
+        case ExecActionType::ACTION_DISPLAY_NUMBER:
+        case ExecActionType::ACTION_DISPLAY_TEXT:
+        case ExecActionType::ACTION_DISPLAY_CLEAR:
+        case ExecActionType::ACTION_OLED_DISPLAY:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
+        case ExecActionType::ACTION_REMOTE_CHANNEL:
+        case ExecActionType::ACTION_REMOTE_READ:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool isTerminalExecStatus(AsyncExecStatus status) {
+    return status == AsyncExecStatus::COMPLETED ||
+           status == AsyncExecStatus::FAILED ||
+           status == AsyncExecStatus::CANCELLED ||
+           status == AsyncExecStatus::REJECTED ||
+           status == AsyncExecStatus::TIMED_OUT;
+}
+
+static bool isRuleSensorTarget(PeripheralType type) {
+    return isGpioDigitalInputType(type) ||
+           type == PeripheralType::GPIO_ANALOG_INPUT ||
+           type == PeripheralType::ADC ||
+           type == PeripheralType::SENSOR_GENERIC ||
+           type == PeripheralType::ONE_WIRE ||
+           type == PeripheralType::ENCODER ||
+           type == PeripheralType::RADAR_SENSOR ||
+           type == PeripheralType::RF_MODULE;
+}
+
+static bool actionMatchesPeripheralTarget(uint8_t actionType,
+                                          const PeripheralConfig& target) {
+    if (target.isExpanderChannel()) {
+        const auto action = static_cast<ExecActionType>(actionType);
+        if (action == ExecActionType::ACTION_SET_PWM || action == ExecActionType::ACTION_SET_DAC ||
+            action == ExecActionType::ACTION_BREATHE) return false;
+    }
+    const PeripheralType type = target.type;
+    switch (static_cast<ExecActionType>(actionType)) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+        case ExecActionType::ACTION_LOW_INVERTED:
+        case ExecActionType::ACTION_GPIO_TOGGLE:
+            return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+                   type == PeripheralType::GPIO_PWM_OUTPUT ||
+                   type == PeripheralType::GPIO_ANALOG_OUTPUT;
+        case ExecActionType::ACTION_BLINK:
+            return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+                   type == PeripheralType::GPIO_PWM_OUTPUT;
+        case ExecActionType::ACTION_BREATHE:
+            return type == PeripheralType::GPIO_PWM_OUTPUT ||
+                   type == PeripheralType::GPIO_ANALOG_OUTPUT;
+        case ExecActionType::ACTION_SET_PWM:
+            return type == PeripheralType::GPIO_PWM_OUTPUT ||
+                   type == PeripheralType::GPIO_ANALOG_OUTPUT ||
+                   type == PeripheralType::PWM_SERVO ||
+                   (type == PeripheralType::GPIO_DIGITAL_OUTPUT &&
+                    target.params.gpio.passive);
+        case ExecActionType::ACTION_SET_DAC:
+            return type == PeripheralType::DAC;
+        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
+            return type == PeripheralType::NEO_PIXEL;
+        case ExecActionType::ACTION_STEPPER_CONTROL:
+            return type == PeripheralType::STEPPER_MOTOR;
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
+        case ExecActionType::ACTION_MODBUS_REG_WRITE:
+            return target.isModbusPeripheral();
+        case ExecActionType::ACTION_SENSOR_READ:
+            return isRuleSensorTarget(type);
+        case ExecActionType::ACTION_DISPLAY_NUMBER:
+        case ExecActionType::ACTION_DISPLAY_TEXT:
+        case ExecActionType::ACTION_DISPLAY_CLEAR:
+            return type == PeripheralType::SEVEN_SEGMENT_TM1637;
+        case ExecActionType::ACTION_OLED_DISPLAY:
+            return type == PeripheralType::LCD;
+        case ExecActionType::ACTION_RF_SEND:
+            return type == PeripheralType::RF_MODULE;
+        case ExecActionType::ACTION_UART_SEND:
+            return type == PeripheralType::UART;
+        case ExecActionType::ACTION_CALL_PERIPHERAL:
+            // This generic action has a command-dependent capability check in
+            // the executor. The shared invariant here is a real, stable target.
+            return true;
+        default:
+            return true;
+    }
 }
 
 // 判断字符串是否为有效数值（整数或浮点数，含负数）
@@ -209,6 +355,8 @@ static bool rulesMatch(const PeriphExecRule& actual,
         actual.protocolType != expected.protocolType ||
         actual.scriptContent != expected.scriptContent ||
         actual.reportAfterExec != expected.reportAfterExec ||
+        actual.allowPanelControl != expected.allowPanelControl ||
+        actual.recordHistory != expected.recordHistory ||
         actual._cachedNeedsModbus != expected._cachedNeedsModbus ||
         actual._cachedHasPollCollectionAction != expected._cachedHasPollCollectionAction ||
         actual.triggers.size() != expected.triggers.size() ||
@@ -305,6 +453,25 @@ void PeriphExecManager::cancelWorkerJob(AsyncExecContext* ctx) {
         owner->_runningRuleIds.erase(ctx->ruleCopy.id);
         owner->_runningStartTime.erase(ctx->ruleCopy.id);
     }
+
+    AsyncExecResult result;
+    result.operationId = ctx->operationId;
+    result.ruleId = ctx->ruleCopy.id;
+    result.ruleName = ctx->ruleCopy.name;
+    result.status = AsyncExecStatus::CANCELLED;
+    result.errorCode = AsyncExecError::CANCELLED_BY_SYSTEM;
+    result.queuedAt = ctx->queuedAt;
+    result.startTime = 0;
+    result.endTime = millis();
+    result.deadlineAt = ctx->deadlineAt;
+    result.queuePosition = ctx->queuePosition;
+    result.asyncExecution = true;
+    result.actionCount = static_cast<uint8_t>(
+        ctx->ruleCopy.actions.size() > 255 ? 255 : ctx->ruleCopy.actions.size());
+    owner->recordResult(result);
+    if (FastBee::MemoryBudget::dramFree() > 10000) {
+        owner->dispatchPeriphExecEvent(ctx->ruleCopy.id, "cancelled");
+    }
     if (ctx->taskSlot) xSemaphoreGive(ctx->taskSlot);
     owner->_contextPool.release(ctx);
 }
@@ -317,6 +484,12 @@ bool PeriphExecManager::initialize() {
     _runningRulesMutex = xSemaphoreCreateMutex();
     _pollIngressMutex = xSemaphoreCreateMutex();
     _sensorCacheMutex = xSemaphoreCreateMutex();
+#if FASTBEE_ENABLE_POINT_HISTORY
+    FastBee::PointHistory::instance().initialize();
+#endif
+    // Allocate the bounded history once during startup. Runtime lifecycle
+    // transitions then update existing slots without vector growth.
+    executionResults.reserve(ASYNC_EXEC_RESULT_HISTORY_LIMIT);
 
     // 创建子模块
     _executor.reset(new PeriphExecExecutor());
@@ -460,7 +633,7 @@ bool PeriphExecManager::shouldAvoidSyncFallback(const PeriphExecRule& rule) cons
     return false;
 }
 
-void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
+bool PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
                                                  bool hasPollCollectionAction,
                                                  const String& ruleName) const {
     uint32_t originalIntervalSec = trigger.intervalSec;
@@ -471,8 +644,8 @@ void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
     if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER)) {
         if (trigger.intervalSec < PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC) {
             trigger.intervalSec = PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC;
-        } else if (trigger.intervalSec > PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC) {
-            trigger.intervalSec = PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC;
+        } else if (trigger.intervalSec > PERIPH_EXEC_MAX_INTERVAL_SEC) {
+            trigger.intervalSec = PERIPH_EXEC_MAX_INTERVAL_SEC;
         }
         // 缓存 timePoint 解析结果，避免 checkTimerTriggers 每秒在锁内重复解析字符串
         if (trigger.timerMode == 1 && trigger.timePoint.length() >= 5) {
@@ -491,6 +664,14 @@ void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
     }
 
     if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+        // Poll 会占用串行总线和 worker；与 Scheduler 的 5 秒下限保持一致，
+        // 使保存值、API 回显和实际运行值不再出现 1s/5s 分裂。
+        if (trigger.intervalSec < PERIPH_EXEC_MIN_POLL_INTERVAL_SEC) {
+            trigger.intervalSec = PERIPH_EXEC_MIN_POLL_INTERVAL_SEC;
+        } else if (trigger.intervalSec > PERIPH_EXEC_MAX_INTERVAL_SEC) {
+            trigger.intervalSec = PERIPH_EXEC_MAX_INTERVAL_SEC;
+        }
+
         if (trigger.pollResponseTimeout < PERIPH_EXEC_MIN_POLL_TIMEOUT_MS) {
             trigger.pollResponseTimeout = PERIPH_EXEC_MIN_POLL_TIMEOUT_MS;
         } else if (trigger.pollResponseTimeout > PERIPH_EXEC_MAX_POLL_TIMEOUT_MS) {
@@ -520,10 +701,11 @@ void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
         }
     }
 
-    if (originalIntervalSec != trigger.intervalSec ||
-        originalTimeout != trigger.pollResponseTimeout ||
-        originalRetries != trigger.pollMaxRetries ||
-        originalInterDelay != trigger.pollInterPollDelay) {
+    const bool modified = originalIntervalSec != trigger.intervalSec ||
+                          originalTimeout != trigger.pollResponseTimeout ||
+                          originalRetries != trigger.pollMaxRetries ||
+                          originalInterDelay != trigger.pollInterPollDelay;
+    if (modified) {
         LOGGER.warningf("[PeriphExec] Sanitized trigger params for rule '%s' (type=%d, interval=%lu, timeout=%u, retries=%u, delay=%u)",
                         ruleName.c_str(),
                         trigger.triggerType,
@@ -532,16 +714,20 @@ void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
                         static_cast<unsigned int>(trigger.pollMaxRetries),
                         static_cast<unsigned int>(trigger.pollInterPollDelay));
     }
+    return modified;
 }
 
-void PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
+bool PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
     bool hasPollCollectionAction = ruleHasPollCollectionAction(rule);
+    bool modified = false;
     for (auto& trigger : rule.triggers) {
-        sanitizeTriggerForSafety(trigger, hasPollCollectionAction, rule.name);
+        modified = sanitizeTriggerForSafety(trigger, hasPollCollectionAction,
+                                             rule.name) || modified;
     }
     // 缓存规则级别标志，避免热路径重复遍历 actions
     rule._cachedHasPollCollectionAction = hasPollCollectionAction;
     rule._cachedNeedsModbus = ruleNeedsModbus(rule);
+    return modified;
 }
 
 unsigned long PeriphExecManager::getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const {
@@ -595,6 +781,171 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
     return added;
 }
 
+bool PeriphExecManager::validateRuleActionsLocked(
+    const PeriphExecRule& rule, String& errorMsg) const {
+    PeripheralManager& peripherals = PeripheralManager::getInstance();
+    bool hasRecordableAction = false;
+
+    for (size_t index = 0; index < rule.actions.size(); ++index) {
+        const ExecAction& action = rule.actions[index];
+        const String actionPath = String("Action ") + String(index + 1U);
+
+        if (action.actionType >
+                static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ) ||
+            action.actionType ==
+                static_cast<uint8_t>(ExecActionType::ACTION_RESERVED_20)) {
+            errorMsg = "ACTION_TYPE_UNSUPPORTED: " + actionPath;
+            return false;
+        }
+
+        if (rule.allowPanelControl && !isPanelSafeAction(action.actionType)) {
+            errorMsg = "PANEL_ACTION_NOT_ALLOWED: " + actionPath;
+            return false;
+        }
+
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ)) {
+            hasRecordableAction = true;
+        }
+
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) {
+            if (action.targetPeriphId.isEmpty()) {
+                errorMsg = "ACTION_TARGET_REQUIRED: remote channel ID is required";
+                return false;
+            }
+            if (action.useReceivedValue) {
+                if (!action.actionValue.isEmpty()) {
+                    errorMsg = "ACTION_VALUE_INVALID: received-value remote action must not store a fixed value";
+                    return false;
+                }
+            } else if (action.actionValue != "on" && action.actionValue != "off" &&
+                       action.actionValue != "trigger") {
+                errorMsg = "ACTION_VALUE_INVALID: remote channel value must be on, off or trigger";
+                return false;
+            }
+            continue;
+        }
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ)) {
+            if (action.targetPeriphId.isEmpty() || !action.actionValue.isEmpty() ||
+                action.useReceivedValue) {
+                errorMsg = "ACTION_VALUE_INVALID: remote read requires an ID and no value";
+                return false;
+            }
+            continue;
+        }
+
+        // Factory reset is deliberately not an automatable rule action. It is
+        // only legal through the dedicated reset endpoint with fresh password
+        // authentication and a one-time RESET confirmation.
+        if (action.actionType == static_cast<uint8_t>(
+                                     ExecActionType::ACTION_SYS_FACTORY_RESET)) {
+            errorMsg = "ACTION_NOT_AUTOMATABLE: factory reset cannot be saved in a rule";
+            return false;
+        }
+        if (isTerminalSystemAction(action.actionType) &&
+            index + 1U != rule.actions.size()) {
+            errorMsg = "ACTION_ORDER_INVALID: restart and feature actions must be last";
+            return false;
+        }
+
+        if (action.actionType == static_cast<uint8_t>(
+                                     ExecActionType::ACTION_TRIGGER_EVENT)) {
+            if (action.targetPeriphId.isEmpty()) {
+                errorMsg = "ACTION_TARGET_REQUIRED: trigger-event action requires an event ID";
+                return false;
+            }
+            continue;
+        }
+
+        if (action.actionType == static_cast<uint8_t>(
+                                     ExecActionType::ACTION_ENABLE_EXEC_RULE) ||
+            action.actionType == static_cast<uint8_t>(
+                                     ExecActionType::ACTION_DISABLE_EXEC_RULE)) {
+            if (action.targetPeriphId.isEmpty()) {
+                errorMsg = "ACTION_TARGET_REQUIRED: rule-control action requires a rule ID";
+                return false;
+            }
+            if (rules.count(action.targetPeriphId) == 0) {
+                errorMsg = String("ACTION_TARGET_NOT_FOUND: target rule '") +
+                           action.targetPeriphId + "' does not exist";
+                return false;
+            }
+            continue;
+        }
+
+        const bool requiresPeripheral =
+            actionRequiresPeripheralTarget(action.actionType);
+        if (requiresPeripheral && action.targetPeriphId.isEmpty()) {
+            errorMsg = "ACTION_TARGET_REQUIRED: " + actionPath +
+                       " requires a target peripheral";
+            return false;
+        }
+
+        // SENSOR_READ and CALL_PERIPHERAL can carry an embedded periphId.
+        // Never allow that secondary field to redirect execution away from the
+        // target which was validated and shown to the user.
+        String jsonValue = action.actionValue;
+        jsonValue.trim();
+        const bool jsonAction = !jsonValue.isEmpty() && jsonValue[0] == '{';
+        const bool sensorRead = action.actionType == static_cast<uint8_t>(
+                                    ExecActionType::ACTION_SENSOR_READ);
+        const bool jsonRequired = sensorRead;
+        String embeddedPeriphId;
+        if (jsonAction) {
+            JsonDocument actionDocument;
+            const DeserializationError jsonError =
+                deserializeJson(actionDocument, jsonValue);
+            if (jsonError) {
+                if (jsonRequired || action.actionType == static_cast<uint8_t>(
+                        ExecActionType::ACTION_CALL_PERIPHERAL)) {
+                    errorMsg = "ACTION_VALUE_INVALID: " + actionPath +
+                               " contains invalid JSON";
+                    return false;
+                }
+            } else if (actionDocument["periphId"].is<const char*>()) {
+                embeddedPeriphId =
+                    actionDocument["periphId"].as<const char*>();
+            }
+        } else if (jsonRequired) {
+            errorMsg = "ACTION_VALUE_INVALID: sensor-read action requires JSON parameters";
+            return false;
+        }
+
+        if (sensorRead && embeddedPeriphId.isEmpty()) {
+            errorMsg = "ACTION_TARGET_REQUIRED: sensor-read actionValue.periphId is required";
+            return false;
+        }
+        if (!embeddedPeriphId.isEmpty() &&
+            embeddedPeriphId != action.targetPeriphId) {
+            errorMsg = "ACTION_TARGET_CONFLICT: actionValue.periphId must match targetPeriphId";
+            return false;
+        }
+
+        if (!requiresPeripheral) continue;
+
+        PeripheralConfig target;
+        if (!peripherals.getPeripheralSnapshot(action.targetPeriphId, target)) {
+            errorMsg = String("ACTION_TARGET_NOT_FOUND: peripheral '") +
+                       action.targetPeriphId + "' does not exist";
+            return false;
+        }
+        if (!actionMatchesPeripheralTarget(action.actionType, target)) {
+            errorMsg = String("ACTION_TARGET_TYPE_MISMATCH: action ") +
+                       String(action.actionType) + " is incompatible with " +
+                       getPeripheralTypeName(target.type);
+            return false;
+        }
+        // A disabled target is valid for pre-configuration. Runtime execution
+        // remains fail-closed until the peripheral is enabled and initialized.
+    }
+    if (rule.recordHistory && !hasRecordableAction) {
+        errorMsg = "HISTORY_SOURCE_REQUIRED: recordHistory requires a numeric collection action";
+        return false;
+    }
+    return true;
+}
+
 bool PeriphExecManager::addRuleLocked(const PeriphExecRule& rule,
                                       String& errorMsg,
                                       String* storedId) {
@@ -634,6 +985,7 @@ bool PeriphExecManager::addRuleLocked(const PeriphExecRule& rule,
     if (!validateRuleProfileLimits(newRule, "addRule", &errorMsg)) {
         return false;
     }
+    if (!validateRuleActionsLocked(newRule, errorMsg)) return false;
     sanitizeRuleForSafety(newRule);
     // 重置运行时字段
     for (auto& t : newRule.triggers) {
@@ -683,6 +1035,7 @@ bool PeriphExecManager::updateRuleLocked(const String& id,
         return false;
     }
     if (!validateRuleProfileLimits(rule, "updateRule", &errorMsg)) return false;
+    if (!validateRuleActionsLocked(rule, errorMsg)) return false;
 
     // 字段校验：名称不能为空，至少有一个触发器和一个动作
     if (rule.name.isEmpty()) {
@@ -1002,73 +1355,338 @@ void PeriphExecManager::rebuildDataSourceCache() {
     }
 }
 
-void PeriphExecManager::updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit,
-                                              const String& dataField, const String& periphId) {
-    static unsigned long lastLockWarn = 0;
-    unsigned long now = millis();
-    bool cacheUpdated = false;
+bool PeriphExecManager::updateSensorReadCache(
+    const String& key, const String& label, const String& value, const String& unit,
+    const String& dataField, const String& periphId, uint32_t sampleTimestamp,
+    uint32_t maxAgeMs, bool recordable, uint32_t sampleIdentity,
+    const String& sourceRevision, uint32_t configVersion) {
+    ObservationUpdate update;
+    update.sourceRef = key;
+    update.label = label;
+    update.value = value;
+    update.unit = unit;
+    update.valueType = "number";
+    update.dataField = dataField;
+    update.periphId = periphId;
+    update.sourceRevision = sourceRevision.isEmpty()
+        ? periphId + ":" + dataField + ":" + unit : sourceRevision;
+    update.quality = ObservationQuality::GOOD;
+    update.sampleTimestamp = sampleTimestamp;
+    update.maxAgeMs = maxAgeMs;
+    update.sampleIdentity = sampleIdentity;
+    update.recordable = recordable;
+    return upsertObservation(update, configVersion);
+}
 
-    if (_sensorCacheMutex && xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        // 淘汰最旧条目（当达到上限时）
-        if (_sensorReadCache.size() >= SENSOR_CACHE_MAX_ENTRIES && _sensorReadCache.find(key) == _sensorReadCache.end()) {
-            // 找到最旧的条目并删除
+bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint32_t configVersion) {
+    static std::atomic<uint32_t> lastLockWarn{0};
+    if (update.sourceRef.isEmpty() || update.sourceRef.length() > 96 ||
+        !_sensorCacheMutex) return false;
+    if (configVersion && (update.label.length() > 128 || update.value.length() > 96 ||
+        update.unit.length() > 32 || update.dataField.length() > 64 || update.periphId.length() > 40 ||
+        update.sourceRevision.length() > 192 || update.valueType.length() > 16 || update.error.length() > 160)) return false;
+
+    const unsigned long now = millis();
+    ObservationUpdate accepted = update;
+    uint32_t publicationToken = 0;
+    auto commit = [&]() {
+        MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
+        if (!guard.isLocked()) return false;
+        auto existing = _sensorReadCache.find(update.sourceRef);
+        if (_sensorReadCache.size() >= SENSOR_CACHE_MAX_ENTRIES &&
+            existing == _sensorReadCache.end()) {
             auto oldest = _sensorReadCache.begin();
             for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end(); ++it) {
                 if (it->second.timestamp < oldest->second.timestamp) oldest = it;
             }
             _sensorReadCache.erase(oldest);
         }
-        SensorReadCache& cache = _sensorReadCache[key];
-        cache.label = label;
-        cache.value = value;
-        cache.unit = unit;
-        cache.dataField = dataField;
-        cache.periphId = periphId;
-        cache.timestamp = now;
-        cacheUpdated = true;
-        xSemaphoreGive(_sensorCacheMutex);
+
+        SensorReadCache& cache = _sensorReadCache[update.sourceRef];
+        cache.label = update.label;
+        cache.unit = update.unit;
+        cache.dataField = update.dataField;
+        cache.periphId = update.periphId;
+        cache.valueType = update.valueType.isEmpty() ? String("number") : update.valueType;
+        cache.sourceRevision = update.sourceRevision;
+        cache.maxAgeMs = update.maxAgeMs;
+        cache.recordable = update.recordable;
+        cache.bindingValid = update.bindingValid;
+        cache.quality = update.quality;
+        cache.error = update.error;
+        cache.configVersion = configVersion;
+        if (++_nextSensorPublication == 0) ++_nextSensorPublication;
+        cache.publicationToken = publicationToken = _nextSensorPublication;
+        cache.pendingPublication = true;
+        if (update.quality == ObservationQuality::GOOD) {
+            cache.value = update.value;
+            cache.timestamp = update.sampleTimestamp ? update.sampleTimestamp : now;
+            cache.sampleIdentity = update.sampleIdentity
+                ? update.sampleIdentity : ++_nextObservationIdentity;
+            accepted.sampleTimestamp = cache.timestamp;
+            accepted.sampleIdentity = cache.sampleIdentity;
+            cache.error = "";
+        }
+        return true;
+    };
+    // Only bounded cache work is performed under the configuration guard.
+    // Unbound observations (e.g. network sources) keep their existing API.
+    const bool cacheUpdated = configVersion
+        ? PeripheralManager::getInstance().commitSensorRead(configVersion, commit) : commit();
+
+    if (!cacheUpdated) {
+        if (configVersion && !FastBee::SensorConfigEpoch::matches(configVersion)) return false;
+        uint32_t lastWarning = lastLockWarn.load(std::memory_order_relaxed);
+        if ((lastWarning == 0 || (now - lastWarning) >= SENSOR_CACHE_LOCK_WARN_INTERVAL_MS) &&
+            lastLockWarn.compare_exchange_strong(lastWarning, static_cast<uint32_t>(now))) {
+            LOGGER.warning("[PeriphExec] Observation update skipped: mutex unavailable");
+        }
+        return false;
     }
 
-    if (!cacheUpdated && (lastLockWarn == 0 || (now - lastLockWarn) >= SENSOR_CACHE_LOCK_WARN_INTERVAL_MS)) {
-        LOGGER.warning("[PeriphExec] Sensor read cache update skipped: mutex unavailable");
-        lastLockWarn = now;
+    auto claim = [&]() {
+        MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
+        if (!guard.isLocked()) return false;
+        const auto it = _sensorReadCache.find(update.sourceRef);
+        if (it == _sensorReadCache.end() || !it->second.pendingPublication ||
+            it->second.configVersion != configVersion ||
+            it->second.publicationToken != publicationToken) return false;
+        const unsigned long maxAge = it->second.maxAgeMs
+            ? it->second.maxAgeMs : SENSOR_CACHE_TTL_MS;
+        if (it->second.quality == ObservationQuality::GOOD &&
+            static_cast<unsigned long>(millis() - it->second.timestamp) > maxAge) return false;
+        it->second.pendingPublication = false;
+        return true;
+    };
+    // Claim is the publication linearization point. Mutations discard events
+    // not yet claimed; transport delivery and callbacks occur outside locks.
+    const bool claimed = configVersion
+        ? PeripheralManager::getInstance().commitSensorRead(configVersion, claim) : claim();
+    if (!claimed) return false;
+
+    if (accepted.quality == ObservationQuality::GOOD) {
+        notifySensorDataSSE(accepted.sourceRef, accepted.label, accepted.value, accepted.unit);
+        if (_scheduler) {
+            JsonDocument doc;
+            JsonArray arr = doc.to<JsonArray>();
+            JsonObject item = arr.add<JsonObject>();
+            item["id"] = accepted.sourceRef;
+            item["value"] = accepted.value;
+            String payload;
+            serializeJson(doc, payload);
+            _scheduler->handlePollData("sensor_cache", payload);
+        }
+
+        if (accepted.recordable &&
+            (accepted.valueType.isEmpty() || accepted.valueType == "number")) {
+            const char* begin = accepted.value.c_str();
+            char* end = nullptr;
+            const double numeric = strtod(begin, &end);
+            while (end && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) ++end;
+            if (end && end != begin && *end == '\0' && std::isfinite(numeric)) {
+#if FASTBEE_ENABLE_POINT_HISTORY
+                FastBee::PointHistory::instance().recordSample(
+                    accepted.sourceRef, numeric, accepted.unit,
+                    accepted.sourceRevision, accepted.sampleIdentity,
+                    accepted.sampleTimestamp);
+#endif
+            }
+        }
     }
-    notifySensorDataSSE(key, label, value, unit);
+    return true;
+}
 
-    if (_scheduler && !key.isEmpty()) {
-        JsonDocument doc;
-        JsonArray arr = doc.to<JsonArray>();
-        JsonObject item = arr.add<JsonObject>();
-        item["id"] = key;
-        item["value"] = value;
+void PeriphExecManager::invalidateSensorReadCache(const String& periphId, const String& reason,
+                                                  uint32_t configVersion) {
+    if (periphId.isEmpty()) return;
+    const String keyPrefix = periphId + "_";
+    size_t marked = 0;
+    auto invalidate = [&]() {
+        MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
+        if (!guard.isLocked()) return false;
+        for (auto& entry : _sensorReadCache) {
+            if (entry.second.periphId == periphId ||
+                (entry.second.periphId.isEmpty() && entry.first.startsWith(keyPrefix))) {
+                entry.second.quality = ObservationQuality::ERROR;
+                entry.second.error = reason;
+                entry.second.pendingPublication = false;
+                ++marked;
+            }
+        }
+        return true;
+    };
+    if (configVersion) PeripheralManager::getInstance().commitSensorRead(configVersion, invalidate);
+    else invalidate();
 
-        String payload;
-        serializeJson(doc, payload);
-        _scheduler->handlePollData("sensor_cache", payload);
+    if (marked > 0) {
+        LOGGER.warningf("[PeriphExec] Marked %u cached sensor value(s) invalid for %s: %s",
+                        static_cast<unsigned>(marked), periphId.c_str(), reason.c_str());
+    }
+}
+
+void PeriphExecManager::invalidateAllSensorReadCache() {
+    MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
+    if (!guard.isLocked()) return;
+    for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end();) {
+        if (it->second.configVersion) it = _sensorReadCache.erase(it);
+        else ++it;
     }
 }
 
 std::map<String, PeriphExecManager::SensorReadCache> PeriphExecManager::getSensorReadCacheCopy() const {
     std::map<String, SensorReadCache> copy;
+    RecursiveMutexGuard configGuard(PeripheralManager::getInstance().getMutex(), pdMS_TO_TICKS(50));
+    if (!configGuard.isLocked()) return copy;
     if (_sensorCacheMutex && xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        copy = _sensorReadCache;
+        const unsigned long now = millis();
+        for (const auto& entry : _sensorReadCache) {
+            const unsigned long maxAge = entry.second.maxAgeMs
+                ? min(entry.second.maxAgeMs, SENSOR_CACHE_TTL_MS) : SENSOR_CACHE_TTL_MS;
+            if ((!entry.second.configVersion || FastBee::SensorConfigEpoch::matches(entry.second.configVersion)) &&
+                entry.second.quality == ObservationQuality::GOOD &&
+                static_cast<unsigned long>(now - entry.second.timestamp) <= maxAge) {
+                copy.emplace(entry.first, entry.second);
+            }
+        }
         xSemaphoreGive(_sensorCacheMutex);
     }
     return copy;
 }
 
 bool PeriphExecManager::lookupSensorCache(const String& key, SensorReadCache& out) const {
+    RecursiveMutexGuard configGuard(PeripheralManager::getInstance().getMutex(), pdMS_TO_TICKS(50));
+    if (!configGuard.isLocked()) return false;
     if (!_sensorCacheMutex || xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return false;
     }
     bool found = false;
     auto it = _sensorReadCache.find(key);
     if (it != _sensorReadCache.end()) {
-        out = it->second;
-        found = true;
+        const unsigned long maxAge = it->second.maxAgeMs
+            ? min(it->second.maxAgeMs, SENSOR_CACHE_TTL_MS) : SENSOR_CACHE_TTL_MS;
+        if ((!it->second.configVersion || FastBee::SensorConfigEpoch::matches(it->second.configVersion)) &&
+            it->second.quality == ObservationQuality::GOOD &&
+            static_cast<unsigned long>(millis() - it->second.timestamp) <= maxAge) {
+            out = it->second;
+            found = true;
+        }
     }
     xSemaphoreGive(_sensorCacheMutex);
     return found;
+}
+
+bool PeriphExecManager::getObservation(const String& sourceRef,
+                                       ObservationSnapshot& out) const {
+    RecursiveMutexGuard configGuard(PeripheralManager::getInstance().getMutex(), pdMS_TO_TICKS(50));
+    if (!configGuard.isLocked()) return false;
+    if (!_sensorCacheMutex || xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return false;
+    }
+    const auto it = _sensorReadCache.find(sourceRef);
+    if (it == _sensorReadCache.end() || (it->second.configVersion &&
+        !FastBee::SensorConfigEpoch::matches(it->second.configVersion))) {
+        xSemaphoreGive(_sensorCacheMutex);
+        return false;
+    }
+    const SensorReadCache& cache = it->second;
+    out = ObservationSnapshot();
+    out.sourceRef = sourceRef;
+    out.label = cache.label;
+    out.value = cache.value;
+    out.unit = cache.unit;
+    out.valueType = cache.valueType;
+    out.sourceRevision = cache.sourceRevision;
+    out.error = cache.error;
+    out.dataField = cache.dataField;
+    out.periphId = cache.periphId;
+    out.quality = cache.quality;
+    out.sampleTimestamp = cache.timestamp;
+    out.maxAgeMs = cache.maxAgeMs;
+    out.sampleIdentity = cache.sampleIdentity;
+    out.recordable = cache.recordable;
+    out.bindingValid = cache.bindingValid;
+    out.hasValue = !cache.value.isEmpty();
+    const unsigned long maxAge = cache.maxAgeMs ? cache.maxAgeMs : SENSOR_CACHE_TTL_MS;
+    out.stale = cache.timestamp != 0 &&
+        static_cast<unsigned long>(millis() - cache.timestamp) > maxAge;
+    if (out.stale && out.quality == ObservationQuality::GOOD) {
+        out.quality = ObservationQuality::STALE;
+    }
+    xSemaphoreGive(_sensorCacheMutex);
+    return true;
+}
+
+bool PeriphExecManager::invalidateObservation(
+    const String& sourceRef, const String& reason,
+    const String& nextSourceRevision) {
+    if (sourceRef.isEmpty() || reason.isEmpty() || reason.length() > 96 ||
+        nextSourceRevision.length() > 64) {
+        return false;
+    }
+    bool found = false;
+    if (_sensorCacheMutex) {
+        MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(20));
+        if (!guard.isLocked()) return false;
+        auto it = _sensorReadCache.find(sourceRef);
+        if (it != _sensorReadCache.end()) {
+            it->second.quality = ObservationQuality::OFFLINE;
+            it->second.error = reason;
+            it->second.pendingPublication = false;
+            it->second.bindingValid = false;
+            found = true;
+        }
+    }
+#if FASTBEE_ENABLE_POINT_HISTORY
+    const bool historyInvalidated = FastBee::PointHistory::instance().invalidateSource(
+        sourceRef, reason, nextSourceRevision);
+#else
+    (void)nextSourceRevision;
+    const bool historyInvalidated = false;
+#endif
+    return found || historyInvalidated;
+}
+
+std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(size_t limit) const {
+    std::vector<ObservationSnapshot> observations;
+    RecursiveMutexGuard configGuard(PeripheralManager::getInstance().getMutex(), pdMS_TO_TICKS(50));
+    if (!configGuard.isLocked()) return observations;
+    if (limit > SENSOR_CACHE_MAX_ENTRIES) limit = SENSOR_CACHE_MAX_ENTRIES;
+    if (!_sensorCacheMutex || xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return observations;
+    }
+    observations.reserve(limit);
+    const unsigned long now = millis();
+    for (const auto& entry : _sensorReadCache) {
+        if (entry.second.configVersion && !FastBee::SensorConfigEpoch::matches(entry.second.configVersion)) continue;
+        if (observations.size() >= limit) break;
+        ObservationSnapshot snapshot;
+        snapshot.sourceRef = entry.first;
+        snapshot.label = entry.second.label;
+        snapshot.value = entry.second.value;
+        snapshot.unit = entry.second.unit;
+        snapshot.valueType = entry.second.valueType;
+        snapshot.sourceRevision = entry.second.sourceRevision;
+        snapshot.error = entry.second.error;
+        snapshot.dataField = entry.second.dataField;
+        snapshot.periphId = entry.second.periphId;
+        snapshot.quality = entry.second.quality;
+        snapshot.sampleTimestamp = entry.second.timestamp;
+        snapshot.maxAgeMs = entry.second.maxAgeMs;
+        snapshot.sampleIdentity = entry.second.sampleIdentity;
+        snapshot.recordable = entry.second.recordable;
+        snapshot.bindingValid = entry.second.bindingValid;
+        snapshot.hasValue = !entry.second.value.isEmpty();
+        const unsigned long maxAge = entry.second.maxAgeMs
+            ? entry.second.maxAgeMs : SENSOR_CACHE_TTL_MS;
+        snapshot.stale = entry.second.timestamp != 0 &&
+            static_cast<unsigned long>(now - entry.second.timestamp) > maxAge;
+        if (snapshot.stale && snapshot.quality == ObservationQuality::GOOD) {
+            snapshot.quality = ObservationQuality::STALE;
+        }
+        observations.push_back(std::move(snapshot));
+    }
+    xSemaphoreGive(_sensorCacheMutex);
+    return observations;
 }
 
 void PeriphExecManager::evictStaleSensorCache() {
@@ -1080,12 +1698,21 @@ void PeriphExecManager::evictStaleSensorCache() {
     }
 
     unsigned long now = millis();
-    auto it = _sensorReadCache.begin();
-    while (it != _sensorReadCache.end()) {
-        if ((now - it->second.timestamp) > SENSOR_CACHE_TTL_MS) {
+    // Epoch invalidation is immediate even when mutation-time cleanup was
+    // contended. Physically reclaim those records during bounded maintenance.
+    for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end();) {
+        if (it->second.configVersion && !FastBee::SensorConfigEpoch::matches(it->second.configVersion)) {
             it = _sensorReadCache.erase(it);
-        } else {
-            ++it;
+        } else ++it;
+    }
+    for (auto& entry : _sensorReadCache) {
+        const unsigned long maxAge = entry.second.maxAgeMs
+            ? entry.second.maxAgeMs : SENSOR_CACHE_TTL_MS;
+        if (entry.second.timestamp != 0 &&
+            static_cast<unsigned long>(now - entry.second.timestamp) > maxAge &&
+            entry.second.quality == ObservationQuality::GOOD) {
+            entry.second.quality = ObservationQuality::STALE;
+            entry.second.error = "STALE";
         }
     }
     xSemaphoreGive(_sensorCacheMutex);
@@ -1110,6 +1737,13 @@ bool PeriphExecManager::saveConfiguration() {
 }
 
 bool PeriphExecManager::saveConfigurationLocked() {
+    // Normalize the in-memory rules at the persistence boundary. This covers
+    // internal callers as well as CRUD routes, so the file, API response and
+    // scheduler always observe the same interval values.
+    for (auto& pair : rules) {
+        sanitizeRuleForSafety(pair.second);
+    }
+
     // 流式保存：逐规则构建小 JsonDocument（单条约 1~2KB）并直接序列化进临时文件，
     // 避免把整份配置表（20+KB）构建进单个 JsonDocument，在堆碎片化
     // （freeHeap~30KB / maxAlloc~27KB）下直接 overflow 失败。
@@ -1170,6 +1804,8 @@ bool PeriphExecManager::saveConfigurationLocked() {
 
         // 数据上报控制
         obj["reportAfterExec"] = r.reportAfterExec;
+        obj["allowPanelControl"] = r.allowPanelControl;
+        obj["recordHistory"] = r.recordHistory;
 
         // 构建过程中若堆不足，ArduinoJson 会置位 overflowed，此时该规则不完整，
         // 拒绝保存以防写入残缺配置（保留原文件不动）
@@ -1282,6 +1918,8 @@ bool PeriphExecManager::loadConfiguration() {
 
     rules.clear();
     JsonArray arr = doc["rules"].as<JsonArray>();
+    bool normalizedLoadedConfig = false;
+    bool canonicalRewriteSafe = true;
 
     for (JsonObject obj : arr) {
         // 软性推荐值检查：超过推荐数量时警告，但不再跳过
@@ -1307,6 +1945,8 @@ bool PeriphExecManager::loadConfiguration() {
         // 兼容处理：旧版序列化可能将 null 存储为字符串 "null"
         if (r.scriptContent == "null") r.scriptContent = "";
         r.reportAfterExec = obj["reportAfterExec"] | true;
+        r.allowPanelControl = obj["allowPanelControl"] | false;
+        r.recordHistory = obj["recordHistory"] | false;
 
         // 读取 triggers[] 和 actions[] 数组
         JsonArray trigArr = obj["triggers"].as<JsonArray>();
@@ -1339,27 +1979,36 @@ bool PeriphExecManager::loadConfiguration() {
             a.execMode = aObj["execMode"] | 0;
             r.actions.push_back(a);
         }
-        sanitizeRuleForSafety(r);
-
         if (r.triggers.size() > MAX_TRIGGERS_PER_RULE) {
             LOGGER.warningf("[PeriphExec] Rule '%s' has too many triggers in config, truncating to %u",
                             r.id.c_str(),
                             static_cast<unsigned int>(MAX_TRIGGERS_PER_RULE));
             r.triggers.resize(MAX_TRIGGERS_PER_RULE);
+            canonicalRewriteSafe = false;
         }
         if (r.actions.size() > MAX_ACTIONS_PER_RULE) {
             LOGGER.warningf("[PeriphExec] Rule '%s' has too many actions in config, truncating to %u",
                             r.id.c_str(),
                             static_cast<unsigned int>(MAX_ACTIONS_PER_RULE));
             r.actions.resize(MAX_ACTIONS_PER_RULE);
+            canonicalRewriteSafe = false;
         }
+
+        // Publish only canonical rules to the runtime map. TIMER accepts
+        // 1..86400s while POLL accepts 5..86400s; all persisted poll timing
+        // parameters are normalized here as well.
+        normalizedLoadedConfig = sanitizeRuleForSafety(r) || normalizedLoadedConfig;
 
         if (!r.id.isEmpty()) {
             if (!validateRuleProfileLimits(r, "loadConfiguration")) {
                 LOGGER.warningf("[PeriphExec] Skipping rule '%s': exceeds profile limits", r.id.c_str());
+                canonicalRewriteSafe = false;
                 continue;
             }
+            if (rules.count(r.id) > 0) canonicalRewriteSafe = false;
             rules[r.id] = r;
+        } else {
+            canonicalRewriteSafe = false;
         }
     }
 
@@ -1367,6 +2016,7 @@ bool PeriphExecManager::loadConfiguration() {
 
     // IR 按键映射：优先读本文件 irKeys 字段；旧版独立文件 ir_keys.json 存在则一次性迁入并删除
     _irKeysJson = "";
+    bool migratedLegacyIrKeys = false;
     JsonArray irKeysArr = doc["irKeys"].as<JsonArray>();
     if (!irKeysArr.isNull() && irKeysArr.size() > 0) {
         serializeJson(irKeysArr, _irKeysJson);
@@ -1384,6 +2034,7 @@ bool PeriphExecManager::loadConfiguration() {
                 JsonArray legacyKeys = legacyDoc["keys"].as<JsonArray>();
                 if (!legacyKeys.isNull() && legacyKeys.size() > 0) {
                     serializeJson(legacyKeys, _irKeysJson);
+                    migratedLegacyIrKeys = true;
                     LOGGER.infof("[PeriphExec] Migrated %d IR keys from legacy ir_keys.json",
                                  (int)legacyKeys.size());
                 }
@@ -1391,7 +2042,20 @@ bool PeriphExecManager::loadConfiguration() {
             legacy.close();
         }
         LittleFS.remove("/config/ir_keys.json");
-        if (!_irKeysJson.isEmpty()) saveConfiguration();
+    }
+
+    // A successfully loaded legacy interval is rewritten once so flash, API
+    // and runtime all expose the same canonical value after reboot. Avoid a
+    // rewrite when unrelated invalid entries were truncated/skipped, because
+    // that could otherwise make their loss permanent.
+    const bool persistCanonicalLoad =
+        normalizedLoadedConfig && canonicalRewriteSafe;
+    if (migratedLegacyIrKeys || persistCanonicalLoad) {
+        if (!saveConfiguration()) {
+            LOGGER.warning("[PeriphExec] Loaded canonical config but failed to persist migration");
+        }
+    } else if (normalizedLoadedConfig) {
+        LOGGER.warning("[PeriphExec] Interval values normalized in runtime; canonical rewrite deferred because config also contains rejected entries");
     }
 
     // 重建按键规则缓存（初始化时无锁竞争，安全调用）
@@ -1452,6 +2116,9 @@ void PeriphExecManager::checkTimers() {
     if (_scheduler) _scheduler->checkTimers();
     // 重试待上报数据（MQTT 恢复后自动发送缓存的报告）
     retryPendingReports();
+#if FASTBEE_ENABLE_POINT_HISTORY
+    FastBee::PointHistory::instance().tick();
+#endif
 }
 
 void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
@@ -1694,7 +2361,6 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         } else if (isInputType(pType)) {
             // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
@@ -1711,6 +2377,9 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_GPIO_TOGGLE), "电平翻转", "GPIO");
 
             // PWM输出
+            if (config->isExpanderChannel()) {
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁(至少200ms)", "GPIO");
+            }
             if (pType == PeripheralType::GPIO_PWM_OUTPUT) {
                 addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
                 addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "PWM");
@@ -1724,7 +2393,6 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 
             // 系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
@@ -1735,7 +2403,6 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         } else {
             // 其他类型外设：只支持系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
@@ -1753,7 +2420,6 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE), "启用功能(webServer/mdns)", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE), "禁用功能(webServer/mdns)", "系统");
@@ -1767,6 +2433,10 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL), "远程通道控制(on/off/trigger)", "远程");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ), "远程数据读取", "远程");
+#endif
     }
 
     String result;
@@ -1776,32 +2446,99 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 
 // ========== 异步执行结果管理 ==========
 
-void PeriphExecManager::recordResult(const AsyncExecResult& result) {
+bool PeriphExecManager::recordResult(const AsyncExecResult& result) {
     MutexGuard lock(_resultsMutex);
-    if (!lock.isLocked()) return;
+    if (!lock.isLocked() || result.operationId == 0) return false;
 
-    // 堆守卫：低堆时跳过记录，防止 push_back 内部 new 失败导致 abort()
-    if (FastBee::MemoryBudget::dramFree() < 10000) return;
+    for (auto& existing : executionResults) {
+        if (existing.operationId == result.operationId) {
+            // The record already owns its String capacity. All remaining trace
+            // fields are fixed-size, so a terminal transition remains possible
+            // even after DRAM falls below the admission threshold.
+            existing = result;
+            return true;
+        }
+    }
+
+    // Only new operations allocate rule-id/name storage. Refuse their admission
+    // under pressure instead of returning an operationId that can never appear.
+    if (FastBee::MemoryBudget::dramFree() < 12000) return false;
+
+    while (executionResults.size() >= ASYNC_EXEC_RESULT_HISTORY_LIMIT) {
+        auto evict = executionResults.end();
+        for (auto it = executionResults.begin(); it != executionResults.end(); ++it) {
+            if (isTerminalExecStatus(it->status)) {
+                evict = it;
+                break;
+            }
+        }
+        // At most MAX_ASYNC_TASKS operations can be active, so this means the
+        // lifecycle invariant was violated. Do not hide an active operation.
+        if (evict == executionResults.end()) return false;
+        executionResults.erase(evict);
+    }
 
     executionResults.push_back(result);
+    return true;
+}
 
-    // 保留最近 MAX_ASYNC_TASKS * 2 条记录
-    while (executionResults.size() > MAX_ASYNC_TASKS * 2) {
-        executionResults.erase(executionResults.begin());
+bool PeriphExecManager::beginOperation(const PeriphExecRule& rule,
+                                       bool asyncExecution,
+                                       uint8_t queuePosition,
+                                       AsyncExecResult& operation) {
+    operation = AsyncExecResult();
+    {
+        MutexGuard lock(_resultsMutex);
+        if (!lock.isLocked()) return false;
+        if (FastBee::MemoryBudget::dramFree() < 12000) return false;
+
+        while (executionResults.size() >= ASYNC_EXEC_RESULT_HISTORY_LIMIT) {
+            auto evict = executionResults.end();
+            for (auto it = executionResults.begin(); it != executionResults.end(); ++it) {
+                if (isTerminalExecStatus(it->status)) {
+                    evict = it;
+                    break;
+                }
+            }
+            if (evict == executionResults.end()) return false;
+            executionResults.erase(evict);
+        }
+
+        do {
+            ++_nextOperationId;
+        } while (_nextOperationId == 0);
+
+        const unsigned long now = millis();
+        operation.operationId = _nextOperationId;
+        operation.ruleId = rule.id;
+        operation.ruleName = rule.name;
+        operation.status = AsyncExecStatus::PENDING;
+        operation.queuedAt = now;
+        operation.deadlineAt = now + ASYNC_EXEC_OPERATION_TIMEOUT_MS;
+        operation.queuePosition = queuePosition;
+        operation.asyncExecution = asyncExecution;
+        operation.actionCount = static_cast<uint8_t>(
+            rule.actions.size() > 255 ? 255 : rule.actions.size());
+        executionResults.push_back(operation);
     }
+    return true;
 }
 
 std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
     MutexGuard lock(_resultsMutex);
+    if (!lock.isLocked()) return {};
     return executionResults;
 }
 
 // ========== 手动执行 ==========
 
-bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
+bool PeriphExecManager::runOnce(const String& id, const String& receivedValue,
+                                String* rejectionReason,
+                                AsyncExecResult* admittedOperation) {
     PeriphExecRule ruleCopy;
     if (!getRuleSnapshot(id, ruleCopy)) {
         LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
+        if (rejectionReason) *rejectionReason = "rule_not_found";
         return false;
     }
 
@@ -1818,8 +2555,7 @@ bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
     }
     LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s, value='%s')",
                  ruleCopy.name.c_str(), id.c_str(), resolvedValue.c_str());
-    dispatchAsync(ruleCopy, resolvedValue);
-    return true;  // 返回 true 表示已提交
+    return dispatchAsync(ruleCopy, resolvedValue, rejectionReason, admittedOperation);
 }
 
 // ========== 异步调度 ==========
@@ -1841,16 +2577,28 @@ bool PeriphExecManager::shouldRunAsync() const {
     return true;
 }
 
-void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& receivedValue) {
-    // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行（重启后无需触发完成事件）
-    for (const auto& a : rule.actions) {
-        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE)) {
-            LOGGER.infof("[PeriphExec] Sync execute (system action): '%s'", rule.name.c_str());
-            executeAllActions(rule, receivedValue);
-            return;
+bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
+                                      const String& receivedValue,
+                                      String* rejectionReason,
+                                      AsyncExecResult* admittedOperation) {
+    if (rejectionReason) *rejectionReason = "";
+    if (admittedOperation) *admittedOperation = AsyncExecResult();
+    // Defense in depth for legacy/imported files which predate the save-time
+    // validator. Destructive reset must never be reachable through automation.
+    for (const auto& action : rule.actions) {
+        if (action.actionType == static_cast<uint8_t>(
+                                     ExecActionType::ACTION_SYS_FACTORY_RESET)) {
+            LOGGER.warningf("[PeriphExec] Reject rule '%s': factory reset is not automatable",
+                            rule.name.c_str());
+            if (rejectionReason) *rejectionReason = "action_not_automatable";
+            return false;
+        }
+    }
+    for (size_t index = 0; index < rule.actions.size(); ++index) {
+        if (isTerminalSystemAction(rule.actions[index].actionType) &&
+            index + 1U != rule.actions.size()) {
+            if (rejectionReason) *rejectionReason = "action_order_invalid";
+            return false;
         }
     }
 
@@ -1867,46 +2615,60 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
                             rule.name.c_str());
             MutexGuard runLock(_runningRulesMutex);
             _failureBackoff[rule.id] = millis() + 5000UL;
-            return;
+            if (rejectionReason) *rejectionReason = "memory_pressure";
+            return false;
         }
     }
 
-    // 用户指定同步执行（per-action 或 rule-level）
-    // 注意："同步"指规则内动作串行执行（非并行），但规则本身仍应在独立任务中运行
-    // 避免阻塞主循环（如流水灯 7s delay 不应卡死 TaskManager 导致按键失效）
-    // 唯一真正需要在主循环中同步执行的是系统动作（重启/恢复出厂，已在上方处理）
-
-    // 检查任务是否已在运行中（防止重复分发）
+    // 原子检查并预留运行标记。系统动作与普通动作走同一准入路径，
+    // 避免两个并发来源同时通过“先检查、后插入”的窗口。
     {
         MutexGuard runLock(_runningRulesMutex);
+        if (!runLock.isLocked()) {
+            if (rejectionReason) *rejectionReason = "rule_state_busy";
+            return false;
+        }
         if (_runningRuleIds.count(rule.id) > 0) {
-            // 自愈机制：规则挂在运行集合时，若满足以下任一条件则视为异常状态并强制清理
-            //  A) 已运行超过 60 秒（任务很可能已异常终止/卡死）
-            //  B) _runningStartTime 中无对应记录（状态不一致，典型来自 async task OOM/栈溢出
-            //     被 FreeRTOS 强制 delete，导致 _runningRuleIds 残留但 startTime 已丢失）
-            // 避免 _runningRuleIds 永久卡死导致按键等事件规则失效（已观察到长时间运行后
-            // 按键单击/双击/长按不响应）
             auto itTime = _runningStartTime.find(rule.id);
             unsigned long now = millis();
             bool startTimeMissing = (itTime == _runningStartTime.end());
             unsigned long elapsed = startTimeMissing ? 0 : (now - itTime->second);
-            bool stuckTooLong = !startTimeMissing && (elapsed > 60000UL);
-
-            if (startTimeMissing || stuckTooLong) {
-                LOGGER.warningf("[PeriphExec] Rule '%s' stale in running set (reason=%s elapsed=%lums), auto-cleanup",
-                                rule.name.c_str(),
-                                startTimeMissing ? "startTimeMissing" : "stuck>60s",
-                                elapsed);
-                _runningRuleIds.erase(rule.id);
-                if (!startTimeMissing) _runningStartTime.erase(rule.id);
-                // 继续执行下方分发逻辑
-            } else {
-                LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running (elapsed=%lums)",
-                                rule.name.c_str(), elapsed);
-                return;
-            }
+            // 慢 Modbus 从站的合法批次可能超过 60 秒。仅凭墙钟时间删除
+            // running 标记会让同一规则重入并并发操作同一硬件。worker 的
+            // 正常/取消出口负责唯一清理；这里始终拒绝重复分发并保留诊断。
+            LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running (%s, elapsed=%lums)",
+                            rule.name.c_str(),
+                            startTimeMissing ? "start-time-missing" : "active",
+                            elapsed);
+            if (rejectionReason) *rejectionReason = "already_running";
+            return false;
         }
+        _runningRuleIds.insert(rule.id);
+        _runningStartTime[rule.id] = millis();
     }
+    auto releaseReservation = [&](bool addBackoff) {
+        MutexGuard runLock(_runningRulesMutex);
+        if (!runLock.isLocked()) return;
+        _runningRuleIds.erase(rule.id);
+        _runningStartTime.erase(rule.id);
+        if (addBackoff && FastBee::MemoryBudget::dramFree() > 10000) {
+            _failureBackoff[rule.id] = millis() + 5000UL;
+        }
+    };
+    auto runTrackedSync = [&]() -> bool {
+        AsyncExecResult operation;
+        if (!beginOperation(rule, false, 0, operation)) {
+            releaseReservation(true);
+            if (rejectionReason) *rejectionReason = "tracking_unavailable";
+            return false;
+        }
+        // Admission and execution outcome are separate contracts. Once the
+        // operation record exists, the request is accepted even if an action
+        // later reaches a failed terminal state.
+        executeSyncWithCompletion(rule, receivedValue, operation);
+        if (admittedOperation) *admittedOperation = operation;
+        return true;
+    };
 
     // 异步模式：判断资源是否充足
     if (!shouldRunAsync()) {
@@ -1915,33 +2677,27 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
                             (int)ESP.getFreeHeap(),
                             (int)uxSemaphoreGetCount(_taskSlotSemaphore),
                             rule.name.c_str());
-            {
-                MutexGuard runLock(_runningRulesMutex);
-                _failureBackoff[rule.id] = millis() + 5000;
-            }
-            return;
+            releaseReservation(true);
+            if (rejectionReason) *rejectionReason = "async_unavailable";
+            return false;
         }
         LOGGER.infof("[PeriphExec] Fallback sync (heap=%d, slots=%d): '%s'",
                      (int)ESP.getFreeHeap(),
                      (int)uxSemaphoreGetCount(_taskSlotSemaphore),
                      rule.name.c_str());
-        executeSyncWithCompletion(rule, receivedValue);
-        return;
+        return runTrackedSync();
     }
 
     // 获取一个任务槽（非阻塞）
     if (xSemaphoreTake(_taskSlotSemaphore, 0) != pdTRUE) {
         if (shouldAvoidSyncFallback(rule)) {
             LOGGER.warningf("[PeriphExec] Skip heavy rule without async slot: '%s'", rule.name.c_str());
-            {
-                MutexGuard runLock(_runningRulesMutex);
-                _failureBackoff[rule.id] = millis() + 5000;
-            }
-            return;
+            releaseReservation(true);
+            if (rejectionReason) *rejectionReason = "no_task_slot";
+            return false;
         }
         LOGGER.warningf("[PeriphExec] No async slot, fallback sync: '%s'", rule.name.c_str());
-        executeSyncWithCompletion(rule, receivedValue);
-        return;
+        return runTrackedSync();
     }
 
     // 从对象池获取异步上下文（避免频繁堆分配）
@@ -1950,16 +2706,13 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         if (shouldAvoidSyncFallback(rule)) {
             LOGGER.warningf("[PeriphExec] Context pool exhausted, skip heavy rule: '%s'", rule.name.c_str());
             xSemaphoreGive(_taskSlotSemaphore);
-            {
-                MutexGuard runLock(_runningRulesMutex);
-                _failureBackoff[rule.id] = millis() + 5000;
-            }
-            return;
+            releaseReservation(true);
+            if (rejectionReason) *rejectionReason = "context_pool_exhausted";
+            return false;
         }
         LOGGER.warning("[PeriphExec] Context pool exhausted, fallback to sync execution");
         xSemaphoreGive(_taskSlotSemaphore);
-        executeSyncWithCompletion(rule, receivedValue);
-        return;
+        return runTrackedSync();
     }
 
     ctx->ruleCopy = rule;
@@ -1968,12 +2721,22 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     ctx->mqtt = nullptr;  // Will be set by executor if needed
     ctx->taskSlot = _taskSlotSemaphore;
 
-    // 在投递前先将规则ID加入运行中集合
-    {
-        MutexGuard runLock(_runningRulesMutex);
-        _runningRuleIds.insert(rule.id);
-        _runningStartTime[rule.id] = millis();
+    const size_t pendingBeforeEnqueue = _workerPool
+        ? _workerPool->pendingCount() : 0;
+    const uint8_t queuePosition = static_cast<uint8_t>(
+        pendingBeforeEnqueue >= 254 ? 255 : pendingBeforeEnqueue + 1);
+    AsyncExecResult operation;
+    if (!beginOperation(rule, true, queuePosition, operation)) {
+        _contextPool.release(ctx);
+        xSemaphoreGive(_taskSlotSemaphore);
+        releaseReservation(true);
+        if (rejectionReason) *rejectionReason = "tracking_unavailable";
+        return false;
     }
+    ctx->operationId = operation.operationId;
+    ctx->queuedAt = operation.queuedAt;
+    ctx->deadlineAt = operation.deadlineAt;
+    ctx->queuePosition = operation.queuePosition;
 
     // D 方案：投递到常驻 worker pool，避免运行期 xTaskCreate 碎片
     // worker pool 在启动期预分配 3×20KB 栈，运行期只需一次队列投递
@@ -1986,41 +2749,55 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         LOGGER.errorf("[PeriphExec] Failed to dispatch to worker pool: '%s' (pool=%s)",
                       rule.name.c_str(),
                       _workerPool ? "queue-full" : "unavailable");
-        // 投递失败，从运行中集合移除
-        {
-            MutexGuard runLock(_runningRulesMutex);
-            _runningRuleIds.erase(rule.id);
-            _runningStartTime.erase(rule.id);
-        }
         _contextPool.release(ctx);  // 归还对象池
         xSemaphoreGive(_taskSlotSemaphore);
         // 重资源规则（脚本/Modbus/多动作）绝对不能同步 fallback：
         // 9s+ 同步执行会阻塞 timer 任务，饯死 web_client_handler / network_update 等 100ms 调度，
         // 导致 Web 服务少响应。此处与前面三个失败分支保持一致：heavy rule 丢入 backoff 跳过本轮。
         if (shouldAvoidSyncFallback(rule)) {
-            MutexGuard runLock(_runningRulesMutex);
-            _failureBackoff[rule.id] = millis() + 5000;
-            return;
+            operation.status = AsyncExecStatus::REJECTED;
+            operation.errorCode = AsyncExecError::WORKER_QUEUE_FULL;
+            operation.endTime = millis();
+            recordResult(operation);
+            if (admittedOperation) *admittedOperation = operation;
+            releaseReservation(true);
+            if (rejectionReason) *rejectionReason = "worker_queue_full";
+            return false;
         }
-        executeSyncWithCompletion(rule, receivedValue);
-        return;
+        operation.asyncExecution = false;
+        operation.queuePosition = 0;
+        recordResult(operation);
+        executeSyncWithCompletion(rule, receivedValue, operation);
+        if (admittedOperation) *admittedOperation = operation;
+        return true;
     }
+
+    if (admittedOperation) *admittedOperation = operation;
 
     LOG_DEBUGF("[PeriphExec] Async dispatched: '%s' (heap=%d, queue=%u/%u)",
                  rule.name.c_str(),
                  (int)ESP.getFreeHeap(),
                  (unsigned)(_workerPool ? _workerPool->pendingCount() : 0),
                  (unsigned)PeriphExecWorkerPool::capacity());
+    return true;
 }
 
 // 单任务执行（由 PeriphExecWorkerPool 在 worker 线程内调用）
 // 等价于原 asyncExecTaskFunc 的业务体，但不再调用 vTaskDelete
 void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     AsyncExecResult result;
+    result.operationId = ctx->operationId;
     result.ruleId = ctx->ruleCopy.id;
     result.ruleName = ctx->ruleCopy.name;
+    result.queuedAt = ctx->queuedAt;
     result.startTime = millis();
+    result.deadlineAt = ctx->deadlineAt;
+    result.queuePosition = ctx->queuePosition;
+    result.asyncExecution = true;
+    result.actionCount = static_cast<uint8_t>(
+        ctx->ruleCopy.actions.size() > 255 ? 255 : ctx->ruleCopy.actions.size());
     result.status = AsyncExecStatus::RUNNING;
+    ctx->manager->recordResult(result);
 
     LOG_DEBUGF("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
 
@@ -2031,22 +2808,41 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     // 阈值校准：MQTT 连接稳态 8BIT 常态 ~7KB，门限取 5KB 保证用户规则
     // 在常态下可执行；窗口内挤出交给 per-action 守卫 + MQTT 强制断开。
     bool allOk = false;
+    bool completedAll = false;
     size_t reportCount = 0;
     uint32_t const dram8Free = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    if (FastBee::MemoryBudget::dramFree() < 16384 || dram8Free < 5120) {
+    if (result.deadlineAt != 0 &&
+        static_cast<int32_t>(result.startTime - result.deadlineAt) >= 0) {
+        LOGGER.warningf("[PeriphExec] Queued operation expired before start: '%s'",
+                        result.ruleName.c_str());
+        result.status = AsyncExecStatus::TIMED_OUT;
+        result.errorCode = AsyncExecError::DEADLINE_EXCEEDED;
+    } else if (FastBee::MemoryBudget::dramFree() < 16384 || dram8Free < 5120) {
         LOGGER.warningf("[PeriphExec] Heap too low (dram=%d dram8=%u), skip execution: '%s'",
                         (int)ESP.getFreeHeap(), (unsigned)dram8Free, result.ruleName.c_str());
         result.status = AsyncExecStatus::FAILED;
+        result.errorCode = AsyncExecError::LOW_MEMORY;
     } else {
         // 执行所有动作（reportCount 回填本次实际上报数量）
-        auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue, false, &reportCount);
+        auto actionResults = ctx->manager->executeAllActions(
+            ctx->ruleCopy, ctx->receivedValue, false, &reportCount, &completedAll,
+            result.deadlineAt, &result);
 
         // 统计结果
-        allOk = true;
+        allOk = completedAll && !ctx->ruleCopy.actions.empty();
         for (const auto& ar : actionResults) {
             if (!ar.success) { allOk = false; break; }
         }
-        result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+        if (result.errorCode == AsyncExecError::DEADLINE_EXCEEDED) {
+            result.status = AsyncExecStatus::TIMED_OUT;
+        } else {
+            result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+            if (!allOk && result.errorCode == AsyncExecError::NONE) {
+                result.errorCode = completedAll
+                    ? AsyncExecError::ACTION_FAILED
+                    : AsyncExecError::INCOMPLETE_ACTIONS;
+            }
+        }
     }
 
     result.endTime = millis();
@@ -2102,32 +2898,36 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
 // 执行规则的所有动作（供异步任务调用）
 std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport, size_t* reportCountOut) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport,
+    size_t* reportCountOut, bool* completedAllOut, unsigned long deadlineAt,
+    AsyncExecResult* traceOut) {
     if (_executor) {
-        return _executor->executeAllActions(rule, receivedValue, suppressReport, reportCountOut);
+        return _executor->executeAllActions(
+            rule, receivedValue, suppressReport, reportCountOut, completedAllOut,
+            deadlineAt, traceOut);
     }
+    if (completedAllOut) *completedAllOut = false;
     return {};
 }
 
 // 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
-void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue) {
-    // 注意：不在此处检查 shouldAvoidSyncFallback，因为：
-    // 1. 用户明确配置同步执行的规则应被允许（从 dispatchAsync 的 user-config 路径调用）
-    // 2. 系统回退路径已在 dispatchAsync() 中通过 shouldAvoidSyncFallback() 拦截
-
-    // 1. 加入运行中集合防重入
-    {
-        MutexGuard runLock(_runningRulesMutex);
-        _runningRuleIds.insert(rule.id);
-        _runningStartTime[rule.id] = millis();
-    }
-
-    // 2. 执行所有动作（reportCount 回填本次实际上报数量）
+bool PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule,
+                                                  const String& receivedValue,
+                                                  AsyncExecResult& operation) {
+    // dispatchAsync 已原子预留运行标记；同步降级只负责执行和统一收尾。
+    operation.status = AsyncExecStatus::RUNNING;
+    operation.startTime = millis();
+    operation.queuePosition = 0;
+    operation.asyncExecution = false;
+    recordResult(operation);
     size_t reportCount = 0;
-    auto actionResults = executeAllActions(rule, receivedValue, false, &reportCount);
+    bool completedAll = false;
+    auto actionResults = executeAllActions(
+        rule, receivedValue, false, &reportCount, &completedAll,
+        operation.deadlineAt, &operation);
 
     // 3. 统计结果
-    bool allOk = true;
+    bool allOk = completedAll && !rule.actions.empty();
     for (const auto& ar : actionResults) {
         if (!ar.success) { allOk = false; break; }
     }
@@ -2158,14 +2958,20 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     }
 
     // 7. 记录执行结果
-    AsyncExecResult result;
-    result.ruleId = rule.id;
-    result.ruleName = rule.name;
-    result.startTime = millis();
-    result.endTime = millis();
-    result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
-    result.reportCount = static_cast<uint8_t>(reportCount > 255 ? 255 : reportCount);
-    recordResult(result);
+    operation.endTime = millis();
+    if (operation.errorCode == AsyncExecError::DEADLINE_EXCEEDED) {
+        operation.status = AsyncExecStatus::TIMED_OUT;
+    } else {
+        operation.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+        if (!allOk && operation.errorCode == AsyncExecError::NONE) {
+            operation.errorCode = completedAll
+                ? AsyncExecError::ACTION_FAILED
+                : AsyncExecError::INCOMPLETE_ACTIONS;
+        }
+    }
+    operation.reportCount = static_cast<uint8_t>(reportCount > 255 ? 255 : reportCount);
+    recordResult(operation);
+    return allOk;
 }
 
 // ========== 内部调度接口实现 ==========
@@ -2229,9 +3035,6 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                      (unsigned)ESP.getMaxAllocHeap());
     }
 
-    std::vector<String> triggeredRuleIds;
-    triggeredRuleIds.reserve(4);  // 预分配避免 push_back 时重新分配
-
     // 第一阶段：收集候选规则（短持锁，避免嵌套锁）
     struct CandidateRule {
         String id;
@@ -2293,8 +3096,26 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
     }
     // 锁已释放
 
-    // 第二阶段：锁外检查运行状态和退避，避免嵌套锁阻塞
-    for (const auto& c : candidates) {
+    // 第二阶段：从上次检查的下一个规则开始轮转。规则存储是按 ID 排序
+    // 的 map；若每轮都从头分发，前几个慢任务会持续占满有限 worker/context
+    // 槽，后续规则永远只能收到队列拒绝。
+    size_t roundRobinStart = 0;
+    if (!_lastTimerDispatchRuleId.isEmpty()) {
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            if (candidates[i].id.compareTo(_lastTimerDispatchRuleId) > 0) {
+                roundRobinStart = i;
+                break;
+            }
+            if (i + 1 == candidates.size()) roundRobinStart = 0;
+        }
+    }
+
+    // 锁外检查运行状态和退避并直接尝试接纳。只有接纳成功才推进
+    // lastTriggerTime/triggerCount；资源拒绝的任务保持 due，下一轮可重试。
+    for (size_t offset = 0; offset < candidates.size(); ++offset) {
+        const CandidateRule& c =
+            candidates[(roundRobinStart + offset) % candidates.size()];
+
         // 检查 Modbus 可用性
         if (c.needsModbus && !modbusAvailable) {
             LOGGER.warningf("[PeriphExec] Skip timer '%s': Modbus not available", c.name.c_str());
@@ -2318,9 +3139,26 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         }
         if (skip) continue;
 
-        // 更新触发时间戳（需要短暂重新获取 rulesMutex）
+        String rejectionReason;
+        const bool accepted = dispatchByRuleId(c.id, "", &rejectionReason);
+        if (!accepted) {
+            LOGGER.warningf("[PeriphExec] Timer admission rejected: '%s' (%s)",
+                            c.name.c_str(),
+                            rejectionReason.isEmpty() ? "unavailable" : rejectionReason.c_str());
+            continue;
+        }
+
+        // The cursor represents the last admitted rule, not the last rule we
+        // merely inspected. Advancing it on queue/context rejection makes a
+        // full scan end at the same highest map key every time, so the next
+        // cycle starts from the first rule again and short-period rules can
+        // starve later peers.
+        _lastTimerDispatchRuleId = c.id;
+
+        // 接纳成功后必须完成触发时间戳提交。运行标记已经预留，因此这里
+        // 可以等待规则锁而不会重复分发；静默跳过会让任务完成后仍保持 due。
         {
-            MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(20));
+            MutexGuard lock(_rulesMutex, portMAX_DELAY);
             if (lock.isLocked()) {
                 auto it = rules.find(c.id);
                 if (it != rules.end() && c.triggerIdx < it->second.triggers.size()) {
@@ -2331,17 +3169,49 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         }
 
         LOGGER.infof("[PeriphExec] Timer triggered: '%s'", c.name.c_str());
-        triggeredRuleIds.push_back(c.id);
-    }
-
-    // 阶段3: 无锁异步分发（定时触发无接收值）
-    for (const auto& ruleId : triggeredRuleIds) {
-        dispatchByRuleId(ruleId, "");
     }
 }
 
+bool PeriphExecManager::dispatchAndCommitTrigger(const String& ruleId,
+                                                 size_t triggerIndex,
+                                                 const String& receivedValue,
+                                                 const char* sourceLabel) {
+    String rejectionReason;
+    if (!dispatchByRuleId(ruleId, receivedValue, &rejectionReason)) {
+        LOGGER.warningf("[PeriphExec] %s admission rejected for rule '%s' (%s)",
+                        sourceLabel ? sourceLabel : "trigger",
+                        ruleId.c_str(),
+                        rejectionReason.isEmpty() ? "unavailable" : rejectionReason.c_str());
+        return false;
+    }
+
+    // Admission owns the execution slot before cooldown/counter state advances.
+    // A rejected dispatch therefore remains eligible for the next source event.
+    MutexGuard lock(_rulesMutex, portMAX_DELAY);
+    if (!lock.isLocked()) {
+        LOGGER.errorf("[PeriphExec] %s trigger commit lock failed for rule '%s'",
+                      sourceLabel ? sourceLabel : "trigger", ruleId.c_str());
+        return false;
+    }
+    auto it = rules.find(ruleId);
+    if (it == rules.end() || triggerIndex >= it->second.triggers.size()) {
+        LOGGER.warningf("[PeriphExec] %s trigger disappeared after admission for rule '%s'",
+                        sourceLabel ? sourceLabel : "trigger", ruleId.c_str());
+        return false;
+    }
+
+    ExecTrigger& trigger = it->second.triggers[triggerIndex];
+    trigger.lastTriggerTime = millis();
+    trigger.triggerCount++;
+    return true;
+}
+
 void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const String& eventData) {
-    std::vector<String> triggeredRuleIds;
+    struct MatchedRule {
+        String ruleId;
+        size_t triggerIndex;
+    };
+    std::vector<MatchedRule> triggeredRules;
 
     {
         MutexGuard lock(_rulesMutex);
@@ -2350,7 +3220,8 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
-            for (auto& trigger : rule.triggers) {
+            for (size_t triggerIndex = 0; triggerIndex < rule.triggers.size(); ++triggerIndex) {
+                auto& trigger = rule.triggers[triggerIndex];
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId.isEmpty()) continue;
                 if (trigger.eventId != eventId) continue;
@@ -2477,9 +3348,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 LOGGER.infof("[PeriphExec] Event rule matched: '%s' (event=%s)",
                     rule.name.c_str(), eventId.c_str());
 
-                trigger.lastTriggerTime = now;
-                trigger.triggerCount++;
-                triggeredRuleIds.push_back(rule.id);
+                triggeredRules.push_back({rule.id, triggerIndex});
                 break;  // 一个触发器匹配即可
             }
         }
@@ -2487,13 +3356,18 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& id : triggeredRuleIds) {
-        dispatchByRuleId(id, eventData);
+    for (const auto& matched : triggeredRules) {
+        dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
+                                 eventData, "event");
     }
 }
 
 void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const String& eventData) {
-    std::vector<String> triggeredRuleIds;
+    struct MatchedRule {
+        String ruleId;
+        size_t triggerIndex;
+    };
+    std::vector<MatchedRule> triggeredRules;
 
     {
         MutexGuard lock(_rulesMutex);
@@ -2502,7 +3376,8 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
-            for (auto& trigger : rule.triggers) {
+            for (size_t triggerIndex = 0; triggerIndex < rule.triggers.size(); ++triggerIndex) {
+                auto& trigger = rule.triggers[triggerIndex];
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId.isEmpty()) continue;
                 if (trigger.eventId != ruleId) continue;
@@ -2513,9 +3388,7 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
                 LOGGER.infof("[PeriphExec] Periph exec event rule matched: '%s' (triggerRule=%s)",
                     rule.name.c_str(), ruleId.c_str());
 
-                trigger.lastTriggerTime = now;
-                trigger.triggerCount++;
-                triggeredRuleIds.push_back(rule.id);
+                triggeredRules.push_back({rule.id, triggerIndex});
                 break;
             }
         }
@@ -2523,13 +3396,18 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& id : triggeredRuleIds) {
-        dispatchByRuleId(id, eventData);
+    for (const auto& matched : triggeredRules) {
+        dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
+                                 eventData, "periph-event");
     }
 }
 
 void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const String& periphId) {
-    std::vector<String> triggeredRuleIds;
+    struct MatchedRule {
+        String ruleId;
+        size_t triggerIndex;
+    };
+    std::vector<MatchedRule> triggeredRules;
 
     {
         MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
@@ -2542,7 +3420,8 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
-            for (auto& trigger : rule.triggers) {
+            for (size_t triggerIndex = 0; triggerIndex < rule.triggers.size(); ++triggerIndex) {
+                auto& trigger = rule.triggers[triggerIndex];
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId != eventId) continue;
                 // 若规则指定了触发外设，仅匹配该外设产生的按键事件；triggerPeriphId 为空则兼容任意按键
@@ -2554,9 +3433,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
                 LOGGER.infof("[PeriphExec] Button event rule matched: '%s' (event=%s, periph=%s)",
                     rule.name.c_str(), eventId.c_str(), periphId.c_str());
 
-                trigger.lastTriggerTime = now;
-                trigger.triggerCount++;
-                triggeredRuleIds.push_back(rule.id);
+                triggeredRules.push_back({rule.id, triggerIndex});
                 break;
             }
         }
@@ -2564,8 +3441,9 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& id : triggeredRuleIds) {
-        dispatchByRuleId(id, "");
+    for (const auto& matched : triggeredRules) {
+        dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
+                                 "", "button-event");
     }
 }
 
@@ -2575,6 +3453,7 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
     struct MatchedRule {
         String ruleId;
         String receivedValue;
+        size_t triggerIndex;
     };
     std::vector<MatchedRule> matchedRules;
 
@@ -2592,9 +3471,20 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                 PeriphExecRule& rule = pair.second;
                 if (!rule.enabled) continue;
 
+                bool alreadyMatched = false;
+                for (const auto& pending : matchedRules) {
+                    if (pending.ruleId == rule.id) {
+                        alreadyMatched = true;
+                        break;
+                    }
+                }
+                if (alreadyMatched) continue;
+
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
-                for (auto& trigger : rule.triggers) {
+                size_t matchedTriggerIndex = 0;
+                for (size_t triggerIndex = 0; triggerIndex < rule.triggers.size(); ++triggerIndex) {
+                    auto& trigger = rule.triggers[triggerIndex];
                     // 确定要匹配的数据源ID（支持平台触发和事件触发数据源）
                     String matchItemId;
                     bool isPlatformTrigger = (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER));
@@ -2632,15 +3522,14 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                             rule.name.c_str(), itemId.c_str(), itemValue.c_str(),
                             trigger.operatorType, trigger.compareValue.c_str());
 
-                        trigger.lastTriggerTime = millis();
-                        trigger.triggerCount++;
+                        matchedTriggerIndex = triggerIndex;
                         triggerMatched = true;
                         break;  // 一个触发器匹配即可
                     }
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule.id, itemValue});
+                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex});
                 }
             }
         }
@@ -2649,7 +3538,8 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
 
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
-        dispatchByRuleId(matched.ruleId, matched.receivedValue);
+        dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
+                                 matched.receivedValue, "mqtt");
     }
 }
 
@@ -2658,6 +3548,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
     struct MatchedRule {
         String ruleId;
         String receivedValue;
+        size_t triggerIndex;
     };
     std::vector<MatchedRule> matchedRules;
 
@@ -2674,11 +3565,22 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
             for (auto& pair : rules) {
                 PeriphExecRule& rule = pair.second;
                 if (!rule.enabled) continue;
+
+                bool alreadyMatched = false;
+                for (const auto& pending : matchedRules) {
+                    if (pending.ruleId == rule.id) {
+                        alreadyMatched = true;
+                        break;
+                    }
+                }
+                if (alreadyMatched) continue;
                 bool hasPollCollectionAction = rule._cachedHasPollCollectionAction;
 
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
-                for (auto& trigger : rule.triggers) {
+                size_t matchedTriggerIndex = 0;
+                for (size_t triggerIndex = 0; triggerIndex < rule.triggers.size(); ++triggerIndex) {
+                    auto& trigger = rule.triggers[triggerIndex];
                     // 确定要匹配的数据源ID（支持轮询触发和事件触发数据源）
                     String matchItemId;
                     if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
@@ -2707,15 +3609,14 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                             rule.name.c_str(), source.c_str(), itemId.c_str(), itemValue.c_str(),
                             trigger.operatorType, trigger.compareValue.c_str());
 
-                        trigger.lastTriggerTime = millis();
-                        trigger.triggerCount++;
+                        matchedTriggerIndex = triggerIndex;
                         triggerMatched = true;
                         break;  // 一个触发器匹配即可
                     }
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule.id, itemValue});
+                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex});
                 }
             }
         }
@@ -2724,7 +3625,8 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
 
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
-        dispatchByRuleId(matched.ruleId, matched.receivedValue);
+        dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
+                                 matched.receivedValue, "poll-data");
     }
 }
 
@@ -2969,7 +3871,10 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 }
 
 // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
-void PeriphExecManager::dispatchByRuleId(const String& ruleId, const String& receivedValue) {
+bool PeriphExecManager::dispatchByRuleId(const String& ruleId,
+                                         const String& receivedValue,
+                                         String* rejectionReason) {
+    if (rejectionReason) *rejectionReason = "";
     PeriphExecRule ruleCopy;
     bool ruleAcquired = false;
     bool ruleMissing = false;
@@ -2987,14 +3892,18 @@ void PeriphExecManager::dispatchByRuleId(const String& ruleId, const String& rec
             ruleAcquired = true;
         }
     }
-    if (ruleMissing) return;
+    if (ruleMissing) {
+        if (rejectionReason) *rejectionReason = "rule_not_found_or_disabled";
+        return false;
+    }
     if (!ruleAcquired) {
         LOGGER.warningf("[PeriphExec] dispatchByRuleId: rulesMutex busy, drop event for rule '%s'",
                         ruleId.c_str());
-        return;
+        if (rejectionReason) *rejectionReason = "rule_service_busy";
+        return false;
     }
     // 锁已释放，安全调用 dispatchAsync
-    dispatchAsync(ruleCopy, receivedValue);
+    return dispatchAsync(ruleCopy, receivedValue, rejectionReason);
 }
 
 String PeriphExecManager::getDynamicEventsJsonInternal() {

@@ -9,12 +9,65 @@
 #if FASTBEE_ENABLE_LCD
 
 #include "peripherals/LCDManager.h"
+#include "core/SensorConfigEpoch.h"
 #include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
 #include "core/AsyncExecTypes.h"
 #include "core/FeatureBudget.h"
+#include "core/I2CBusManager.h"
 #include "core/RuntimeFeatureManager.h"
 #include <WiFi.h>
+
+namespace {
+const void* g_lcdI2cOwner = nullptr;
+bool g_lcdI2cTransferLocked = false;
+
+void abortManagedLcdTransfer() {
+    if (!g_lcdI2cTransferLocked) return;
+    FastBee::I2CBusManager::instance().unlock();
+    g_lcdI2cTransferLocked = false;
+}
+
+uint8_t managedU8g2I2cByte(u8x8_t* u8x8, uint8_t msg,
+                           uint8_t argInt, void* argPtr) {
+    auto& manager = FastBee::I2CBusManager::instance();
+    if (!g_lcdI2cOwner) return 0;
+
+    switch (msg) {
+        case U8X8_MSG_BYTE_INIT:
+            return manager.isAcquired(g_lcdI2cOwner) ? 1 : 0;
+        case U8X8_MSG_BYTE_SET_DC:
+            return 1;
+        case U8X8_MSG_BYTE_START_TRANSFER: {
+            // Recover defensively if a prior U8g2 transfer aborted before END.
+            abortManagedLcdTransfer();
+            if (!manager.lock(250)) return 0;
+            g_lcdI2cTransferLocked = true;
+            TwoWire* wire = manager.wire(g_lcdI2cOwner);
+            if (!wire) {
+                abortManagedLcdTransfer();
+                return 0;
+            }
+            wire->beginTransmission(u8x8_GetI2CAddress(u8x8) >> 1);
+            return 1;
+        }
+        case U8X8_MSG_BYTE_SEND: {
+            if (!g_lcdI2cTransferLocked) return 0;
+            TwoWire* wire = manager.wire(g_lcdI2cOwner);
+            return wire && wire->write(static_cast<uint8_t*>(argPtr), argInt) == argInt;
+        }
+        case U8X8_MSG_BYTE_END_TRANSFER: {
+            if (!g_lcdI2cTransferLocked) return 0;
+            TwoWire* wire = manager.wire(g_lcdI2cOwner);
+            const bool success = wire && wire->endTransmission() == 0;
+            abortManagedLcdTransfer();
+            return success ? 1 : 0;
+        }
+        default:
+            return 0;
+    }
+}
+}  // namespace
 
 // 单例实现
 LCDManager& LCDManager::getInstance()
@@ -30,10 +83,17 @@ LCDManager::LCDManager()
 
 LCDManager::~LCDManager()
 {
+    abortManagedLcdTransfer();
     if (_display) {
         delete _display;
         _display = nullptr;
     }
+    if (_busAcquired) {
+        auto& bus = FastBee::I2CBusManager::instance();
+        if (!bus.release(this, 100)) bus.deferRelease(this);
+        _busAcquired = false;
+    }
+    if (g_lcdI2cOwner == this) g_lcdI2cOwner = nullptr;
     if (_displayMutex) {
         vSemaphoreDelete(_displayMutex);
         _displayMutex = nullptr;
@@ -69,7 +129,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     LOG_INFO("LCD Manager: Initializing...");
     
     // 如果已初始化，先反初始化
-    if (_initialized)
+    if (_initialized || _display || _busAcquired)
     {
         deinitialize();
     }
@@ -102,7 +162,16 @@ bool LCDManager::initialize(const PeripheralConfig& config)
             if (pinsValid) {
                 _sdaPin = sda;
                 _sclPin = scl;
-                Wire.begin(sda, scl);
+                String busError;
+                if (!FastBee::I2CBusManager::instance().acquire(
+                        this, sda, scl, 100000, busError)) {
+                    LOG_WARNINGF("LCD Manager: I2C lease failed: %s", busError.c_str());
+                    _sdaPin = -1;
+                    _sclPin = -1;
+                    return false;
+                }
+                _busAcquired = true;
+                g_lcdI2cOwner = this;
                 LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
                           sda, scl, _i2cAddress);
                 // U8G2 sends a complete controller setup sequence from begin().
@@ -110,6 +179,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
                 // profile cannot stall boot or flood the log with one error per byte.
                 if (!probeI2cDisplay(true)) {
                     LOG_WARNING("LCD Manager: Display probe failed, skipping U8G2 initialization");
+                    deinitialize();
                     return false;
                 }
             } else {
@@ -129,7 +199,20 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     if (!createDisplay(config))
     {
         LOG_ERROR("LCD Manager: Failed to create display");
+        deinitialize();
         return false;
+    }
+
+    if (_interface == DisplayInterface::I2C_MODE) {
+        _display->getU8x8()->byte_cb = managedU8g2I2cByte;
+        // U8g2 initializes every configured GPIO before its byte callback.
+        // Arduino 3 pinMode() on SDA/SCL detaches the active Wire controller;
+        // the managed byte callback deliberately never starts another bus.
+        // Only I2CBusManager owns these pins, including during initDisplay()
+        // maintenance. Keep U8g2's reset pin and delay callback intact.
+        u8x8_SetPin(_display->getU8x8(), U8X8_PIN_I2C_CLOCK, U8X8_PIN_NONE);
+        u8x8_SetPin(_display->getU8x8(), U8X8_PIN_I2C_DATA, U8X8_PIN_NONE);
+        _display->setBusClock(100000);
     }
     
     // 初始化显示屏
@@ -162,6 +245,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
 void LCDManager::deinitialize()
 {
     LCD_GUARD_OR_RETURN_VOID();
+    abortManagedLcdTransfer();
     if (_display)
     {
         delete _display;
@@ -170,6 +254,14 @@ void LCDManager::deinitialize()
     
     _initialized = false;
     _contentChanged = false;
+    if (_busAcquired) {
+        auto& bus = FastBee::I2CBusManager::instance();
+        if (!bus.release(this, 100)) bus.deferRelease(this);
+        _busAcquired = false;
+    }
+    if (g_lcdI2cOwner == this) g_lcdI2cOwner = nullptr;
+    _sdaPin = -1;
+    _sclPin = -1;
     
     LOG_INFO("LCD Manager: Deinitialized");
 }
@@ -515,10 +607,11 @@ bool LCDManager::drawDisc(uint8_t x, uint8_t y, uint8_t r)
 // ========== 通用传感器数据显示模块 ==========
 
 void LCDManager::updateSensorEntry(const String& id, const String& label, float value,
-                                   const String& unit, uint8_t decimals)
+                                   const String& unit, uint8_t decimals, uint32_t configVersion)
 {
     LCD_GUARD_OR_RETURN_VOID();
     if (!_initialized) return;
+    if (configVersion && !FastBee::SensorConfigEpoch::matches(configVersion)) return;
     
     // 查找已有条目
     for (auto& entry : _sensorEntries)
@@ -531,6 +624,7 @@ void LCDManager::updateSensorEntry(const String& id, const String& label, float 
             entry.decimals = decimals;
             entry.timestamp = millis();
             entry.valid = true;
+            entry.configVersion = configVersion;
             return;
         }
     }
@@ -550,6 +644,7 @@ void LCDManager::updateSensorEntry(const String& id, const String& label, float 
     entry.decimals = decimals;
     entry.timestamp = millis();
     entry.valid = true;
+    entry.configVersion = configVersion;
     _sensorEntries.push_back(entry);
     
     LOG_INFOF("LCD Manager: Registered sensor entry '%s' (%s)", id.c_str(), label.c_str());
@@ -633,7 +728,7 @@ bool LCDManager::showSensorPage(int8_t page)
         const SensorDisplayEntry& entry = _sensorEntries[i];
         char lineBuf[40];
         
-        if (entry.valid)
+        if (entry.valid && (!entry.configVersion || FastBee::SensorConfigEpoch::matches(entry.configVersion)))
         {
             // 格式：“标签：数值单位”（全角冒号，适配中文 label）
             char valueBuf[16];
@@ -765,8 +860,12 @@ bool LCDManager::probeI2cDisplay(bool logWarning)
     if (_interface != DisplayInterface::I2C_MODE) return true;
     if (_sdaPin < 0 || _sclPin < 0) return false;
 
-    Wire.beginTransmission(_i2cAddress);
-    const uint8_t wireStatus = Wire.endTransmission();
+    FastBee::I2CBusLock busLock(100);
+    TwoWire* wire = busLock.locked()
+        ? FastBee::I2CBusManager::instance().wire(this) : nullptr;
+    if (!wire) return false;
+    wire->beginTransmission(_i2cAddress);
+    const uint8_t wireStatus = wire->endTransmission();
     if (wireStatus == 0) return true;
 
     const unsigned long now = millis();
@@ -837,9 +936,13 @@ void LCDManager::performMaintenance()
 
     if (_interface == DisplayInterface::I2C_MODE && _sdaPin >= 0 && _sclPin >= 0) {
         if (now - _lastFullRecovery >= FULL_RECOVERY_INTERVAL_MS) {
-            // 完整 I2C 总线恢复：重置 Wire 外设 → 重发面板初始化 → 重推画面
-            Wire.end();
-            Wire.begin(_sdaPin, _sclPin);
+            // 全局锁内恢复控制器，保留其他 I2C 使用者的租约。
+            String recoveryError;
+            if (!FastBee::I2CBusManager::instance().recover(this, recoveryError)) {
+                LOG_WARNINGF("LCD Manager: I2C recovery failed: %s", recoveryError.c_str());
+                _lastFullRecovery = now;
+                return;
+            }
             if (!probeI2cDisplay(true)) {
                 _lastFullRecovery = now;
                 return;

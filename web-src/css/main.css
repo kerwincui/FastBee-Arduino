@@ -654,7 +654,7 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .notification-title { font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
 .notification-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; padding: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: var(--rounded); transition: background-color var(--transition); }
 .notification-close:hover { background: var(--slate-100); color: var(--text-primary); }
-.notification-body { padding: var(--space-4); }
+.notification-body { padding: var(--space-4); white-space: pre-line; overflow-wrap: anywhere; }
 .notification-progress { height: 3px; background: var(--slate-200); width: 100%; overflow: hidden; }
 .notification-progress-bar { height: 100%; background: currentColor; width: 100%; animation: progress var(--notification-duration, 3000ms) linear forwards; }
 
@@ -756,6 +756,7 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .pe-base-checks { display: flex; gap: var(--space-6); align-items: center; flex-wrap: wrap; white-space: nowrap; }
 .pe-base-checks .fb-form-group { margin: 0; }
 .pe-base-checks .fb-checkbox { margin: 0; }
+.pe-base-checks .fb-checkbox.is-disabled { color: var(--text-muted); cursor: not-allowed; opacity: 0.65; }
 @media (max-width: 600px) {
     .pe-base-grid { grid-template-columns: 1fr; align-items: stretch; }
     .pe-base-checks { padding-bottom: 0; justify-self: start; }
@@ -1139,7 +1140,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 #dev-advanced .dev-factory-panel { order: 3; }
 #dev-advanced .dev-config-transfer-panel { order: 4; }
 #dev-advanced .fb-panel { margin-bottom: 0; min-width: 0; }
-#dev-advanced .factory-reset-actions { display: grid; grid-template-columns: max-content minmax(88px, 110px) minmax(132px, 148px); gap: 8px; align-items: center; }
+#dev-advanced .factory-reset-actions { display: grid; grid-template-columns: max-content minmax(72px, 90px) minmax(140px, 1fr) minmax(132px, 148px); gap: 8px; align-items: center; }
 #dev-advanced .factory-reset-actions .factory-reset-input { width: 100% !important; min-width: 0; }
 #dev-advanced .factory-reset-actions .fb-btn { width: 100% !important; min-width: 0 !important; }
 #dev-advanced .config-transfer-scope { display: grid; grid-template-columns: 72px minmax(180px, 1fr); align-items: center; gap: 10px; }
@@ -1148,6 +1149,10 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 @media (max-width: 900px) {
     #dev-advanced.active { grid-template-columns: 1fr; }
     #dev-advanced .factory-reset-actions { grid-template-columns: 1fr; align-items: stretch; }
+}
+@media (min-width: 901px) and (max-width: 1280px) {
+    #dev-advanced .factory-reset-actions { grid-template-columns: max-content minmax(72px, 90px) minmax(140px, 1fr); }
+    #dev-advanced .factory-reset-actions .fb-btn { grid-column: 2 / -1; }
 }
 .u-action-row .u-ml-8, .u-action-row .u-ml-10 { margin-left: 0 !important; }
 
@@ -2266,6 +2271,155 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   
   .status-value {
     font-size: 13px;
+  }
+}
+
+/* Remote MQTT/weather resources shared by protocol consumers. */
+.remote-resource-section {
+  margin-top: var(--space-4, 16px);
+  padding-top: var(--space-4, 16px);
+  border-top: 1px solid var(--border-secondary, #e5e7eb);
+}
+
+.remote-resource-heading,
+.remote-resource-save-bar,
+.remote-resource-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+}
+
+.remote-resource-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.remote-resource-heading p,
+.remote-resource-summary {
+  margin: 4px 0 0;
+  color: var(--text-secondary, #667085);
+  font-size: 12px;
+}
+
+.remote-resource-list {
+  display: grid;
+  gap: var(--space-3, 12px);
+  margin-top: var(--space-3, 12px);
+}
+
+.remote-resource-item {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--border-secondary, #d9dee5);
+  border-radius: 6px;
+}
+
+.remote-resource-item legend {
+  padding: 0 6px;
+  color: var(--text-primary, #263238);
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.remote-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.remote-resource-grid + .remote-resource-grid {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-secondary, #e5e7eb);
+}
+
+.remote-resource-grid label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary, #667085);
+  font-size: 12px;
+}
+
+.remote-resource-grid input,
+.remote-resource-grid select,
+.remote-resource-grid textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.remote-resource-grid .remote-resource-check {
+  flex-direction: row;
+  align-items: center;
+  color: var(--text-primary, #263238);
+}
+
+.remote-resource-check input {
+  width: auto;
+}
+
+.remote-resource-wide {
+  grid-column: span 2;
+}
+
+.remote-resource-mapping {
+  margin-top: 12px;
+}
+
+.remote-resource-mapping summary {
+  width: fit-content;
+  margin-bottom: 10px;
+  color: var(--primary, #2563eb);
+  cursor: pointer;
+}
+
+.remote-resource-item-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.remote-resource-empty {
+  margin-top: 10px;
+  padding: 16px;
+  border: 1px dashed var(--border-secondary, #d0d5dd);
+  border-radius: 6px;
+  color: var(--text-secondary, #667085);
+  text-align: center;
+}
+
+.remote-resource-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  margin-top: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-secondary, #e5e7eb);
+  background: var(--card-bg, #fff);
+}
+
+@media (max-width: 860px) {
+  .remote-resource-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .remote-resource-heading,
+  .remote-resource-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .remote-resource-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .remote-resource-wide {
+    grid-column: auto;
   }
 }
 

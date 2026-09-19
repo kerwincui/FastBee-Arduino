@@ -54,6 +54,7 @@ enum class ModbusDataSource {
 enum class ModbusRestartResult : uint8_t {
     Started,
     IdleNoEnabledTargets,
+    DeferredBusy,
     Failed
 };
 #endif
@@ -92,6 +93,46 @@ public:
 
     // 获取 ModbusHandler 指针（供路由处理器访问Master模式接口）
 #if FASTBEE_ENABLE_MODBUS
+    class ModbusHandlerLease {
+    public:
+        ModbusHandlerLease() : _owner(nullptr), _handler(nullptr) {}
+        ~ModbusHandlerLease() { release(); }
+        ModbusHandlerLease(ModbusHandlerLease&& other) noexcept
+            : _owner(other._owner), _handler(other._handler) {
+            other._owner = nullptr;
+            other._handler = nullptr;
+        }
+        ModbusHandlerLease& operator=(ModbusHandlerLease&& other) noexcept {
+            if (this != &other) {
+                release();
+                _owner = other._owner;
+                _handler = other._handler;
+                other._owner = nullptr;
+                other._handler = nullptr;
+            }
+            return *this;
+        }
+        ModbusHandler* get() const { return _handler; }
+        ModbusHandler* operator->() const { return _handler; }
+        explicit operator bool() const { return _handler != nullptr; }
+
+        ModbusHandlerLease(const ModbusHandlerLease&) = delete;
+        ModbusHandlerLease& operator=(const ModbusHandlerLease&) = delete;
+
+    private:
+        friend class ProtocolManager;
+        ModbusHandlerLease(ProtocolManager* owner, ModbusHandler* handler)
+            : _owner(owner), _handler(handler) {}
+        void release();
+        ProtocolManager* _owner;
+        ModbusHandler* _handler;
+    };
+
+    // 获取 handler 活跃引用。生命周期互斥只保护快照/计数，不会在整个
+    // UART 操作期间持有；热重启看到活跃引用时延期，避免 end/reset 竞态。
+    ModbusHandlerLease acquireModbusHandler(
+        TickType_t timeout = pdMS_TO_TICKS(2000)) const;
+
     ModbusHandler* getModbusHandler() const { return modbusHandler.get(); }
 #else
     ModbusHandler* getModbusHandler() const { return nullptr; }
@@ -191,6 +232,9 @@ private:
 #endif
 #if FASTBEE_ENABLE_MODBUS
     std::unique_ptr<ModbusHandler> modbusHandler;
+    mutable SemaphoreHandle_t modbusLifecycleMutex = nullptr;
+    mutable portMUX_TYPE modbusLeaseMux = portMUX_INITIALIZER_UNLOCKED;
+    mutable uint16_t modbusActiveLeases = 0;
 #endif
     
     std::vector<ProtocolConfig> protocols;
@@ -202,8 +246,11 @@ private:
     SimpleSSECallback modbusStatusSSECallback;
     
     bool isInitialized;
+    bool shutdownComplete = false;
 #if FASTBEE_ENABLE_MODBUS
     volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
+    volatile bool modbusStopPending = false;
+    volatile bool modbusShutdownPending = false;
     volatile bool modbusRestartResultAvailable = false;
     ModbusRestartResult modbusLastRestartResult = ModbusRestartResult::Failed;
 #endif
@@ -218,8 +265,17 @@ private:
         char version[32];
         char error[96];
     };
-    QueueHandle_t fastBeeOtaReplyQueue = nullptr;
+    QueueHandle_t fastBeeOtaActiveTerminalQueue = nullptr; // active task status 3/4
+    QueueHandle_t fastBeeOtaReplyQueue = nullptr;          // non-owner terminal replies
+    QueueHandle_t fastBeeOtaProgressQueue = nullptr;       // latest status 2 only
+    FastBeeOtaReplyEvent fastBeeOtaPendingReply{};
+    bool fastBeeOtaHasPendingReply = false;
     unsigned long fastBeeOtaLastPublishAttemptMs = 0;
+    portMUX_TYPE fastBeeOtaStateMux = portMUX_INITIALIZER_UNLOCKED;
+    int32_t fastBeeOtaActiveTaskId = 0;
+    int32_t fastBeeOtaLastTerminalTaskId = 0;
+    uint8_t fastBeeOtaLastTerminalStatus = 0;
+    char fastBeeOtaLastTerminalVersion[32] = {};
 #endif
     
     // 网络类型追踪：用于在 handle() 中检测网络类型变更并立即重启 MQTT
@@ -239,6 +295,10 @@ private:
 #endif
 #if FASTBEE_ENABLE_MODBUS
     bool initModbus(void* config);
+    ModbusHandlerLease acquireModbusHandlerInternal(TickType_t timeout,
+                                                    bool allowPending) const;
+    void releaseModbusHandlerLease();
+    uint16_t getActiveModbusLeaseCount() const;
 #endif
     
     // 内部消息处理

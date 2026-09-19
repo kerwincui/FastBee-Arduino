@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <functional>
-#include "PeripheralExecution.h"
+#include "AsyncExecTypes.h"
 
 // 前向声明
 class PeriphExecManager;
@@ -69,7 +69,13 @@ public:
     // 执行规则的所有动作（同步）
     // reportCountOut（可选）：回填本次实际上报的动作结果数量
     // （采集或属性控制动作在 reportAfterExec 勾选时 > 0）
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false, size_t* reportCountOut = nullptr);
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule,
+                                                    const String& receivedValue,
+                                                    bool suppressReport = false,
+                                                    size_t* reportCountOut = nullptr,
+                                                    bool* completedAllOut = nullptr,
+                                                    unsigned long deadlineAt = 0,
+                                                    AsyncExecResult* traceOut = nullptr);
 
     // ========== 具体动作执行方法 ==========
 
@@ -82,7 +88,8 @@ public:
                                  std::vector<ActionExecResult>* controlResults = nullptr);
 
     // 执行传感器读取动作
-    bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result);
+    bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
+                                 bool recordHistory = false);
 
     // 按传感器类别推断默认数据通道名（仅用于通道选择/LCD 条目等内部用途，
     // 不作为上报 ID；上报 ID 通用规则见 reportActionResults：显式 dataField 优先，

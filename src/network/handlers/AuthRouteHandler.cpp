@@ -19,15 +19,11 @@
 
 namespace {
 
-#if CHIP_DUAL_CORE
-static constexpr uint32_t LOGIN_TASK_STACK_BYTES = 8192U;
-#else
-// C3 field evidence: steady-state internal largest block is about 7.1KB, so
-// an 8KB transient stack can never be created even with 25KB total DRAM free.
-// Keep the worker transient to avoid permanently consuming 6KB on constrained
-// targets; the recorded high-water mark below must be checked after flashing.
+// Measured ESP32/S3 login usage is 3520/3688 bytes. A 6KB transient stack
+// retains >2KB margin while saving 2KB during the browser's initial burst.
+// C3 also needs this size because its largest internal block can be ~7KB.
+// Keep HWM telemetry for both successful and rejected login paths.
 static constexpr uint32_t LOGIN_TASK_STACK_BYTES = 6144U;
-#endif
 // xTaskCreate allocates the stack as one block, but the TCB and Web/lwIP
 // working memory do not need to be contiguous with it. Keep only allocator
 // metadata/alignment overhead on the largest-block gate, and protect the rest

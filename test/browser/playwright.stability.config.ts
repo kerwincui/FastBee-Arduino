@@ -26,8 +26,14 @@ import { defineConfig, devices } from '@playwright/test';
 
 const deviceIp = process.env.DEVICE_IP || '192.168.1.1';
 const devicePort = process.env.DEVICE_PORT || '80';
-const stabilityRounds = parseInt(process.env.STABILITY_ROUNDS || '5', 10);
-const stabilityWorkers = parseInt(process.env.STABILITY_WORKERS || '2', 10);
+const parsedStabilityRounds = Number.parseInt(process.env.STABILITY_ROUNDS || '5', 10);
+const parsedStabilityWorkers = Number.parseInt(process.env.STABILITY_WORKERS || '2', 10);
+const stabilityRounds = Number.isFinite(parsedStabilityRounds) && parsedStabilityRounds > 0
+  ? parsedStabilityRounds
+  : 5;
+const stabilityWorkers = Number.isFinite(parsedStabilityWorkers) && parsedStabilityWorkers > 0
+  ? parsedStabilityWorkers
+  : 2;
 
 export default defineConfig({
   testDir: './suites',
@@ -35,9 +41,10 @@ export default defineConfig({
   fullyParallel: true, // 稳定性测试启用并行，多 worker 同时工作
   forbidOnly: !!process.env.CI,
   retries: 1, // 稳定性测试只重试 1 次（过多重试掩盖真实问题）
+  repeatEach: stabilityRounds,
   workers: stabilityWorkers,
   timeout: 90_000, // 稳定性测试适当放宽超时（90s）
-  // 多轮循环：通过 globalSetup 实现重复执行
+  // globalSetup 负责设备预检；repeatEach 负责实际的多轮执行。
   globalSetup: require.resolve('./stability-global-setup'),
   reporter: [
     ['html', { outputFolder: 'reports/stability-html', open: 'never' }],

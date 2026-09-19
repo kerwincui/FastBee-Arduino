@@ -3,22 +3,12 @@
 
 #include "core/DriverRegistry.h"
 #include "core/interfaces/ISensorDriver.h"
+#include "peripherals/drivers/I2CSensorBus.h"
 
 #include <ArduinoJson.h>
 #include <Wire.h>
 
 namespace {
-
-uint8_t readI2cAddress(JsonVariantConst value, uint8_t fallback) {
-    if (value.isNull()) return fallback;
-    if (value.is<const char*>()) return static_cast<uint8_t>(strtoul(value.as<const char*>(), nullptr, 0));
-    return static_cast<uint8_t>(value.as<uint32_t>());
-}
-
-int readPin(JsonVariantConst value, int fallback) {
-    if (value.isNull()) return fallback;
-    return value.as<int>();
-}
 
 class BH1750Driver : public ISensorDriver {
 public:
@@ -35,33 +25,25 @@ public:
 
     bool init(uint8_t pin, const char* params) override {
         (void)pin;
-        _addr = 0x23;
-        int sda = -1;
-        int scl = -1;
-        if (params && params[0]) {
-            JsonDocument doc;
-            if (deserializeJson(doc, params) == DeserializationError::Ok) {
-                _addr = readI2cAddress(doc["addr"], _addr);
-                sda = readPin(doc["sda"], -1);
-                scl = readPin(doc["scl"], -1);
-            }
-        }
-        if (sda >= 0 && scl >= 0) Wire.begin(sda, scl);
-        else Wire.begin();
+        deinit();
+        JsonDocument doc;
+        if (!_bus.open(this, getName(), params, doc)) return false;
         if (!writeCommand(0x01)) return false;
         delay(10);
-        writeCommand(0x07);
+        if (!writeCommand(0x07)) return false;
         _ready = writeCommand(0x10);
         delay(180);
         return _ready;
     }
 
     bool read(SensorReading& reading) override {
-        if (!_ready) return false;
+        reading = SensorReading();
+        if (!_ready) return _bus.fail("BH1750_NOT_INITIALIZED");
         if (!writeCommand(0x10)) return false;
         delay(180);
-        if (Wire.requestFrom(_addr, static_cast<uint8_t>(2)) != 2) return false;
-        uint16_t raw = (static_cast<uint16_t>(Wire.read()) << 8) | Wire.read();
+        uint8_t data[2];
+        if (!_bus.read(data, sizeof(data))) return false;
+        uint16_t raw = (static_cast<uint16_t>(data[0]) << 8) | data[1];
         reading.values[0] = static_cast<float>(raw) / 1.2f;
         reading.channelCount = 1;
         reading.success = true;
@@ -69,17 +51,16 @@ public:
         return true;
     }
 
-    void deinit() override { _ready = false; }
+    void deinit() override { _ready = false; _bus.close(); }
     unsigned long getMinInterval() const override { return 500; }
+    const char* getLastError() const override { return _bus.error(); }
 
 private:
     bool writeCommand(uint8_t cmd) {
-        Wire.beginTransmission(_addr);
-        Wire.write(cmd);
-        return Wire.endTransmission() == 0;
+        return _bus.write(&cmd, 1);
     }
 
-    uint8_t _addr = 0x23;
+    FastBee::I2CSensorBus _bus;
     bool _ready = false;
 };
 

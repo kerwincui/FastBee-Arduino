@@ -372,6 +372,34 @@ static void test_ota_url_download_runs_in_background_task() {
         "OTAManager must create a dedicated FreeRTOS task for URL download");
 }
 
+static void test_ota_async_latch_released_before_completion_callback() {
+    TestLog::testStart("Stability: OTA async latch released before terminal callback");
+
+    std::string content = readStabilitySrcFile("src/network/OTAManager.cpp");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("OTAManager.cpp not readable, skipping source check");
+        return;
+    }
+
+    const size_t taskStart = content.find("void otaUrlDownloadTask(void* pv)");
+    const size_t taskEnd = content.find("}  // namespace", taskStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        taskStart != std::string::npos && taskEnd != std::string::npos,
+        "OTA URL background task must exist");
+    const std::string taskBody = content.substr(taskStart, taskEnd - taskStart);
+
+    const size_t lockPos = taskBody.find("portENTER_CRITICAL(&s_otaSpawnMux)");
+    const size_t releasePos = taskBody.find("s_otaUrlTaskActive = false", lockPos);
+    const size_t unlockPos = taskBody.find("portEXIT_CRITICAL(&s_otaSpawnMux)", releasePos);
+    const size_t callbackPos = taskBody.find(
+        "params->completionCallback(success, error)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        lockPos != std::string::npos && releasePos != std::string::npos &&
+        unlockPos != std::string::npos && callbackPos != std::string::npos &&
+        lockPos < releasePos && releasePos < unlockPos && unlockPos < callbackPos,
+        "finished OTA task must release its synchronized spawn latch before terminal callback");
+}
+
 static void test_ota_download_loop_has_timeouts() {
     TestLog::testStart("Stability: OTA download loop must have stall & total timeouts");
 
@@ -387,6 +415,69 @@ static void test_ota_download_loop_has_timeouts() {
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("TOTAL_TIMEOUT_MS") != std::string::npos,
         "OTA download loop must have an overall deadline");
+}
+
+static void test_ota_https_download_requires_complete_known_length() {
+    TestLog::testStart("Stability: HTTPS OTA requires a complete known-length response");
+
+    std::string content = readStabilitySrcFile("src/network/OTAManager.cpp");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("OTAManager.cpp not readable, skipping source check");
+        return;
+    }
+
+    size_t startPos = content.find("bool OTAManager::startOTA(const String& url");
+    size_t asyncPos = content.find("bool OTAManager::startOTAAsync", startPos);
+    TEST_ASSERT_TRUE_MESSAGE(startPos != std::string::npos && asyncPos != std::string::npos,
+        "OTAManager URL download functions must exist");
+    std::string download = content.substr(startPos, asyncPos - startPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        download.find("setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS)") != std::string::npos,
+        "HTTPS OTA must follow redirects without weakening HTTPS validation");
+    TEST_ASSERT_TRUE_MESSAGE(
+        download.find("contentLength = http.getSize()") != std::string::npos &&
+        download.find("contentLength <= 0") != std::string::npos,
+        "HTTPS OTA must reject chunked or unknown-length firmware responses");
+    TEST_ASSERT_TRUE_MESSAGE(
+        download.find("while (remaining > 0)") != std::string::npos &&
+        download.find("!http.connected()") != std::string::npos,
+        "HTTPS OTA must stop cleanly when the server disconnects early");
+
+    size_t incompletePos = download.find("remaining != 0");
+    size_t sizeCheckPos = download.find("currentSize != expectedSize", incompletePos);
+    size_t abortPos = download.find("Update.end(false)", incompletePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        incompletePos != std::string::npos && sizeCheckPos != std::string::npos &&
+        abortPos != std::string::npos && incompletePos < abortPos,
+        "An incomplete HTTPS response must abort Update instead of finalizing partial firmware");
+}
+
+static void test_ota_end_uses_strict_known_size_verification() {
+    TestLog::testStart("Stability: OTA end must not force-finish known-size firmware");
+
+    std::string content = readStabilitySrcFile("src/network/OTAManager.cpp");
+    if (content.empty()) {
+        TEST_IGNORE_MESSAGE("OTAManager.cpp not readable, skipping source check");
+        return;
+    }
+
+    size_t endPos = content.find("bool OTAManager::endOTA()");
+    size_t cancelPos = content.find("void OTAManager::cancelOTA()", endPos);
+    TEST_ASSERT_TRUE_MESSAGE(endPos != std::string::npos && cancelPos != std::string::npos,
+        "OTAManager end/cancel functions must exist");
+    std::string endBody = content.substr(endPos, cancelPos - endPos);
+
+    size_t mismatchPos = endBody.find("currentSize != totalExpected");
+    size_t strictFlagPos = endBody.find("allowUnknownSize = totalExpected == 0");
+    size_t updateEndPos = endBody.find("Update.end(allowUnknownSize)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mismatchPos != std::string::npos && strictFlagPos != std::string::npos &&
+        updateEndPos != std::string::npos && mismatchPos < updateEndPos,
+        "Known-size OTA must compare received bytes before calling Update.end(false)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        endBody.find("Update.end(true)") == std::string::npos,
+        "Known-size OTA must not force-finish with Update.end(true)");
 }
 
 static void test_ota_restart_uses_system_rebooter() {
@@ -1420,6 +1511,196 @@ static void test_scan_serialization_reserve_null() {
     }
 }
 
+// Rule actions are persisted execution authority. Keep validation in the
+// Manager so alternate API/import paths cannot bypass UI-side checks.
+static void test_periph_exec_rule_actions_fail_closed() {
+    TestLog::testStart("Stability: rule actions must fail closed in Manager");
+
+    const std::string header =
+        readStabilitySrcFile("include/core/PeriphExecManager.h");
+    const std::string manager =
+        readStabilitySrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "PeriphExecManager.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "PeriphExecManager.cpp must be readable");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(
+        std::string::npos, header.find("validateRuleActionsLocked"),
+        "Manager must declare one authoritative rule-action validator");
+
+    const size_t validatorStart = manager.find(
+        "bool PeriphExecManager::validateRuleActionsLocked");
+    const size_t validatorEnd = manager.find(
+        "bool PeriphExecManager::addRuleLocked", validatorStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        validatorStart != std::string::npos && validatorEnd != std::string::npos,
+        "Manager rule-action validator body must exist");
+    const std::string validator =
+        manager.substr(validatorStart, validatorEnd - validatorStart);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("validateRuleActionsLocked(newRule, errorMsg)") != std::string::npos &&
+        manager.find("validateRuleActionsLocked(rule, errorMsg)") != std::string::npos,
+        "Both rule add and update paths must call the shared validator");
+    TEST_ASSERT_TRUE_MESSAGE(
+        validator.find("ACTION_NOT_AUTOMATABLE") != std::string::npos &&
+        validator.find("ACTION_TARGET_REQUIRED") != std::string::npos &&
+        validator.find("ACTION_TARGET_NOT_FOUND") != std::string::npos &&
+        validator.find("ACTION_TARGET_TYPE_MISMATCH") != std::string::npos &&
+        validator.find("ACTION_TARGET_CONFLICT") != std::string::npos,
+        "Validator must reject destructive, missing, unknown, incompatible, and redirected actions");
+    TEST_ASSERT_EQUAL_MESSAGE(
+        std::string::npos, validator.find("target.enabled"),
+        "Disabled peripherals must remain valid preconfiguration targets");
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("type == PeripheralType::ENCODER") != std::string::npos,
+        "Encoder peripherals must be valid sensor-read targets");
+
+    const size_t optionsStart = manager.find(
+        "String PeriphExecManager::getValidActionTypes");
+    const size_t optionsEnd = manager.find(
+        "// ========== 异步执行结果管理", optionsStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        optionsStart != std::string::npos && optionsEnd != std::string::npos,
+        "Valid-action option builder must exist");
+    const std::string options =
+        manager.substr(optionsStart, optionsEnd - optionsStart);
+    TEST_ASSERT_EQUAL_MESSAGE(
+        std::string::npos, options.find("ACTION_SYS_FACTORY_RESET"),
+        "Factory reset must never be advertised as an automatable action");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        validator.find("isTerminalSystemAction(action.actionType)") != std::string::npos &&
+        validator.find("index + 1U != rule.actions.size()") != std::string::npos &&
+        manager.find("isTerminalSystemAction(rule.actions[index].actionType)") != std::string::npos,
+        "Restart and feature mutations must be terminal in saved and legacy rules");
+
+    const size_t dispatchStart = manager.find(
+        "bool PeriphExecManager::dispatchAsync");
+    const size_t dispatchEnd = manager.find(
+        "void PeriphExecManager::executeWorkerJob", dispatchStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        dispatchStart != std::string::npos && dispatchEnd != std::string::npos,
+        "Async dispatch admission implementation must exist");
+    const std::string dispatch =
+        manager.substr(dispatchStart, dispatchEnd - dispatchStart);
+    const size_t reservationCheck = dispatch.find("_runningRuleIds.count(rule.id)");
+    const size_t reservationInsert = dispatch.find("_runningRuleIds.insert(rule.id)");
+    const size_t asyncDecision = dispatch.find("if (!shouldRunAsync())");
+    TEST_ASSERT_TRUE_MESSAGE(
+        dispatch.find("MutexGuard runLock(_runningRulesMutex)") != std::string::npos &&
+        reservationCheck != std::string::npos &&
+        reservationInsert != std::string::npos &&
+        asyncDecision != std::string::npos &&
+        reservationCheck < reservationInsert && reservationInsert < asyncDecision,
+        "Running-rule check and reservation must be atomic and precede every execution path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("bool PeriphExecManager::executeSyncWithCompletion") != std::string::npos &&
+        manager.find("return allOk;") != std::string::npos,
+        "Synchronous terminal actions must propagate their real execution result");
+}
+
+static void test_modbus_lifecycle_and_deadline_guards() {
+    TestLog::testStart("Stability: Modbus lifecycle and batch deadlines must stay bounded");
+
+    const std::string protocolHeader =
+        readStabilitySrcFile("include/protocols/ProtocolManager.h");
+    const std::string protocol =
+        readStabilitySrcFile("src/protocols/ProtocolManager.cpp");
+    const std::string modbusHeader =
+        readStabilitySrcFile("include/protocols/ModbusHandler.h");
+    const std::string modbus =
+        readStabilitySrcFile("src/protocols/ModbusHandler.cpp");
+    const std::string executor =
+        readStabilitySrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(protocolHeader.empty(), "ProtocolManager.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(protocol.empty(), "ProtocolManager.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(modbusHeader.empty(), "ModbusHandler.h must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(modbus.empty(), "ModbusHandler.cpp must be readable");
+    TEST_ASSERT_FALSE_MESSAGE(executor.empty(), "PeriphExecExecutor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        protocolHeader.find("class ModbusHandlerLease") != std::string::npos &&
+        protocolHeader.find("ModbusHandlerLease(const ModbusHandlerLease&) = delete") != std::string::npos &&
+        protocolHeader.find("modbusActiveLeases") != std::string::npos &&
+        protocol.find("++modbusActiveLeases") != std::string::npos &&
+        protocol.find("releaseModbusHandlerLease()") != std::string::npos,
+        "Modbus handler access must use a move-only counted lifecycle lease");
+    TEST_ASSERT_TRUE_MESSAGE(
+        protocol.find("acquireModbusHandlerInternal(0, true)") != std::string::npos,
+        "Modbus maintenance handling must remain available while restart/stop is deferred");
+    TEST_ASSERT_TRUE_MESSAGE(
+        protocolHeader.find("modbusShutdownPending") != std::string::npos &&
+        protocol.find("if (modbusShutdownPending) return ModbusHandlerLease()") != std::string::npos &&
+        protocol.find("while (getActiveModbusLeaseCount() > 0)") != std::string::npos,
+        "Shutdown must reject new leases and drain admitted operations before destruction");
+
+    const size_t restartStart = protocol.find(
+        "ModbusRestartResult ProtocolManager::restartModbus");
+    const size_t restartEnd = protocol.find(
+        "void ProtocolManager::stopModbus", restartStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        restartStart != std::string::npos && restartEnd != std::string::npos,
+        "Modbus restart implementation must exist");
+    const std::string restart =
+        protocol.substr(restartStart, restartEnd - restartStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        restart.find("getActiveModbusLeaseCount() > 0") != std::string::npos &&
+        restart.find("ModbusRestartResult::DeferredBusy") != std::string::npos,
+        "Hot restart must defer while a handler lease is active");
+    const size_t unregisterPos = restart.find("unregisterModbusSubDevices()");
+    const size_t resetPos = restart.find("modbusHandler.reset()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        unregisterPos != std::string::npos && resetPos != std::string::npos &&
+        unregisterPos < resetPos,
+        "Old Modbus callbacks/subdevices must be unregistered before handler destruction");
+
+    const size_t registerStart = protocol.find(
+        "void ProtocolManager::registerModbusSubDevices");
+    const size_t registerEnd = protocol.find(
+        "void ProtocolManager::unregisterModbusSubDevices", registerStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        registerStart != std::string::npos && registerEnd != std::string::npos,
+        "Modbus subdevice callback registration must exist");
+    const std::string registration =
+        protocol.substr(registerStart, registerEnd - registerStart);
+    const size_t firstLease = registration.find("acquireModbusHandler");
+    const size_t secondLease = registration.find("acquireModbusHandler", firstLease + 1);
+    TEST_ASSERT_TRUE_MESSAGE(
+        registration.find("[this]") != std::string::npos &&
+        firstLease != std::string::npos && secondLease != std::string::npos,
+        "Every retained Modbus write callback must acquire a fresh handler lease");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        modbusHeader.find("uint16_t timeoutOverride = 0") != std::string::npos &&
+        modbusHeader.find("uint8_t retriesOverride = 0xFF") != std::string::npos &&
+        modbus.find("expectedSlaveAddress, timeoutOverride") != std::string::npos &&
+        modbus.find("retriesOverride") != std::string::npos,
+        "Control writes must propagate bounded timeout/retry overrides to transactions");
+    TEST_ASSERT_TRUE_MESSAGE(
+        executor.find("MODBUS_POLL_BATCH_TIMEOUT_MS = 30000") != std::string::npos &&
+        executor.find("remainingBatchBudgetMs") != std::string::npos &&
+        executor.find("maxAttempts = transactionBudget / attemptBudget") != std::string::npos &&
+        executor.find("effectiveTimeout, effectiveRetries") != std::string::npos &&
+        executor.find("modbus_ctrl_deadline") != std::string::npos,
+        "Poll/control batches must reduce retry policy and stop when the shared deadline expires");
+    const size_t batchStart = executor.find("const unsigned long batchStart = millis()");
+    const size_t leaseAcquire = executor.find("acquireModbusHandler", batchStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        batchStart != std::string::npos && leaseAcquire != std::string::npos &&
+        batchStart < leaseAcquire,
+        "The shared Modbus deadline must include handler lease admission wait");
+    TEST_ASSERT_TRUE_MESSAGE(
+        modbus.find("MODBUS_BUS_ACQUIRE_TIMEOUT_MS") != std::string::npos &&
+        modbus.find("remainingMs - MODBUS_BUS_ACQUIRE_TIMEOUT_MS") != std::string::npos,
+        "Transaction fitting must reserve the possible Modbus bus-acquire wait");
+
+    const std::string manager =
+        readStabilitySrcFile("src/core/PeriphExecManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty(), "PeriphExecManager.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        manager.find("MutexGuard lock(_rulesMutex, portMAX_DELAY)") != std::string::npos,
+        "Accepted timer dispatch must commit its trigger timestamp without a timed-lock drop");
+}
+
 // ========== 测试组入口 ==========
 
 void test_stability_fixes_group() {
@@ -1432,7 +1713,10 @@ void test_stability_fixes_group() {
     RUN_TEST(test_wifi_scan_task_single_core_safe);
     RUN_TEST(test_wifi_scan_sta_mode_cache_and_dwell);
     RUN_TEST(test_ota_url_download_runs_in_background_task);
+    RUN_TEST(test_ota_async_latch_released_before_completion_callback);
     RUN_TEST(test_ota_download_loop_has_timeouts);
+    RUN_TEST(test_ota_https_download_requires_complete_known_length);
+    RUN_TEST(test_ota_end_uses_strict_known_size_verification);
     RUN_TEST(test_ota_restart_uses_system_rebooter);
 
     // P1 并发与重连
@@ -1480,4 +1764,6 @@ void test_stability_fixes_group() {
     RUN_TEST(test_sensor_template_single_lookup);
     RUN_TEST(test_runtime_gates_use_dram_budget);
     RUN_TEST(test_scan_serialization_reserve_null);
+    RUN_TEST(test_periph_exec_rule_actions_fail_closed);
+    RUN_TEST(test_modbus_lifecycle_and_deadline_guards);
 }

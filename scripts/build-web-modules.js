@@ -27,6 +27,7 @@ const {
     capabilityRuleSatisfied,
     getWebProfile,
     hasDeviceControl,
+    resolveRequestGovernorLimits,
     resolveWebBuildContext,
     shouldIncludeAsset,
     shouldIncludeMenu,
@@ -40,6 +41,8 @@ const {
     filterProdI18nTranslations
 } = require('./build-app-bundle');
 const { minifyJS } = require('./minify-js');
+const { minify_sync } = require('terser');
+const { withWebPublishLock } = require('./web-publish-lock');
 
 function minifyCSS(css) {
     return css
@@ -65,6 +68,8 @@ const ALL_DIRECT_RUNTIME_MODULES = [
     'periph-exec-sensor.js',
     'periph-exec-effects.js',
     'periph-exec-modbus.js',
+    'screen-panel-model.js',
+    'screen-panel.js',
     'peripherals.js',
     'peripheral-save.js',
     'peripheral-io.js',
@@ -101,7 +106,9 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'logs.js',
     'users.js',
 ]);
-const STANDALONE_ROOT_JS = [{ file: 'notification.js', minify: true }];
+// notification.js is already part of chunk-2-app.js. No standalone page loads
+// it, so publishing a second copy only consumes flash and manifest entries.
+const STANDALONE_ROOT_JS = [];
 const STANDALONE_ROOT_JS_SET = new Set(STANDALONE_ROOT_JS.map((item) => item.file));
 const APP_CHUNK_FILES = new Set(APP_CHUNK_GROUPS.map((chunk) => chunk.outName));
 
@@ -282,7 +289,7 @@ function stripProdOnlyCssRules(content) {
     ];
 
     // 统一架构：不移除任何样式（保留全部资源）
-    
+
 
     return content
         .split(/\r?\n/)
@@ -351,7 +358,7 @@ function normalizePath(relPath) {
 function compiledModuleSequences(context = BUILD_CONTEXT) {
     const capabilities = context.compiledCapabilities;
     const sequences = {};
-    if (capabilities.mqtt || capabilities.modbus) {
+    if (capabilities.mqtt || capabilities.modbus || capabilities.remoteResources) {
         sequences.protocol = ['protocol'];
     }
     if (capabilities.modbus) {
@@ -370,6 +377,9 @@ function compiledModuleSequences(context = BUILD_CONTEXT) {
         if (capabilities.modbus) sequences['periph-exec-editor'].push('periph-exec-modbus');
         sequences['periph-exec-editor'].push('periph-exec-form');
     }
+    if (capabilities.screenPanel) {
+        sequences['screen-panel'] = ['screen-panel-model', 'screen-panel'];
+    }
     return sequences;
 }
 
@@ -383,6 +393,25 @@ function replaceRequiredBlock(content, startMarker, endMarker, replacement, labe
 }
 
 function transformAppSourceContent(fileName, content) {
+    if (fileName === 'request-governor.js') {
+        const limits = resolveRequestGovernorLimits(BUILD_CONTEXT);
+        const replacement = [
+            '    // Generated from the firmware memory profile by build-web-modules.js.',
+            '    const WEB_PROFILE_REQUEST_LIMITS = Object.freeze({',
+            `        maxConcurrent: ${limits.maxConcurrent},`,
+            `        maxWeight: ${limits.maxWeight}`,
+            '    });',
+            '    '
+        ].join('\n');
+        return replaceRequiredBlock(
+            content,
+            '    // FASTBEE_WEB_PROFILE_REQUEST_LIMITS_START',
+            '// FASTBEE_WEB_PROFILE_REQUEST_LIMITS_END',
+            replacement,
+            'request governor memory profile'
+        );
+    }
+
     if (fileName === 'module-loader.js') {
         const sequenceMap = JSON.stringify(compiledModuleSequences(BUILD_CONTEXT), null, 4)
             .split('\n')
@@ -399,7 +428,8 @@ function transformAppSourceContent(fileName, content) {
 
     if (fileName === 'state-session.js') {
         const preloadPages = ['device-page', 'network-page', 'peripheral-page'];
-        if (BUILD_CONTEXT.compiledCapabilities.mqtt || BUILD_CONTEXT.compiledCapabilities.modbus) {
+        if (BUILD_CONTEXT.compiledCapabilities.mqtt || BUILD_CONTEXT.compiledCapabilities.modbus ||
+            BUILD_CONTEXT.compiledCapabilities.remoteResources) {
             preloadPages.push('protocol-page');
         }
         const replacement = `PageLoader.preloadPages(${JSON.stringify(preloadPages)}, self._pageMapping, { delayMs: 1200 })`;
@@ -408,14 +438,14 @@ function transformAppSourceContent(fileName, content) {
         return content.replace(pattern, replacement);
     }
 
-    if (fileName === 'state.js' &&
-        !BUILD_CONTEXT.compiledCapabilities.mqtt &&
-        BUILD_CONTEXT.compiledCapabilities.modbus) {
+    if (fileName === 'state.js' && !BUILD_CONTEXT.compiledCapabilities.mqtt &&
+        (BUILD_CONTEXT.compiledCapabilities.modbus || BUILD_CONTEXT.compiledCapabilities.remoteResources)) {
         const mqttDefault = "this.loadProtocolConfig('mqtt');";
         if (!content.includes(mqttDefault)) {
-            throw new Error('Unable to select the Modbus-only protocol default tab');
+            throw new Error('Unable to select the protocol default tab');
         }
-        return content.replace(mqttDefault, "this.loadProtocolConfig('modbus-rtu');");
+        const defaultTab = BUILD_CONTEXT.compiledCapabilities.modbus ? 'modbus-rtu' : 'remote-resources';
+        return content.replace(mqttDefault, `this.loadProtocolConfig('${defaultTab}');`);
     }
 
     return content;
@@ -444,7 +474,12 @@ function syncDirectRuntimeModules() {
         }
 
         const raw = readUtf8(sourceFile);
-        const content = noMinify ? raw : minifyJS(raw);
+        // The action editor keeps its public AppState methods/property names.
+        // Parse and shorten local bindings only to fit its expanded action set
+        // without raising the shared asset budget or unsafe text rewrites.
+        const content = noMinify ? raw : (['periph-exec-form.js', 'peripherals.js'].includes(fileName)
+            ? minify_sync(raw, { compress: false, mangle: true }).code
+            : minifyJS(raw));
         writeUtf8(publishFile, content);
 
         results.push({
@@ -629,7 +664,7 @@ function syncStaticAssets() {
         if (!fs.existsSync(jsDestDir)) {
             fs.mkdirSync(jsDestDir, { recursive: true });
         }
-        // 统一架构：始终发布 notification.js
+        // Only scripts referenced directly by standalone pages belong here.
         const noMinify = process.argv.includes('--no-minify');
         STANDALONE_ROOT_JS.forEach(({ file, minify: shouldMinify }) => {
             const srcFile = path.join(jsSrcDir, file);
@@ -715,6 +750,7 @@ const SUBDIR_BUNDLES = [
         order: [
             'common.js',
             { file: 'mqtt-config.js', requirements: ['mqtt'] },
+            { file: 'remote-resources.js', requirements: ['remoteResources'] },
             'protocol-lite-config.js'
         ]
     },
@@ -985,7 +1021,7 @@ function buildWebModules() {
 }
 
 if (require.main === module) {
-    const result = buildWebModules();
+    const result = withWebPublishLock(buildWebModules, { label: 'build-web-modules' });
     console.log(`Synced ${result.staticAssets.length} static assets from web-src/`);
     result.staticAssets.forEach((item) => {
         console.log(`  Copied: ${item.src} -> data/www/${item.dest} (${item.size} bytes)`);

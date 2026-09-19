@@ -13,14 +13,15 @@
  *     22KB 时 blk8 已碎至 9.7KB 导致响应挂起) 时激活。
  *     2026-08-19 lite-soak 实测持续轮询下 free8 缓降至 11~18KB 后 lwIP
  *     饿死整体停摆，旧 16KB 阈值落在停摆区内，故上调提前背压；
- *     新 API/动态请求（/api/*）直接返回 503 + JSON（Retry-After: 5），
+ *     新 API/动态请求（/api/ 前缀）直接返回 503 + JSON（Retry-After: 5），
  *     不进入 handler 与响应构建分配；已连接的 SSE 客户端主动优雅断开，
  *     释放 lwIP/TCP 缓冲，给系统恢复窗口；
  *   - 放行：静态文件/SPA 页面（Flash/LittleFS 直读流式服务，几乎不占
  *     DRAM）不受护栏影响，保证登录页等基础资源始终可访问；
  *   - 恢复：free8 回到 WEB_GUARD_RECOVERY_DRAM_FREE(20KB+1KB 迟滞)
  *     且 blk8 >= WEB_GUARD_RECOVERY_DRAM_BLK8(4KB+5KB 迟滞)
- *     后自动解除，避免触发/恢复来回震荡。
+ *     后自动解除；限长流式响应模式下，21KB free / 6KB 最大块稳定
+ *     5 秒也可恢复，避免可用碎片内存永久被旧大响应门槛封锁。
  *
  * 编译开关 FASTBEE_WEB_MEM_GUARD：默认对无 PSRAM 的 classic ESP32 /
  * C3 / C6 生效（CONFIG_IDF_TARGET_* + FASTBEE_USE_PSRAM==0）；S3-F8R8/
@@ -105,6 +106,7 @@ private:
     // 50KB 级水位跌入碎片化区；缩短去抖窗口优先保证不触发 throwing new。
     // 正常的 1~2s 瞬态仍由恢复迟滞和前端退避吸收。
     static constexpr unsigned long ACTIVATE_DELAY_MS = 500UL;
+    static constexpr unsigned long STREAMING_RECOVERY_DELAY_MS = 5000UL;
 
     bool active_ = false;
     uint32_t rejectedCount_ = 0;
@@ -112,6 +114,7 @@ private:
     unsigned long activeSinceMs_ = 0;
     unsigned long forceRecoverMs_ = 0;  // 0 = 无冷却；否则为最近一次 FORCE-RECOVER 时刻
     unsigned long lowWaterSinceMs_ = 0;  // 0 = 当前不在低水位；否则为首次采样到低水位的时刻
+    unsigned long streamingRecoverySinceMs_ = 0;
     SSERouteHandler* sse_ = nullptr;
 };
 

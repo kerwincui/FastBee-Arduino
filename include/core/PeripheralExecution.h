@@ -52,7 +52,9 @@ enum class ExecActionType : uint8_t {
     ACTION_UART_SEND = 29,          // 串口发送（UART，actionValue: 文本/数据）
     ACTION_GPIO_TOGGLE = 30,        // 电平翻转（读当前电平取反写入：HIGH↔LOW，等价于 CALL_PERIPHERAL "toggle" 命令，无需 actionValue）
     ACTION_FEATURE_ENABLE = 31,     // 启用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
-    ACTION_FEATURE_DISABLE = 32     // 禁用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
+    ACTION_FEATURE_DISABLE = 32,    // 禁用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
+    ACTION_REMOTE_CHANNEL = 33,     // 受限远程通道控制（targetPeriphId=通道 ID；actionValue=on/off/trigger）
+    ACTION_REMOTE_READ = 34         // 受限远程数据读取（targetPeriphId=远程/天气来源 ID；actionValue 必须为空）
 };
 
 // 传感器类别枚举
@@ -249,6 +251,8 @@ struct PeriphExecRule {
 
     // 数据上报控制
     bool reportAfterExec = true; // 执行完成后是否上报设备数据（默认启用）
+    bool allowPanelControl = false; // 允许已保存的屏幕卡片经受限入口手动执行
+    bool recordHistory = false;     // 为本规则产生的数值采样保留最近 10 条
 
     // 缓存标志（由 sanitizeRuleForSafety 计算，避免热路径重复遍历 actions）
     bool _cachedNeedsModbus = false;           // 规则是否需要 Modbus 可用

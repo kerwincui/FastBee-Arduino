@@ -642,13 +642,13 @@ void test_regression_mqtt_save_preserves_topics_snapshot() {
     size_t snapshotInSave = saveBody.find("var snapshot = {}");
     size_t loadInSave = saveBody.find("this._loadFullProtocolConfig");
     // 恢复块中的 innerHTML 赋值仅出现在 _loadFullProtocolConfig 之后
-    size_t restoreInSave = saveBody.find("pubTopics.innerHTML = snapshot");
+    size_t restoreInSave = saveBody.find("currentPubTopics.innerHTML = snapshot");
     TEST_ASSERT_TRUE_MESSAGE(snapshotInSave != std::string::npos,
         "snapshot creation not found in saveProtocolConfig");
     TEST_ASSERT_TRUE_MESSAGE(loadInSave != std::string::npos,
         "_loadFullProtocolConfig call not found in saveProtocolConfig");
     TEST_ASSERT_TRUE_MESSAGE(restoreInSave != std::string::npos,
-        "pubTopics.innerHTML restore not found in saveProtocolConfig");
+        "current MQTT publish topics restore not found in saveProtocolConfig");
     TEST_ASSERT_TRUE(snapshotInSave < loadInSave);
     TestLog::step("Snapshot created BEFORE _loadFullProtocolConfig in saveProtocolConfig");
     TEST_ASSERT_TRUE(loadInSave < restoreInSave);
@@ -1865,12 +1865,15 @@ static void test_regression_mqtt_no_hardcoded_defaults() {
         "protocol-lite-config.js must NOT hardcode 'K451265A72244J79'");
     TestLog::step("protocol-lite-config.js: no hardcoded defaults");
 
-    // 3. protocol-mqtt.html 模板不应包含硬编码示例值
+    // 3. protocol-mqtt.html 不得用 value 预填生产 Broker。placeholder 仅是
+    // 输入格式提示，不会覆盖后端返回的真实配置。
     std::string html = readRegressionSrcFile("web-src/pages/fragments/protocol-mqtt.html");
     TEST_ASSERT_FALSE_MESSAGE(html.empty(), "Cannot read protocol-mqtt.html");
 
-    TEST_ASSERT_TRUE_MESSAGE(html.find("iot.fastbee.cn") == std::string::npos,
-        "protocol-mqtt.html must NOT hardcode 'iot.fastbee.cn' in template");
+    TEST_ASSERT_TRUE_MESSAGE(
+        html.find("value=\"iot.fastbee.cn\"") == std::string::npos &&
+        html.find("value='iot.fastbee.cn'") == std::string::npos,
+        "protocol-mqtt.html must NOT prefill 'iot.fastbee.cn' as the broker value");
     TEST_ASSERT_TRUE_MESSAGE(html.find("K451265A72244J79") == std::string::npos,
         "protocol-mqtt.html must NOT hardcode secret in template");
     TEST_ASSERT_TRUE_MESSAGE(html.find("S&FB100900001") == std::string::npos,
@@ -3409,24 +3412,43 @@ void test_regression_monitor_sensor_cache_wiring_in_source() {
         "SensorReadCache must carry periphId as generic report id fallback");
     TEST_ASSERT_TRUE_MESSAGE(header.find("const String& dataField = \"\"") != std::string::npos,
         "updateSensorReadCache must accept dataField with default value");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("uint32_t sampleTimestamp = 0") != std::string::npos &&
+                             header.find("uint32_t maxAgeMs = 0") != std::string::npos,
+        "sensor cache must accept the real sample timestamp and freshness bound");
+    TEST_ASSERT_TRUE_MESSAGE(header.find("invalidateSensorReadCache") != std::string::npos,
+        "sensor cache must expose failure invalidation by peripheral id");
     TestLog::step("SensorReadCache.dataField/periphId + signature present");
 
-    // 2. Manager 实现将 dataField/periphId 写入缓存
+    // 2. Manager 经 ObservationUpdate 将 dataField/periphId 传递到统一缓存提交入口
     std::string mgr = readRegressionSrcFile("src/core/PeriphExecManager.cpp");
     TEST_ASSERT_FALSE_MESSAGE(mgr.empty(), "cannot read PeriphExecManager.cpp");
-    TEST_ASSERT_TRUE_MESSAGE(mgr.find("cache.dataField = dataField") != std::string::npos,
-        "updateSensorReadCache must store dataField into cache entry");
-    TEST_ASSERT_TRUE_MESSAGE(mgr.find("cache.periphId = periphId") != std::string::npos,
-        "updateSensorReadCache must store periphId into cache entry");
+    const size_t updateStart = mgr.find("bool PeriphExecManager::updateSensorReadCache(");
+    const size_t upsertStart = mgr.find("bool PeriphExecManager::upsertObservation(", updateStart);
+    const size_t upsertEnd = mgr.find("void PeriphExecManager::invalidateSensorReadCache(", upsertStart);
+    TEST_ASSERT_TRUE_MESSAGE(updateStart != std::string::npos &&
+                             upsertStart != std::string::npos && upsertEnd != std::string::npos,
+        "sensor cache update and observation commit implementations must exist");
+    const std::string update = mgr.substr(updateStart, upsertStart - updateStart);
+    const std::string upsert = mgr.substr(upsertStart, upsertEnd - upsertStart);
+    TEST_ASSERT_TRUE_MESSAGE(update.find("update.dataField = dataField") != std::string::npos &&
+                             upsert.find("cache.dataField = update.dataField") != std::string::npos,
+        "sensor cache update must preserve dataField through the observation commit");
+    TEST_ASSERT_TRUE_MESSAGE(update.find("update.periphId = periphId") != std::string::npos &&
+                             upsert.find("cache.periphId = update.periphId") != std::string::npos,
+        "sensor cache update must preserve periphId through the observation commit");
+    TEST_ASSERT_TRUE_MESSAGE(update.find("return upsertObservation(update, configVersion)") != std::string::npos,
+        "sensor cache update must delegate to the configuration-aware observation commit");
     TestLog::step("manager stores dataField + periphId");
 
     // 3. Executor 调用时传入显式 dataField 与外设配置 id（所有 ACTION_SENSOR_READ 类别的统一入口）；
     //    回归：类别推断的默认字段不得进入缓存 dataField，避免顶替物模型标识符
     std::string exec = readRegressionSrcFile("src/core/PeriphExecExecutor.cpp");
     TEST_ASSERT_FALSE_MESSAGE(exec.empty(), "cannot read PeriphExecExecutor.cpp");
-    TEST_ASSERT_TRUE_MESSAGE(
-        exec.find("updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit), explicitFieldStr, String(periphId))") != std::string::npos,
-        "executeSensorReadAction must pass explicit dataField and periphId to sensor cache");
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("updateSensorReadCache(cacheKey") != std::string::npos &&
+                             exec.find("sensorSampleTimestamp, sensorMaxAgeMs") != std::string::npos,
+        "executeSensorReadAction must pass mapping identity, sample time and freshness to sensor cache");
+    TEST_ASSERT_TRUE_MESSAGE(exec.find("invalidateSensorReadCache(String(periphId)") != std::string::npos,
+        "failed sensor reads must invalidate cached values for the target peripheral");
     TEST_ASSERT_TRUE_MESSAGE(exec.find("result.dataField = explicitFieldStr") != std::string::npos,
         "result.dataField must only carry explicitly configured dataField (generic report id rule)");
     TestLog::step("executor passes explicit dataField + periphId");
@@ -3899,6 +3921,16 @@ void test_regression_factory_features_are_memory_safe() {
     TEST_ASSERT_TRUE_MESSAGE(
         statusBlock.find("rfm.shouldEnable(meta->key)") != std::string::npos,
         "system status must reflect runtime userEnabled state");
+    const size_t userEnabledPos = statusBlock.find("rfm.isUserEnabled(meta->key)");
+    const size_t runtimeDisabledPos = statusBlock.find("rfm.isRuntimeDisabled(meta->key)");
+    const size_t budgetDeniedPos = statusBlock.find("budgetReg.isDenied(meta->key)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        userEnabledPos != std::string::npos &&
+        runtimeDisabledPos != std::string::npos &&
+        budgetDeniedPos != std::string::npos &&
+        userEnabledPos < runtimeDisabledPos &&
+        userEnabledPos < budgetDeniedPos,
+        "user-disabled features must stay disabled instead of being reported as no-memory");
     TestLog::testEnd(true);
 }
 
@@ -3984,6 +4016,555 @@ void test_regression_logger_reliability_guards() {
         cleanup.find("MemoryBudget::dram8Largest()") != std::string::npos &&
         cleanup.find("MAX_DELETES_PER_PASS") != std::string::npos,
         "backup cleanup must use internal 8-bit DRAM guards and bounded work");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_modbus_raw_125_registers_dispatch_per_frame() {
+    TestLog::testStart("Regression: Modbus RAW keeps 125-register ADUs frame-delimited");
+
+    std::string constants = readRegressionSrcFile("include/core/SystemConstants.h");
+    std::string header = readRegressionSrcFile("include/protocols/ModbusHandler.h");
+    std::string handler = readRegressionSrcFile("src/protocols/ModbusHandler.cpp");
+    std::string manager = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    std::string executor = readRegressionSrcFile("src/core/PeriphExecExecutor.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(
+        constants.empty() || header.empty() || handler.empty() ||
+        manager.empty() || executor.empty(),
+        "Modbus RAW production sources must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        constants.find("MODBUS_MAX_REGISTERS_PER_READ = 125") != std::string::npos &&
+        constants.find("MODBUS_BUFFER_SIZE = 256") != std::string::npos,
+        "Modbus buffers must fit the standard 125-register response ADU");
+
+    size_t readStart = handler.find("OneShotResult ModbusHandler::readRegistersOnce");
+    size_t readEnd = handler.find("OneShotError ModbusHandler::_readRangeInto", readStart);
+    TEST_ASSERT_TRUE_MESSAGE(readStart != std::string::npos && readEnd != std::string::npos,
+                             "Modbus one-shot read implementation must be discoverable");
+    std::string readPath = handler.substr(readStart, readEnd - readStart);
+    size_t rawLimitPos = readPath.find("rawResponseHex\n        ? Protocols::MODBUS_MAX_REGISTERS_PER_READ");
+    size_t rawBufferPos = readPath.find("uint8_t rawResponse[Protocols::MODBUS_BUFFER_SIZE]");
+    size_t preservePos = readPath.find("*rawResponseHex += byteHex", rawBufferPos);
+    size_t largeRawReturnPos = readPath.find(
+        "rawResponseHex && quantity > Protocols::MODBUS_ONESHOT_BUFFER_SIZE", preservePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        rawLimitPos != std::string::npos && rawBufferPos != std::string::npos &&
+        preservePos != std::string::npos && largeRawReturnPos != std::string::npos &&
+        rawLimitPos < rawBufferPos && rawBufferPos < preservePos && preservePos < largeRawReturnPos,
+        "RAW one-shot reads must preserve the full validated ADU before the 32-value JSON limit");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("String* rawResponseHex = nullptr") != std::string::npos,
+        "The one-shot API must expose the exact validated RAW response");
+
+    size_t managerReadStart = manager.find("String ProtocolManager::executeModbusRead");
+    size_t managerReadEnd = manager.find("String ProtocolManager::executeModbusRawSend", managerReadStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        managerReadStart != std::string::npos && managerReadEnd != std::string::npos,
+        "ProtocolManager Modbus read path must be discoverable");
+    std::string managerRead = manager.substr(managerReadStart, managerReadEnd - managerReadStart);
+    size_t capturePos = managerRead.find("rawTransfer ? &rawResponseHex : nullptr");
+    size_t dispatchPos = managerRead.find(
+        "slaveAddr, rawResponseHex, ModbusDataSource::PeriphExecPoll", capturePos);
+    size_t jsonMappingPos = managerRead.find("t.containsKey(\"mappings\")", dispatchPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        capturePos != std::string::npos && dispatchPos != std::string::npos &&
+        jsonMappingPos != std::string::npos && capturePos < dispatchPos &&
+        dispatchPos < jsonMappingPos && managerRead.find("formatRawHex(") == std::string::npos,
+        "Each RAW one-shot ADU must be dispatched directly instead of reconstructed or JSON-wrapped");
+
+    size_t batchStart = handler.find("String ModbusHandler::executePollTaskBatch");
+    size_t batchEnd = handler.find("String ModbusHandler::getPollStatistics", batchStart);
+    TEST_ASSERT_TRUE_MESSAGE(batchStart != std::string::npos && batchEnd != std::string::npos,
+                             "Modbus batch implementation must be discoverable");
+    std::string batch = handler.substr(batchStart, batchEnd - batchStart);
+    size_t rawBranchPos = batch.find("if (rawTransfer)");
+    size_t callbackPos = batch.find("rawFrameCallback(slaveAddress, result)", rawBranchPos);
+    size_t rawReturnPos = batch.find("return;", callbackPos);
+    size_t jsonAppendPos = batch.find("result.substring(1, result.length() - 1)", rawReturnPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("using PollFrameCallback") != std::string::npos &&
+        rawBranchPos != std::string::npos && callbackPos != std::string::npos &&
+        rawReturnPos != std::string::npos && jsonAppendPos != std::string::npos &&
+        rawBranchPos < callbackPos && callbackPos < rawReturnPos && rawReturnPos < jsonAppendPos,
+        "RAW batch reads must emit one callback per RTU frame before JSON aggregation");
+    TEST_ASSERT_TRUE_MESSAGE(
+        executor.find("slaveAddress, frame, ModbusDataSource::PeriphExecPoll") != std::string::npos &&
+        executor.find("&pollBatchComplete, dispatchRawFrame") != std::string::npos &&
+        executor.find("&legacyBatchComplete, dispatchRawFrame") != std::string::npos,
+        "Both PeriphExec batch formats must route each RAW frame through ProtocolManager");
+
+    size_t dispatchStart = manager.find("void ProtocolManager::dispatchModbusData");
+    size_t dispatchEnd = manager.find("bool ProtocolManager::restartMQTT", dispatchStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        dispatchStart != std::string::npos && dispatchEnd != std::string::npos,
+        "ProtocolManager Modbus dispatch implementation must be discoverable");
+    std::string dispatch = manager.substr(dispatchStart, dispatchEnd - dispatchStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        dispatch.find("const bool structuredPayload") != std::string::npos &&
+        dispatch.find("const bool rawRtuPayload") != std::string::npos &&
+        dispatch.find("mqttClient->queueModbusRtuReport(data)") != std::string::npos &&
+        dispatch.find("mqttClient->publishModbusRtuReport(data)") != std::string::npos &&
+        dispatch.find("mqttClient->queueReportData(data)") != std::string::npos &&
+        dispatch.find("mqttClient->publishReportData(data)") != std::string::npos,
+        "ProtocolManager must preserve explicit RAW-vs-JSON MQTT publication paths");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_fastbee_ota_mqtt_defaults() {
+    TestLog::testStart("Regression: FastBee OTA MQTT defaults use complete no-prefix topics");
+
+    std::string configText = readRegressionSrcFile("data/config/protocol.json");
+    TEST_ASSERT_FALSE_MESSAGE(configText.empty(), "Cannot read protocol.json");
+    JsonDocument config;
+    TEST_ASSERT_FALSE_MESSAGE(deserializeJson(config, configText),
+                              "protocol.json must be valid JSON");
+
+    JsonObjectConst mqtt = config["mqtt"].as<JsonObjectConst>();
+    TEST_ASSERT_TRUE_MESSAGE(mqtt["otaBaseUrl"].is<const char*>(),
+                             "MQTT config must persist otaBaseUrl");
+
+    bool replyFound = false;
+    bool commandFound = false;
+    bool enabledBinaryOtaFound = false;
+    for (JsonObjectConst topic : mqtt["publishTopics"].as<JsonArrayConst>()) {
+        const int topicType = topic["topicType"] | -1;
+        const bool enabled = topic["enabled"] | false;
+        const char* path = topic["topic"] | "";
+        if (topicType == 5 && std::string(path) == "/{deviceNum}/http/upgrade/reply") {
+            replyFound = enabled && !(topic["autoPrefix"] | true);
+        }
+        if (topicType == 6 && enabled) enabledBinaryOtaFound = true;
+    }
+    for (JsonObjectConst topic : mqtt["subscribeTopics"].as<JsonArrayConst>()) {
+        const int topicType = topic["topicType"] | -1;
+        const bool enabled = topic["enabled"] | false;
+        const char* path = topic["topic"] | "";
+        if (topicType == 5 && std::string(path) == "/{deviceNum}/http/upgrade/set") {
+            commandFound = enabled && !(topic["autoPrefix"] | true);
+        }
+        if (topicType == 6 && enabled) enabledBinaryOtaFound = true;
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(replyFound,
+        "OTA reply must be /{deviceNum}/http/upgrade/reply with autoPrefix disabled");
+    TEST_ASSERT_TRUE_MESSAGE(commandFound,
+        "OTA command must be /{deviceNum}/http/upgrade/set with autoPrefix disabled");
+    TEST_ASSERT_FALSE_MESSAGE(enabledBinaryOtaFound,
+        "Unsupported OTA_BINARY topics must not be enabled by default");
+
+    std::string systemDefaults = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        systemDefaults.find("/{deviceNum}/http/upgrade/reply") != std::string::npos &&
+        systemDefaults.find("/{deviceNum}/http/upgrade/set") != std::string::npos,
+        "Factory reset defaults must preserve the FastBee OTA topic templates");
+    TestLog::testEnd(true);
+}
+
+void test_regression_fastbee_ota_config_pipeline() {
+    TestLog::testStart("Regression: FastBee OTA HTTPS base is wired through MQTT config UI");
+
+    std::string header = readRegressionSrcFile("include/protocols/MQTTClient.h");
+    std::string handler = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    std::string html = readRegressionSrcFile("web-src/pages/fragments/protocol-mqtt.html");
+    std::string fullJs = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
+    std::string liteJs = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-lite-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty() || handler.empty() || html.empty() ||
+                              fullJs.empty() || liteJs.empty(),
+                              "OTA MQTT config pipeline sources must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(header.find("String otaBaseUrl") != std::string::npos,
+        "MQTTConfig must expose otaBaseUrl");
+    TEST_ASSERT_TRUE_MESSAGE(
+        handler.find("mqttOut[\"otaBaseUrl\"]") != std::string::npos &&
+        handler.find("mqtt_otaBaseUrl") != std::string::npos &&
+        handler.find("validateOtaBaseUrl") != std::string::npos &&
+        handler.find("startsWith(\"https://\")") != std::string::npos,
+        "Protocol API must return, validate, and persist the OTA HTTPS base URL");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("id=\"mqtt-ota-base-url\"") != std::string::npos,
+        "MQTT protocol page must expose the OTA HTTPS base URL field");
+    TEST_ASSERT_TRUE_MESSAGE(
+        fullJs.find("mqtt.otaBaseUrl") != std::string::npos &&
+        fullJs.find("mqtt_otaBaseUrl") != std::string::npos &&
+        liteJs.find("mqtt.otaBaseUrl") != std::string::npos,
+        "Full and lightweight MQTT loaders must preserve otaBaseUrl");
+    TestLog::testEnd(true);
+}
+
+void test_regression_fastbee_ota_topic_resolution_and_binary_guard() {
+    TestLog::testStart("Regression: OTA topic templates resolve once and binary OTA stays disabled");
+
+    std::string mqtt = readRegressionSrcFile("src/protocols/MQTTClient.cpp");
+    std::string handler = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    std::string mqttUi = readRegressionSrcFile("web-src/modules/runtime/protocol/mqtt-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(mqtt.empty() || handler.empty() || mqttUi.empty(),
+                              "MQTT OTA implementation sources must be readable");
+
+    size_t topicStart = mqtt.find("String MQTTClient::buildFullTopicWithType");
+    size_t callbackStart = mqtt.find("void MQTTClient::mqttCallback", topicStart);
+    TEST_ASSERT_TRUE_MESSAGE(topicStart != std::string::npos && callbackStart != std::string::npos,
+                             "MQTT topic resolver must exist");
+    std::string resolver = mqtt.substr(topicStart, callbackStart - topicStart);
+    size_t placeholderPos = resolver.find("replace(\"{deviceNum}\"");
+    size_t noPrefixPos = resolver.find("if (!autoPrefix)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        placeholderPos != std::string::npos && noPrefixPos != std::string::npos &&
+        placeholderPos < noPrefixPos,
+        "Complete no-prefix OTA topics must still resolve {deviceNum}");
+
+    size_t publishNormalizeStart = mqtt.find("void ensureFastBeeOtaPublishTopic");
+    size_t subscribeNormalizeStart = mqtt.find("void ensureFastBeeOtaSubscribeTopic");
+    size_t normalizeEnd = mqtt.find("FastBee::StringBufferPool", subscribeNormalizeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        publishNormalizeStart != std::string::npos &&
+        subscribeNormalizeStart != std::string::npos && normalizeEnd != std::string::npos,
+        "Runtime FastBee OTA topic normalizers must be discoverable");
+    std::string publishNormalizer = mqtt.substr(
+        publishNormalizeStart, subscribeNormalizeStart - publishNormalizeStart);
+    std::string subscribeNormalizer = mqtt.substr(
+        subscribeNormalizeStart, normalizeEnd - subscribeNormalizeStart);
+    size_t publishDefaultPos = publishNormalizer.find("MqttPublishTopic topic;");
+    size_t subscribeDefaultPos = subscribeNormalizer.find("MqttSubscribeTopic topic;");
+    TEST_ASSERT_TRUE_MESSAGE(
+        publishNormalizer.find("configured != FASTBEE_OTA_REPLY_TOPIC") != std::string::npos &&
+        publishNormalizer.find("configured != FASTBEE_OTA_REPLY_LEGACY") != std::string::npos &&
+        publishNormalizer.find("!topic.autoPrefix") != std::string::npos &&
+        subscribeNormalizer.find("configured != FASTBEE_OTA_COMMAND_TOPIC") != std::string::npos &&
+        subscribeNormalizer.find("configured != FASTBEE_OTA_COMMAND_LEGACY") != std::string::npos &&
+        subscribeNormalizer.find("!topic.autoPrefix") != std::string::npos,
+        "Runtime migration must recognize only canonical topics or legacy suffix+prefix rows");
+    TEST_ASSERT_TRUE_MESSAGE(
+        publishDefaultPos != std::string::npos && subscribeDefaultPos != std::string::npos &&
+        publishNormalizer.substr(0, publishDefaultPos).find("topic.enabled") == std::string::npos &&
+        subscribeNormalizer.substr(0, subscribeDefaultPos).find("topic.enabled") == std::string::npos,
+        "Runtime migration must preserve enabled=false for canonical and legacy OTA rows");
+
+    size_t runtimeNormalizeStart = mqtt.find("void MQTTClient::normalizeFastBeeOtaTopics()");
+    size_t runtimeNormalizeEnd = mqtt.find("void MQTTClient::mqttCallback", runtimeNormalizeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        runtimeNormalizeStart != std::string::npos && runtimeNormalizeEnd != std::string::npos,
+        "Resolved-path OTA normalizer must be discoverable");
+    std::string runtimeNormalizer = mqtt.substr(
+        runtimeNormalizeStart, runtimeNormalizeEnd - runtimeNormalizeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        runtimeNormalizer.find("buildFullTopicWithType") != std::string::npos &&
+        runtimeNormalizer.find("!topic.enabled && config.publishTopics[replyWinner].enabled") != std::string::npos &&
+        runtimeNormalizer.find("!topic.enabled && config.subscribeTopics[commandWinner].enabled") != std::string::npos &&
+        runtimeNormalizer.find("config.publishTopics.erase") != std::string::npos &&
+        runtimeNormalizer.find("config.subscribeTopics.erase") != std::string::npos &&
+        runtimeNormalizer.find(".enabled =") == std::string::npos,
+        "Resolved-path normalization must retain disabled winners and remove duplicate OTA paths");
+
+    size_t apiNormalizeStart = handler.find("void ensureFastBeeOtaTopic(");
+    size_t apiNormalizeEnd = handler.find("void ensureFastBeeOtaTopics(", apiNormalizeStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        apiNormalizeStart != std::string::npos && apiNormalizeEnd != std::string::npos,
+        "Protocol API FastBee OTA topic normalizer must be discoverable");
+    std::string apiNormalizer = handler.substr(
+        apiNormalizeStart, apiNormalizeEnd - apiNormalizeStart);
+    size_t apiDefaultPos = apiNormalizer.find("JsonObject topic = topics.add");
+    TEST_ASSERT_TRUE_MESSAGE(
+        apiNormalizer.find("configured != canonicalTopic") != std::string::npos &&
+        apiNormalizer.find("configured != legacyTopic") != std::string::npos &&
+        apiNormalizer.find("!(topic[\"autoPrefix\"] | true)") != std::string::npos &&
+        apiDefaultPos != std::string::npos &&
+        apiNormalizer.substr(0, apiDefaultPos).find("topic[\"enabled\"]") == std::string::npos,
+        "Protocol API migration must preserve disabled rows and require the exact legacy form");
+
+    size_t otaLookupStart = mqtt.find("int MQTTClient::findFastBeeOtaReplyTopicIndex");
+    size_t otaLookupEnd = mqtt.find("bool MQTTClient::hasUsableFastBeeOtaReplyTopic", otaLookupStart);
+    size_t otaPublishStart = mqtt.find("bool MQTTClient::publishOtaReply");
+    size_t otaPublishEnd = mqtt.find("bool MQTTClient::publishDeviceEvent", otaPublishStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        otaLookupStart != std::string::npos && otaLookupEnd != std::string::npos &&
+        otaPublishStart != std::string::npos && otaPublishEnd != std::string::npos,
+        "Canonical FastBee OTA reply lookup and publisher must be discoverable");
+    std::string otaLookup = mqtt.substr(otaLookupStart, otaLookupEnd - otaLookupStart);
+    std::string otaPublisher = mqtt.substr(otaPublishStart, otaPublishEnd - otaPublishStart);
+    TEST_ASSERT_TRUE_MESSAGE(
+        otaLookup.find("buildFullTopicWithType") != std::string::npos &&
+        otaLookup.find("!= expected") != std::string::npos &&
+        otaLookup.find("/http/upgrade/reply") != std::string::npos &&
+        otaLookup.find("if (!topic.enabled) return -1;") != std::string::npos,
+        "OTA reply lookup must require the canonical resolved path and honor a disabled canonical row");
+    TEST_ASSERT_TRUE_MESSAGE(
+        otaPublisher.find("findFastBeeOtaReplyTopicIndex()") != std::string::npos &&
+        otaPublisher.find("findEnabledPublishTopicIndex") == std::string::npos,
+        "OTA replies must not use an arbitrary enabled topicType=5 row");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("OTA_BINARY subscribe is not supported; topic forced disabled") != std::string::npos &&
+        mqtt.find("OTA_BINARY publish rejected because binary OTA is not supported") != std::string::npos &&
+        mqtt.find("OTA_BINARY message dropped because binary OTA is not supported") != std::string::npos,
+        "Firmware must disable OTA_BINARY at load, publish, and receive boundaries");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqttUi.find("OTA二进制（暂不支持）") != std::string::npos &&
+        mqttUi.find("disabled: true") != std::string::npos,
+        "MQTT UI must not allow selecting unsupported binary OTA");
+    TestLog::testEnd(true);
+}
+
+void test_regression_fastbee_ota_success_reply_precedes_reboot() {
+    TestLog::testStart("Regression: FastBee OTA publishes success before scheduling reboot");
+
+    std::string manager = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    std::string managerHeader = readRegressionSrcFile("include/protocols/ProtocolManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(manager.empty() || managerHeader.empty(),
+                              "Cannot read ProtocolManager OTA sources");
+    size_t processPos = manager.find("void ProtocolManager::processFastBeeOtaReplies()");
+    size_t processEnd = manager.find("#endif", processPos);
+    TEST_ASSERT_TRUE_MESSAGE(processPos != std::string::npos && processEnd != std::string::npos,
+                             "FastBee OTA reply processor must exist");
+    std::string process = manager.substr(processPos, processEnd - processPos);
+
+    size_t publishPos = process.find("publishOtaReply(payload)");
+    size_t successPos = process.find("STATUS_SUCCESS", publishPos);
+    size_t clearPendingPos = process.find("fastBeeOtaHasPendingReply = false", publishPos);
+    size_t rebootPos = process.find("SystemRebooter::scheduleReboot", publishPos);
+    size_t publishFailurePos = process.find("if (!mqttClient->publishOtaReply(payload))");
+    size_t publishFailureEnd = process.find("const bool otaSucceeded", publishFailurePos);
+    size_t failureReleasePos = process.find(
+        "if (event.status == FastBeeOtaProtocol::STATUS_FAILED)", publishFailureEnd);
+    size_t clearActiveAfterPublishPos = process.find(
+        "fastBeeOtaActiveTaskId = 0", failureReleasePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        publishPos != std::string::npos && successPos != std::string::npos &&
+        clearPendingPos != std::string::npos && rebootPos != std::string::npos &&
+        publishPos < successPos && successPos < clearPendingPos && clearPendingPos < rebootPos,
+        "status=3 must publish successfully and clear pending state before reboot is scheduled");
+    TEST_ASSERT_TRUE_MESSAGE(
+        publishFailurePos != std::string::npos && publishFailureEnd != std::string::npos &&
+        process.substr(publishFailurePos, publishFailureEnd - publishFailurePos)
+                .find("fastBeeOtaHasPendingReply = false") == std::string::npos &&
+        process.substr(publishFailurePos, publishFailureEnd - publishFailurePos)
+                .find("fastBeeOtaActiveTaskId = 0") == std::string::npos,
+        "A failed MQTT publish must retain both the pending reply and active OTA task");
+    TEST_ASSERT_TRUE_MESSAGE(
+        failureReleasePos != std::string::npos &&
+        clearActiveAfterPublishPos != std::string::npos &&
+        publishFailureEnd < failureReleasePos && failureReleasePos < clearActiveAfterPublishPos,
+        "A failed OTA task may release its task ID only after status=4 publishes successfully");
+
+    size_t commandPos = manager.find("void ProtocolManager::handleFastBeeOtaCommand");
+    size_t queuePos = manager.find("void ProtocolManager::queueFastBeeOtaReply", commandPos);
+    TEST_ASSERT_TRUE_MESSAGE(commandPos != std::string::npos && queuePos != std::string::npos,
+                             "FastBee OTA command handler must exist");
+    std::string command = manager.substr(commandPos, queuePos - commandPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        command.find("startOTAAsync") != std::string::npos &&
+        command.find("STATUS_UPGRADING") != std::string::npos &&
+        command.find("STATUS_SUCCESS") != std::string::npos &&
+        command.find("STATUS_FAILED") != std::string::npos,
+        "MQTT OTA must queue progress and terminal FastBee status replies");
+
+    size_t parsePos = command.find("FastBeeOtaProtocol::parseCommand");
+    size_t mqttGuardPos = command.find("if (!mqttClient)", parsePos);
+    size_t connectionGuardPos = command.find("if (!mqttClient->getIsConnected())", mqttGuardPos);
+    size_t replyQueueGuardPos = command.find(
+        "if (!fastBeeOtaReplyQueue || !fastBeeOtaProgressQueue)", connectionGuardPos);
+    size_t activeTerminalQueueGuardPos = command.find(
+        "if (!fastBeeOtaActiveTerminalQueue)", replyQueueGuardPos);
+    size_t usableReplyGuardPos = command.find(
+        "if (!mqttClient->hasUsableFastBeeOtaReplyTopic())", activeTerminalQueueGuardPos);
+    size_t stateLockPos = command.find(
+        "portENTER_CRITICAL(&fastBeeOtaStateMux)", usableReplyGuardPos);
+    size_t resolveUrlPos = command.find("FastBeeOtaProtocol::resolveFirmwareUrl");
+    size_t startOtaPos = command.find("startOTAAsync", resolveUrlPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        parsePos != std::string::npos && mqttGuardPos != std::string::npos &&
+        connectionGuardPos != std::string::npos && replyQueueGuardPos != std::string::npos &&
+        activeTerminalQueueGuardPos != std::string::npos &&
+        usableReplyGuardPos != std::string::npos && stateLockPos != std::string::npos &&
+        resolveUrlPos != std::string::npos && startOtaPos != std::string::npos &&
+        parsePos < mqttGuardPos && mqttGuardPos < connectionGuardPos &&
+        connectionGuardPos < replyQueueGuardPos &&
+        replyQueueGuardPos < activeTerminalQueueGuardPos &&
+        activeTerminalQueueGuardPos < usableReplyGuardPos &&
+        usableReplyGuardPos < stateLockPos && stateLockPos < resolveUrlPos &&
+        resolveUrlPos < startOtaPos,
+        "Connected canonical reply routing and the dedicated active-terminal queue must be verified before claiming a task or writing Flash");
+    size_t usableReplyGuardEnd = command.find("}", usableReplyGuardPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        usableReplyGuardEnd != std::string::npos &&
+        command.substr(usableReplyGuardPos, usableReplyGuardEnd - usableReplyGuardPos)
+                .find("return;") != std::string::npos,
+        "A disabled or non-canonical OTA reply topic must stop the command before Flash OTA");
+
+    size_t terminalBranchPos = command.find("if (cachedTerminalStatus ==");
+    size_t activeBranchPos = command.find("if (duplicateActiveTask)", terminalBranchPos);
+    size_t busyBranchPos = command.find("if (anotherTaskActive)", activeBranchPos);
+    size_t otaFeatureGuardPos = command.find("#if !FASTBEE_ENABLE_OTA", busyBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        terminalBranchPos != std::string::npos && activeBranchPos != std::string::npos &&
+        busyBranchPos != std::string::npos && otaFeatureGuardPos != std::string::npos &&
+        terminalBranchPos < activeBranchPos && activeBranchPos < busyBranchPos &&
+        busyBranchPos < otaFeatureGuardPos,
+        "Terminal, active-duplicate, and busy-task branches must remain ordered");
+    std::string terminalDuplicateBranch =
+        command.substr(terminalBranchPos, activeBranchPos - terminalBranchPos);
+    std::string busyBranch = command.substr(
+        busyBranchPos, otaFeatureGuardPos - busyBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        terminalDuplicateBranch.find("String(cachedTerminalVersion)") != std::string::npos &&
+        terminalDuplicateBranch.find("cachedTerminalStillActive || anotherTaskActive") !=
+                std::string::npos,
+        "Terminal duplicates must use the cached version without consuming capacity owned by an active claim");
+    std::string activeDuplicateBranch =
+        command.substr(activeBranchPos, busyBranchPos - activeBranchPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        activeDuplicateBranch.find("ignored") != std::string::npos &&
+        activeDuplicateBranch.find("return;") != std::string::npos &&
+        activeDuplicateBranch.find("queueFastBeeOtaReply") == std::string::npos &&
+        activeDuplicateBranch.find("STATUS_UPGRADING") == std::string::npos,
+        "An active duplicate must be ignored without appending another status=2 reply");
+    TEST_ASSERT_TRUE_MESSAGE(
+        busyBranch.find("queueFastBeeOtaReply") != std::string::npos &&
+        busyBranch.find("uxQueueSpacesAvailable") == std::string::npos,
+        "Busy-task replies may use the auxiliary queue without gating the active OTA owner");
+    TEST_ASSERT_TRUE_MESSAGE(
+        command.find("uxQueueSpacesAvailable(fastBeeOtaReplyQueue)") == std::string::npos,
+        "A full non-owner reply queue must not reject a new OTA task before it can use the dedicated terminal queue");
+
+    size_t queueEnd = manager.find("void ProtocolManager::processFastBeeOtaReplies()", queuePos);
+    TEST_ASSERT_TRUE_MESSAGE(queueEnd != std::string::npos,
+                             "FastBee OTA reply queue function must have a bounded source section");
+    std::string queue = manager.substr(queuePos, queueEnd - queuePos);
+    size_t terminalFlagPos = queue.find("const bool terminal =");
+    size_t terminalCachePos = queue.find("fastBeeOtaLastTerminalTaskId = taskId");
+    size_t versionCachePos = queue.find("fastBeeOtaLastTerminalVersion");
+    size_t progressBranchPos = queue.find("if (!terminal)", versionCachePos);
+    size_t progressOverwritePos = queue.find(
+        "xQueueOverwrite(fastBeeOtaProgressQueue", progressBranchPos);
+    size_t progressReturnPos = queue.find("return;", progressOverwritePos);
+    size_t activeTerminalBranchPos = queue.find("if (activeTerminal)", progressReturnPos);
+    size_t activeTerminalOverwritePos = queue.find(
+        "xQueueOverwrite(fastBeeOtaActiveTerminalQueue", activeTerminalBranchPos);
+    size_t terminalEnqueuePos = queue.find(
+        "xQueueSend(fastBeeOtaReplyQueue", activeTerminalOverwritePos);
+    size_t discardProgressPos = queue.find(
+        "xQueueReceive(fastBeeOtaProgressQueue", terminalEnqueuePos);
+    size_t progressPeekPos = queue.find(
+        "xQueuePeek(fastBeeOtaProgressQueue", terminalEnqueuePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        terminalFlagPos != std::string::npos && terminalCachePos != std::string::npos &&
+        versionCachePos != std::string::npos && progressBranchPos != std::string::npos &&
+        progressOverwritePos != std::string::npos && progressReturnPos != std::string::npos &&
+        activeTerminalBranchPos != std::string::npos &&
+        activeTerminalOverwritePos != std::string::npos &&
+        terminalEnqueuePos != std::string::npos && discardProgressPos != std::string::npos &&
+        progressPeekPos != std::string::npos &&
+        terminalFlagPos < terminalCachePos && terminalCachePos < versionCachePos &&
+        versionCachePos < progressBranchPos && progressBranchPos < progressOverwritePos &&
+        progressOverwritePos < progressReturnPos &&
+        progressReturnPos < activeTerminalBranchPos &&
+        activeTerminalBranchPos < activeTerminalOverwritePos &&
+        activeTerminalOverwritePos < terminalEnqueuePos &&
+        terminalEnqueuePos < discardProgressPos,
+        "The active terminal must use its dedicated overwrite queue before non-owner replies use the bounded queue");
+    TEST_ASSERT_TRUE_MESSAGE(
+        queue.find("xQueuePeek(fastBeeOtaProgressQueue", progressPeekPos + 1) ==
+            std::string::npos,
+        "Terminal enqueue must contain exactly one progress-queue peek guard");
+    TEST_ASSERT_TRUE_MESSAGE(
+        queue.find("xQueueReceive(fastBeeOtaReplyQueue") == std::string::npos &&
+        queue.find("fastBeeOtaActiveTaskId = 0") == std::string::npos,
+        "Progress enqueue must never evict a terminal reply or release a failed active task");
+
+    size_t activeTerminalDequeuePos = process.find(
+        "xQueueReceive(fastBeeOtaActiveTerminalQueue");
+    size_t activeTerminalReplacePos = process.find(
+        "fastBeeOtaPendingReply = activeTerminalEvent", activeTerminalDequeuePos);
+    size_t terminalDequeuePos = process.find("xQueueReceive(fastBeeOtaReplyQueue");
+    size_t progressDequeuePos = process.find("xQueueReceive(fastBeeOtaProgressQueue");
+    TEST_ASSERT_TRUE_MESSAGE(
+        activeTerminalDequeuePos != std::string::npos &&
+        activeTerminalReplacePos != std::string::npos &&
+        terminalDequeuePos != std::string::npos && progressDequeuePos != std::string::npos &&
+        activeTerminalDequeuePos < activeTerminalReplacePos &&
+        activeTerminalReplacePos < terminalDequeuePos && terminalDequeuePos < progressDequeuePos,
+        "The active OTA terminal must preempt pending, non-owner terminal, and progress replies");
+    size_t pendingProgressGuardPos = process.find(
+        "fastBeeOtaPendingReply.status == FastBeeOtaProtocol::STATUS_UPGRADING");
+    size_t terminalTakeoverPos = process.find(
+        "xQueueReceive(fastBeeOtaReplyQueue, &terminalEvent", pendingProgressGuardPos);
+    size_t replacePendingPos = process.find(
+        "fastBeeOtaPendingReply = terminalEvent", terminalTakeoverPos);
+    size_t resetRetryPos = process.find(
+        "fastBeeOtaLastPublishAttemptMs = 0", replacePendingPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        pendingProgressGuardPos != std::string::npos && terminalTakeoverPos != std::string::npos &&
+        replacePendingPos != std::string::npos && resetRetryPos != std::string::npos &&
+        pendingProgressGuardPos < terminalTakeoverPos && terminalTakeoverPos < replacePendingPos &&
+        replacePendingPos < resetRetryPos && resetRetryPos < publishPos,
+        "A retained status=2 publish must be preempted immediately when status=3/4 is queued");
+    TEST_ASSERT_TRUE_MESSAGE(
+        managerHeader.find("QueueHandle_t fastBeeOtaActiveTerminalQueue") != std::string::npos &&
+        managerHeader.find("QueueHandle_t fastBeeOtaReplyQueue") != std::string::npos &&
+        managerHeader.find("QueueHandle_t fastBeeOtaProgressQueue") != std::string::npos &&
+        managerHeader.find("char fastBeeOtaLastTerminalVersion[32]") != std::string::npos &&
+        manager.find("fastBeeOtaActiveTerminalQueue = xQueueCreate(1") != std::string::npos &&
+        manager.find("fastBeeOtaProgressQueue = xQueueCreate(1") != std::string::npos,
+        "ProtocolManager must retain terminal identity plus dedicated active-terminal and latest-progress slots");
+    TestLog::testEnd(true);
+}
+
+void test_regression_mqtt_queued_report_publish_failure_retries() {
+    TestLog::testStart("Regression: queued MQTT reports survive publish failure");
+
+    std::string mqtt = readRegressionSrcFile("src/protocols/MQTTClient.cpp");
+    std::string header = readRegressionSrcFile("include/protocols/MQTTClient.h");
+    TEST_ASSERT_FALSE_MESSAGE(mqtt.empty() || header.empty(),
+                              "MQTT queued-report sources must be readable");
+
+    size_t processStart = mqtt.find("void MQTTClient::processQueuedReports()");
+    size_t processEnd = mqtt.find("void MQTTClient::setMinReportInterval", processStart);
+    TEST_ASSERT_TRUE_MESSAGE(processStart != std::string::npos && processEnd != std::string::npos,
+                             "MQTT queued-report processor must be discoverable");
+    std::string process = mqtt.substr(processStart, processEnd - processStart);
+
+    size_t pendingGuardPos = process.find("if (!_pendingReportSlot.occupied)");
+    size_t pendingEncodingCopyPos = process.find(
+        "_pendingReportSlot.encoding = slot.encoding", pendingGuardPos);
+    size_t pendingCopyPos = process.find(
+        "memcpy(_pendingReportSlot.payload, slot.payload", pendingEncodingCopyPos);
+    size_t ringClearPos = process.find("slot.clear()", pendingCopyPos);
+    size_t pendingPayloadPos = process.find(
+        "const String pendingPayload(_pendingReportSlot.payload", ringClearPos);
+    size_t encodingBranchPos = process.find(
+        "_pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX",
+        pendingPayloadPos);
+    size_t rawPublishPos = process.find(
+        "publishModbusRtuReport(pendingPayload)", encodingBranchPos);
+    size_t textPublishPos = process.find(
+        "publishReportData(pendingPayload)", rawPublishPos);
+    size_t publishGuardPos = process.find("if (!publishOk)", textPublishPos);
+    size_t retryBreakPos = process.find("break;", publishGuardPos);
+    size_t pendingClearPos = process.find("_pendingReportSlot.clear()", retryBreakPos);
+    size_t publishedCountPos = process.find("_queueStats.publishTotal++", pendingClearPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        pendingGuardPos != std::string::npos && pendingEncodingCopyPos != std::string::npos &&
+        pendingCopyPos != std::string::npos && ringClearPos != std::string::npos &&
+        pendingPayloadPos != std::string::npos && encodingBranchPos != std::string::npos &&
+        rawPublishPos != std::string::npos && textPublishPos != std::string::npos &&
+        publishGuardPos != std::string::npos &&
+        retryBreakPos != std::string::npos && pendingClearPos != std::string::npos &&
+        publishedCountPos != std::string::npos && pendingGuardPos < pendingCopyPos &&
+        pendingGuardPos < pendingEncodingCopyPos &&
+        pendingEncodingCopyPos < pendingCopyPos && pendingCopyPos < ringClearPos &&
+        ringClearPos < pendingPayloadPos && pendingPayloadPos < encodingBranchPos &&
+        encodingBranchPos < rawPublishPos && rawPublishPos < textPublishPos &&
+        textPublishPos < publishGuardPos && publishGuardPos < retryBreakPos &&
+        retryBreakPos < pendingClearPos &&
+        pendingClearPos < publishedCountPos,
+        "A queued report must retain its encoding, publish through the matching path, and clear only on success");
+    TEST_ASSERT_TRUE_MESSAGE(
+        process.substr(publishGuardPos, retryBreakPos - publishGuardPos)
+                .find("_pendingReportSlot.clear()") == std::string::npos &&
+        header.find("enum class MqttPayloadEncoding") != std::string::npos &&
+        header.find("MODBUS_RTU_HEX = 1") != std::string::npos &&
+        header.find("MqttPayloadEncoding encoding") != std::string::npos &&
+        header.find("MqttSlot _pendingReportSlot") != std::string::npos,
+        "Publish failure must keep the exact queued JSON or RAW frame for the next flush");
 
     TestLog::testEnd(true);
 }
@@ -4088,7 +4669,13 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_modbus_deferred_restart_before_heap_guard);
     RUN_TEST(test_regression_modbus_restart_distinguishes_intentional_idle);
     RUN_TEST(test_regression_s3_f16r8_modbus_templates_remain_disabled);
+    RUN_TEST(test_regression_modbus_raw_125_registers_dispatch_per_frame);
     RUN_TEST(test_regression_mqtt_summary_default_json);
+    RUN_TEST(test_regression_fastbee_ota_mqtt_defaults);
+    RUN_TEST(test_regression_fastbee_ota_config_pipeline);
+    RUN_TEST(test_regression_fastbee_ota_topic_resolution_and_binary_guard);
+    RUN_TEST(test_regression_fastbee_ota_success_reply_precedes_reboot);
+    RUN_TEST(test_regression_mqtt_queued_report_publish_failure_retries);
     RUN_TEST(test_regression_device_layout_security_factory_at_bottom);
     RUN_TEST(test_regression_mdns_async_restart);
 

@@ -4,9 +4,20 @@
  */
 (function() {
     AppState.registerModule('network', {
+        _networkModeChangeTimer: null,
+        _networkRefreshTimer: null,
+        _networkSaveCountdownTimer: null,
+        _networkBleMessageTimer: null,
+        _networkStatusPollingTimer: null,
+        _networkStatusPollingCountdown: null,
+        _networkStatusPollingRemaining: 0,
+        _networkDeferredTimers: [],
 
         // ============ 事件绑定 ============
         setupNetworkEvents() {
+            const pageRoot = document.getElementById('network-page');
+            if (!pageRoot || pageRoot.dataset.eventsBound === 'true') return;
+            pageRoot.dataset.eventsBound = 'true';
             // 联网方式切换
             const networkType = document.getElementById('network-type');
             if (networkType) {
@@ -83,6 +94,28 @@
                 });
             }
 
+            this.setupStatusRefresh();
+            this.setupBleProvision();
+            this._filterNetworkTypesByCapabilities();
+        },
+
+        _filterNetworkTypesByCapabilities() {
+            var getter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh
+                : (typeof apiGetFresh === 'function' ? apiGetFresh : (typeof apiGet === 'function' ? apiGet : null));
+            if (!getter) return;
+            getter('/api/system/capabilities').then(function(res) {
+                if (!res || !res.success || !res.data) return;
+                var select = document.getElementById('network-type');
+                if (!select) return;
+                if (!res.data.ethernet) {
+                    var ethernet = select.querySelector('option[value="1"]');
+                    if (ethernet) ethernet.remove();
+                }
+                if (!res.data.cellular) {
+                    var cellular = select.querySelector('option[value="2"]');
+                    if (cellular) cellular.remove();
+                }
+            }).catch(function() { /* Keep the visible options when capability probing fails. */ });
         },
 
         /**
@@ -157,7 +190,10 @@
 
             const saveBtn = document.getElementById('network-type-save-btn');
             if (saveBtn) saveBtn.disabled = false;
-            setTimeout(() => {
+            if (this._networkModeChangeTimer) clearTimeout(this._networkModeChangeTimer);
+            this._networkModeChangeTimer = setTimeout(() => {
+                this._networkModeChangeTimer = null;
+                if (this.currentPage !== 'network') return;
                 if (value === '2' || value === '1') {
                     // 4G或以太网：启动状态轮询（4G最长4分钟，以太网1分钟）
                     var pollDuration = (value === '2') ? 240000 : 60000;
@@ -169,7 +205,7 @@
         },
 
         _renderWifiNote(text) {
-            return '<small class="wifi-note-inline">' + text + '</small>';
+            return String(text == null ? '' : text);
         },
 
         _setWifiModeNotice(message) {
@@ -186,9 +222,9 @@
 
         _renderWifiScanState(message, detail) {
             let html = '<div class="wifi-scan-state is-error">' +
-                '<div class="wifi-scan-state-text">' + message + '</div>';
+                '<div class="wifi-scan-state-text">' + this._escapeHtml(message) + '</div>';
             if (detail) {
-                html += '<div class="wifi-scan-state-detail">' + detail + '</div>';
+                html += '<div class="wifi-scan-state-detail">' + this._escapeHtml(detail) + '</div>';
             }
             html += '</div>';
             return html;
@@ -350,7 +386,38 @@
         },
 
         _refreshNetworkStatusSoon(delayMs) {
-            setTimeout(() => this.loadNetworkStatus(), delayMs || 800);
+            if (this._networkRefreshTimer) clearTimeout(this._networkRefreshTimer);
+            this._networkRefreshTimer = setTimeout(() => {
+                this._networkRefreshTimer = null;
+                if (this.currentPage === 'network') this.loadNetworkStatus();
+            }, delayMs || 800);
+        },
+
+        _stopNetworkPageWork() {
+            this._stopNetworkStatusPolling();
+            [
+                '_networkModeChangeTimer',
+                '_networkRefreshTimer',
+                '_networkSaveCountdownTimer',
+                '_networkBleMessageTimer'
+            ].forEach((key) => {
+                if (this[key]) clearTimeout(this[key]);
+                this[key] = null;
+            });
+            this._networkDeferredTimers.forEach(function(timer) { clearTimeout(timer); });
+            this._networkDeferredTimers = [];
+        },
+
+        _scheduleNetworkPageTask(callback, delayMs) {
+            var self = this;
+            var timer = setTimeout(function() {
+                self._networkDeferredTimers = self._networkDeferredTimers.filter(function(item) {
+                    return item !== timer;
+                });
+                if (self.currentPage === 'network') callback();
+            }, delayMs);
+            this._networkDeferredTimers.push(timer);
+            return timer;
         },
 
         /**
@@ -415,7 +482,7 @@
             }, intervalMs);
 
             // 首次立即刷新
-            setTimeout(function() { self.loadNetworkStatus(); }, 1000);
+            this._refreshNetworkStatusSoon(1000);
         },
 
         /**
@@ -433,16 +500,23 @@
         /**
          * 保存按钮倒计时禁用（网络重启后自动恢复）
          */
-        _startSaveBtnCountdown(btn, btnTextEl, originalText, seconds) {
+        _startSaveBtnCountdown(btn, btnTextEl, originalText, seconds, onTick) {
+            if (this._networkSaveCountdownTimer) {
+                clearInterval(this._networkSaveCountdownTimer);
+                this._networkSaveCountdownTimer = null;
+            }
             let countdown = seconds;
-            const interval = setInterval(() => {
+            this._networkSaveCountdownTimer = setInterval(() => {
                 countdown--;
                 if (countdown <= 0) {
-                    clearInterval(interval);
+                    clearInterval(this._networkSaveCountdownTimer);
+                    this._networkSaveCountdownTimer = null;
                     if (btn) btn.disabled = false;
                     if (btnTextEl) btnTextEl.textContent = originalText;
+                    if (typeof onTick === 'function') onTick(0);
                 } else {
                     if (btnTextEl) btnTextEl.textContent = '网络模式切换中... (' + countdown + 's)';
+                    if (typeof onTick === 'function') onTick(countdown);
                 }
             }, 1000);
             this._refreshNetworkStatusSoon(3000);
@@ -459,11 +533,11 @@
 
             const submitBtn = document.getElementById('wifi-save-btn');
             const submitBtnText = document.getElementById('wifi-save-btn-text');
-            const originalText = submitBtnText?.innerHTML;
+            const originalText = submitBtnText?.textContent || '保存配置';
 
             if (submitBtn && submitBtnText) {
                 submitBtn.disabled = true;
-                submitBtnText.innerHTML = '网络模式切换中...';
+                submitBtnText.textContent = '网络模式切换中...';
             }
 
             this._showMessage('wifi-success', false);
@@ -472,7 +546,7 @@
             const noticeTextEl = document.getElementById('wifi-mode-notice-text');
             this._setWifiModeNotice('');
 
-            apiPut('/api/network/config', config)
+            return apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('wifi-success', true);
@@ -482,7 +556,7 @@
                         let noticeMessage = '网络模式切换提醒：';
 
                         if (data.restartRequired) {
-                            message += '<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...');
+                            message += '\n' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...');
                         }
 
                         const mode = data.mode;
@@ -491,56 +565,44 @@
                         if (mode === 0 || modeText === 'STA') {
                             if (data.mdnsDomain) {
                                 const hint = '可通过域名 http://' + data.mdnsDomain + ' 访问Web服务';
-                                message += '<br>' + this._renderWifiNote(hint);
+                                message += '\n' + this._renderWifiNote(hint);
                                 noticeMessage += '切换到STA模式后，可通过 http://' + data.mdnsDomain + ' 访问';
                             }
                         } else if (mode === 1 || modeText === 'AP') {
                             const hint = '请先连接热点 [' + (data.apSSID || 'fastbee-ap') + ']，然后访问 http://' + (data.apIP || '192.168.4.1') + ' 或 http://fastbee.local';
-                            message += '<br>' + this._renderWifiNote(hint);
+                            message += '\n' + this._renderWifiNote(hint);
                             noticeMessage += '切换到AP模式后，请连接热点 [' + (data.apSSID || 'fastbee-ap') + '] 访问 http://' + (data.apIP || '192.168.4.1') + ' 或 http://fastbee.local';
                         }
 
-                        message += '<br>' + this._renderWifiNote('如无法访问，请刷新页面或重新连接网络。');
+                        message += '\n' + this._renderWifiNote('如无法访问，请刷新页面或重新连接网络。');
                         this._setWifiModeNotice(noticeMessage);
 
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
                             message: message,
-                            html: true,
                             duration: 8000
                         });
 
-                        // 15秒倒计时后恢复按钮
-                        let countdown = 15;
-                        const countdownInterval = setInterval(() => {
-                            countdown--;
-                            if (countdown <= 0) {
-                                clearInterval(countdownInterval);
-                                if (submitBtn && submitBtnText) {
-                                    submitBtn.disabled = false;
-                                    submitBtnText.textContent = originalText || '保存配置';
-                                }
-                                if (noticeTextEl && noticeMessage) {
-                                    noticeTextEl.textContent = noticeMessage;
-                                }
-                            } else {
-                                if (submitBtnText) {
-                                    submitBtnText.textContent = '网络模式切换中... (' + countdown + 's)';
-                                }
-                                if (noticeTextEl) {
-                                    const countdownText = '按钮将在 ' + countdown + ' 秒后恢复可用。';
-                                    noticeTextEl.textContent = noticeMessage + ' ' + countdownText;
-                                }
+                        this._startSaveBtnCountdown(
+                            submitBtn,
+                            submitBtnText,
+                            originalText,
+                            15,
+                            (countdown) => {
+                                if (!noticeTextEl) return;
+                                noticeTextEl.textContent = countdown > 0
+                                    ? noticeMessage + ' 按钮将在 ' + countdown + ' 秒后恢复可用。'
+                                    : noticeMessage;
                             }
-                        }, 1000);
+                        );
 
                     } else {
                         this._showMessage('wifi-error', true);
                         Notification.error(res?.error || '保存失败', '网络设置');
                         if (submitBtn && submitBtnText) {
                             submitBtn.disabled = false;
-                            submitBtnText.innerHTML = originalText || '保存配置';
+                            submitBtnText.textContent = originalText;
                         }
                     }
                 })
@@ -567,7 +629,7 @@
                         });
                         if (submitBtn && submitBtnText) {
                             submitBtn.disabled = false;
-                            submitBtnText.innerHTML = originalText || '保存配置';
+                            submitBtnText.textContent = originalText;
                         }
                     } else if (isConnectionClosed) {
                         // 连接被设备断开：网络配置已保存，设备正在重启网络服务
@@ -575,8 +637,7 @@
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
-                            message: '网络设置保存成功！<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...'),
-                            html: true,
+                            message: '网络设置保存成功！\n' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...'),
                             duration: 8000
                         });
                     } else {
@@ -584,7 +645,7 @@
                         Notification.error('保存失败', '网络设置');
                         if (submitBtn && submitBtnText) {
                             submitBtn.disabled = false;
-                            submitBtnText.innerHTML = originalText || '保存配置';
+                            submitBtnText.textContent = originalText;
                         }
                     }
                 });
@@ -604,13 +665,13 @@
             };
 
             const submitBtn = document.querySelector('#ap-form button[type="submit"]');
-            const originalText = submitBtn?.innerHTML;
+            const originalText = submitBtn?.textContent || '保存配置';
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.innerHTML = '… 保存中...';
+                submitBtn.textContent = '… 保存中...';
             }
 
-            apiPut('/api/network/config', config)
+            return apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('ap-success', true);
@@ -626,7 +687,7 @@
                 .finally(() => {
                     if (submitBtn) {
                         submitBtn.disabled = false;
-                        submitBtn.innerHTML = originalText;
+                        submitBtn.textContent = originalText;
                     }
                 });
         },
@@ -661,13 +722,13 @@
             };
 
             const submitBtn = document.querySelector('#advanced-form button[type="submit"]');
-            const originalText = submitBtn?.innerHTML;
+            const originalText = submitBtn?.textContent || '保存配置';
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.innerHTML = '… 保存中...';
+                submitBtn.textContent = '… 保存中...';
             }
 
-            apiPut('/api/network/config', config)
+            return apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('advanced-success', true);
@@ -676,14 +737,13 @@
                         let message = '高级配置保存成功！';
 
                         if (data.restartRequired) {
-                            message += '<br><small class="wifi-note-inline">配置变更需要重启网络服务才能生效，请等待约10秒...</small>';
+                            message += '\n配置变更需要重启网络服务才能生效，请等待约10秒...';
                         }
 
                         Notification.show({
                             type: 'success',
                             title: '高级配置已保存',
                             message: message,
-                            html: true,
                             duration: 8000
                         });
                     } else {
@@ -697,7 +757,7 @@
                 .finally(() => {
                     if (submitBtn) {
                         submitBtn.disabled = false;
-                        submitBtn.innerHTML = originalText;
+                        submitBtn.textContent = originalText;
                     }
                 });
         },
@@ -728,14 +788,13 @@
                 .then(res => {
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
-                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
-                            + '<br>以太网连接成功后，可通过以太网 IP 或 http://fastbee.local 访问；'
+                            + '\n网络配置变更需要重启网络服务才能生效，请等待约10秒...'
+                            + '\n以太网连接成功后，可通过以太网 IP 或 http://fastbee.local 访问；'
                             + '如连接失败，AP 热点将始终可用：http://192.168.4.1 或 http://fastbee.local';
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
                             message: message,
-                            html: true,
                             duration: 12000
                         });
                         this._startNetworkStatusPolling(60000, submitBtn, submitBtnText, originalText);
@@ -777,13 +836,12 @@
                 .then(res => {
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
-                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约15秒...'
-                            + '<br>4G 连接后，可通过设备 AP 热点 http://192.168.4.1 或 http://fastbee.local 访问本系统';
+                            + '\n网络配置变更需要重启网络服务才能生效，请等待约15秒...'
+                            + '\n4G 连接后，可通过设备 AP 热点 http://192.168.4.1 或 http://fastbee.local 访问本系统';
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
                             message: message,
-                            html: true,
                             duration: 12000
                         });
                         this._startNetworkStatusPolling(240000, submitBtn, submitBtnText, originalText);
@@ -853,11 +911,13 @@
                         const encryption = net.encryption || (net.encrypted ? 'wpa2' : 'open');
                         const isOpen = encryption === 'open';
                         const encryptIcon = this._getWifiLockIcon(!isOpen);
-                        const encLabel = encryptLabels[encryption] || encryption;
+                        const encryptionEsc = this._escapeHtml(encryption);
+                        const encLabel = this._escapeHtml(encryptLabels[encryption] || encryption);
                         const ssidEsc = this._escapeHtml(net.ssid);
+                        const rssiEsc = this._escapeHtml(net.rssi);
 
                         html += `
-                            <div class="wifi-grid-item" data-ssid="${ssidEsc}" data-encryption="${encryption}">
+                            <div class="wifi-grid-item" data-ssid="${ssidEsc}" data-encryption="${encryptionEsc}">
                                 <div class="wifi-info">
                                     <div class="wifi-ssid">${ssidEsc}</div>
                                     <div class="wifi-meta">
@@ -865,7 +925,7 @@
                                     </div>
                                 </div>
                                 <div class="wifi-signal ${signalClass}">
-                                    ${net.rssi} dBm
+                                    ${rssiEsc} dBm
                                 </div>
                             </div>
                         `;
@@ -919,12 +979,12 @@
         loadNetworkStatus(retryCount) {
             retryCount = retryCount || 0;
             var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            getter('/api/network/status')
+            return getter('/api/network/status')
                 .then(res => {
                     if (!res || !res.success || !res.data) {
                         // 响应无效，重试一次
                         if (retryCount < 2) {
-                            setTimeout(() => this.loadNetworkStatus(retryCount + 1), 2000);
+                            this._scheduleNetworkPageTask(() => this.loadNetworkStatus(retryCount + 1), 2000);
                         } else {
                             this._loadNetworkStatusFallback();
                         }
@@ -944,7 +1004,7 @@
                     }
                     // 其他网络错误时重试（可能是内存压力导致503）
                     if (retryCount < 2) {
-                        setTimeout(() => this.loadNetworkStatus(retryCount + 1), 3000);
+                        this._scheduleNetworkPageTask(() => this.loadNetworkStatus(retryCount + 1), 3000);
                     } else {
                         this._loadNetworkStatusFallback();
                     }
@@ -1228,18 +1288,11 @@
                     refreshBtn.disabled = true;
                     this._setNetworkStatusLoading();
                     this.loadNetworkStatus();
-                    setTimeout(() => {
+                    this._scheduleNetworkPageTask(() => {
                         refreshBtn.disabled = false;
                     }, 1500);
                 });
             }
-
-            // 首次加载网络配置时同时加载状态
-            const originalLoadConfig = this.loadNetworkConfig.bind(this);
-            this.loadNetworkConfig = () => {
-                originalLoadConfig();
-                setTimeout(() => this.loadNetworkStatus(), 500);
-            };
         },
 
         // ============ 蓝牙配网（BLE Provisioning）============
@@ -1259,7 +1312,7 @@
                 refreshBtn.addEventListener('click', () => {
                     refreshBtn.disabled = true;
                     this.loadBleProvisionStatus();
-                    setTimeout(() => { refreshBtn.disabled = false; }, 1500);
+                    this._scheduleNetworkPageTask(() => { refreshBtn.disabled = false; }, 1500);
                 });
             }
 
@@ -1372,7 +1425,9 @@
                 errEl.textContent = message || t('ble-prov-op-fail');
                 errEl.classList.toggle('fb-hidden', !!ok);
             }
-            setTimeout(() => {
+            if (this._networkBleMessageTimer) clearTimeout(this._networkBleMessageTimer);
+            this._networkBleMessageTimer = setTimeout(() => {
+                this._networkBleMessageTimer = null;
                 if (okEl) okEl.classList.add('fb-hidden');
                 if (errEl) errEl.classList.add('fb-hidden');
             }, 5000);
@@ -1385,35 +1440,12 @@
         AppState.setupNetworkEvents();
     }
 
-    // 初始化状态刷新功能
-    if (typeof AppState.setupStatusRefresh === 'function') {
-        AppState.setupStatusRefresh();
+    if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('network', function() {
+            if (this.currentPage === 'network' && typeof this._stopNetworkPageWork === 'function') {
+                this._stopNetworkPageWork();
+            }
+        });
     }
 
-    // 初始化蓝牙配网面板（探测固件 BLE 支持并绑定按钮）
-    if (typeof AppState.setupBleProvision === 'function') {
-        AppState.setupBleProvision();
-    }
-
-    // 根据固件能力隐藏不支持的联网方式
-    (function filterNetworkTypesByCapabilities() {
-        var getter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh
-            : (typeof apiGetFresh === 'function' ? apiGetFresh : (typeof apiGet === 'function' ? apiGet : null));
-        if (!getter) return;
-        getter('/api/system/capabilities').then(function(res) {
-            if (!res || !res.success || !res.data) return;
-            var caps = res.data;
-            var select = document.getElementById('network-type');
-            if (!select) return;
-            // value="1" = 以太网 W5500, value="2" = 4G EC801E
-            if (!caps.ethernet) {
-                var opt1 = select.querySelector('option[value="1"]');
-                if (opt1) opt1.remove();
-            }
-            if (!caps.cellular) {
-                var opt2 = select.querySelector('option[value="2"]');
-                if (opt2) opt2.remove();
-            }
-        }).catch(function() { /* 静默失败，保留所有选项 */ });
-    })();
 })();

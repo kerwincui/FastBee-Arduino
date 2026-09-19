@@ -26,7 +26,8 @@ void test_periph_config_group();
 // ========== sanitize 常量（镜像自 PeriphExecManager.cpp） ==========
 namespace SanitizeConstants {
     constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;
-    constexpr uint32_t MAX_TIMER_INTERVAL_SEC = 86400UL;
+    constexpr uint32_t MIN_POLL_INTERVAL_SEC = 5;
+    constexpr uint32_t MAX_INTERVAL_SEC = 86400UL;
     constexpr uint16_t MIN_POLL_TIMEOUT_MS = 100;
     constexpr uint16_t MAX_POLL_TIMEOUT_MS = 5000;
     constexpr uint16_t HEAVY_POLL_TIMEOUT_MS = 3000;
@@ -39,8 +40,10 @@ namespace SanitizeConstants {
 
 // ========== validateLoadedConfig 常量（镜像自 PeriphExecScheduler.h） ==========
 namespace ValidateConstants {
-    constexpr uint32_t MIN_POLL_INTERVAL_MS = 5000;
-    constexpr uint32_t SAFE_POLL_INTERVAL_MS = 30000;
+    constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;
+    constexpr uint32_t MIN_POLL_INTERVAL_SEC = 5;
+    constexpr uint32_t MAX_INTERVAL_SEC = 86400;
+    constexpr uint32_t AGGRESSIVE_INTERVAL_WARN_SEC = 10;
     constexpr uint8_t MAX_ACTIVE_TASKS = 12;
     constexpr uint8_t WARN_TASK_THRESHOLD = 8;
 }
@@ -66,13 +69,20 @@ static bool sanitizeTriggerForSafety(ConfigTrigger& trigger, bool hasPollCollect
         if (trigger.intervalSec < SanitizeConstants::MIN_TIMER_INTERVAL_SEC) {
             trigger.intervalSec = SanitizeConstants::MIN_TIMER_INTERVAL_SEC;
             modified = true;
-        } else if (trigger.intervalSec > SanitizeConstants::MAX_TIMER_INTERVAL_SEC) {
-            trigger.intervalSec = SanitizeConstants::MAX_TIMER_INTERVAL_SEC;
+        } else if (trigger.intervalSec > SanitizeConstants::MAX_INTERVAL_SEC) {
+            trigger.intervalSec = SanitizeConstants::MAX_INTERVAL_SEC;
             modified = true;
         }
     }
 
     if (trigger.triggerType == 5) {  // POLL_TRIGGER
+        if (trigger.intervalSec < SanitizeConstants::MIN_POLL_INTERVAL_SEC) {
+            trigger.intervalSec = SanitizeConstants::MIN_POLL_INTERVAL_SEC;
+            modified = true;
+        } else if (trigger.intervalSec > SanitizeConstants::MAX_INTERVAL_SEC) {
+            trigger.intervalSec = SanitizeConstants::MAX_INTERVAL_SEC;
+            modified = true;
+        }
         if (trigger.pollResponseTimeout < SanitizeConstants::MIN_POLL_TIMEOUT_MS) {
             trigger.pollResponseTimeout = SanitizeConstants::MIN_POLL_TIMEOUT_MS;
             modified = true;
@@ -135,27 +145,30 @@ static uint8_t countActiveTimerTasks(const std::map<String, ConfigRule>& rules) 
     return count;
 }
 
-static bool validateLoadedConfig(std::map<String, ConfigRule>& rules) {
+static bool validateLoadedConfig(const std::map<String, ConfigRule>& rules) {
     uint8_t activeCount = countActiveTimerTasks(rules);
-    bool modified = false;
 
-    for (auto& kv : rules) {
+    for (const auto& kv : rules) {
         if (!kv.second.enabled) continue;
-        for (auto& trigger : kv.second.triggers) {
-            if (trigger.triggerType != 1 && trigger.triggerType != 5) continue;
+        for (const auto& trigger : kv.second.triggers) {
+            const bool isTimer = trigger.triggerType == 1;
+            const bool isPoll = trigger.triggerType == 5;
+            if (!isTimer && !isPoll) continue;
 
-            uint32_t intervalMs = trigger.intervalSec * 1000UL;
-            if (intervalMs < ValidateConstants::MIN_POLL_INTERVAL_MS) {
-                trigger.intervalSec = ValidateConstants::MIN_POLL_INTERVAL_MS / 1000;
-                modified = true;
-            } else if (activeCount > ValidateConstants::WARN_TASK_THRESHOLD &&
-                       intervalMs < 10000) {
-                trigger.intervalSec = ValidateConstants::SAFE_POLL_INTERVAL_MS / 1000;
-                modified = true;
+            const uint32_t minimumSec = isPoll
+                ? ValidateConstants::MIN_POLL_INTERVAL_SEC
+                : ValidateConstants::MIN_TIMER_INTERVAL_SEC;
+            if (trigger.intervalSec < minimumSec ||
+                trigger.intervalSec > ValidateConstants::MAX_INTERVAL_SEC) {
+                return true;
+            }
+            if (activeCount > ValidateConstants::WARN_TASK_THRESHOLD &&
+                trigger.intervalSec < ValidateConstants::AGGRESSIVE_INTERVAL_WARN_SEC) {
+                return true;
             }
         }
     }
-    return modified;
+    return false;
 }
 
 // ============================================================
@@ -206,6 +219,33 @@ void test_sanitize_timer_interval_normal() {
     t.intervalSec = 30;
     bool mod = sanitizeTriggerForSafety(t, false);
     TEST_ASSERT_FALSE(mod);
+}
+
+void test_config_sanitize_poll_interval_below_min() {
+    ConfigTrigger t;
+    t.triggerType = 5;
+    t.intervalSec = 1;
+    bool mod = sanitizeTriggerForSafety(t, false);
+    TEST_ASSERT_TRUE(mod);
+    TEST_ASSERT_EQUAL_UINT32(5, t.intervalSec);
+}
+
+void test_config_sanitize_poll_interval_at_min() {
+    ConfigTrigger t;
+    t.triggerType = 5;
+    t.intervalSec = 5;
+    bool mod = sanitizeTriggerForSafety(t, false);
+    TEST_ASSERT_FALSE(mod);
+    TEST_ASSERT_EQUAL_UINT32(5, t.intervalSec);
+}
+
+void test_config_sanitize_poll_interval_above_max() {
+    ConfigTrigger t;
+    t.triggerType = 5;
+    t.intervalSec = 100000;
+    bool mod = sanitizeTriggerForSafety(t, false);
+    TEST_ASSERT_TRUE(mod);
+    TEST_ASSERT_EQUAL_UINT32(86400, t.intervalSec);
 }
 
 // --- Poll timeout 边界 ---
@@ -353,21 +393,34 @@ void test_sanitize_platform_trigger_not_modified() {
 //  TEST GROUP 2: validateLoadedConfig 全局配置安全校验
 // ============================================================
 
-void test_validate_interval_below_min_corrected() {
+void test_validate_timer_one_second_allowed_without_mutation() {
     std::map<String, ConfigRule> rules;
     ConfigRule r;
-    r.id = "r1"; r.name = "Low interval"; r.enabled = true;
-    ConfigTrigger t; t.triggerType = 1; t.intervalSec = 2;  // 2s < 5s
+    r.id = "r1"; r.name = "Fast timer"; r.enabled = true;
+    ConfigTrigger t; t.triggerType = 1; t.intervalSec = 1;
     r.triggers.push_back(t);
     rules[r.id] = r;
 
-    bool mod = validateLoadedConfig(rules);
-    TEST_ASSERT_TRUE(mod);
-    TEST_ASSERT_EQUAL_UINT32(5, rules["r1"].triggers[0].intervalSec);
+    bool warned = validateLoadedConfig(rules);
+    TEST_ASSERT_FALSE(warned);
+    TEST_ASSERT_EQUAL_UINT32(1, rules["r1"].triggers[0].intervalSec);
 }
 
-void test_validate_dangerous_combo_corrected() {
-    // 9 个活跃任务 (> WARN=8) 且间隔 8s (< 10s) → 强制 30s
+void test_validate_poll_below_min_warned_without_mutation() {
+    std::map<String, ConfigRule> rules;
+    ConfigRule r;
+    r.id = "r1"; r.name = "Invalid poll"; r.enabled = true;
+    ConfigTrigger t; t.triggerType = 5; t.intervalSec = 2;
+    r.triggers.push_back(t);
+    rules[r.id] = r;
+
+    bool warned = validateLoadedConfig(rules);
+    TEST_ASSERT_TRUE(warned);
+    TEST_ASSERT_EQUAL_UINT32(2, rules["r1"].triggers[0].intervalSec);
+}
+
+void test_validate_dangerous_combo_warned_without_mutation() {
+    // 9 个活跃任务 (> WARN=8) 且间隔 8s (< 10s)：告警但保持持久化值。
     std::map<String, ConfigRule> rules;
     for (int i = 0; i < 9; i++) {
         ConfigRule r;
@@ -377,9 +430,9 @@ void test_validate_dangerous_combo_corrected() {
         rules[r.id] = r;
     }
 
-    bool mod = validateLoadedConfig(rules);
-    TEST_ASSERT_TRUE(mod);
-    TEST_ASSERT_EQUAL_UINT32(30, rules["r0"].triggers[0].intervalSec);
+    bool warned = validateLoadedConfig(rules);
+    TEST_ASSERT_TRUE(warned);
+    TEST_ASSERT_EQUAL_UINT32(8, rules["r0"].triggers[0].intervalSec);
 }
 
 void test_validate_safe_config_not_modified() {
@@ -608,7 +661,8 @@ void test_config_peripheral_properties_map() {
 void test_config_constants_sanity() {
     // 确保常量合理
     TEST_ASSERT_TRUE(SanitizeConstants::MIN_TIMER_INTERVAL_SEC >= 1);
-    TEST_ASSERT_TRUE(SanitizeConstants::MAX_TIMER_INTERVAL_SEC <= 86400);
+    TEST_ASSERT_TRUE(SanitizeConstants::MIN_POLL_INTERVAL_SEC >= 5);
+    TEST_ASSERT_TRUE(SanitizeConstants::MAX_INTERVAL_SEC <= 86400);
     TEST_ASSERT_TRUE(SanitizeConstants::MIN_POLL_TIMEOUT_MS >= 50);
     TEST_ASSERT_TRUE(SanitizeConstants::MAX_POLL_TIMEOUT_MS <= 10000);
     TEST_ASSERT_TRUE(SanitizeConstants::MAX_POLL_RETRIES <= 5);
@@ -2100,6 +2154,9 @@ void test_periph_config_group() {
     RUN_TEST(test_sanitize_timer_interval_at_max);
     RUN_TEST(test_sanitize_timer_interval_above_max);
     RUN_TEST(test_sanitize_timer_interval_normal);
+    RUN_TEST(test_config_sanitize_poll_interval_below_min);
+    RUN_TEST(test_config_sanitize_poll_interval_at_min);
+    RUN_TEST(test_config_sanitize_poll_interval_above_max);
     RUN_TEST(test_sanitize_poll_timeout_below_min);
     RUN_TEST(test_sanitize_poll_timeout_above_max);
     RUN_TEST(test_sanitize_poll_timeout_normal);
@@ -2117,8 +2174,9 @@ void test_periph_config_group() {
     RUN_TEST(test_sanitize_platform_trigger_not_modified);
 
     // Group 2: validateLoadedConfig 全局配置安全校验
-    RUN_TEST(test_validate_interval_below_min_corrected);
-    RUN_TEST(test_validate_dangerous_combo_corrected);
+    RUN_TEST(test_validate_timer_one_second_allowed_without_mutation);
+    RUN_TEST(test_validate_poll_below_min_warned_without_mutation);
+    RUN_TEST(test_validate_dangerous_combo_warned_without_mutation);
     RUN_TEST(test_validate_safe_config_not_modified);
     RUN_TEST(test_validate_disabled_rules_ignored);
     RUN_TEST(test_validate_active_task_count);

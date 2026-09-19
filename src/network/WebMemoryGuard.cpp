@@ -40,6 +40,13 @@ void WebMemoryGuardMiddleware::maintain() {
     // 多 KB 级响应构建会挂起（C3 full 镜像 soak 实测）
     const uint32_t free8 = MemoryBudget::dram8Free();
     const uint32_t blk8 = MemoryBudget::dram8Largest();
+    if (active_ && MemoryBudget::hasWebStreamingHeadroom(free8, blk8)) {
+        if (streamingRecoverySinceMs_ == 0) {
+            streamingRecoverySinceMs_ = millis() ? millis() : 1;
+        }
+    } else {
+        streamingRecoverySinceMs_ = 0;
+    }
 
     // 状态迁移日志用 Serial.printf 而非 LOG_WARNINGF：MEMGUARD CRITICAL 降级
     // 会抬高日志等级，FORCE-RECOVER/re-ACTIVE 迁移被吞导致死环不可见
@@ -74,14 +81,17 @@ void WebMemoryGuardMiddleware::maintain() {
         } else {
             lowWaterSinceMs_ = 0;  // 水位回升，去抖动计时清零
         }
-    } else if (free8 >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE &&
-               blk8 >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_BLK8) {
+    } else if ((free8 >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE &&
+                blk8 >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_BLK8) ||
+               (streamingRecoverySinceMs_ != 0 &&
+                millis() - streamingRecoverySinceMs_ >= STREAMING_RECOVERY_DELAY_MS)) {
         active_ = false;
         forceRecoverMs_ = 0;  // 真正恢复，解除冷却
-        Serial.printf("[WebGuard] RECOVERED: free8=%u blk8=%u >= %u/%u, resuming API requests (rejected=%u)\n",
+        streamingRecoverySinceMs_ = 0;
+        Serial.printf("[WebGuard] RECOVERED: free8=%u blk8=%u, fast-block=%u stable-block=%u, resuming API requests (rejected=%u)\n",
                       (unsigned)free8, (unsigned)blk8,
-                      (unsigned)MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE,
                       (unsigned)MemoryBudget::WEB_GUARD_RECOVERY_DRAM_BLK8,
+                      (unsigned)MemoryBudget::WEB_STREAMING_RECOVERY_DRAM_BLK8,
                       (unsigned)rejectedCount_);
     } else if (free8 >= MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE &&
                millis() - activeSinceMs_ >= MAX_ACTIVE_MS) {

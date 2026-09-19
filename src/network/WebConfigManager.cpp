@@ -2,6 +2,7 @@
 #include "./network/WebHandlerContext.h"
 #include "core/MemoryBudget.h"
 #include "core/RuntimeFeatureManager.h"
+#include "utils/RoutePsramScope.h"
 #include <WiFi.h>
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
@@ -41,6 +42,12 @@
 #endif
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/handlers/FeatureRouteHandler.h"
+#if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
+#include "network/handlers/ScreenPanelRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+#include "network/handlers/RemoteResourceRouteHandler.h"
+#endif
 #include "./network/handlers/SSERouteHandler.h"
 #include "./network/WebMemoryGuard.h"
 #include "systems/LoggerSystem.h"
@@ -77,6 +84,8 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
+    FastBee::RoutePsramScope routeAllocationScope;
+
     // 创建专职 Handler（条件编译裁剪未启用的模块，节省 Flash 和 RAM）
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
@@ -111,6 +120,12 @@ bool WebConfigManager::initialize() {
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
 #endif
     featureHandler     = std::unique_ptr<FeatureRouteHandler>(new FeatureRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
+    screenPanelHandler.reset(new ScreenPanelRouteHandler(ctx.get()));
+#endif
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    remoteResourceHandler.reset(new RemoteResourceRouteHandler(ctx.get()));
+#endif
     sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
 #if FASTBEE_WEB_MEM_GUARD
@@ -426,6 +441,17 @@ size_t WebConfigManager::copyRecoveryEvents(WebRecoveryEvent* out, size_t maxEve
 
 // ============ 维护 ============
 
+unsigned long WebConfigManager::getLastWebRequestAgeMs() const {
+    // Read the cross-task timestamp before sampling the clock. A request may
+    // arrive after performMaintenance() captured maintenanceNow; subtracting
+    // that newer timestamp from the old sample wraps to almost 49 days and
+    // incorrectly aborts active HTTP/OTA connections. Keep 32-bit wraparound
+    // arithmetic so a real millis() rollover still gives the elapsed time.
+    const uint32_t requestSeenMs = lastRequestSeenMs.load(std::memory_order_relaxed);
+    const uint32_t requestNow = millis();
+    return requestSeenMs == 0 ? 0 : static_cast<uint32_t>(requestNow - requestSeenMs);
+}
+
 void WebConfigManager::performMaintenance() {
     // 统一重启机制：由 SystemRebooter::update() 执行待处理的重启
     SystemRebooter::update();
@@ -576,7 +602,7 @@ void WebConfigManager::performMaintenance() {
     //   3. 存在 TIME_WAIT 或异常 TCP 连接堆积（表明之前有连接但当前僵死）
     // 如果端口正常监听且无异常连接，说明 Web 服务健康，仅因无人访问而已，无需重启
     if (lastRequestSeenMs > 0 && isRunning) {
-        const unsigned long noRequestDuration = maintenanceNow - lastRequestSeenMs;
+        const unsigned long noRequestDuration = getLastWebRequestAgeMs();
         if (noRequestDuration >= NO_REQUEST_WATCHDOG_MS) {
             // 检查 WiFi 连接状态（未联网时无请求是正常的）
             const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
@@ -603,6 +629,9 @@ void WebConfigManager::performMaintenance() {
                     LOG_DEBUGF("[WebConfig] No-request watchdog skipped: port healthy, no stale connections (%lus idle)",
                                (unsigned long)(noRequestDuration / 1000));
                 } else {
+                    // Counting PCBs can yield to AsyncTCP. A request that
+                    // arrived during that check makes the idle result stale.
+                    if (getLastWebRequestAgeMs() < NO_REQUEST_WATCHDOG_MS) return;
                     // 有僵死连接或异常堆积 → 就地回收残留 PCB，不动监听器
                     // （软重启会 end()/begin()，一旦 bind 失败服务永久下线，风险远大于收益）
                     LOG_WARNINGF("[WebConfig] No HTTP requests for %lus with %u active/%u TIME_WAIT connections, reaping stale pcbs",
@@ -639,10 +668,14 @@ void WebConfigManager::performMaintenance() {
         maintenanceFreeHeap,
         maintenanceLargestBlock);
 
+    // Streaming responses no longer require the old 8KB contiguous JSON body.
+    // A usable 21KB/6KB heap must not enter the 90s restart loop solely because
+    // the fragmentation percentage is high. Low free/block safety floors stay.
     const bool severeWebPressure = FastBee::MemoryBudget::isSevereWebPressure8(
         maintenanceFreeHeap,
         maintenanceLargestBlock,
-        maintenanceFrag);
+        maintenanceFrag) && !FastBee::MemoryBudget::hasWebStreamingHeadroom(
+            maintenanceFreeHeap, maintenanceLargestBlock);
 
     if (severeWebPressure) {
         if (safeSoftRestartSince == 0) {
@@ -1213,7 +1246,13 @@ void WebConfigManager::setupAllRoutes() {
     rfHandler->setupRoutes(server);                          ROUTE_PROBE("Rf");
 #endif
 
-    // 8. 外设执行路由（/api/periph-exec/*）
+    // 8. 屏幕面板及历史的具体路由必须先于通用
+    // /api/periph-exec JSON handler；后者按前缀匹配 POST。
+#if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
+    screenPanelHandler->setupRoutes(server);                 ROUTE_PROBE("ScreenPanel");
+#endif
+
+    // 8b. 外设执行路由（/api/periph-exec/*）
 #if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler->setupRoutes(server);                  ROUTE_PROBE("PeriphExec");
 #endif
@@ -1230,6 +1269,9 @@ void WebConfigManager::setupAllRoutes() {
 
     // 10b. 功能配置路由（/api/features/*）
     featureHandler->setupRoutes(server);                     ROUTE_PROBE("Feature");
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+    remoteResourceHandler->setupRoutes(server);              ROUTE_PROBE("RemoteResource");
+#endif
 
     // 11. SSE 事件推送路由（/api/events）
     sseRouteHandler->setupRoutes(server);                    ROUTE_PROBE("SSE");

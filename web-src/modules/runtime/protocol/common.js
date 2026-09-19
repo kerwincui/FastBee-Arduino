@@ -262,45 +262,6 @@
                 '</div>';
         },
 
-        _renderProtocolEmptyRow(colspan, text) {
-            return '<tr><td colspan="' + colspan + '" class="u-empty-cell">' + (text || '') + '</td></tr>';
-        },
-
-        _renderProtocolStatus(enabled) {
-            const isEnabled = enabled !== false;
-            return '<span class="' + (isEnabled ? 'protocol-status-on' : 'protocol-status-off') + '">' +
-                (isEnabled ? 'ON' : 'OFF') + '</span>';
-        },
-
-        _getProtocolBadgeTone(type) {
-            const tones = {
-                sensor: 'protocol-badge--sensor',
-                relay: 'protocol-badge--relay',
-                pwm: 'protocol-badge--pwm',
-                pid: 'protocol-badge--pid'
-            };
-            return tones[type] || 'protocol-badge--sensor';
-        },
-
-        _renderProtocolBadge(type, label) {
-            return '<span class="protocol-badge ' + this._getProtocolBadgeTone(type) + '">' +
-                (label || type || '-') + '</span>';
-        },
-
-        _renderProtocolActionButton(label, tone, action, index, source) {
-            var attrs = 'data-protocol-action="' + action + '"';
-            if (index !== undefined && index !== null) attrs += ' data-index="' + index + '"';
-            if (source) attrs += ' data-source="' + source + '"';
-            var locked = action !== 'open-control-modal' && !this.isDeveloperModeEnabled();
-            if (locked) attrs += ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"';
-            return '<button type="button" class="fb-btn fb-btn-sm protocol-action-btn protocol-action-btn--' + tone +
-                (locked ? ' dev-mode-locked' : '') + '" ' + attrs + '>' + label + '</button>';
-        },
-
-        _renderProtocolActionCell(buttons) {
-            return '<td class="protocol-action-cell">' + buttons.join('') + '</td>';
-        },
-
         _getProtocolIndexedItem(ref, itemSelector) {
             if (!ref || typeof ref.closest !== 'function') return null;
             var item = ref.closest(itemSelector);
@@ -318,80 +279,6 @@
                 '<option value="1"' + (selectedQos === 1 ? ' selected' : '') + '>1</option>',
                 '<option value="2"' + (selectedQos === 2 ? ' selected' : '') + '>2</option>'
             ].join('');
-        },
-
-        _getProtocolControlDeviceInfo(device) {
-            var deviceType = device.deviceType || 'relay';
-            var info = (device.channelCount || 2) + 'ch';
-            if (deviceType === 'relay') {
-                info += ' ' + (device.controlProtocol === 1 ? 'Reg' : 'Coil') + '@' + (device.coilBase || 0);
-            } else if (deviceType === 'pwm') {
-                info += ' Reg@' + (device.pwmRegBase || 0) + ' ' + (device.pwmResolution || 8) + 'bit';
-            } else if (deviceType === 'pid') {
-                info += ' PV@' + ((device.pidAddrs && device.pidAddrs[0]) || 0);
-            }
-            if (device.sensorId) info += ' id:' + device.sensorId;
-            return info;
-        },
-
-        // ========== 设备行渲染 ==========
-
-        _renderAllDeviceSensorRow(task, index, fcNames, typeLabels) {
-            var label = task.name || task.label || ('Slave ' + (task.slaveAddress || 1));
-            var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
-            var mappingCount = (task.mappings && task.mappings.length) || 0;
-            if (mappingCount > 0) info += ' [' + mappingCount + ' ' + t('proto-mapping-count', '映射') + ']';
-            // 采集任务始终允许打开寄存器映射配置：
-            // - JSON 模式：映射用于解析寄存器为物模型属性
-            // - 透传模式：映射仍可用于本地缓存展示（device-control/render.js 依赖 mappings）
-            var actions = [
-                this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'edit-device', index, 'sensor'),
-                this._renderProtocolActionButton(t('proto-btn-mapping', '映射'), 'warning', 'open-mapping', index),
-                this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'delete-device', index, 'sensor')
-            ];
-            return '<tr>' +
-                '<td>' + escapeHtml(label) + '</td>' +
-                '<td>' + this._renderProtocolBadge('sensor', typeLabels.sensor) + '</td>' +
-                '<td>' + (task.slaveAddress || 1) + '</td>' +
-                '<td><small>' + escapeHtml(info) + '</small></td>' +
-                '<td>' + this._renderProtocolStatus(task.enabled) + '</td>' +
-                this._renderProtocolActionCell(actions) +
-                '</tr>';
-        },
-
-        _renderAllDeviceControlRow(device, index, typeLabels) {
-            var deviceType = device.deviceType || 'relay';
-            return '<tr>' +
-                '<td>' + escapeHtml(device.name || '-') + '</td>' +
-                '<td>' + this._renderProtocolBadge(deviceType, typeLabels[deviceType] || deviceType) + '</td>' +
-                '<td>' + (device.slaveAddress || 1) + '</td>' +
-                '<td><small>' + escapeHtml(this._getProtocolControlDeviceInfo(device)) + '</small></td>' +
-                '<td>' + this._renderProtocolStatus(device.enabled) + '</td>' +
-                this._renderProtocolActionCell([
-                    this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'edit-device', index, 'control'),
-                    this._renderProtocolActionButton(t('proto-btn-control', '控制'), 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'delete-device', index, 'control')
-                ]) +
-                '</tr>';
-        },
-
-        _renderModbusDeviceRow(device, index, typeLabels, protocolLabels) {
-            var deviceType = device.deviceType || 'relay';
-            var controlProtocol = device.controlProtocol || 0;
-            return '<tr>' +
-                '<td>' + escapeHtml(device.name || '-') + '</td>' +
-                '<td>' + this._renderProtocolBadge(deviceType, typeLabels[deviceType] || deviceType) + '</td>' +
-                '<td>' + (device.slaveAddress || 1) + '</td>' +
-                '<td>' + (device.channelCount || 2) + '</td>' +
-                '<td>' + (device.coilBase || 0) + '</td>' +
-                '<td>' + (protocolLabels[controlProtocol] || 'Coil') + '</td>' +
-                '<td>' + (device.ncMode ? 'ON' : '-') + '</td>' +
-                this._renderProtocolActionCell([
-                    this._renderProtocolActionButton(t('proto-btn-edit', '编辑'), 'primary', 'open-edit-modal', index),
-                    this._renderProtocolActionButton(t('proto-btn-control', '控制'), 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton(t('proto-btn-delete', '删除'), 'danger', 'remove-device', index)
-                ]) +
-                '</tr>';
         },
 
         // ========== UI 辅助 ==========

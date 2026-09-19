@@ -129,6 +129,75 @@ inline uint32_t mapAnalogOutputPercent(uint32_t percent, uint8_t minimumPercent,
         static_cast<uint64_t>(maximumDuty) * mappedPercent / 100ULL);
 }
 
+// Graphical display configuration is intentionally separate from the legacy
+// U8g2 LCD parameters. Named pins avoid truncating wide display/touch wiring
+// into PeripheralConfig::pins[8], while keeping the persisted schema explicit.
+struct DisplayConfigParams {
+    char backend[16];             // spi_tft / rgb
+    char driver[16];              // st7789 / ili9341 / st7701
+    char touchBackend[16];        // none / gt911
+    uint16_t width;
+    uint16_t height;
+    uint8_t rotation;             // 0, 1, 2, 3
+    uint8_t colorDepth;           // first implementation: RGB565 (16)
+    uint8_t bufferLines;          // bounded renderer stripe hint
+    uint8_t brightness;           // 0..100
+    uint8_t backlightChannel;     // explicit LEDC channel for resource planning
+    bool backlightActiveHigh;
+    uint32_t spiFrequency;
+    uint32_t i2cFrequency;
+    int8_t mosi;
+    int8_t sclk;
+    int8_t cs;
+    int8_t dc;
+    int8_t rst;
+    int8_t backlight;
+    int8_t touchSda;
+    int8_t touchScl;
+    int8_t touchInt;
+    int8_t touchRst;
+    char rgbInitProfile[24];
+    int8_t rgbDataPins[16];       // D0..15: B0..4, G0..5, R0..4
+    int8_t rgbDe, rgbVsync, rgbHsync, rgbPclk;
+    uint32_t rgbFrequency;
+    uint16_t hsyncFrontPorch, hsyncPulseWidth, hsyncBackPorch;
+    uint16_t vsyncFrontPorch, vsyncPulseWidth, vsyncBackPorch;
+    bool hsyncIdleLow, vsyncIdleLow, pclkActiveNeg;
+    char controlBackend[16];      // none / tca9554 / ch32v003
+    int8_t controlSda, controlScl;
+    uint8_t controlAddress, controlResetMask, controlBacklightMask, controlEnableMask;
+    uint8_t controlInactiveMask; // Explicit outputs to hold low; never infer unclaimed pins.
+    uint8_t controlTouchIntMask; // Optional GT911 INT on control expander; low during reset, then input.
+
+    bool controlMasksDisjoint() const {
+        return !(controlResetMask & controlEnableMask) &&
+               !(controlBacklightMask & (controlResetMask | controlEnableMask)) &&
+               !(controlInactiveMask & (controlResetMask | controlEnableMask | controlBacklightMask)) &&
+               !(controlTouchIntMask & (controlResetMask | controlEnableMask | controlBacklightMask | controlInactiveMask));
+    }
+
+    bool controlTouchSyncValid() const {
+        return controlTouchIntMask == 0 ||
+            (!(controlTouchIntMask & (controlTouchIntMask - 1U)) && controlResetMask != 0 &&
+             strcasecmp(backend, "rgb") == 0 && strcasecmp(touchBackend, "gt911") == 0 &&
+             (strcasecmp(controlBackend, "ch32v003") == 0 || strcasecmp(controlBackend, "tca9554") == 0) &&
+             touchInt < 0 && touchRst < 0);
+    }
+
+    // Stable named-pin slots, including RGB and optional shared control I2C.
+    int8_t pinAt(uint8_t index) const {
+        const int8_t base[] = {mosi, sclk, cs, dc, rst, backlight,
+                              touchSda, touchScl, touchInt, touchRst};
+        if (index < 10) return base[index];
+        if (strcasecmp(backend, "rgb") != 0) return -1;
+        if (index < 26) return rgbDataPins[index - 10];
+        const int8_t extra[] = {rgbDe, rgbVsync, rgbHsync, rgbPclk,
+            controlSda == touchSda ? static_cast<int8_t>(-1) : controlSda,
+            controlScl == touchScl ? static_cast<int8_t>(-1) : controlScl};
+        return index < 32 ? extra[index - 26] : -1;
+    }
+};
+
 // 外设配置结构体
 struct PeripheralConfig {
     String id;                    // 唯一标识符
@@ -181,7 +250,17 @@ struct PeripheralConfig {
             bool invertLogic;         // 逻辑反相（用户看到的高低电平）
             uint16_t debounceMs;      // 0=使用安全默认 50ms
             uint8_t reportMode;       // 0=状态变化, 1=周期, 2=仅规则事件
+            uint8_t ioSource;         // 0=native GPIO, 1=IO expander channel
+            char providerId[41];      // Parent peripheral ID; never an MCU pin
+            uint8_t channel;          // PCF8574 P0..P7
         } gpio;
+
+        struct {
+            char driver[16];          // First supported model: PCF8574
+            char busPeripheralId[41]; // Optional reference to an I2C peripheral
+            uint8_t address;          // PCF8574: 0x20..0x27
+            uint16_t sampleInterval;  // 20..1000ms; zero uses 20ms
+        } ioExpander;
         
         // ADC参数
         struct {
@@ -281,6 +360,10 @@ struct PeripheralConfig {
             uint8_t interface;        // 0=Parallel, 1=SPI, 2=I2C
             uint8_t contrast;         // 对比度/亮度 0-255（默认 255）
         } lcd;
+
+        // Graphical display and optional external touch controller. This does
+        // not replace the legacy LCD member above.
+        DisplayConfigParams display;
         
         // 通用传感器容器参数（逻辑数据源、外部传感器）
         struct {
@@ -290,6 +373,11 @@ struct PeripheralConfig {
             uint8_t address;          // I2C 地址
             uint8_t mode;             // 0=默认/加速度，1=陀螺仪
             uint32_t frequency;       // I2C 频率，默认 100kHz
+            char busPeripheralId[41];
+            float shuntResistance;   // INA226 ohms; zero means uncalibrated
+            float maxCurrent;        // INA226 expected maximum current, A
+            uint16_t conversionTimeUs;
+            uint16_t averaging;
         } sensor;
 
         // 数码管参数（TM1637 等）
@@ -365,6 +453,10 @@ struct PeripheralConfig {
         int typeValue = static_cast<int>(type);
         return typeValue >= 11 && typeValue <= 25;
     }
+
+    bool isExpanderChannel() const {
+        return isGPIOPeripheral() && params.gpio.ioSource == 1;
+    }
     
     // 检查是否为Modbus外设
     bool isModbusPeripheral() const {
@@ -389,12 +481,39 @@ struct PeripheralConfig {
     
     // 检查引脚是否被使用
     bool usesPin(uint8_t pin) const {
+        if (type == PeripheralType::SCREEN_DISPLAY) {
+            for (uint8_t i = 0; i < configuredPinCount(); ++i) {
+                if (configuredPinAt(i) == pin) return true;
+            }
+            return false;
+        }
         for (int i = 0; i < pinCount && i < 8; i++) {
             if (pins[i] == pin) {
                 return true;
             }
         }
         return false;
+    }
+
+    uint8_t configuredPinCount() const {
+        if (type != PeripheralType::SCREEN_DISPLAY) return pinCount > 8 ? 8 : pinCount;
+        uint8_t count = 0;
+        for (uint8_t i = 0; i < 32; ++i) if (params.display.pinAt(i) >= 0) ++count;
+        return count;
+    }
+
+    uint8_t configuredPinAt(uint8_t configuredIndex) const {
+        if (type != PeripheralType::SCREEN_DISPLAY) {
+            return configuredIndex < pinCount && configuredIndex < 8
+                ? pins[configuredIndex] : 255;
+        }
+        uint8_t seen = 0;
+        for (uint8_t i = 0; i < 32; ++i) {
+            const int8_t value = params.display.pinAt(i);
+            if (value < 0) continue;
+            if (seen++ == configuredIndex) return static_cast<uint8_t>(value);
+        }
+        return 255;
     }
 };
 
@@ -439,6 +558,26 @@ constexpr uint32_t RFID_DEFAULT_FREQUENCY = 4000000UL;
 constexpr uint8_t LCD1602_DEFAULT_COLS = 16;
 constexpr uint8_t LCD1602_DEFAULT_ROWS = 2;
 constexpr uint8_t LCD1602_DEFAULT_ADDRESS = 0x27;
+constexpr uint16_t DISPLAY_DEFAULT_WIDTH = 240;
+constexpr uint16_t DISPLAY_DEFAULT_HEIGHT = 320;
+constexpr uint8_t DISPLAY_DEFAULT_COLOR_DEPTH = 16;
+constexpr uint8_t DISPLAY_DEFAULT_BUFFER_LINES = 16;
+constexpr uint8_t DISPLAY_DEFAULT_BRIGHTNESS = 70;
+constexpr uint32_t DISPLAY_DEFAULT_SPI_FREQUENCY = 40000000UL;
+constexpr uint32_t DISPLAY_DEFAULT_I2C_FREQUENCY = 400000UL;
+
+template <size_t N>
+inline void copyPeripheralConfigText(char (&destination)[N], const char* source) {
+    static_assert(N > 0, "fixed configuration text must have storage");
+    size_t length = 0;
+    if (source) {
+        while (length + 1 < N && source[length] != '\0') {
+            destination[length] = source[length];
+            ++length;
+        }
+    }
+    destination[length] = '\0';
+}
 
 inline void initializeSdCardDefaults(PeripheralConfig& config) {
     memset(&config.params, 0, sizeof(config.params));
@@ -465,10 +604,47 @@ inline void initializeRfidDefaults(PeripheralConfig& config) {
     config.params.rfid.frequency = RFID_DEFAULT_FREQUENCY;
 }
 
+inline void initializeDisplayDefaults(PeripheralConfig& config) {
+    memset(&config.params, 0, sizeof(config.params));
+    copyPeripheralConfigText(config.params.display.backend, "spi_tft");
+    copyPeripheralConfigText(config.params.display.driver, "st7789");
+    copyPeripheralConfigText(config.params.display.touchBackend, "none");
+    config.params.display.width = DISPLAY_DEFAULT_WIDTH;
+    config.params.display.height = DISPLAY_DEFAULT_HEIGHT;
+    config.params.display.rotation = 0;
+    config.params.display.colorDepth = DISPLAY_DEFAULT_COLOR_DEPTH;
+    config.params.display.bufferLines = DISPLAY_DEFAULT_BUFFER_LINES;
+    config.params.display.brightness = DISPLAY_DEFAULT_BRIGHTNESS;
+    config.params.display.backlightChannel = 0;
+    config.params.display.backlightActiveHigh = true;
+    config.params.display.spiFrequency = DISPLAY_DEFAULT_SPI_FREQUENCY;
+    config.params.display.i2cFrequency = DISPLAY_DEFAULT_I2C_FREQUENCY;
+    config.params.display.mosi = -1;
+    config.params.display.sclk = -1;
+    config.params.display.cs = -1;
+    config.params.display.dc = -1;
+    config.params.display.rst = -1;
+    config.params.display.backlight = -1;
+    config.params.display.touchSda = -1;
+    config.params.display.touchScl = -1;
+    config.params.display.touchInt = -1;
+    config.params.display.touchRst = -1;
+    copyPeripheralConfigText(config.params.display.rgbInitProfile, "st7701_type1");
+    copyPeripheralConfigText(config.params.display.controlBackend, "none");
+    config.params.display.controlInactiveMask = 0;
+    config.params.display.controlTouchIntMask = 0;
+    memset(config.params.display.rgbDataPins, -1, sizeof(config.params.display.rgbDataPins));
+    config.params.display.rgbDe = config.params.display.rgbVsync = -1;
+    config.params.display.rgbHsync = config.params.display.rgbPclk = -1;
+    config.params.display.controlSda = config.params.display.controlScl = -1;
+}
+
 inline void initializeSensorDefaults(PeripheralConfig& config) {
     memset(&config.params, 0, sizeof(config.params));
     config.params.sensor.sampleInterval = 1000;
     config.params.sensor.frequency = 100000;
+    config.params.sensor.conversionTimeUs = 1100;
+    config.params.sensor.averaging = 16;
 }
 
 struct EncoderReading {

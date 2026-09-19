@@ -2,7 +2,7 @@
 /**
  * FastBee 舰队长期稳定性监测器（Playwright 浏览器自动化）
  *
- * 对舰队 5 台设备持续执行真实用户视角的 Web 全链路验证：
+ * 对默认测试台或 --device-config 指定的设备持续执行真实用户视角的 Web 全链路验证：
  *   1. HTTP 探针（显式 STA 地址）→ 在线率 / 响应时间
  *   2. 浏览器打开主页 → 登录 → 验证 #app-container 显示
  *   3. 遍历侧边栏全部菜单页，验证每页内容非空、无 console/pageerror/HTTP 4xx/5xx
@@ -15,14 +15,15 @@
  *   node fleet-stability-monitor.mjs --interval 120 --report-every 8
  *   node fleet-stability-monitor.mjs --max-cycles 40
  *   node fleet-stability-monitor.mjs --devices esp32c3-f4r0,esp32s3-f16r8
+ *   node fleet-stability-monitor.mjs --device-config ../../artifacts/device-acceptance/fleet-live.json
  *   node fleet-stability-monitor.mjs --min-duration-hours 8 --max-cycles 161
  *   node fleet-stability-monitor.mjs --report-only       # 仅基于已有 JSONL 重新生成报告
+ *   node fleet-stability-monitor.mjs --help
  *
  * 数据输出: .pio/fleet-monitor/<run-id>/<device>/cycles.jsonl + events.jsonl
  * 报告输出: .pio/fleet-monitor/<run-id>/fleet-stability-report.md
  */
 
-import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,16 +31,151 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
 // ─── 舰队定义 ─────────────────────────────────────────
-// Keep the test bench's STA addresses explicit.  AP addresses and stale
-// mDNS aliases are intentionally excluded so a monitor cycle cannot route
-// through a device hotspot or attribute one board's result to another.
-const DEVICES = [
+// The built-in catalog remains the no-argument test-bench default. A deployment
+// acceptance run should pass its freshly discovered fleet via --device-config.
+const DEFAULT_DEVICES = [
   { label: 'esp32c3-f4r0', host: '192.168.5.55', ips: ['192.168.5.55'], model: 'ESP32-C3-F4R0' },
   { label: 'esp32c6-f4r0', host: '192.168.5.19', ips: ['192.168.5.19'], model: 'ESP32-C6-F4R0' },
   { label: 'esp32-f4r0', host: '192.168.5.21', ips: ['192.168.5.21'], model: 'ESP32-F4R0' },
   { label: 'esp32s3-f16r8', host: '192.168.5.22', ips: ['192.168.5.22'], model: 'ESP32-S3-F16R8' },
   { label: 'esp32s3-f8r0', host: '192.168.5.67', ips: ['192.168.5.67'], model: 'ESP32-S3-F8R0' },
 ];
+
+const REQUIRED_DEVICE_CONFIG_FIELDS = ['label', 'ip', 'profile', 'domain', 'serial'];
+const HELP_TEXT = `Usage: node test/browser/fleet-stability-monitor.mjs [options]
+
+Options:
+  --device-config <json>     Load a live fleet JSON array (required label/ip/profile/domain/serial;
+                             optional expectedMenus)
+  --devices <labels>         Monitor only the comma-separated labels from the selected fleet
+  --interval <seconds>       Delay between cycles for each device (minimum 15, default 180)
+  --max-cycles <count>       Stop after this many cycles per device (0 means unlimited)
+  --min-duration-hours <h>   Require this actual first-to-last sample window
+  --report-every <count>     Regenerate the report every N intervals (default 8)
+  --cycle-timeout <seconds>  Per-device cycle watchdog (minimum 30, default 420)
+  --viewport <width>x<height> Browser viewport (default 1366x800; width 320-3840, height 320-2160)
+  --output-dir <path>        Fresh report directory
+  --once                     Run one cycle per selected device
+  --report-only              Rebuild reports from an existing output directory
+  --allow-existing-output    Allow appending to an occupied output directory
+  --help                     Show this help
+
+Relative device-config and output paths are resolved from the repository root.`;
+
+function configField(entry, field) {
+  const expectedName = field.toLowerCase();
+  const key = Object.keys(entry).find(name => name.toLowerCase() === expectedName);
+  return key === undefined ? undefined : entry[key];
+}
+
+function isIpv4(value) {
+  const parts = value.split('.');
+  return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+function isHostname(value) {
+  if (!value || value.length > 253) return false;
+  const labels = value.split('.');
+  return labels.every(label =>
+    label.length > 0 &&
+    label.length <= 63 &&
+    /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(label));
+}
+
+function loadDeviceConfig(configPath) {
+  let parsed;
+  try {
+    const text = fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '');
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`unable to read device config ${configPath}: ${error.message}`);
+  }
+
+  const entries = Array.isArray(parsed) ? parsed : parsed?.devices;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error(`device config must contain a non-empty JSON array: ${configPath}`);
+  }
+
+  const devices = entries.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`device config entry ${index + 1} must be an object`);
+    }
+    for (const field of REQUIRED_DEVICE_CONFIG_FIELDS) {
+      if (configField(entry, field) === undefined) {
+        throw new Error(`device config entry ${index + 1} is missing '${field}'`);
+      }
+    }
+
+    const label = String(configField(entry, 'label')).trim();
+    const ip = String(configField(entry, 'ip')).trim();
+    const profile = String(configField(entry, 'profile')).trim();
+    const domain = String(configField(entry, 'domain')).trim();
+    const serial = String(configField(entry, 'serial')).trim();
+    const configuredExpectedMenus = configField(entry, 'expectedMenus');
+    if (!label || !profile || !serial) {
+      throw new Error(`device config entry ${index + 1} has an empty label, profile, or serial`);
+    }
+    if (!isIpv4(ip) || ip === '0.0.0.0') {
+      throw new Error(`device config entry ${index + 1} has an invalid IPv4 address`);
+    }
+    if (domain && !isHostname(domain)) {
+      throw new Error(`device config entry ${index + 1} domain must be a valid hostname without scheme or path`);
+    }
+
+    const outputSlug = label.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+    if (!outputSlug) {
+      throw new Error(`device config entry ${index + 1} label must contain an ASCII letter or digit`);
+    }
+
+    let expectedMenus;
+    if (configuredExpectedMenus !== undefined) {
+      if (!Array.isArray(configuredExpectedMenus) || configuredExpectedMenus.length === 0) {
+        throw new Error(`device config entry ${index + 1} expectedMenus must be a non-empty array`);
+      }
+      if (configuredExpectedMenus.some(menu => typeof menu !== 'string' || !menu.trim())) {
+        throw new Error(`device config entry ${index + 1} expectedMenus must contain only non-empty strings`);
+      }
+      expectedMenus = configuredExpectedMenus.map(menu => menu.trim());
+      const unknownMenu = expectedMenus.find(menu => !MENU_PAGE_ORDER.includes(menu));
+      if (unknownMenu) {
+        throw new Error(`device config entry ${index + 1} expectedMenus contains unknown menu '${unknownMenu}'`);
+      }
+      const duplicateMenu = expectedMenus.find((menu, menuIndex) => expectedMenus.indexOf(menu) !== menuIndex);
+      if (duplicateMenu) {
+        throw new Error(`device config entry ${index + 1} expectedMenus contains duplicate menu '${duplicateMenu}'`);
+      }
+    }
+
+    return {
+      label,
+      host: domain || ip,
+      ips: [ip],
+      model: label,
+      ip,
+      profile,
+      domain,
+      serial,
+      expectedMenus,
+      outputSlug,
+    };
+  });
+
+  for (const [name, values] of [
+    ['label', devices.map(device => device.label.toLowerCase())],
+    ['IP', devices.map(device => device.ip)],
+    ['serial', devices.map(device => device.serial.toLowerCase())],
+    ['output label', devices.map(device => device.outputSlug)],
+  ]) {
+    if (new Set(values).size !== values.length) {
+      throw new Error(`device config contains duplicate ${name} values`);
+    }
+  }
+  const domains = devices.map(device => device.domain.toLowerCase()).filter(Boolean);
+  if (new Set(domains).size !== domains.length) {
+    throw new Error('device config contains duplicate non-empty domain values');
+  }
+  return devices;
+}
 
 const AUTH = {
   username: process.env.FASTBEE_WEB_USERNAME || 'admin',
@@ -65,9 +201,94 @@ const ACCEPT_MAX_HEAP_DROP = 20_000;
 const ACCEPT_MAX_ALLOC_DROP = 12_000;
 const ACCEPT_MAX_PROBE_P95_MS = 5_000;
 const ACCEPT_MAX_MENU_P95_MS = 7_000;
+const MENU_PAGE_ORDER = Object.freeze([
+  'dashboard',
+  'device',
+  'network',
+  'peripheral',
+  'periph-exec',
+  'protocol',
+  'device-control',
+  'rule-script',
+  'logs',
+  'users',
+  'features',
+]);
+const CORE_MENU_PAGES = new Set([
+  'dashboard',
+  'device',
+  'network',
+  'peripheral',
+  'periph-exec',
+  'protocol',
+  'features',
+]);
+const OPTIONAL_MENU_FEATURES = Object.freeze({
+  'device-control': 'deviceControl',
+  'rule-script': 'ruleScript',
+  logs: 'logViewer',
+  users: 'userAdmin',
+});
+
+function uniqueMenus(menus) {
+  return [...new Set((Array.isArray(menus) ? menus : []).filter(Boolean))];
+}
+
+function expectedMenusFromFeatureStates(featureStates) {
+  const states = featureStates && typeof featureStates === 'object' && !Array.isArray(featureStates)
+    ? featureStates
+    : {};
+  return MENU_PAGE_ORDER.filter(page =>
+    CORE_MENU_PAGES.has(page) || states[OPTIONAL_MENU_FEATURES[page]] === 'active');
+}
+
+function getCycleMenuCoverage(cycle, configuredExpectedMenus) {
+  const round = cycle?.round || {};
+  const visible = uniqueMenus(round.visibleMenus);
+  let expected;
+  if (Array.isArray(configuredExpectedMenus)) {
+    expected = uniqueMenus(configuredExpectedMenus);
+  } else if (Array.isArray(round.expectedMenus)) {
+    expected = uniqueMenus(round.expectedMenus);
+  } else {
+    const featureStates = cycle?.mem?.featureStates ?? cycle?.memAfter?.featureStates;
+    // Reports produced before expectedMenus/featureStates were recorded remain
+    // readable and retain their original visible-menu acceptance semantics.
+    expected = featureStates && typeof featureStates === 'object'
+      ? expectedMenusFromFeatureStates(featureStates)
+      : visible;
+  }
+  const expectedSet = new Set(expected);
+  const visibleSet = new Set(visible);
+  const successfulMenus = new Set((round.menus || [])
+    .filter(menu => menu?.ok)
+    .map(menu => menu.page));
+  return {
+    cycle: cycle?.cycle ?? '?',
+    expected,
+    visible,
+    missing: expected.filter(page => !visibleSet.has(page)),
+    unexpected: visible.filter(page => !expectedSet.has(page)),
+    successfulExpected: expected.filter(page => successfulMenus.has(page)),
+    failedExpected: expected.filter(page => !successfulMenus.has(page)),
+  };
+}
 
 function runId() {
   return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function parseViewport(value) {
+  const match = /^(\d+)x(\d+)$/i.exec(value || '');
+  if (!match) {
+    throw new Error('--viewport must use WIDTHxHEIGHT (for example, 390x844)');
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width < 320 || width > 3840 || height < 320 || height > 2160) {
+    throw new Error('--viewport width must be 320-3840 and height must be 320-2160');
+  }
+  return { width, height };
 }
 
 // ─── CLI 参数 ─────────────────────────────────────────
@@ -80,21 +301,38 @@ function parseArgs() {
     once: false,
     reportOnly: false,
     devices: null,       // 逗号分隔 label 过滤
+    deviceConfig: null,
     cycleTimeout: 420_000, // 单设备单周期看门狗 7 分钟（含 goto/登录重试预算）
     minDurationHours: 0,
     allowExistingOutput: false,
+    help: false,
+    viewport: { width: 1366, height: 800 },
     outputDir: path.join(ROOT, '.pio', 'fleet-monitor', runId()),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--once') opts.once = true;
+    if (a === '--help' || a === '-h') opts.help = true;
+    else if (a === '--once') opts.once = true;
     else if (a === '--report-only') opts.reportOnly = true;
     else if (a === '--interval') opts.interval = parseInt(argv[++i], 10);
     else if (a === '--report-every') opts.reportEvery = parseInt(argv[++i], 10);
     else if (a === '--max-cycles') opts.maxCycles = parseInt(argv[++i], 10);
-    else if (a === '--devices') opts.devices = argv[++i].split(',').map(s => s.trim());
+    else if (a === '--devices') {
+      const value = argv[++i];
+      if (!value) throw new Error('--devices requires a comma-separated label list');
+      opts.devices = value.split(',').map(s => s.trim());
+      if (opts.devices.some(label => !label)) {
+        throw new Error('--devices must not contain empty labels');
+      }
+    }
+    else if (a === '--device-config') {
+      const value = argv[++i];
+      if (!value) throw new Error('--device-config requires a path');
+      opts.deviceConfig = path.isAbsolute(value) ? value : path.resolve(ROOT, value);
+    }
     else if (a === '--cycle-timeout') opts.cycleTimeout = parseInt(argv[++i], 10) * 1000;
     else if (a === '--min-duration-hours') opts.minDurationHours = Number(argv[++i]);
+    else if (a === '--viewport') opts.viewport = parseViewport(argv[++i]);
     else if (a === '--allow-existing-output') opts.allowExistingOutput = true;
     else if (a === '--output-dir') {
       const value = argv[++i];
@@ -111,11 +349,26 @@ function parseArgs() {
   return opts;
 }
 const OPTS = parseArgs();
+if (OPTS.help) {
+  console.log(HELP_TEXT);
+  process.exit(0);
+}
+const DEVICES = OPTS.deviceConfig ? loadDeviceConfig(OPTS.deviceConfig) : DEFAULT_DEVICES;
 const OUT_DIR = OPTS.outputDir;
 const REPORT_PATH = path.join(OUT_DIR, 'fleet-stability-report.md');
-const DEVICES_ACTIVE = OPTS.devices
-  ? DEVICES.filter(d => OPTS.devices.includes(d.label))
-  : DEVICES;
+let DEVICES_ACTIVE = DEVICES;
+if (OPTS.devices) {
+  const duplicateLabels = OPTS.devices.filter((label, index) => OPTS.devices.indexOf(label) !== index);
+  if (duplicateLabels.length) {
+    throw new Error(`--devices contains duplicate label(s): ${uniqueMenus(duplicateLabels).join(', ')}`);
+  }
+  const devicesByLabel = new Map(DEVICES.map(device => [device.label, device]));
+  const unknownLabels = OPTS.devices.filter(label => !devicesByLabel.has(label));
+  if (unknownLabels.length) {
+    throw new Error(`--devices contains unknown label(s): ${unknownLabels.join(', ')}`);
+  }
+  DEVICES_ACTIVE = OPTS.devices.map(label => devicesByLabel.get(label));
+}
 if (DEVICES_ACTIVE.length === 0) throw new Error('no matching devices selected');
 
 // ─── 工具函数 ─────────────────────────────────────────
@@ -236,6 +489,7 @@ async function sampleMemory(base) {
       uptime: null,
       rssi: null,
       noMemoryFeatures: null,
+      featureStates: null,
       rtt: r.rtt,
       attempts: transientFailures.length,
       transientFailures,
@@ -244,7 +498,9 @@ async function sampleMemory(base) {
     };
   }
   const data = r.json.data;
-  const features = data.features || {};
+  const features = data.features && typeof data.features === 'object' && !Array.isArray(data.features)
+    ? data.features
+    : {};
   const noMemory = Object.values(features).filter(v => v === 'no-memory').length;
   const memory = data.memory || {};
   return {
@@ -255,6 +511,7 @@ async function sampleMemory(base) {
     uptime: Number(data.uptime || 0),
     rssi: data.rssi ?? null,
     noMemoryFeatures: noMemory,
+    featureStates: features,
     rtt: r.rtt,
     attempts: transientFailures.length + 1,
     transientFailures,
@@ -263,9 +520,17 @@ async function sampleMemory(base) {
 }
 
 // ─── 浏览器轮：登录 + 菜单遍历 + 错误采集 ─────────────
-async function browserRound(dev, context, base, menuDelay = MENU_DELAY_NORMAL, isAborted = () => false) {
+async function browserRound(
+  dev,
+  context,
+  base,
+  expectedMenus,
+  menuDelay = MENU_DELAY_NORMAL,
+  isAborted = () => false,
+) {
   const round = {
     login: { ok: false, ms: 0, error: null },
+    expectedMenus: uniqueMenus(expectedMenus),
     visibleMenus: [],
     menus: [],
     consoleErrors: [],
@@ -488,7 +753,7 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
     if (context && !browserHolder.browser.isConnected()) context = null;
     if (!context) {
       context = await browserHolder.browser.newContext({
-        viewport: { width: 1366, height: 800 },
+        viewport: OPTS.viewport,
         extraHTTPHeaders: { 'Accept-Language': 'zh-CN' },
       });
     }
@@ -553,6 +818,9 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
       // 上轮已出现 503 时才跳过一轮。这样受限设备仍有完整菜单覆盖。
       const heapNow = rec.mem?.freeHeap ?? Infinity;
       const maxAllocNow = rec.mem?.maxAlloc ?? Infinity;
+      const expectedMenus = Array.isArray(dev.expectedMenus)
+        ? [...dev.expectedMenus]
+        : expectedMenusFromFeatureStates(rec.mem?.featureStates);
       const gentle = heapNow < GENTLE_CYCLE_HEAP || maxAllocNow < GENTLE_CYCLE_MAX_ALLOC;
       if (rec.mem?.status503) {
         rec.skipped = 'system-status-503';
@@ -576,6 +844,7 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
               dev,
               ctx,
               probe.base,
+              expectedMenus,
               gentle ? MENU_DELAY_GENTLE : MENU_DELAY_NORMAL,
               () => cycleTimedOut,
             );
@@ -735,7 +1004,20 @@ function summarize(dev, cycles, events) {
   }
   const heaps = cycles.map(c => c.memAfter?.freeHeap ?? c.mem?.freeHeap).filter(v => Number.isFinite(v));
   const maxAllocs = cycles.map(c => c.memAfter?.maxAlloc ?? c.mem?.maxAlloc).filter(v => Number.isFinite(v));
-  const noMem = cycles.map(c => c.mem?.noMemoryFeatures).filter(v => Number.isFinite(v));
+  const noMemBefore = cycles.map(c => c.mem?.noMemoryFeatures).filter(v => Number.isFinite(v));
+  const noMemAfter = cycles.map(c => c.memAfter?.noMemoryFeatures).filter(v => Number.isFinite(v));
+  const noMemSamples = [...noMemBefore, ...noMemAfter];
+  const noMemPeak = noMemSamples.length ? Math.max(...noMemSamples) : null;
+  const lastCycle = cycles[total - 1];
+  const lastNoMemBefore = Number.isFinite(lastCycle?.mem?.noMemoryFeatures)
+    ? lastCycle.mem.noMemoryFeatures
+    : null;
+  const lastNoMemAfter = Number.isFinite(lastCycle?.memAfter?.noMemoryFeatures)
+    ? lastCycle.memAfter.noMemoryFeatures
+    : null;
+  const lastNoMemTransition = lastNoMemBefore !== null && lastNoMemAfter !== null
+    ? { before: lastNoMemBefore, after: lastNoMemAfter }
+    : null;
   const reboots = events.filter(e => e.type === 'reboot').length;
   const consoleErrs = rounds.flatMap(c => c.round.consoleErrors);
   const pageErrs = rounds.flatMap(c => c.round.pageErrors);
@@ -759,16 +1041,28 @@ function summarize(dev, cycles, events) {
   const menuSignatures = new Set(rounds
     .filter(c => c.round.login.ok)
     .map(c => [...(c.round.visibleMenus || [])].sort().join(',')));
+  const menuCoverage = rounds
+    .filter(c => c.round.login.ok)
+    .map(c => getCycleMenuCoverage(c, dev.expectedMenus));
+  const expectedMenuTotal = menuCoverage.reduce((count, coverage) => count + coverage.expected.length, 0);
+  const expectedMenuOk = menuCoverage.reduce((count, coverage) => count + coverage.successfulExpected.length, 0);
+  const menuSetMismatches = menuCoverage.filter(coverage =>
+    coverage.missing.length > 0 || coverage.unexpected.length > 0);
+  const expectedMenuFailures = menuCoverage.filter(coverage => coverage.failedExpected.length > 0);
+  const expectedFailedPages = [...new Set(expectedMenuFailures.flatMap(coverage => coverage.failedExpected))];
   return {
     total, online, probeRtts, mdnsHits, rounds, logins, loginMs, perPage,
-    menuAll, menuOk, menuMs, heaps, maxAllocs, noMem, reboots, events,
+    menuAll, menuOk, menuMs, heaps, maxAllocs, noMemBefore, noMemAfter,
+    noMemPeak, lastNoMemBefore, lastNoMemAfter, lastNoMemTransition,
+    reboots, events,
     consoleErrs, pageErrs, httpErrs, webguard503, domToasts, first, last, windowMs,
     skipped, cycleErrors, statusErrors, probeRetries, browserRetries,
     navigationRetries, interactionRetries, ignoredSession401,
-    ignoredNavigationAborts, menuSignatures,
+    ignoredNavigationAborts, menuSignatures, menuSetMismatches, expectedMenuFailures,
+    expectedMenuTotal, expectedMenuOk, expectedFailedPages,
     onlineRate: pct(online.length, total),
     loginRate: pct(logins.length, online.length),
-    menuRate: pct(menuOk.length, menuAll.length),
+    menuRate: pct(expectedMenuOk, expectedMenuTotal),
     lastHeap: heaps.length ? heaps[heaps.length - 1] : null,
     lastUptime: cycles[total - 1]?.memAfter?.uptime ?? cycles[total - 1]?.mem?.uptime ?? null,
     heapTrendDrop: trendDrop(heaps),
@@ -805,9 +1099,20 @@ function evaluateAcceptance(summaries) {
     const missingCore = s.rounds.filter(c => c.round.login.ok).flatMap(c =>
       ['dashboard', 'device'].filter(menu => !(c.round.visibleMenus || []).includes(menu)));
     if (missingCore.length) reasons.push(`${p}: ${missingCore.length} 次缺少 dashboard/device 基本菜单`);
+    if (s.menuSetMismatches.length) {
+      const first = s.menuSetMismatches[0];
+      reasons.push(`${p}: 菜单集合不匹配 ${s.menuSetMismatches.length} 次（cycle ${first.cycle}: 缺少 [${first.missing.join(', ')}]，多出 [${first.unexpected.join(', ')}]）`);
+    }
+    if (s.expectedMenuFailures.length) {
+      const first = s.expectedMenuFailures[0];
+      reasons.push(`${p}: 期望菜单未成功 ${s.expectedMenuFailures.length} 次（cycle ${first.cycle}: [${first.failedExpected.join(', ')}]）`);
+    }
     if (s.menuSignatures.size > 1) reasons.push(`${p}: 可见菜单集合在监测期间发生变化`);
     if (s.reboots) reasons.push(`${p}: 检测到 ${s.reboots} 次重启`);
     if (s.webguard503) reasons.push(`${p}: 检测到 ${s.webguard503} 次 WebGuard/system status 503`);
+    if (s.noMemPeak !== null && s.noMemPeak > 0) {
+      reasons.push(`${p}: 运行时 no-memory 峰值 ${s.noMemPeak}，监测期间发生功能内存降级`);
+    }
     if (s.httpErrs.length) reasons.push(`${p}: HTTP 4xx/5xx 或请求失败 ${s.httpErrs.length} 次`);
     if (s.consoleErrs.length) reasons.push(`${p}: console error ${s.consoleErrs.length} 条`);
     if (s.pageErrs.length) reasons.push(`${p}: pageerror ${s.pageErrs.length} 条`);
@@ -889,7 +1194,7 @@ function renderDeviceSection(dev, s) {
       L.push(`| ${p} | ${v.tries} | ${v.ok} | ${pct(v.ok, v.tries).toFixed(0)}% | ${fmtMs(avg)} | ${fmtMs(max)} |`);
     }
     L.push('');
-    L.push(`总体菜单通过率：**${s.menuRate.toFixed(1)}%**（${s.menuOk.length}/${s.menuAll.length}）`);
+    L.push(`总体期望菜单通过率：**${s.menuRate.toFixed(1)}%**（${s.expectedMenuOk}/${s.expectedMenuTotal}）`);
   } else {
     L.push('无菜单遍历数据（登录未成功或设备离线）。');
   }
@@ -902,13 +1207,31 @@ function renderDeviceSection(dev, s) {
     const min = Math.min(...s.heaps), max = Math.max(...s.heaps);
     const avg = s.heaps.reduce((a, b) => a + b, 0) / s.heaps.length;
     L.push(`- freeHeap：min **${(min / 1024).toFixed(1)}KB** / avg ${(avg / 1024).toFixed(1)}KB / 最新 ${(s.lastHeap / 1024).toFixed(1)}KB / max ${(max / 1024).toFixed(1)}KB`);
-    const noMemLast = s.noMem.length ? s.noMem[s.noMem.length - 1] : null;
-    if (noMemLast !== null) L.push(`- 因内存不足未加载的功能数（no-memory）：${noMemLast}`);
     if (s.maxAllocs.length) L.push(`- 最大连续块：最低 **${Math.min(...s.maxAllocs)}B** / 首尾窗口变化 ${Math.round(s.maxAllocTrendDrop)}B`);
     L.push(`- 内部 DRAM 首尾窗口变化：${Math.round(s.heapTrendDrop)}B（正数表示下降）`);
     if (s.lastUptime !== null) L.push(`- 当前 uptime：${(s.lastUptime / 3600000).toFixed(2)}h`);
   } else {
     L.push('无内存采样数据。');
+  }
+  if (s.total > 0) {
+    const beforePeak = s.noMemBefore.length ? Math.max(...s.noMemBefore) : null;
+    const afterPeak = s.noMemAfter.length ? Math.max(...s.noMemAfter) : null;
+    const beforeText = s.lastNoMemBefore === null
+      ? `周期前最新 无采样${beforePeak === null ? '' : `（历史峰值 ${beforePeak}）`}`
+      : `周期前最新 **${s.lastNoMemBefore}**（峰值 ${beforePeak}）`;
+    const afterText = s.lastNoMemAfter === null
+      ? `周期后最终 无采样${afterPeak === null ? '' : `（历史峰值 ${afterPeak}）`}`
+      : `周期后最终 **${s.lastNoMemAfter}**（峰值 ${afterPeak}）`;
+    const transition = s.lastNoMemTransition;
+    let transitionText = '';
+    if (transition) {
+      let outcome = '无变化';
+      if (transition.before > 0 && transition.after === 0) outcome = '已恢复';
+      else if (transition.after < transition.before) outcome = '部分恢复';
+      else if (transition.after > transition.before) outcome = '增加';
+      transitionText = ` / 最新成对采样 **${transition.before} → ${transition.after}（${outcome}）**`;
+    }
+    L.push(`- 运行时 no-memory：${beforeText} / ${afterText}${transitionText}`);
   }
   L.push('');
 
@@ -946,14 +1269,14 @@ function renderDeviceSection(dev, s) {
     else if (min < RISK_WATCH) risks.push(`🟡 freeHeap 最低 ${(min / 1024).toFixed(1)}KB 处于观察线 30KB 以下，内存紧张`);
   }
   if (s.webguard503 > 0) risks.push(`🟠 出现 ${s.webguard503} 次 WebGuard 503 拒绝（内存压力实证）`);
+  if (s.noMemPeak !== null && s.noMemPeak > 0) risks.push(`🔴 运行时 no-memory 峰值 ${s.noMemPeak}，发生功能内存降级`);
   if (s.skipped.length > 0) risks.push(`🟠 ${s.skipped.length} 个周期被降载跳过，浏览器覆盖不完整`);
   if (s.cycleErrors.length + s.statusErrors.length > 0) risks.push(`🟠 周期/状态采样错误 ${s.cycleErrors.length + s.statusErrors.length} 次`);
   if (s.httpErrs.length > 0) risks.push(`🟠 存在 ${s.httpErrs.length} 次 HTTP 4xx/5xx 或请求失败`);
   if (s.probeRetries + s.browserRetries + s.navigationRetries + s.interactionRetries > 0) risks.push('🟠 存在瞬时失败后重试，未达到无错误长期验收标准');
   if (s.online.length && s.loginRate < 100) risks.push(`🟠 登录通过率 ${s.loginRate.toFixed(1)}%，存在登录失败`);
-  if (s.menuAll.length && s.menuRate < 100) {
-    const fails = Object.entries(s.perPage).filter(([, v]) => v.ok < v.tries).map(([p, v]) => `${p}(${v.ok}/${v.tries})`);
-    risks.push(`🟠 菜单通过率 ${s.menuRate.toFixed(1)}%，失败页：${fails.join(', ')}`);
+  if (s.expectedMenuTotal > 0 && s.menuRate < 100) {
+    risks.push(`🟠 期望菜单通过率 ${s.menuRate.toFixed(1)}%，未成功页：${s.expectedFailedPages.join(', ')}`);
   }
   if (s.consoleErrs.length + s.pageErrs.length > 0) risks.push(`🟡 存在 ${s.consoleErrs.length + s.pageErrs.length} 条前端错误（详见错误日志）`);
   if (risks.length === 0) L.push('✅ 未发现风险项：在线率 100%、无重启、登录与菜单全通过、内存水位健康。');
@@ -963,7 +1286,7 @@ function renderDeviceSection(dev, s) {
   // 综合评级
   let grade = 'A（稳定）';
   if (s.onlineRate < 95 || s.reboots > 2 || s.loginRate < 80) grade = 'D（不稳定，需立即处理）';
-  else if ((s.heaps.length > 0 && Math.min(...s.heaps) < ACCEPT_MIN_HEAP) || s.onlineRate < 99 || s.reboots > 0 || s.loginRate < 95 || s.menuRate < 95 || s.cycleErrors.length > 0) grade = 'C（有明显风险）';
+  else if ((s.heaps.length > 0 && Math.min(...s.heaps) < ACCEPT_MIN_HEAP) || (s.noMemPeak !== null && s.noMemPeak > 0) || s.onlineRate < 99 || s.reboots > 0 || s.loginRate < 95 || s.menuRate < 95 || s.cycleErrors.length > 0) grade = 'C（有明显风险）';
   else if (s.onlineRate < 100 || s.menuRate < 100 || s.webguard503 > 0 || s.httpErrs.length > 0 || s.consoleErrs.length > 0 || s.pageErrs.length > 0 || s.skipped.length > 0 || s.probeRetries + s.browserRetries + s.navigationRetries + s.interactionRetries > 0) grade = 'B（基本稳定，存在间歇性问题）';
   L.push(`**综合评级：${grade}**`);
   L.push('');
@@ -983,15 +1306,27 @@ async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   fs.writeFileSync(path.join(OUT_DIR, 'run-metadata.json'), JSON.stringify({
     startedAt: nowIso(),
-    devices: DEVICES_ACTIVE.map(d => ({ label: d.label, model: d.model, host: d.host })),
+    deviceConfig: OPTS.deviceConfig,
+    devices: DEVICES_ACTIVE.map(d => ({
+      label: d.label,
+      model: d.model,
+      host: d.host,
+      ip: d.ip || d.ips[0],
+      domain: d.domain || '',
+      profile: d.profile || '',
+      serial: d.serial || '',
+      expectedMenus: Array.isArray(d.expectedMenus) ? d.expectedMenus : null,
+    })),
     intervalSeconds: OPTS.interval,
     maxCycles: OPTS.maxCycles,
     minDurationHours: OPTS.minDurationHours,
     cycleTimeoutMs: OPTS.cycleTimeout,
+    viewport: OPTS.viewport,
   }, null, 2), 'utf8');
 
   log(`═══ 舰队长期稳定性监测启动 ═══ 设备=${DEVICES_ACTIVE.map(d => d.label).join(', ')} 间隔=${OPTS.interval}s 最大周期=${OPTS.maxCycles || '∞'}`);
 
+  const { chromium } = await import('playwright');
   const browserHolder = { browser: await chromium.launch({ headless: true }) };
   const stopFlag = { value: false };
   let finished = false;

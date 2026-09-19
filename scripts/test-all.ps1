@@ -59,6 +59,7 @@ $psExe = if ($IsWin) { "powershell" } else { "pwsh" }
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $script:RootBoundParameters = @{} + $PSBoundParameters
 Set-Location $ProjectDir
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 # 非 Windows 平台规范化路径分隔符
 if (-not $IsWin) {
@@ -433,6 +434,16 @@ if ($requestedDeviceChecks.Count -gt 0) {
 }
 
 Write-Host "FastBee test matrix" -ForegroundColor Green
+$lockChecks = @("static", "native", "build", "artifacts")
+$requiresFirmwareLock = @($Checks | Where-Object { $_ -in $lockChecks }).Count -gt 0
+$firmwareLock = $null
+if ($requiresFirmwareLock) {
+    $firmwareLock = Enter-FastBeeFirmwareBuildLock `
+        -ProjectRoot $ProjectDir `
+        -Label "test-all:$($Checks -join ',')" `
+        -Environment ($Environments -join ",")
+}
+try {
 Write-Host "  Checks       : $($Checks -join ', ')"
 Write-Host "  Environments : $($Environments -join ', ')"
 Write-Host "  Device       : $BaseUrl ($DeviceProfile)"
@@ -482,3 +493,9 @@ if ($failed.Count -gt 0) {
 }
 
 Write-Host "Test matrix passed: $($Results.Count) step(s)." -ForegroundColor Green
+}
+finally {
+    if ($null -ne $firmwareLock) {
+        Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+    }
+}

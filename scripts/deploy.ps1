@@ -28,6 +28,7 @@ $IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
+. (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
 
 $script:PioLogRunId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss-fff"), $PID
 $script:PioLogSequence = 0
@@ -132,18 +133,18 @@ function Kill-StaleProcesses {
     }
 }
 
-Kill-StaleProcesses
-
-# 清理 native 测试产物（防止 .pio/build/native/program 被锁定
-# 导致 PlatformIO 无法清理构建目录，报 WinError 5 拒绝访问）
-$nativeDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") "native"
-if (Test-Path -LiteralPath $nativeDir -PathType Container) {
-    Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
-    # 如果删除失败（文件被杀毒软件/索引服务锁定），等待后重试
+function Clear-NativeBuildOutput {
+    # 清理 native 测试产物（防止 .pio/build/native/program 被锁定
+    # 导致 PlatformIO 无法清理构建目录，报 WinError 5 拒绝访问）
+    $nativeDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") "native"
     if (Test-Path -LiteralPath $nativeDir -PathType Container) {
-        Write-Host "  Waiting 3s for native build dir lock to release..." -ForegroundColor Yellow
-        Start-Sleep -Seconds 3
         Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
+        # 如果删除失败（文件被杀毒软件/索引服务锁定），等待后重试
+        if (Test-Path -LiteralPath $nativeDir -PathType Container) {
+            Write-Host "  Waiting 3s for native build dir lock to release..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+            Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -463,6 +464,62 @@ function Add-UploadPort {
     return $Arguments + @("--upload-port", $Port)
 }
 
+function Test-NonEmptyBuildArtifact {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    return (Get-Item -LiteralPath $Path).Length -gt 0
+}
+
+function Repair-RequestedBuildArtifacts {
+    param(
+        [string]$BuildEnv,
+        [bool]$RequireFilesystem,
+        [bool]$RequireFirmware
+    )
+
+    $buildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") $BuildEnv
+    $filesystemPath = Join-Path $buildDir "littlefs.bin"
+    $firmwarePath = Join-Path $buildDir "firmware.bin"
+
+    # buildfs runs before the application build. A clean-rebuild retry of the
+    # latter can therefore delete littlefs.bin, while the filesystem archive
+    # may still contain a factory image merged with an older firmware.bin.
+    # Refresh buildfs after firmware and repeat the bounded repair if either
+    # stage had to clean the shared environment directory.
+    $refreshFilesystem = $RequireFilesystem -and $RequireFirmware
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $firmwareMissing = $RequireFirmware -and -not (Test-NonEmptyBuildArtifact -Path $firmwarePath)
+        if ($firmwareMissing) {
+            Write-Host "[Artifacts] Rebuilding missing firmware.bin (attempt $attempt/3)..." -ForegroundColor Yellow
+            Invoke-FastBeePioBuild -Arguments @("run", "-e", $BuildEnv)
+            if ($RequireFilesystem) { $refreshFilesystem = $true }
+        }
+
+        $filesystemMissing = $RequireFilesystem -and -not (Test-NonEmptyBuildArtifact -Path $filesystemPath)
+        if ($filesystemMissing -or $refreshFilesystem) {
+            $reason = if ($filesystemMissing) { "missing littlefs.bin" } else { "refreshing factory image with current firmware" }
+            Write-Host "[Artifacts] $reason (attempt $attempt/3)..." -ForegroundColor DarkGray
+            Invoke-FastBeePioBuild -Arguments @("run", "-e", $BuildEnv, "--target", "buildfs")
+            $refreshFilesystem = $false
+        }
+
+        $firmwareReady = -not $RequireFirmware -or (Test-NonEmptyBuildArtifact -Path $firmwarePath)
+        $filesystemReady = -not $RequireFilesystem -or (Test-NonEmptyBuildArtifact -Path $filesystemPath)
+        if ($firmwareReady -and $filesystemReady -and -not $refreshFilesystem) {
+            Write-Host "[Artifacts] Requested firmware/filesystem artifacts are complete." -ForegroundColor Green
+            return
+        }
+    }
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    if ($RequireFirmware -and -not (Test-NonEmptyBuildArtifact -Path $firmwarePath)) { $missing.Add("firmware.bin") }
+    if ($RequireFilesystem -and -not (Test-NonEmptyBuildArtifact -Path $filesystemPath)) { $missing.Add("littlefs.bin") }
+    throw "Build artifact repair did not converge for $BuildEnv; missing: $($missing -join ', ')"
+}
+
 function Test-DeviceWebAssets {
     param([string]$Address)
 
@@ -536,6 +593,14 @@ if ($VerifyWeb -and $BuildOnly) {
     throw "-VerifyWeb requires an uploaded device; remove -BuildOnly."
 }
 
+$firmwareLock = Enter-FastBeeFirmwareBuildLock `
+    -ProjectRoot $ProjectDir `
+    -Label "deploy" `
+    -Environment $Env `
+    -Port $Port
+try {
+Kill-StaleProcesses
+Clear-NativeBuildOutput
 Initialize-PlatformIoDataDir
 
 if (-not $SkipDoctor) {
@@ -601,8 +666,17 @@ if (-not $SkipFirmware) {
     }
 }
 
+Repair-RequestedBuildArtifacts `
+    -BuildEnv $Env `
+    -RequireFilesystem (-not $SkipFs) `
+    -RequireFirmware (-not $SkipFirmware)
+
 Write-Host ""
 Write-Host "Deploy step completed." -ForegroundColor Green
+}
+finally {
+    Exit-FastBeeFirmwareBuildLock -Handle $firmwareLock
+}
 
 if ($VerifyWeb -and -not $BuildOnly) {
     Test-DeviceWebAssets -Address $DeviceIP

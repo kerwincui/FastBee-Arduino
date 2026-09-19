@@ -5,7 +5,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { createWebAssetReport } = require('./web-asset-report');
 const {
-    DEFAULT_WEB_ASSET_BUDGETS,
+    resolveWebAssetBudgets,
     evaluateWebAssetReport
 } = require('./web-quality-gate');
 const {
@@ -196,9 +196,9 @@ function checkUiRegressionGuards(files, manifest) {
 
     assert(!peripheralsCore.includes('/api/boards/profiles') && !peripheralsCore.includes('/api/peripherals/resources'),
         'board/resource APIs must stay out of the peripherals core');
-    assert(peripheralsCore.includes("ModuleLoader.loadModule('peripheral-save',run)"),
+    assert(/ModuleLoader\.loadModule\(["']peripheral-save["'],[A-Za-z_$][\w$]*\)/.test(peripheralsCore),
         'peripheral save/preflight module must be loaded on demand');
-    assert(peripheralsCore.includes("ModuleLoader.loadModule('peripheral-io',run)"),
+    assert(/ModuleLoader\.loadModule\(["']peripheral-io["'],[A-Za-z_$][\w$]*\)/.test(peripheralsCore),
         'peripheral diagnostics module must be loaded on demand');
     assert(peripheralSave.includes('/api/peripherals/preflight'),
         'peripheral save module preflight API coverage missing');
@@ -305,9 +305,9 @@ function checkPaginationRegressionGuards(files) {
     assert(allJs.includes('totalPages') || allJs.includes('Math.ceil'), 'pagination page calculation logic missing');
 }
 
-function checkAssetBudgets() {
+function checkAssetBudgets(manifest) {
     const report = createWebAssetReport({ topN: 999 });
-    evaluateWebAssetReport(report, DEFAULT_WEB_ASSET_BUDGETS).forEach((issue) => assert(false, issue));
+    evaluateWebAssetReport(report, resolveWebAssetBudgets(manifest)).forEach((issue) => assert(false, issue));
 }
 
 function checkFirstPaintPath(manifest) {
@@ -850,7 +850,7 @@ function run() {
     checkWifiSecurityRegressionGuards();
     checkRoleManagementRemoved();
     checkDeveloperModeAndModalEventBinding();
-    checkAssetBudgets();
+    checkAssetBudgets(manifest);
     checkFirstPaintPath(manifest);
 
     if (failures.length > 0) {

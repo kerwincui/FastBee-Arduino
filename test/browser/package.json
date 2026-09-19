@@ -8,6 +8,7 @@
     "test:smoke": "npx playwright test -c playwright.device.config.ts",
     "test:device": "npx playwright test -c playwright.device.config.ts",
     "test:offline-ui": "playwright test -c playwright.offline-ui.config.ts",
+    "test:offline-matrix": "playwright test -c playwright.offline-ui.config.ts --grep WEB-MATRIX-",
     "test:core": "npx playwright test --project=core",
     "test:features": "npx playwright test --project=features",
     "test:perf": "npx playwright test --project=perf",

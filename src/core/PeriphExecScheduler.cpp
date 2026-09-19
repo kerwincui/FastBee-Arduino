@@ -117,11 +117,11 @@ void PeriphExecScheduler::initialize(PeriphExecManager* manager, PeriphExecExecu
 void PeriphExecScheduler::validateLoadedConfig() {
     if (!_manager) return;
 
-    auto& rulesMap = _manager->getRules();
+    const auto& rulesMap = _manager->getRules();
 
     // 统计活跃定时/轮询任务数（enabled 且触发类型为 TIMER 或 POLL）
-    uint8_t activeTimerTaskCount = 0;
-    for (auto& kv : rulesMap) {
+    size_t activeTimerTaskCount = 0;
+    for (const auto& kv : rulesMap) {
         if (!kv.second.enabled) continue;
         for (const auto& trigger : kv.second.triggers) {
             if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER) ||
@@ -134,58 +134,56 @@ void PeriphExecScheduler::validateLoadedConfig() {
 
     // 校验活跃任务数上限
     if (activeTimerTaskCount > MAX_ACTIVE_TASKS) {
-        LOGGER.warningf("[WARN] Active timer/poll tasks (%d) exceeds max (%d), "
+        LOGGER.warningf("[WARN] Active timer/poll tasks (%u) exceeds max (%u), "
                         "excess rules may cause resource pressure",
-                        activeTimerTaskCount, MAX_ACTIVE_TASKS);
+                        static_cast<unsigned int>(activeTimerTaskCount), MAX_ACTIVE_TASKS);
     } else if (activeTimerTaskCount > WARN_TASK_THRESHOLD) {
-        LOGGER.warningf("[WARN] High number of active timer/poll tasks: %d (threshold=%d)",
-                        activeTimerTaskCount, WARN_TASK_THRESHOLD);
+        LOGGER.warningf("[WARN] High number of active timer/poll tasks: %u (threshold=%u)",
+                        static_cast<unsigned int>(activeTimerTaskCount), WARN_TASK_THRESHOLD);
     }
 
-    // 遍历所有规则，校验并修正危险的轮询间隔
-    bool configModified = false;
-    for (auto& kv : rulesMap) {
+    // Manager 是间隔规范化的唯一写入方。Scheduler 只诊断，不得在运行期
+    // 改写配置，否则文件/API 回显与实际调度值会产生分叉。
+    for (const auto& kv : rulesMap) {
         if (!kv.second.enabled) continue;
 
-        for (auto& trigger : kv.second.triggers) {
-            if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER) &&
-                trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+        for (const auto& trigger : kv.second.triggers) {
+            const bool isTimer =
+                trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER);
+            const bool isPoll =
+                trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER);
+            if (!isTimer && !isPoll) continue;
+
+            const uint32_t minimumSec =
+                isPoll ? MIN_POLL_INTERVAL_SEC : MIN_TIMER_INTERVAL_SEC;
+            if (trigger.intervalSec < minimumSec ||
+                trigger.intervalSec > MAX_INTERVAL_SEC) {
+                LOGGER.warningf(
+                    "[WARN] Non-canonical %s interval (%lus) for rule '%s'; "
+                    "expected %lu..%lus. Manager persistence must normalize it",
+                    isPoll ? "poll" : "timer",
+                    static_cast<unsigned long>(trigger.intervalSec),
+                    kv.second.name.c_str(),
+                    static_cast<unsigned long>(minimumSec),
+                    static_cast<unsigned long>(MAX_INTERVAL_SEC));
                 continue;
             }
 
-            uint32_t intervalMs = static_cast<uint32_t>(trigger.intervalSec) * 1000UL;
-
-            // 绝对下限：轮询间隔 < 5s 强制修正为 5s
-            if (intervalMs < MIN_POLL_INTERVAL_MS) {
-                LOGGER.warningf("[WARN] Poll interval too low (%lus) for rule '%s', "
-                                "forced to %lus (absolute minimum)",
-                                (unsigned long)trigger.intervalSec,
-                                kv.second.name.c_str(),
-                                (unsigned long)(MIN_POLL_INTERVAL_MS / 1000));
-                trigger.intervalSec = MIN_POLL_INTERVAL_MS / 1000;
-                configModified = true;
-            }
-            // 危险组合：活跃任务 > 8 且轮询间隔 < 10s
-            else if (activeTimerTaskCount > WARN_TASK_THRESHOLD &&
-                     intervalMs < 10000) {
-                LOGGER.warningf("[WARN] Poll interval too aggressive (%lus with %d tasks) "
-                                "for rule '%s', adjusted to 30s",
-                                (unsigned long)trigger.intervalSec,
-                                activeTimerTaskCount,
-                                kv.second.name.c_str());
-                trigger.intervalSec = SAFE_POLL_INTERVAL_MS / 1000;
-                configModified = true;
+            if (activeTimerTaskCount > WARN_TASK_THRESHOLD &&
+                trigger.intervalSec < AGGRESSIVE_INTERVAL_WARN_SEC) {
+                LOGGER.warningf(
+                    "[WARN] Aggressive %s interval (%lus) with %u active tasks "
+                    "for rule '%s'; value preserved, adjust the saved rule explicitly if needed",
+                    isPoll ? "poll" : "timer",
+                    static_cast<unsigned long>(trigger.intervalSec),
+                    static_cast<unsigned int>(activeTimerTaskCount),
+                    kv.second.name.c_str());
             }
         }
     }
 
-    if (configModified) {
-        LOGGER.info("[PeriphExec] Config auto-corrected for safety, "
-                    "changes apply to runtime only (file unchanged)");
-    }
-
-    LOGGER.infof("[PeriphExec] Config validation complete: %d active timer/poll tasks",
-                 activeTimerTaskCount);
+    LOGGER.infof("[PeriphExec] Config validation complete: %u active timer/poll tasks",
+                 static_cast<unsigned int>(activeTimerTaskCount));
 }
 
 // ========== 定时触发 ==========
@@ -328,11 +326,13 @@ void PeriphExecScheduler::checkTimers() {
     // 预先获取 ModbusHandler 状态（避免在锁内调用）
     bool modbusAvailable = false;
 #if FASTBEE_ENABLE_MODBUS
+    ProtocolManager::ModbusHandlerLease modbusLease;
     ModbusHandler* modbus = nullptr;
     if (fw) {
         auto* protMgr = fw->getProtocolManager();
         if (protMgr) {
-            modbus = protMgr->getModbusHandler();
+            modbusLease = protMgr->acquireModbusHandler(pdMS_TO_TICKS(100));
+            modbus = modbusLease.get();
             modbusAvailable = (modbus != nullptr && modbus->getMode() == MODBUS_MASTER);
         }
     }
@@ -632,8 +632,8 @@ bool PeriphExecScheduler::tryReportDeviceData() {
 void PeriphExecScheduler::checkButtonEvents() {
     unsigned long now = millis();
 
-    // 每 50ms 检测一次按键状态（与任务间隔一致）
-    if (now - _lastButtonCheck < 50) return;
+    // Provider sampling is task based; no I2C transaction runs in a GPIO ISR.
+    if (now - _lastButtonCheck < 20) return;
     _lastButtonCheck = now;
 
     PeripheralManager& pm = PeripheralManager::getInstance();
@@ -652,7 +652,7 @@ void PeriphExecScheduler::checkButtonEvents() {
         if (!config.enabled) return;
         if (!isGpioDigitalInputType(config.type)) return;
 
-        const bool isButton = supportsButtonEvent(config.type);
+        const bool isButton = supportsButtonEvent(config.type) || config.isExpanderChannel();
 
         uint8_t inputMode = config.params.gpio.inputMode;
         if (inputMode == static_cast<uint8_t>(DigitalInputMode::AUTO)) {
@@ -662,24 +662,33 @@ void PeriphExecScheduler::checkButtonEvents() {
                                 ? static_cast<uint8_t>(DigitalInputMode::PULL_DOWN)
                                 : static_cast<uint8_t>(DigitalInputMode::FLOATING);
         }
-        bool idleLevel = inputMode == static_cast<uint8_t>(DigitalInputMode::PULL_UP);
+        bool idleLevel = config.isExpanderChannel() ||
+                         inputMode == static_cast<uint8_t>(DigitalInputMode::PULL_UP);
         if (config.params.gpio.invertLogic) idleLevel = !idleLevel;
-        const uint16_t debounceMs = effectiveDigitalInputDebounceMs(config.params.gpio.debounceMs);
+        const uint16_t debounceMs = config.isExpanderChannel() && config.params.gpio.debounceMs == 0
+            ? 40 : effectiveDigitalInputDebounceMs(config.params.gpio.debounceMs);
 
         // 读取当前按键状态
         GPIOState gpioState = pm.readPin(config.id);
-        if (gpioState == GPIOState::STATE_UNDEFINED) return;
+        if (gpioState == GPIOState::STATE_UNDEFINED) {
+            if (config.isExpanderChannel()) _buttonStates.erase(config.id);
+            return;
+        }
 
         bool currentLevel = (gpioState == GPIOState::STATE_HIGH);
         // 获取或创建状态。普通 DI 首次采样只建立基线；按键以空闲电平
         // 为基线，使上电时已按下仍能在稳定一个 debounce 窗口后产生 PRESS。
         auto stateIt = _buttonStates.find(config.id);
+        const uint32_t generation = pm.digitalInputGeneration(config);
         if (stateIt == _buttonStates.end() ||
+            (config.isExpanderChannel() && stateIt->second.sourceGeneration != generation) ||
             (isButton && stateIt->second.idleLevel != idleLevel)) {
             ButtonRuntimeState state;
+            state.sourceGeneration = generation;
+            state.awaitIdle = config.isExpanderChannel() && currentLevel != idleLevel;
             state.periphId = config.id;
             state.idleLevel = idleLevel;
-            state.lastState = isButton ? idleLevel : currentLevel;
+            state.lastState = isButton && !config.isExpanderChannel() ? idleLevel : currentLevel;
             state.currentState = currentLevel;
             state.lastChangeTime = now;
             _buttonStates[config.id] = state;
@@ -693,6 +702,15 @@ void PeriphExecScheduler::checkButtonEvents() {
         if (currentLevel != btnState.currentState) {
             btnState.currentState = currentLevel;
             btnState.lastChangeTime = now;
+            return;
+        }
+
+        if (btnState.awaitIdle) {
+            if (currentLevel == btnState.idleLevel &&
+                now - btnState.lastChangeTime >= debounceMs) {
+                btnState.awaitIdle = false;
+                btnState.lastState = currentLevel;
+            }
             return;
         }
 
@@ -1070,7 +1088,8 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
 
     // 检查 Modbus 状态（使用 bool 方法替代字符串分配）
 #if FASTBEE_ENABLE_MODBUS
-    ModbusHandler* modbus = protocolMgr->getModbusHandler();
+    auto modbusLease = protocolMgr->acquireModbusHandler(pdMS_TO_TICKS(100));
+    ModbusHandler* modbus = modbusLease.get();
     if (modbus && modbus->isRunning()) {
         connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
         hasConnectedProtocol = true;

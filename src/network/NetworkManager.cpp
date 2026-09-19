@@ -140,6 +140,8 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       , _bootStaRetryScanState(BootStaRetryScanState::IDLE)
       , _bootStaRetryScanStartedAt(0)
       , _bootStaRetryCandidateCount(0)
+      , _consecutiveAuthFailures(0)
+      , _authRetryCooldownMs(0)
       , _staDisconnectedSince(0)
 {
     
@@ -160,6 +162,9 @@ FBNetworkManager::~FBNetworkManager() {
 }
 
 void FBNetworkManager::setWiFiCredentials(const String& ssid, const String& password) {
+    if (wifiConfig.staSSID != ssid || wifiConfig.staPassword != password) {
+        resetStaAuthBackoff();
+    }
     wifiConfig.staSSID = ssid;
     wifiConfig.staPassword = password;
     wifiConfig.mode = NetworkMode::NETWORK_STA;  // 强制使用 STA 模式
@@ -181,6 +186,7 @@ bool FBNetworkManager::initialize() {
     resetApModeWifiProbe();
     _bootConnectRetries = 0;
     resetBootStaRetryScan();
+    resetStaAuthBackoff();
 
     // 初始化Preferences（独立 namespace，避免与 ConfigStorage 的 "fastbee" 冲突）
     if (!preferences.begin("net_cfg", false)) {
@@ -533,6 +539,7 @@ void FBNetworkManager::disconnect() {
     connectingStartTime = 0;
     resetApModeWifiProbe();
     resetBootStaRetryScan();
+    resetStaAuthBackoff();
     
     // 重置状态信息
     statusInfo = NetworkStatusInfo();
@@ -552,7 +559,38 @@ void FBNetworkManager::resetBootStaRetryScan() {
     _bootStaRetryCandidateCount = 0;
 }
 
+void FBNetworkManager::resetStaAuthBackoff() {
+    _consecutiveAuthFailures = 0;
+    _authRetryCooldownMs = 0;
+}
+
+void FBNetworkManager::updateStaAuthBackoff() {
+    const uint8_t reason = wifiManager ? wifiManager->getLastDisconnectReason() : 0;
+    if (!WiFiRetryPolicy::isAuthOrAssociationFailure(reason)) {
+        resetStaAuthBackoff();
+        return;
+    }
+
+    if (_consecutiveAuthFailures < UINT8_MAX) {
+        ++_consecutiveAuthFailures;
+    }
+    _authRetryCooldownMs =
+        WiFiRetryPolicy::authFailureCooldownMs(_consecutiveAuthFailures);
+
+    if (_authRetryCooldownMs == 0) {
+        Serial.printf("[NET] STA auth/association failure reason=%u streak=%u; preserving one fast retry\n",
+                      (unsigned int)reason,
+                      (unsigned int)_consecutiveAuthFailures);
+    } else {
+        Serial.printf("[NET] STA auth/association failure reason=%u streak=%u; cooling down %lums\n",
+                      (unsigned int)reason,
+                      (unsigned int)_consecutiveAuthFailures,
+                      _authRetryCooldownMs);
+    }
+}
+
 void FBNetworkManager::launchBootStaRetryConnection() {
+    wifiManager->clearLastDisconnectReason();
     const bool usePinnedCandidate =
         _bootConnectRetries >= 2 && _bootStaRetryCandidateCount > 1;
     if (usePinnedCandidate) {
@@ -582,9 +620,15 @@ void FBNetworkManager::startBootStaRetryScan() {
     // for ~750ms before the scan even started.
     _bootStaRetryCandidateCount = 0;
     _bootStaRetryScanStartedAt = millis();
-    _bootStaRetryScanState = BootStaRetryScanState::DRIVER_NULL_SETTLE;
     _bootStaRetryScanInProgress = true;
     WiFi.mode(WIFI_MODE_NULL);
+    if (_authRetryCooldownMs > 0) {
+        _bootStaRetryScanState = BootStaRetryScanState::AUTH_COOLDOWN;
+        Serial.printf("[NET] STA retry radio cooldown started (%lums)\n",
+                      _authRetryCooldownMs);
+        return;
+    }
+    _bootStaRetryScanState = BootStaRetryScanState::DRIVER_NULL_SETTLE;
     Serial.println("[NET] Async boot retry driver reset started");
 }
 
@@ -592,6 +636,17 @@ void FBNetworkManager::handleBootStaRetryScan() {
     if (!_bootStaRetryScanInProgress) return;
 
     const unsigned long now = millis();
+
+    if (_bootStaRetryScanState == BootStaRetryScanState::AUTH_COOLDOWN) {
+        if (now - _bootStaRetryScanStartedAt < _authRetryCooldownMs) return;
+        if (!WiFi.mode(WIFI_MODE_STA)) {
+            LOG_WARNING("NetworkManager: STA driver restart after auth cooldown reported failure");
+        }
+        _bootStaRetryScanState = BootStaRetryScanState::DRIVER_STA_SETTLE;
+        _bootStaRetryScanStartedAt = now;
+        Serial.println("[NET] STA auth cooldown complete; asynchronous candidate scan resuming");
+        return;
+    }
 
     if (_bootStaRetryScanState == BootStaRetryScanState::DRIVER_NULL_SETTLE) {
         if (now - _bootStaRetryScanStartedAt < 250UL) return;
@@ -1021,6 +1076,7 @@ void FBNetworkManager::update() {
         _staDisconnectedSince = 0;  // 重连成功，清零长时间失联看门狗计时
         resetGatewayWatchdog();     // 重连成功，清零数据面连通性看门狗
         _bootConnectRetries = 0;    // 连接成功，清零开机重试计数
+        resetStaAuthBackoff();      // successful association clears auth cooldown
         
         // 重新启动mDNS以更新IP绑定
         if (shouldRunMDNS()) {
@@ -1070,7 +1126,15 @@ void FBNetworkManager::update() {
 
     // 网关 ICMP 使用会话内成功基线做自适应判断。完全不响应 echo 的路由器始终
     // 只告警；已经成功过、随后连续多轮无回包，才视为 WiFi 僵尸关联并重连 STA。
-    if (!connecting &&
+    auto* gatewayFw = FastBeeFramework::getInstance();
+    auto* gatewayWeb = gatewayFw ? gatewayFw->getWebConfigManager() : nullptr;
+    const bool deferGatewayProbeForWeb =
+        gatewayWeb && gatewayWeb->isForegroundRequestActive();
+    if (deferGatewayProbeForWeb) {
+        // Static-file bursts can delay or drop ICMP while TCP is healthy.
+        // Require a complete quiet interval before the next gateway probe.
+        _lastGwProbeTime = currentTime;
+    } else if (!connecting &&
         isConnected &&
         wifiConfig.mode == NetworkMode::NETWORK_STA &&
         statusInfo.status == NetworkStatus::CONNECTED &&
@@ -1138,6 +1202,7 @@ void FBNetworkManager::update() {
                       (unsigned long)bootConnectTimeout);
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
+        updateStaAuthBackoff();
 
 #if FASTBEE_WEB_START_EARLY
         // 开机重试：单次超时不立即回退 AP。同名 SSID 多 AP 环境下首次关联常
@@ -1231,6 +1296,9 @@ void FBNetworkManager::update() {
             );
             if (!wifiConfig.autoFailover) {
                 backoffInterval = max(backoffInterval, STA_ONLY_RETRY_INTERVAL_MS);
+            }
+            if (_authRetryCooldownMs > 0) {
+                backoffInterval = max(backoffInterval, _authRetryCooldownMs);
             }
             if (currentTime - lastReconnectAttempt >= backoffInterval) {
                 attemptReconnect();
@@ -2856,6 +2924,7 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
     if (effectiveConfig.mode != wifiConfig.mode ||
         effectiveConfig.apSSID != wifiConfig.apSSID ||
         effectiveConfig.staSSID != wifiConfig.staSSID ||
+        effectiveConfig.staPassword != wifiConfig.staPassword ||
         effectiveConfig.ipConfigType != wifiConfig.ipConfigType ||
         effectiveConfig.networkType != wifiConfig.networkType ||
         effectiveConfig.ethernet.spiMosi != wifiConfig.ethernet.spiMosi ||
@@ -2906,6 +2975,11 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
             return false;
         }
         LOG_INFO("NetworkManager: Configuration saved successfully");
+    }
+
+    if (effectiveConfig.staSSID != previousConfig.staSSID ||
+        effectiveConfig.staPassword != previousConfig.staPassword) {
+        resetStaAuthBackoff();
     }
     
     // mDNS 配置变更：如果已有设备重启调度，跳过 mDNS 运行时重启（重启后 mDNS 会自动初始化）
