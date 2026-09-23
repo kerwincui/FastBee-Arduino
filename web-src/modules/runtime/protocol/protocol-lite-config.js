@@ -7,7 +7,6 @@
         _protocolFragmentMap: {
             'mqtt': { container: 'mqtt-fragment-container', fragment: 'protocol-mqtt' },
             'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' },
-            'remote-resources': { container: 'remote-resources-fragment-container', fragment: 'protocol-remote-resources' }
         },
 
         _loadFullProtocolConfig: function(tabId, options) {
@@ -48,9 +47,9 @@
         },
 
         loadProtocolConfig: function(tabId, options) {
-            if (tabId === 'remote-resources' && typeof this._loadRemoteResourcesTab === 'function') {
-                if (typeof this._stopMqttStatusPolling === 'function') this._stopMqttStatusPolling();
-                return this._loadRemoteResourcesTab(options);
+            if (tabId === 'remote-resources') {
+                this.changePage('screen-panel');
+                return Promise.resolve();
             }
             if (tabId !== 'mqtt') {
                 return this._loadFullProtocolConfig(tabId, options);

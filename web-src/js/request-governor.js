@@ -24,6 +24,12 @@
     const MEMORY_PRESSURE_NOTICE_COOLDOWN_MS = 5000;
     var lastMemoryPressureNoticeAt = 0;
 
+    function pageAbortError() {
+        var error = new Error('Request cancelled by page navigation');
+        error._pageAborted = true;
+        return error;
+    }
+
     // FASTBEE_WEB_PROFILE_REQUEST_LIMITS_START
     const WEB_PROFILE_REQUEST_LIMITS = Object.freeze({
         maxConcurrent: 2,
@@ -85,7 +91,6 @@
         const controller = new AbortController();
         const externalSignal = options.signal;
         var timedOut = false;
-        var externallyAborted = false;
         const timer = setTimeout(function () {
             timedOut = true;
             controller.abort();
@@ -95,7 +100,6 @@
         // page-lifetime signal.  Keep the two causes separate so a timeout is
         // not mistaken for a navigation cancellation by page modules.
         var onExternalAbort = function () {
-            externallyAborted = true;
             controller.abort();
         };
         if (externalSignal) {
@@ -109,9 +113,8 @@
         return fetch(url, fetchOptions)
             .catch(function (err) {
                 if (requestContext && requestContext.pageAborted) {
-                    var pageErr = new Error('Request cancelled by page navigation');
+                    var pageErr = pageAbortError();
                     pageErr.name = 'AbortError';
-                    pageErr._pageAborted = true;
                     pageErr.cause = err;
                     throw pageErr;
                 }
@@ -125,7 +128,6 @@
                 }
                 // An externally supplied signal that is not owned by a page is
                 // still a normal AbortError; preserve it for the caller.
-                if (externallyAborted) throw err;
                 throw err;
             })
             .finally(function () {
@@ -424,16 +426,16 @@
     function describeApiError(err, fallback) {
         if (err && err._pageAborted) return '';
         if (err && err._handled) return '';
-        if (err && err.name === 'AbortError') return '\u8bf7\u6c42\u8d85\u65f6\uff0c\u8bbe\u5907\u53ef\u80fd\u6b63\u5fd9\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
+        if (err && err.name === 'AbortError') return '请求超时，设备可能正忙，请稍后重试';
         if (err && err.status === 503 && isMemoryPressure503(err.data)) {
             return memoryPressureNotice(err.data);
         }
-        if (err && err.status === 503) return '\u8bbe\u5907\u8d44\u6e90\u7d27\u5f20\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
-        if (err && err.status === 504) return '\u8bbe\u5907\u54cd\u5e94\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
+        if (err && err.status === 503) return '设备资源紧张，请稍后重试';
+        if (err && err.status === 504) return '设备响应超时，请稍后重试';
         if (err instanceof TypeError || (err && err.message && /fetch/i.test(err.message))) {
-            return '\u8bbe\u5907\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u540e\u91cd\u8bd5';
+            return '设备连接失败，请检查网络后重试';
         }
-        return fallback || '\u8bf7\u6c42\u5931\u8d25';
+        return fallback || '请求失败';
     }
 
     var Governor = {
@@ -465,7 +467,6 @@
         BATCH_WINDOW_MS: 25,
 
         enqueue: function (method, path, options, timeoutMs) {
-            var self = this;
             options = options || {};
 
             var params = options.params || {};
@@ -515,13 +516,18 @@
                 seq: (++this._seq)
             });
 
-            this._dedupMap[dedupKey] = promise;
-            promise.then(
-                function () { delete self._dedupMap[dedupKey]; },
-                function () { delete self._dedupMap[dedupKey]; }
-            );
-
+            this._trackRequest(dedupKey, promise);
             this._drain();
+            return promise;
+        },
+
+        _trackRequest: function (key, promise) {
+            var pending = this._dedupMap;
+            pending[key] = promise;
+            var cleanup = function () {
+                if (pending[key] === promise) delete pending[key];
+            };
+            promise.then(cleanup, cleanup);
             return promise;
         },
 
@@ -606,9 +612,7 @@
                 if (this._queue[i].pageGen < this._pageGen) {
                     var expired = this._queue.splice(i, 1)[0];
                     delete this._dedupMap[expired.dedupKey];
-                    var err = new Error('Request cancelled by page navigation');
-                    err._pageAborted = true;
-                    expired.reject(err);
+                    expired.reject(pageAbortError());
                 }
             }
 
@@ -649,9 +653,7 @@
             // large module response overlap JSON allocation on the device.
             var transmit = function () {
                 if (entry.pageAborted) {
-                    var error = new Error('Request cancelled before transmission');
-                    error._pageAborted = true;
-                    return Promise.reject(error);
+                    return Promise.reject(pageAbortError());
                 }
                 return request(entry.method, entry.path, requestOptions, entry.timeoutMs);
             };
@@ -660,9 +662,7 @@
             transfer
                 .then(function (data) {
                     if (entry.pageGen < self._pageGen && !(entry.options && entry.options.staleOk === true)) {
-                        var staleErr = new Error('Request result ignored after page navigation');
-                        staleErr._pageAborted = true;
-                        entry.reject(staleErr);
+                        entry.reject(pageAbortError());
                         return;
                     }
                     self._backoffMs = 1000;
@@ -804,9 +804,7 @@
             for (var b = this._batchQueue.length - 1; b >= 0; b--) {
                 if (this._batchQueue[b].pageGen < this._pageGen) {
                     var expiredBatch = this._batchQueue.splice(b, 1)[0];
-                    var batchErr = new Error('Batch request cancelled by page navigation');
-                    batchErr._pageAborted = true;
-                    expiredBatch.reject(batchErr);
+                    expiredBatch.reject(pageAbortError());
                 }
             }
             if (this._batchQueue.length === 0 && this._batchTimer) {
@@ -817,9 +815,7 @@
                 if (this._queue[i].pageGen < this._pageGen) {
                     var expired = this._queue.splice(i, 1)[0];
                     delete this._dedupMap[expired.dedupKey];
-                    var err = new Error('Request cancelled by page navigation');
-                    err._pageAborted = true;
-                    expired.reject(err);
+                    expired.reject(pageAbortError());
                 }
             }
         },
@@ -865,14 +861,8 @@
             var skipCache = options.noCache === true;
             var priority = typeof options.priority === 'number' ? options.priority : (isSilent ? 0 : profile.priority);
 
-            if (profile.batchSafe !== true || profile.tier === 'heavy') {
-                return this.enqueue('GET', url, {
-                    params: params || {},
-                    profile: profile,
-                    silent: isSilent,
-                    priority: priority,
-                    noCache: skipCache
-                });
+            if (this.MAX_CONCURRENT === 1 || profile.batchSafe !== true || profile.tier === 'heavy') {
+                return this.enqueue('GET', url, Object.assign({}, options, { params: params || {}, profile: profile }));
             }
 
             if (profile.cacheTtl > 0 && !skipCache) {
@@ -882,8 +872,19 @@
                 }
             }
 
-            return new Promise(function (resolve, reject) {
-                self._batchQueue.push({
+            // Multiple widgets can ask for the same state during the batch
+            // window. Keep one logical read (including while it is in flight)
+            // so the device does not allocate duplicate JSON sub-responses.
+            var dedupKey = 'B:' + this._pageGen + ':' + fullUrl + (skipCache ? '#fresh' : '');
+            var pending = this._dedupMap[dedupKey];
+            if (pending) {
+                pending.item.priority = Math.max(pending.item.priority, priority);
+                pending.item.silent = pending.item.silent && isSilent;
+                return pending;
+            }
+            var entry;
+            var promise = new Promise(function (resolve, reject) {
+                entry = {
                     url: url,
                     params: params || {},
                     resolve: resolve,
@@ -894,7 +895,8 @@
                     priority: priority,
                     noCache: skipCache,
                     pageGen: self._pageGen
-                });
+                };
+                self._batchQueue.push(entry);
 
                 if (!self._batchTimer) {
                     self._batchTimer = setTimeout(function () {
@@ -902,6 +904,8 @@
                     }, self.BATCH_WINDOW_MS);
                 }
             });
+            promise.item = entry;
+            return this._trackRequest(dedupKey, promise);
         },
 
         batchGetMany: function (requests, options) {
@@ -909,8 +913,24 @@
             options = options || {};
             requests = Array.isArray(requests) ? requests : [];
             if (requests.length === 0) return Promise.resolve([]);
-
             var pageGen = this._pageGen;
+            // No-PSRAM targets read one endpoint at a time to avoid retaining
+            // several JSON trees in a batch. Other targets keep the server's
+            // five-entry limit and the original positional
+            // results (including sub-request failures). Send chunks serially;
+            // failure or page navigation must not start the remaining chunks.
+            var limit = this.MAX_CONCURRENT === 1 ? 1 : 5;
+            if (requests.length > limit) {
+                return this.batchGetMany(requests.slice(0, limit), options).then(function (results) {
+                    if (pageGen < self._pageGen && options.staleOk !== true) {
+                        throw pageAbortError();
+                    }
+                    return self.batchGetMany(requests.slice(limit), options).then(function (rest) {
+                        return results.concat(rest);
+                    });
+                });
+            }
+
             var skipCache = options.noCache === true;
             var cachedResults = new Array(requests.length);
             var pendingRequests = [];
@@ -941,7 +961,9 @@
             if (pendingRequests.length === 0) return Promise.resolve(cachedResults);
             if (pendingRequests.length === 1) {
                 var single = pendingRequests[0];
-                return this.batchGet(single.url, single.params, options).then(function (res) {
+                return this.enqueue('GET', single.url, Object.assign({}, options, {
+                    params: single.params, profile: single.profile
+                })).then(function (res) {
                     cachedResults[single.index] = res;
                     return cachedResults;
                 });
@@ -961,13 +983,10 @@
                 staleOk: options.staleOk === true
             }).then(function (resp) {
                 if (pageGen < self._pageGen && options.staleOk !== true) {
-                    var staleErr = new Error('Batch result ignored after page navigation');
-                    staleErr._pageAborted = true;
-                    throw staleErr;
+                    throw pageAbortError();
                 }
                 var results = resp.results || resp;
-                if (!Array.isArray(results)) throw new Error('Invalid batch response');
-                if (results.length < pendingRequests.length) throw new Error('Incomplete batch response');
+                if (!Array.isArray(results) || results.length < pendingRequests.length) throw new Error('Invalid batch response');
                 pendingRequests.forEach(function (pending, index) {
                     var item = results[index];
                     if (pending.profile && pending.profile.cacheTtl > 0 && !skipCache && item && item.success !== false && !item.error) {
@@ -988,70 +1007,30 @@
             if (queue.length === 0) return;
             queue = queue.filter(function (item) {
                 if (item.pageGen >= self._pageGen) return true;
-                var err = new Error('Batch request cancelled by page navigation');
-                err._pageAborted = true;
-                item.reject(err);
+                item.reject(pageAbortError());
                 return false;
             });
             if (queue.length === 0) return;
 
-            if (queue.length === 1) {
-                self.enqueue('GET', queue[0].url, {
-                    params: queue[0].params,
-                    profile: queue[0].profile,
-                    silent: queue[0].silent,
-                    priority: queue[0].priority,
-                    noCache: queue[0].noCache
-                })
-                    .then(queue[0].resolve)
-                    .catch(queue[0].reject);
-                return;
-            }
-
-            var batchPriority = 0;
-            var requests = queue.map(function (item) {
-                batchPriority = Math.max(batchPriority, item.priority || 0);
-                var req = { url: item.url };
-                if (item.params && Object.keys(item.params).length > 0) req.params = item.params;
-                return req;
-            });
-
-            self.enqueue('POST', '/api/batch', {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ requests: requests }),
-                priority: batchPriority
-            }).then(function (resp) {
-                var results = resp.results || resp;
-                if (!Array.isArray(results)) {
-                    queue.forEach(function (item) {
-                        item.reject(new Error('Invalid batch response'));
-                    });
-                    return;
-                }
-
-                results.forEach(function (item, index) {
-                    if (index >= queue.length) return;
-                    if (queue[index].pageGen < self._pageGen) {
-                        var staleErr = new Error('Batch result ignored after page navigation');
-                        staleErr._pageAborted = true;
-                        queue[index].reject(staleErr);
-                        return;
-                    }
-
+            // Reuse the same response validation and navigation checks as an
+            // explicit group. Cache was checked before this queue was formed;
+            // bypassing it here also avoids rejoining our own pending entry.
+            self.batchGetMany(queue, {
+                priority: Math.max.apply(null, queue.map(function (item) { return item.priority || 0; })),
+                noCache: true
+            }).then(function (results) {
+                queue.forEach(function (queued, index) {
+                    var item = results[index];
                     if (item.success === false || item.error) {
-                        queue[index].reject(item.error || new Error('Batch sub-request failed'));
+                        queued.reject(item.error || new Error('Batch sub-request failed'));
                         return;
                     }
 
-                    if (queue[index].profile && queue[index].profile.cacheTtl > 0) {
-                        self._cache[queue[index].fullUrl] = { data: item, ts: Date.now() };
+                    if (queued.profile && queued.profile.cacheTtl > 0) {
+                        self._cache[queued.fullUrl] = { data: item, ts: Date.now() };
                     }
-                    queue[index].resolve(item);
+                    queued.resolve(item);
                 });
-
-                for (var i = results.length; i < queue.length; i++) {
-                    queue[i].reject(new Error('Batch response missing result'));
-                }
             }).catch(function (err) {
                 queue.forEach(function (item) { item.reject(err); });
             });
@@ -1063,7 +1042,7 @@
     window.apiNotifyError = function (err, fallback, title) {
         var message = describeApiError(err, fallback);
         if (!message || typeof Notification === 'undefined') return;
-        Notification.error(message, title || '\u8bf7\u6c42\u5931\u8d25');
+        Notification.error(message, title || '请求失败');
     };
 
     window.apiGet = function (url, params) {
@@ -1196,7 +1175,7 @@
         if (!err) return false;
         if (err._pageAborted) return true;
         if (err._requestTimeout) return false;
-        if (err.message && /page navigation|result ignored after page navigation|batch request cancelled by page navigation/i.test(err.message)) return true;
+        if (err.message && /page navigation/i.test(err.message)) return true;
         return false;
     };
 

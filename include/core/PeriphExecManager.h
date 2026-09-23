@@ -6,6 +6,8 @@
 #include <set>
 #include <vector>
 #include <memory>
+#include <new>
+#include <utility>
 #include <functional>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -65,6 +67,41 @@ using ModbusDynamicEventsCallback = std::function<void(JsonArray& arr)>;
 // MQTT 设备事件上报回调：(eventId, eventName, eventData) → true=已发布
 using MqttEventPublishCallback = std::function<bool(const String& eventId, const String& eventName, const String& eventData)>;
 
+// Keep the operation lifecycle bounded without reserving six inline traces on
+// devices that have never executed a rule. Allocation is explicit and fallible;
+// after admission no container growth can prevent the terminal status update.
+// Callers must hold the manager's results mutex for every access.
+class ExecutionResultHistory {
+public:
+    using iterator = AsyncExecResult*;
+    bool ensureCapacity() {
+        if (_entries) return true;
+        _entries.reset(new (std::nothrow) AsyncExecResult[ASYNC_EXEC_RESULT_HISTORY_LIMIT]);
+        return static_cast<bool>(_entries);
+    }
+    bool hasCapacity() const { return static_cast<bool>(_entries); }
+    void releaseIfEmpty() { if (_size == 0) _entries.reset(); }
+    size_t size() const { return _size; }
+    iterator begin() { return _entries.get(); }
+    iterator end() { return _size ? _entries.get() + _size : _entries.get(); }
+    void erase(iterator position) {
+        const size_t index = static_cast<size_t>(position - begin());
+        for (size_t next = index + 1; next < _size; ++next) {
+            _entries[next - 1] = std::move(_entries[next]);
+        }
+        _entries[--_size] = AsyncExecResult();
+    }
+    void push_back(const AsyncExecResult& result) {
+        // All insertion paths admit capacity before changing operation state.
+        if (_entries && _size < ASYNC_EXEC_RESULT_HISTORY_LIMIT) {
+            _entries[_size++] = result;
+        }
+    }
+private:
+    std::unique_ptr<AsyncExecResult[]> _entries;
+    size_t _size = 0;
+};
+
 class PeriphExecManager {
 public:
     static PeriphExecManager& getInstance();
@@ -104,6 +141,13 @@ public:
     // ========== 持久化 ==========
     bool saveConfiguration();
     bool loadConfiguration();
+    // Validate without allocating a second rule table or changing runtime state.
+    static bool validateConfigurationFile(const char* path, String& errorMsg);
+    // Commit a validated staged file for the next boot. No rule is executed or
+    // hot-swapped. Further configuration writes are rejected until restart.
+    bool importConfigurationFile(const char* stagedPath, String& errorMsg);
+    bool isConfigurationRestartPending() const { return _configurationRestartPending; }
+    bool hasConfigurationLoadError() const { return _configurationLoadFailed; }
 
     // ========== IR 按键映射（随 periph_exec.json 统一持久化，不再单独建 ir_keys.json） ==========
     // 返回当前红外按键映射 JSON 数组字符串（如 [{"name":"k1","code":"0x00FF6897","protocol":"NEC"}]，无配置时为空串）
@@ -285,7 +329,7 @@ public:
     SemaphoreHandle_t getResultsMutex() const { return _resultsMutex; }
 
     // 获取执行结果列表
-    std::vector<AsyncExecResult>& getExecutionResults() { return executionResults; }
+    ExecutionResultHistory& getExecutionResults() { return executionResults; }
 
     // 检查是否应该异步执行
     bool shouldRunAsync() const;
@@ -377,12 +421,20 @@ private:
     // path. Route/UI preflight is advisory and must not be the only guard.
     bool validateRuleActionsLocked(const PeriphExecRule& rule,
                                    String& errorMsg) const;
+    bool ensureResultHistoryCapacity();
     bool beginOperation(const PeriphExecRule& rule,
                         bool asyncExecution,
                         uint8_t queuePosition,
                         AsyncExecResult& operation);
     void refreshRuleRuntimeIndexesLocked(bool validateScheduler = true);
     bool saveConfigurationLocked();
+    bool writeConfigurationLocked(const RuleMap& sourceRules, const String& irKeys);
+    bool _configurationRestartPending = false;
+    bool _configurationLoadFailed = false;
+    const char* configurationWriteError() const {
+        return _configurationRestartPending ? "CONFIG_PENDING_RESTART" :
+               (_configurationLoadFailed ? "CONFIG_LOAD_FAILED" : nullptr);
+    }
 
     // ========== 子模块 ==========
     bool ruleNeedsModbus(const PeriphExecRule& rule) const;
@@ -421,7 +473,7 @@ private:
     SemaphoreHandle_t _resultsMutex = nullptr;      // 保护 executionResults 的互斥量
 
     // ========== 异步执行结果 ==========
-    std::vector<AsyncExecResult> executionResults;
+    ExecutionResultHistory executionResults;
     uint32_t _nextOperationId = 0;
 
     // ========== Modbus 读取回调 ==========
@@ -498,15 +550,22 @@ public:
                                     uint32_t configVersion = 0);
     void invalidateAllSensorReadCache();
     bool upsertObservation(const ObservationUpdate& update, uint32_t configVersion = 0);
+    // One physical sample, at most four explicitly configured channels. All
+    // preparation may fail before the cache changes; callbacks run unlocked.
+    bool upsertSensorObservationBatch(const ObservationUpdate* const* updates,
+                                      size_t count, uint32_t configVersion);
     bool invalidateObservation(const String& sourceRef, const String& reason,
                                const String& nextSourceRevision = "");
     bool getObservation(const String& sourceRef, ObservationSnapshot& out) const;
     std::vector<ObservationSnapshot> getObservationSnapshots(size_t limit = SENSOR_CACHE_MAX_ENTRIES) const;
+    std::vector<ObservationSnapshot> getObservationSnapshots(
+        const std::vector<const char*>& sourceRefs) const;
     std::map<String, SensorReadCache> getSensorReadCacheCopy() const;  // 线程安全的拷贝访问
     // 审计 P2-3：单条持锁查询，避免模板解析每次全量深拷贝整表
     bool lookupSensorCache(const String& key, SensorReadCache& out) const;
     void evictStaleSensorCache();  // 淘汰过期条目（由 checkTimers 定期调用）
 private:
+    void publishObservation(const ObservationUpdate& accepted);
     std::map<String, SensorReadCache> _sensorReadCache;  // key = periphId + "_" + dataField
     mutable SemaphoreHandle_t _sensorCacheMutex = nullptr; // 保护传感器缓存的互斥量
     uint32_t _nextObservationIdentity = 0;

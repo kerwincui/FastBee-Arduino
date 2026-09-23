@@ -477,22 +477,22 @@
             html += '<span id="dc-motor-run-' + devIdx + '" class="motor-run-badge motor-run-idle">--</span>';
             html += '<button class="dc-motor-refresh motor-refresh-btn" data-dev="' + devIdx + '" title="刷新">&#x21bb;</button>';
             html += '</div></div><div class="motor-status-grid">';
-            html += '<div class="motor-status-item"><span class="motor-status-label">速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span><span class="motor-status-unit">rpm</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">脉冲数</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">设定速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">单次脉冲</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
             html += '<div class="motor-status-item"><span class="motor-status-label">方向</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">计数</span><span class="motor-status-value" id="dc-motor-count-' + devIdx + '">--</span><span class="motor-status-unit">次</span></div>';
             html += '</div></div>';
             return html;
         },
 
         _renderDcMotorParamsSection: function(devIdx, dev) {
+            var sf = Math.pow(10, dev.motorDecimals || 0);
             var html = '<div class="motor-params-section">';
-            html += '<div class="motor-param-row"><label>速度</label>';
-            html += '<input type="number" class="motor-param-input " id="dc-motor-speed-in-' + devIdx + '" value="50" min="0">';
+            html += '<div class="motor-param-row"><label>设定速度</label>';
+            html += '<input type="number" class="motor-param-input " id="dc-motor-speed-in-' + devIdx + '" value="' + (50 / sf) + '" min="0" max="' + (65535 / sf) + '" step="' + (1 / sf) + '">';
             html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'speed', label: '设置速度' });
             html += this._renderSidTag(devIdx, '_spd', '0~65535') + '</div>';
             html += '<div class="motor-param-row"><label>脉冲</label>';
-            html += '<input type="number" class="motor-param-input " id="dc-motor-pulse-in-' + devIdx + '" value="1600" min="0">';
+            html += '<input type="number" class="motor-param-input " id="dc-motor-pulse-in-' + devIdx + '" value="1600" min="0" max="65535">';
             html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'pulse', label: '设置脉冲' });
             html += this._renderSidTag(devIdx, '_pls', '0~65535') + '</div></div>';
             return html;

@@ -98,11 +98,18 @@ var PageLoader = {
      * @param {string} url - 请求地址
      * @param {number} [retries=3] - 最大重试次数
      */
-    async _fetchWithRetry(url, retries) {
+    async _fetchWithRetry(url, retries, signal) {
         retries = (retries == null) ? 3 : retries;
         var lastErr;
         for (var i = 0; i <= retries; i++) {
+            if (signal && signal.aborted) {
+                var cancelled = new Error('Static asset request cancelled');
+                cancelled.name = 'AbortError';
+                throw cancelled;
+            }
             var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            var cancel = function() { if (controller) controller.abort(); };
+            if (signal) signal.addEventListener('abort', cancel, { once: true });
             var timedOut = false;
             var timer = controller ? setTimeout(function() {
                 timedOut = true;
@@ -111,13 +118,19 @@ var PageLoader = {
             try {
                 var resp = await fetch(url, controller ? { signal: controller.signal } : undefined);
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                return resp;
+                // fetch() resolves at headers. Keep the same deadline and
+                // queue slot until the entire body (including chunked) arrives.
+                return await resp.text();
             } catch (e) {
+                // Navigation/caller cancellation releases the queue without
+                // restarting a transfer the caller no longer needs.
+                if ((signal && signal.aborted) || (e.name === 'AbortError' && !timedOut)) throw e;
                 lastErr = timedOut
                     ? new Error('Static asset request timed out after ' + PAGE_FETCH_TIMEOUT_MS + 'ms')
                     : e;
             } finally {
                 if (timer) clearTimeout(timer);
+                if (signal) signal.removeEventListener('abort', cancel);
             }
             if (i < retries) {
                 await new Promise(function(resolve) { setTimeout(resolve, 800 * (i + 1)); });
@@ -185,8 +198,7 @@ var PageLoader = {
         }
 
         this._loadingPages[moduleName] = this._enqueueOp(async () => {
-            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
-            var html = await resp.text();
+            var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             this._cachePageTemplates(moduleName, html);
             if (!this._pageTemplates[pageId]) {
                 throw new Error('Page response missing expected root: #' + pageId);
@@ -274,8 +286,7 @@ var PageLoader = {
         if (this._loadingPages['modals']) return this._loadingPages['modals'];
         var self = this;
         var operation = this._enqueueOp(async () => {
-            var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
-            var html = await resp.text();
+            var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
             this._cacheModalTemplates(html, '', [
                 'change-password-modal',
                 'peripheral-modal',
@@ -317,8 +328,7 @@ var PageLoader = {
         }
         try {
             await this._enqueueOp(async () => {
-                var resp = await this._fetchWithRetry(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
-                var html = await resp.text();
+                var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
                 this._fragmentTemplates[fragmentName] = this._cacheModalTemplates(html, containerId);
                 var container = document.getElementById(containerId);
                 if (container) {

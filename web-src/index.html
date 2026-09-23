@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FastBee设备配置管理</title>
-    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon">
+    <link id="fb-favicon" rel="icon" href="data:," data-asset-src="/assets/favicon.ico" type="image/x-icon">
     <!-- Critical CSS: 登录页骨架 + 基础变量（避免 FOUC） -->
     <style>
     :root{--primary:#1677ff;--primary-hover:#4096ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--text-primary:rgba(0,0,0,.88);--border:#d9d9d9;--space-2:8px;--space-4:16px;--space-5:20px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--glass-shadow:0 6px 16px 0 rgba(0,0,0,.08),0 3px 6px -4px rgba(0,0,0,.12),0 9px 28px 8px rgba(0,0,0,.05)}
@@ -40,6 +40,32 @@
         window.__fastbeeStaticAssetChain = run.then(settle, settle);
         return run;
     };
+    // Images share the text/API transport queue too. Cache the completed blob
+    // so showing the same logo in the sidebar cannot open another connection.
+    window.__fastbeeImageAssets = Object.create(null);
+    window.__fastbeeLoadImageAsset = function(element, path) {
+        if (!element || !path) return Promise.resolve();
+        var assets = window.__fastbeeImageAssets;
+        if (!assets[path]) {
+            assets[path] = window.__fastbeeQueueStaticAsset(async function() {
+                var controller = new AbortController();
+                var timer = setTimeout(function() { controller.abort(); }, 8000);
+                try {
+                    var response = await fetch(window.__fastbeeResolveAssetUrl(path), { signal: controller.signal });
+                    if (!response.ok) throw new Error('Image asset HTTP ' + response.status);
+                    return URL.createObjectURL(await response.blob());
+                } finally {
+                    clearTimeout(timer);
+                }
+            }).catch(function(error) {
+                delete assets[path];
+                throw error;
+            });
+        }
+        return assets[path].then(function(url) {
+            element.setAttribute(element.tagName === 'LINK' ? 'href' : 'src', url);
+        });
+    };
     </script>
     <noscript>
         <link rel="stylesheet" href="./css/main.css">
@@ -54,7 +80,7 @@
     <div id="login-page" class="login-page">
         <div class="login-card">
             <div class="login-header">
-                <img class="login-logo-img" src="/assets/logo.png" alt="FastBee Logo">
+                <img id="login-logo" class="login-logo-img" data-asset-src="/assets/logo.png" alt="FastBee Logo">
                 <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title" data-i18n="login-title">FastBee Arduino</h1>
             </div>
 
@@ -110,11 +136,11 @@
                         <span class="menu-icon">⚡</span> <span id="menu-periph-exec"
                             data-i18n="menu-periph-exec">外设执行</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="screen-panel" style="display:none" aria-hidden="true">
-                        <span class="menu-icon">▣</span> <span id="menu-screen-panel">智能面板</span>
-                    </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol" data-i18n="menu-protocol">通信协议</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="screen-panel" style="display:none" aria-hidden="true">
+                        <span class="menu-icon">▣</span> <span id="menu-screen-panel">设备屏幕</span>
                     </a>
                     <a href="#" class="menu-item" data-page="device-control" style="display:none" aria-hidden="true">
                         <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备大屏</span>
@@ -249,6 +275,11 @@
         function startChunkLoad() {
             if (started) return;
             started = true;
+            ['login-logo', 'fb-favicon'].forEach(function(id) {
+                var element = document.getElementById(id);
+                if (element) window.__fastbeeLoadImageAsset(element, element.getAttribute('data-asset-src'))
+                    .catch(function(error) { console.warn('[FastBee] Optional image unavailable:', error.message); });
+            });
             loadSequence(bootChunks, 30);
         }
         window.__fastbeeStartChunks = startChunkLoad;

@@ -176,9 +176,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             });
         },
 
-        _renderPeripheralActionButton(action, id, label, className, requiresDeveloper = true) {
+        _renderPeripheralActionButton(action, id, label, className, requiresDeveloper = true, title = '') {
             var locked = requiresDeveloper && !this.isDeveloperModeEnabled();
-            var attrs = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : '';
+            var attrs = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : (title ? ' title="' + escapeHtml(title) + '"' : '');
             var lockClass = locked ? ' dev-mode-locked' : '';
             return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + className + lockClass + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '"' + attrs + '>' + label + '</button>';
         },
@@ -211,18 +211,40 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
 
         _canOpenPeripheralDiagnostics(peripheral) {
             var descriptor = this._getPeripheralTypeDescriptor(peripheral && peripheral.type);
-            var implemented = descriptor ? descriptor.implemented === true : peripheral?.implemented === true;
+            // The detail/list snapshot is authoritative; catalog loading is optional.
+            var implemented = typeof peripheral?.implemented === 'boolean'
+                ? peripheral.implemented : descriptor?.implemented === true;
             return implemented && !!this._getPeripheralDiagnosticKind(peripheral);
         },
 
+        _getPeripheralDiagnosticBlockReason(peripheral) {
+            if (peripheral?.diagnosticBlockedReason === 'protocol.modbus') {
+                return '此串口由 Modbus 协议管理，请到通信协议页面调试；终端收发已禁用，避免干扰总线';
+            }
+            if (peripheral?.enabled === false || peripheral?.diagnosticBlockedReason === 'disabled') {
+                return '外设已禁用，请先在外设配置中启用后再使用诊断';
+            }
+            if (peripheral?.memorySuspended || peripheral?.status?.memorySuspended) return '外设因内存保护暂停，请恢复后重试';
+            return '';
+        },
+
         _diagnosticButtonLabel(kind) {
-            if (kind === 'uart') return '终端';
-            if (kind === 'encoder') return '读数';
-            if (kind === 'sd') return '文件';
-            if (kind === 'rfid') return '读卡';
-            if (kind === 'ds1302') return '时钟';
-            if (kind === 'lcd1602') return '显示';
-            return '探测';
+            // 诊断入口保留给接线调试，但在列表中统一成一个低优先级入口，
+            // 避免“终端/探测/读数”等按钮挤占主操作区。
+            return '诊断';
+        },
+
+        _diagnosticButtonTitle(kind) {
+            var labels = {
+                uart: '打开串口终端进行收发测试',
+                encoder: '查看编码器实时读数',
+                sd: '管理存储卡文件',
+                rfid: '执行 RFID 读卡操作',
+                ds1302: '查看并设置时钟',
+                lcd1602: '测试字符屏显示',
+                'i2c-sensor': '扫描并读取 I2C 设备'
+            };
+            return labels[kind] || '打开外设诊断工具';
         },
 
         _setPeripheralCapacity(profile) {
@@ -314,6 +336,11 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         },
 
         loadPeripherals(filterType = '', options) {
+            if (this._periphListFilter !== filterType) {
+                this._periphCurrentPage = 1;
+                this._periphListFilter = filterType;
+            }
+            const requestSequence = this._periphListSequence = (this._periphListSequence || 0) + 1;
             const tbody = document.getElementById('peripheral-table-body');
             if (!tbody) return;
             this.applyDeveloperModeState();
@@ -327,8 +354,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 pageSize: this._periphPageSize
             };
             if (filterType) params.category = filterType;
-            getter('/api/peripherals', params)
+            return getter('/api/peripherals', params)
                 .then(res => {
+                    if (requestSequence !== this._periphListSequence) return;
                     // List responses carry the same runtime memory-degradation
                     // snapshot as /api/system/status. Feed it to the shared
                     // governor so this page also slows polling and shows the
@@ -345,6 +373,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     const total = res.total || 0;
                     const page = res.page || 1;
                     const pageSize = res.pageSize || 10;
+                    const lastPage = Math.max(1, Math.ceil(total / pageSize));
+                    this._periphCurrentPage = Math.min(page, lastPage);
+                    if (page > lastPage) return this.loadPeripherals(filterType, { noCache: true });
                     this._periphTotalCount = total;
                     this._setPeripheralCapacity(res.profile || null);
                     const peripherals = res.data || [];
@@ -374,7 +405,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             : (periph.pins && periph.pins.length ? periph.pins.join(', ') : (ioParams.busPeripheralId || '--')));
                         const diagnosticKind = this._getPeripheralDiagnosticKind(periph);
                         const diagnosticButton = this._canOpenPeripheralDiagnostics(periph)
-                            ? this._renderPeripheralActionButton('diagnose', periph.id, this._diagnosticButtonLabel(diagnosticKind), 'fb-btn-secondary', false)
+                            ? this._renderPeripheralActionButton('diagnose', periph.id, this._diagnosticButtonLabel(diagnosticKind), 'fb-btn-secondary peripheral-diagnostic-action', false, this._diagnosticButtonTitle(diagnosticKind))
                             : '';
                         html += '<tr>' +
                             '<td>' + safeId + '</td>' +
@@ -394,6 +425,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     this.applyDeveloperModeState(tbody);
                 })
                 .catch(err => {
+                    if (requestSequence !== this._periphListSequence) return;
                     // 页面切换导致的请求中止属预期行为，静默返回不渲染错误行
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     var msg = '加载失败';
@@ -748,6 +780,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             if (data.params.inputMode !== undefined) { const el = document.getElementById('gpio-input-mode'); if (el) el.value = String(data.params.inputMode); }
                             { const el = document.getElementById('gpio-invert-logic'); if (el && data.params.invertLogic !== undefined) el.checked = !!data.params.invertLogic; }
                             if (data.params.reportMode !== undefined) { const el = document.getElementById('gpio-report-mode'); if (el) el.value = String(data.params.reportMode); }
+                            { const el = document.getElementById('gpio-paired-input-id'); if (el) el.value = data.params.pairedInputId || ''; }
+                            { const el = document.getElementById('gpio-pair-debounce-ms'); if (el) el.value = data.params.pairDebounceMs || 200; }
                             if (data.params.defaultValue !== undefined) { const el = document.getElementById('dac-default-value'); if (el) el.value = data.params.defaultValue; }
                             if (Number(data.type) === 41) {
                                 [
@@ -1282,6 +1316,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     ['hsyncIdleLow', 'HSYNC 空闲低', false], ['vsyncIdleLow', 'VSYNC 空闲低', false], ['pclkActiveNeg', 'PCLK 下降沿有效', false],
                     ['controlBackend', '辅助控制器', 'none'], ['controlAddress', '控制器地址 (十进制)', 0],
                     ['controlResetMask', '复位掩码', 0], ['controlBacklightMask', '背光掩码', 0], ['controlEnableMask', '使能掩码', 0],
+                    ['controlBuzzerMask', '蜂鸣器掩码（仅 CH32V003）', 0],
+                    ['touchBuzzerDurationMs', '触摸提示音时长', 30],
                     ['controlInactiveMask', '保持低电平掩码（与其他掩码不重叠）', 0],
                     ['controlTouchIntMask', 'GT911 INT 同步掩码（单一位）', 0],
                     ['controlSda', '控制 SDA', -1], ['controlScl', '控制 SCL', -1],
@@ -1293,6 +1329,11 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     var input = name === 'controlBackend' ? '<select id="' + id + '"><option value="none">无</option><option value="tca9554">TCA9554</option><option value="ch32v003">CH32V003</option></select>' :
                         '<input id="' + id + '" type="' + (typeof value === 'boolean' ? 'checkbox' : (typeof value === 'number' ? 'number' : 'text')) +
                         '" value="' + value + '"' + (name === 'rgbInitProfile' ? ' readonly' : '') + '>';
+                    if (name === 'touchBuzzerDurationMs') {
+                        input = '<select id="' + id + '">' + [20, 30, 60, 100, 150].map(function(ms) {
+                            return '<option value="' + ms + '"' + (ms === 30 ? ' selected' : '') + '>' + ms + ' ms</option>';
+                        }).join('') + '</select><small class="fb-text-muted">板载蜂鸣器为固定音量；缩短提示音可减少打扰。仅用于触摸反馈。</small>';
+                    }
                     return '<div class="fb-form-group"><label for="' + id + '">' + label + '</label>' + input + '</div>';
                 }).join('');
             }
@@ -1303,6 +1344,13 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                     var key = input.id.slice(8);
                     var dataIndex = key.match(/^rgbData(\d+)$/);
                     var value = dataIndex ? pins.rgbDataPins?.[Number(dataIndex[1])] : (params?.[key] ?? pins[key]);
+                    if (key === 'touchBuzzerDurationMs') {
+                        value = params?.[key] ?? 30;
+                        if (Number.isInteger(value) && value >= 20 && value <= 150 &&
+                            !Array.from(input.options).some(function(option) { return option.value === String(value); })) {
+                            input.add(new Option(value + ' ms', String(value)));
+                        }
+                    }
                     if (value !== undefined) {
                         if (input.type === 'checkbox') input.checked = value === true;
                         else input.value = String(value);

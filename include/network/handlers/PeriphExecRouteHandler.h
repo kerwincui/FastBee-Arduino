@@ -21,6 +21,14 @@ public:
 private:
     WebHandlerContext* ctx;
 
+    // One bounded upload; the active configuration is untouched until commit.
+    String importSession;
+    size_t importSize = 0;
+    size_t importReceived = 0;
+    unsigned long importUpdatedAt = 0;
+    bool importCommitted = false;
+    void handleImportChunk(AsyncWebServerRequest* request);
+
     void handleGetRules(AsyncWebServerRequest* request);
     void handleAddRule(AsyncWebServerRequest* request);
     void handleUpdateRule(AsyncWebServerRequest* request);

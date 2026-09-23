@@ -11,10 +11,9 @@
 #ifndef FEATURE_FLAGS_H
 #define FEATURE_FLAGS_H
 
-// The generic panel is compiled into full builds, but its runtime feature is
-// disabled by default. Builds for constrained targets may override these
-// macros to 0; screen snapshots and render buffers are allocated only after
-// the runtime feature is explicitly enabled.
+// Device screens are supported on ESP32-S3. Host tests retain the generic
+// model; production targets explicitly set these capabilities in platformio.ini.
+// Runtime enablement is independent: buffers are allocated only when enabled.
 #ifndef FASTBEE_ENABLE_SCREEN_PANEL
 #define FASTBEE_ENABLE_SCREEN_PANEL 1
 #endif

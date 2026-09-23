@@ -32,7 +32,7 @@ const ENV_EXPECTATIONS = {
         ota: false,
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: false, cellular: false },
-        adapterSourceFilter: 'lite',
+        adapterSourceFilter: 'wifi-only',
         forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32-F8R0': {
@@ -46,7 +46,7 @@ const ENV_EXPECTATIONS = {
         ota: true,
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: true, cellular: true },
-        adapterSourceFilter: 'full',
+        adapterSourceFilter: 'all-adapters',
         requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32-F8R8': {
@@ -59,7 +59,7 @@ const ENV_EXPECTATIONS = {
         ds18b20: true,
         ota: true,
         networkAdapters: { ethernet: true, cellular: true },
-        adapterSourceFilter: 'full',
+        adapterSourceFilter: 'all-adapters',
         requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32c3-F4R0': {
@@ -70,7 +70,7 @@ const ENV_EXPECTATIONS = {
         ota: false,
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: false, cellular: false },
-        adapterSourceFilter: 'lite',
+        adapterSourceFilter: 'wifi-only',
         forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32s3-F8R0': {
@@ -81,7 +81,7 @@ const ENV_EXPECTATIONS = {
         ds18b20: true,
         ota: true,
         networkAdapters: { ethernet: true, cellular: true },
-        adapterSourceFilter: 'full',
+        adapterSourceFilter: 'all-adapters',
         requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32c6-F4R0': {
@@ -94,7 +94,7 @@ const ENV_EXPECTATIONS = {
         ota: false,
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: false, cellular: false },
-        adapterSourceFilter: 'lite',
+        adapterSourceFilter: 'wifi-only',
         forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32c6-F8R0': {
@@ -107,7 +107,7 @@ const ENV_EXPECTATIONS = {
         ota: true,
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: false, cellular: false },
-        adapterSourceFilter: 'lite',
+        adapterSourceFilter: 'wifi-only',
         forbiddenAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32s3-F8R8': {
@@ -119,7 +119,7 @@ const ENV_EXPECTATIONS = {
         ota: true,
         libIgnore: ['IRremoteESP8266', 'NimBLE-Arduino'],
         networkAdapters: { ethernet: true, cellular: true },
-        adapterSourceFilter: 'full',
+        adapterSourceFilter: 'all-adapters',
         requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     },
     'esp32s3-F16R8': {
@@ -132,7 +132,7 @@ const ENV_EXPECTATIONS = {
         // F16R8 keeps IR/RF compiled; only BLE is omitted from the unified image.
         libIgnore: ['NimBLE-Arduino'],
         networkAdapters: { ethernet: true, cellular: true },
-        adapterSourceFilter: 'full',
+        adapterSourceFilter: 'all-adapters',
         requiredAdapterLibs: ['TinyGSM', 'SSLClient']
     }
 };
@@ -403,16 +403,16 @@ function validateAdapterExpectations(platformioText, sectionName, expectation, i
     });
 
     const adapterSources = ['network/CellularAdapter.cpp', 'network/EthernetAdapter.cpp'];
-    if (expectation.adapterSourceFilter === 'lite') {
+    if (expectation.adapterSourceFilter === 'wifi-only') {
         adapterSources.forEach((source) => {
             if (!excluded.includes(source)) {
-                issues.push(`${label}: lite adapter profile must exclude '${source}'`);
+                issues.push(`${label}: Wi-Fi-only hardware must exclude '${source}'`);
             }
         });
-    } else if (expectation.adapterSourceFilter === 'full') {
+    } else if (expectation.adapterSourceFilter === 'all-adapters') {
         adapterSources.forEach((source) => {
             if (excluded.includes(source)) {
-                issues.push(`${label}: full adapter profile must compile '${source}'`);
+                issues.push(`${label}: enabled network adapters must compile '${source}'`);
             }
         });
     }
@@ -488,6 +488,13 @@ function validateEnvExpectations(platformioText, issues) {
 
         const buildFlags = extractIniList(platformioText, sectionName, 'build_flags');
         requireTokens(`${label} build_flags`, buildFlags, expectation.buildFlags || [], issues);
+        const resolvedScreenFlags = resolveIniBuildFlags(platformioText, sectionName);
+        const expectedScreen = envName.startsWith('esp32s3-') ? '1' : '0';
+        for (const macro of ['FASTBEE_ENABLE_SCREEN_PANEL', 'FASTBEE_ENABLE_SCREEN_UI']) {
+            if (getLastBuildFlagValue(resolvedScreenFlags, macro) !== expectedScreen) {
+                issues.push(`${label}: ${macro} must resolve to ${expectedScreen}; device screens are S3-only`);
+            }
+        }
         forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags || [], issues);
 
         const resolvedBuildFlags = resolveIniBuildFlags(platformioText, sectionName);
@@ -606,7 +613,7 @@ function validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, is
         const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
         // Unified Architecture v2.0：未声明 build_src_filter 的环境编译全部源码，
         // 功能关闭仅靠运行时门控，不要求编译期排除源文件；
-        // 声明了 build_src_filter 的环境（如 lite_src_filter）才检查一致性。
+        // 声明了 build_src_filter 的环境（如 wifi_only_src_filter）才检查一致性。
         const hasSrcFilter = extractIniValue(platformioText, sectionName, 'build_src_filter') !== '';
         const excluded = hasSrcFilter ? extractExcludedSources(platformioText, sectionName) : null;
 
@@ -680,6 +687,22 @@ function validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, is
                 issues.push(`${rel(PLATFORMIO_PATH)} [${sectionName}] build_flags: conflicting macro ${name} (${values.join(', ')})`);
             }
         });
+    });
+}
+
+function validateAsyncWebServerRegexDisabled(platformioText, allPlatformioEnvs, issues) {
+    allPlatformioEnvs.filter((envName) => envName !== 'native').forEach((envName) => {
+        const flags = resolveIniBuildFlags(platformioText, `env:${envName}`);
+        // ESPAsyncWebServer uses #ifdef: defining the macro to zero still
+        // links its unused regex engine and can overflow a 4 MB app slot.
+        const definesRegex = flags.some((flag, index) =>
+            /^-DASYNCWEBSERVER_REGEX(?:=|$)/.test(flag) ||
+            (flag === '-D' && /^ASYNCWEBSERVER_REGEX(?:=|$)/.test(flags[index + 1] || '')));
+        const undefinesRegex = flags.some((flag, index) => flag === '-UASYNCWEBSERVER_REGEX' ||
+            (flag === '-U' && flags[index + 1] === 'ASYNCWEBSERVER_REGEX'));
+        const label = `${rel(PLATFORMIO_PATH)} [env:${envName}] resolved build_flags`;
+        if (definesRegex) issues.push(`${label}: must not define ASYNCWEBSERVER_REGEX, including =0; the library uses #ifdef`);
+        if (!undefinesRegex) issues.push(`${label}: missing -UASYNCWEBSERVER_REGEX to omit the unused regex engine`);
     });
 }
 
@@ -1033,6 +1056,7 @@ function main() {
     validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs, issues);
     validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, issues);
     validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues);
+    validateAsyncWebServerRegexDisabled(platformioText, allPlatformioEnvs, issues);
     validateRuntimeFlagSections(platformioText, issues);
     validateOutputNames(outputNameByEnv, collectEnvMap, releaseEnvs, issues);
     validateReadmeScriptExamples(releaseEnvs, allPlatformioEnvs, outputNameByEnv, issues);
@@ -1049,4 +1073,6 @@ function main() {
     console.log(`FastBee build matrix OK: firmwareEnvs=${firmwareEnvs.length}, releaseEnvs=${releaseEnvs.length}, default=${defaultEnvs.join(',')}`);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { validateAsyncWebServerRegexDisabled, extractPlatformioEnvNames };

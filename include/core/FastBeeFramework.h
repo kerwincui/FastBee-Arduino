@@ -135,6 +135,7 @@ private:
     bool ntpSyncStarted = false;       // NTP同步已启动标志
     int ntpRetryCount = 0;             // NTP同步重试计数
     unsigned long ntpGiveUpTimeMs = 0; // NTP同步放弃时间戳（用于冷却后重试）
+    uint8_t ntpHttpFallbackAttempts = 0; // PSRAM设备的HTTP时间回退次数
     bool mqttAutoStarted = false;      // MQTT自动启动标志
     bool modbusAutoStarted = false;    // Modbus自动启动标志
     

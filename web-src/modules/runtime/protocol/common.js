@@ -4,6 +4,8 @@
  *       最终 registerModule 调用由入口 protocol.js 在所有子模块加载完成后执行
  */
 (function() {
+    // This lazy module must also work when protocol is the first page opened.
+    const t = typeof window.t === 'function' ? window.t : (key, fallback) => fallback;
     Object.assign(AppState, {
 
         // ============ 状态变量 ============

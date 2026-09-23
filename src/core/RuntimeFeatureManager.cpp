@@ -186,7 +186,7 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"deviceControl", "设备控制面板", "system", 27, 0,
                      FASTBEE_ENABLE_DEVICE_CONTROL != 0, false,
                      "No resident device RAM; browser assets streamed; API heap is transient/on-demand", nullptr, 0});
-    registerFeature({"screenPanel", "屏幕面板", "peripheral", 80, 69632,
+    registerFeature({"screenPanel", "设备屏幕", "peripheral", 80, 69632,
                      FASTBEE_ENABLE_SCREEN_PANEL != 0, false,
                      "SPI display + optional I2C touch; ~48KB snapshot and stripe prefer PSRAM; 8KB task stack remains internal",
                      nullptr, 20, false});

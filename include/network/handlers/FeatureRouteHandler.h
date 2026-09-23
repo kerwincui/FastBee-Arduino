@@ -30,6 +30,7 @@ private:
     void handleStatus(AsyncWebServerRequest* request);
     void handleConfig(AsyncWebServerRequest* request);
     void handleApply(AsyncWebServerRequest* request);
+    void handleUpdate(AsyncWebServerRequest* request, bool reboot);
     void handleEstimate(AsyncWebServerRequest* request);
 
     // POST JSON body 收集（ESPAsyncWebServer 不自动缓存原始 body）

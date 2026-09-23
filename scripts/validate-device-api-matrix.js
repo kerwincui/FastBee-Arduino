@@ -8,9 +8,7 @@ const MATRIX_PATH = path.join(ROOT_DIR, 'scripts', 'device-api-test-matrix.json'
 const SMOKE_SCRIPT_PATH = path.join(ROOT_DIR, 'scripts', 'smoke-test-device.ps1');
 const SOAK_SCRIPT_PATH = path.join(ROOT_DIR, 'scripts', 'soak-test-device.ps1');
 const HANDLER_DIR = path.join(ROOT_DIR, 'src', 'network', 'handlers');
-// Production images use one unified profile; legacy profiles remain accepted
-// for experimental custom builds.
-const PROFILES = new Set(['lite', 'standard', 'full', 'unified']);
+const CAPABILITIES = new Set(['modbus', 'webServer', 'logViewer', 'ota', 'ruleScript', 'auth']);
 const METHODS = new Set(['GET', 'POST']);
 const TYPES = new Set(['', 'multi-session', 'bearer-over-cookie', 'expect-unavailable', 'expect-error', 'capability-optional', 'mqtt-ntp-sync', 'batch-stress']);
 const SEMANTIC_ONLY_CHECKS = new Set([
@@ -18,7 +16,7 @@ const SEMANTIC_ONLY_CHECKS = new Set([
     'config-transfer-import'
 ]);
 
-const REQUIRED_ALL_PROFILE_CHECKS = [
+const REQUIRED_COMMON_CHECKS = [
     'auth-session',
     'auth-multi-session',
     'auth-bearer-over-cookie',
@@ -36,6 +34,7 @@ const REQUIRED_ALL_PROFILE_CHECKS = [
     'network-config',
     'mqtt-status',
     'protocol-config',
+    'protocol-periph-exec-config',
     'protocol-mqtt-config',
     'peripherals',
     'peripheral-types',
@@ -50,24 +49,87 @@ const REQUIRED_ALL_PROFILE_CHECKS = [
     'batch-basic'
 ];
 
-const REQUIRED_PROFILE_CHECKS = [
-    { name: 'protocol-periph-exec-config', profiles: ['standard', 'full'] },
-    { name: 'modbus-status', profiles: ['standard', 'full'] },
-    { name: 'modbus-unavailable', profiles: ['lite'] },
-    { name: 'filesystem', profiles: ['full'] },
-    { name: 'filesystem-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'files-root', profiles: ['full'] },
-    { name: 'files-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'logs-list', profiles: ['full'] },
-    { name: 'logs-tail', profiles: ['full'] },
-    { name: 'logs-info', profiles: ['full'] },
-    { name: 'logs-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'ota-status', profiles: ['full'] },
-    { name: 'ota-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'rule-scripts', profiles: ['full'] },
-    { name: 'rule-scripts-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'users', profiles: ['full'] },
-    { name: 'users-unavailable', profiles: ['lite', 'standard'] }
+const REQUIRED_CAPABILITY_CHECKS = [
+    {
+        "name": "modbus-status",
+        "capability": "modbus",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "modbus-unavailable",
+        "capability": "modbus",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "filesystem",
+        "capability": "webServer",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "filesystem-unavailable",
+        "capability": "webServer",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "files-root",
+        "capability": "webServer",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "files-unavailable",
+        "capability": "webServer",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "logs-list",
+        "capability": "logViewer",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "logs-tail",
+        "capability": "logViewer",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "logs-info",
+        "capability": "logViewer",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "logs-unavailable",
+        "capability": "logViewer",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "ota-status",
+        "capability": "ota",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "ota-unavailable",
+        "capability": "ota",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "rule-scripts",
+        "capability": "ruleScript",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "rule-scripts-unavailable",
+        "capability": "ruleScript",
+        "capabilityEnabled": false
+    },
+    {
+        "name": "users",
+        "capability": "auth",
+        "capabilityEnabled": true
+    },
+    {
+        "name": "users-unavailable",
+        "capability": "auth",
+        "capabilityEnabled": false
+    }
 ];
 
 function readJson(filePath) {
@@ -136,18 +198,11 @@ function routeExists(pathValue, registered) {
     return false;
 }
 
-function arrayEqualsAsSet(actual, expected) {
-    if (actual.length !== expected.length) return false;
-    const set = new Set(actual);
-    return expected.every((item) => set.has(item));
-}
-
-function validateCheck(check, index, issues, registered, names, profileCounts) {
+function validateCheck(check, index, issues, registered, names) {
     const label = `checks[${index}]`;
     const name = String(check && check.name || '');
     const method = String(check && check.method || '');
     const type = String(check && check.type || '');
-    const profiles = Array.isArray(check && check.profiles) ? check.profiles.map(String) : [];
     const pathValue = String(check && check.path || '');
 
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
@@ -170,20 +225,14 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
         issues.push(`${label} (${name}): path '${normalizeApiPath(pathValue)}' is not registered by network handlers`);
     }
 
-    if (profiles.length === 0) {
-        issues.push(`${label} (${name || 'unnamed'}): profiles must be explicit`);
+    if (Object.prototype.hasOwnProperty.call(check, 'profiles')) {
+        issues.push(`${label}: firmware editions are not supported; use capability conditions`);
     }
-    const profileSet = new Set();
-    profiles.forEach((profile) => {
-        if (!PROFILES.has(profile)) {
-            issues.push(`${label} (${name || 'unnamed'}): unknown profile '${profile}'`);
+    if (Object.prototype.hasOwnProperty.call(check, 'capability')) {
+        if (!CAPABILITIES.has(check.capability) || typeof check.capabilityEnabled !== 'boolean') {
+            issues.push(`${label}: invalid capability condition`);
         }
-        if (profileSet.has(profile)) {
-            issues.push(`${label} (${name || 'unnamed'}): duplicate profile '${profile}'`);
-        }
-        profileSet.add(profile);
-        if (PROFILES.has(profile)) profileCounts[profile] += 1;
-    });
+    }
 
     const allowedStatuses = Array.isArray(check && check.allowedStatuses) ? check.allowedStatuses : [];
     const hasAllowedMessages = check && Object.prototype.hasOwnProperty.call(check, 'allowedMessages');
@@ -231,31 +280,15 @@ function validateCheck(check, index, issues, registered, names, profileCounts) {
     }
 }
 
-function validateRequiredProfiles(checksByName, issues) {
-    REQUIRED_ALL_PROFILE_CHECKS.forEach((name) => {
+function validateRequiredChecks(checksByName, issues) {
+    REQUIRED_COMMON_CHECKS.forEach((name) => {
         const check = checksByName.get(name);
-        if (!check) {
-            issues.push(`matrix: missing required all-profile check '${name}'`);
-            return;
-        }
-        const profiles = check.profiles || [];
-        const legacyCoverage = arrayEqualsAsSet(profiles, ['lite', 'standard', 'full']);
-        const unifiedCoverage = arrayEqualsAsSet(profiles, ['unified']);
-        if (!legacyCoverage && !unifiedCoverage) {
-            issues.push(`matrix: '${name}' must cover unified (or lite, standard, full for legacy builds)`);
-        }
+        if (!check || check.capability) issues.push(`matrix: missing unconditional check '${name}'`);
     });
-
-    REQUIRED_PROFILE_CHECKS.forEach(({ name, profiles }) => {
+    REQUIRED_CAPABILITY_CHECKS.forEach(({name, capability, capabilityEnabled}) => {
         const check = checksByName.get(name);
-        if (!check) {
-            issues.push(`matrix: missing required profile check '${name}'`);
-            return;
-        }
-        const actual = check.profiles || [];
-        const unifiedCoverage = arrayEqualsAsSet(actual, ['unified']);
-        if (!arrayEqualsAsSet(actual, profiles) && !unifiedCoverage) {
-            issues.push(`matrix: '${name}' must cover unified or ${profiles.join(', ')}`);
+        if (!check || check.capability !== capability || check.capabilityEnabled !== capabilityEnabled) {
+            issues.push(`matrix: '${name}' must follow ${capability}=${capabilityEnabled}`);
         }
     });
 }
@@ -326,7 +359,6 @@ function main() {
     const registered = collectRegisteredApiPaths();
     const names = new Set();
     const checksByName = new Map();
-    const profileCounts = { lite: 0, standard: 0, full: 0, unified: 0 };
 
     if (!Number.isInteger(matrix.version) || matrix.version < 1) {
         issues.push('matrix: version must be a positive integer');
@@ -336,18 +368,11 @@ function main() {
     }
 
     checks.forEach((check, index) => {
-        validateCheck(check, index, issues, registered, names, profileCounts);
+        validateCheck(check, index, issues, registered, names);
         if (check && check.name) checksByName.set(String(check.name), check);
     });
-    validateRequiredProfiles(checksByName, issues);
+    validateRequiredChecks(checksByName, issues);
     const semanticCount = validateSemanticParity(checksByName, issues);
-
-    Object.entries(profileCounts).forEach(([profile, count]) => {
-        // Unified is mandatory for production; legacy profiles are optional.
-        if (profile === 'unified' && count < 20) {
-            issues.push(`matrix: ${profile} profile has too few checks (${count})`);
-        }
-    });
 
     if (issues.length > 0) {
         console.error('FastBee device API matrix validation failed:');
@@ -355,7 +380,7 @@ function main() {
         process.exit(1);
     }
 
-    console.log(`FastBee device API matrix OK: checks=${checks.length}, semantics=${semanticCount}, lite=${profileCounts.lite}, standard=${profileCounts.standard}, full=${profileCounts.full}, unified=${profileCounts.unified}`);
+    console.log(`FastBee device API matrix OK: checks=${checks.length}, semantics=${semanticCount}, capabilityConditions=${REQUIRED_CAPABILITY_CHECKS.length}`);
 }
 
 main();

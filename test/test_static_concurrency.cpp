@@ -398,7 +398,7 @@ void test_page_loader_response_integrity_locked() {
     TEST_ASSERT_TRUE_MESSAGE(noRoot != std::string::npos && throwNoRoot > noRoot &&
                              storeTemplate > throwNoRoot && markLoaded > storeTemplate,
         "Only a complete response with page roots may populate the template and loaded caches");
-    size_t readBody = loadBlock.find("var html = await resp.text()");
+    size_t readBody = loadBlock.find("var html = await this._fetchWithRetry(");
     size_t cacheTemplates = loadBlock.find("this._cachePageTemplates(moduleName, html)", readBody);
     size_t expectedRoot = loadBlock.find("Page response missing expected root", cacheTemplates);
     TEST_ASSERT_TRUE_MESSAGE(readBody != std::string::npos && cacheTemplates > readBody &&

@@ -307,6 +307,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     _handleUrlParams() {
         var params = new URLSearchParams(window.location.search);
         var targetPage = params.get('page');
+        this._pendingHistoryTab = targetPage === 'screen-panel' && params.get('tab') === 'history';
         var goFullscreen = params.get('fullscreen') === '1';
         if (targetPage) {
             this._pendingUrlPage = targetPage;
@@ -326,6 +327,14 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         delete this._pendingUrlFullscreen;
         // 跳转到指定页面
         var navigation = this.changePage(page);
+        if (this._pendingHistoryTab) {
+            delete this._pendingHistoryTab;
+            Promise.resolve(navigation).then(() => {
+                if (this.currentPage !== 'screen-panel' || !this._spSwitchTopTab) return;
+                this._spSwitchTopTab('sp-config');
+                document.querySelector('.sp-history-settings')?.scrollIntoView({ block: 'center' });
+            });
+        }
         // 页面和功能门控完成后再进入全屏，避免禁用直达页的旧定时器误触发。
         if (goFullscreen && page === 'device-control') {
             var urlNavSeq = this._pageNavSeq;
@@ -921,7 +930,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-gpio': _t('state-page-gpio') !== 'state-page-gpio' ? _t('state-page-gpio') : 'GPIO配置',
             'page-title-peripheral': _t('state-page-peripherals') !== 'state-page-peripherals' ? _t('state-page-peripherals') : '外设配置',
             'page-title-periph-exec': _t('state-page-periph-exec') !== 'state-page-periph-exec' ? _t('state-page-periph-exec') : '外设执行',
-            'page-title-screen-panel': '智能面板',
+            'page-title-screen-panel': '设备屏幕',
             'page-title-users': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
             'page-title-device-control': _t('state-page-fullscreen') !== 'state-page-fullscreen' ? _t('state-page-fullscreen') : '设备大屏',
             'page-title-rule-script': _t('state-page-rule-scripts') !== 'state-page-rule-scripts' ? _t('state-page-rule-scripts') : '规则脚本',

@@ -264,28 +264,8 @@
             var elRun = document.getElementById('dc-motor-run-' + devIdx);
             var elDir = document.getElementById('dc-motor-dir-' + devIdx);
             if (!elRun && !elDir) return false;
-            var v = String(value || '').toLowerCase().trim();
-            var dirText = '--';
-            var badgeClass = 'motor-run-idle';
-            var runText = '--';
-            if (v === 'forward' || v === '1' || v === '正转') {
-                dirText = '← 正转';
-                badgeClass = 'motor-run-forward';
-                runText = '正转中';
-            } else if (v === 'reverse' || v === '-1' || v === '反转') {
-                dirText = '→ 反转';
-                badgeClass = 'motor-run-reverse';
-                runText = '反转中';
-            } else if (v === 'stop' || v === '0' || v === '停止') {
-                dirText = '停止';
-                badgeClass = 'motor-run-stopped';
-                runText = '停止';
-            }
-            if (elDir) elDir.textContent = dirText;
-            if (elRun) {
-                elRun.className = 'motor-run-badge ' + badgeClass;
-                elRun.textContent = runText;
-            }
+            // These SSE values are command reports, not measured motion feedback.
+            this._dcUpdateMotorRunUI(devIdx, {}, dev.motorDecimals || 0);
             return true;
         },
 

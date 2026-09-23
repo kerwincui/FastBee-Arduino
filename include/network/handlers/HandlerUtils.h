@@ -97,7 +97,10 @@ inline void addMemoryDegradationStatus(JsonObject parent) {
     // Keep the compact fields available to callers that only inspect the
     // normal memory object (for example the request governor).  The detailed
     // memoryDegradation object remains the canonical diagnostic payload.
-    JsonObject memory = parent["memory"].to<JsonObject>();
+    // to<JsonObject>() clears an existing object, including the heap/PSRAM
+    // metrics already populated by compact system-info and metrics routes.
+    JsonObject memory = parent["memory"].as<JsonObject>();
+    if (memory.isNull()) memory = parent["memory"].to<JsonObject>();
     memory["guardLevel"] = memoryGuardLevelName(monitor->getMemoryGuardLevel());
     memory["degraded"] = monitor->isMemoryDegraded();
     memory["periphExecPaused"] = monitor->isPeriphExecPausedForMemory();

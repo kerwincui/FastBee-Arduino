@@ -981,7 +981,12 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
     if (newLevel == MemoryGuardLevel::NORMAL) {
         if (_degradationActive) {
             logger.setLogLevel(_savedLogLevel);
-            logger.enableFileLogging(_savedFileLogging);
+            // The user can change this setting while memory recovery is
+            // active. Restore current intent, not the pre-degradation value.
+            // Clear our temporary override before evaluating feature policy.
+            auto& features = FastBee::RuntimeFeatureManager::instance();
+            features.clearRuntimeDisabled("fileLogging");
+            logger.enableFileLogging(features.shouldEnable("fileLogging"));
             _degradationActive = false;
             Serial.println("[MEMGUARD] Restored: logLevel & fileLogging");
             // 恢复 MQTT 上报频率
@@ -1032,7 +1037,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
     // ── 首次进入降级：保存当前日志设置 ──────────────────────────────────
     if (!_degradationActive) {
         _savedLogLevel = logger.getLogLevel();
-        _savedFileLogging = logger.isFileLoggingEnabled();
+        _savedFileLogging = logger.isFileLoggingRequested();
         _degradationActive = true;
     }
 
@@ -1046,7 +1051,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
 
     // ── SEVERE 级及以上：禁用文件日志 + MQTT 降采样 ────────────────────
     if (newLevel >= MemoryGuardLevel::SEVERE) {
-        if (logger.isFileLoggingEnabled()) {
+        if (logger.isFileLoggingRequested()) {
             logger.enableFileLogging(false);
             Serial.println("[MEMGUARD] SEVERE: file logging disabled");
         }

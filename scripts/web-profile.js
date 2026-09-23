@@ -75,10 +75,9 @@ const ASSET_CAPABILITY_REQUIREMENTS = Object.freeze({
     'js/modules/protocol-full-config.js': ['modbus'],
     'pages/fragments/protocol-modbus-rtu.html': ['modbus'],
 
-    'js/modules/protocol.js': { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
-    'pages/protocol.html': { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
+    'js/modules/protocol.js': { anyOf: ['mqtt', 'modbus'] },
+    'pages/protocol.html': { anyOf: ['mqtt', 'modbus'] },
     'pages/fragments/protocol-mqtt.html': ['mqtt'],
-    'pages/fragments/protocol-remote-resources.html': ['remoteResources'],
 
     'js/modules/screen-panel-model.js': ['screenPanel'],
     'js/modules/screen-panel.js': ['screenPanel'],
@@ -113,8 +112,8 @@ const MENU_CAPABILITY_REQUIREMENTS = Object.freeze({
     network: [],
     peripheral: [],
     'periph-exec': ['periphExec'],
+    protocol: { anyOf: ['mqtt', 'modbus'] },
     'screen-panel': ['screenPanel'],
-    protocol: { anyOf: ['mqtt', 'modbus', 'remoteResources'] },
     'device-control': ['deviceControl'],
     'rule-script': ['ruleScript'],
     logs: ['logViewer'],
@@ -139,7 +138,6 @@ const MODAL_CAPABILITY_REQUIREMENTS = Object.freeze({
 const PROTOCOL_TAB_CAPABILITY_REQUIREMENTS = Object.freeze({
     mqtt: ['mqtt'],
     'modbus-rtu': ['modbus'],
-    'remote-resources': ['remoteResources']
 });
 
 function stripIniComment(value) {
@@ -343,6 +341,7 @@ function capabilityRuleSatisfied(rule, context = resolveWebBuildContext()) {
 
 function shouldIncludeAsset(relPath, context = resolveWebBuildContext()) {
     const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    if (normalized === 'pages/fragments/protocol-remote-resources.html' || normalized === 'js/modules/protocol/remote-resources.js') return false;
     const requirements = ASSET_CAPABILITY_REQUIREMENTS[normalized] || [];
     return capabilityRuleSatisfied(requirements, context);
 }
@@ -369,14 +368,9 @@ function resolveRequestGovernorLimits(context = resolveWebBuildContext()) {
 }
 
 // Compatibility helpers retained for scripts that still print a profile label.
-// The selection itself is capability-driven and has no lite/full user switch.
+// The selection itself is driven by compiled hardware capabilities.
 function getWebProfile(context = resolveWebBuildContext()) {
     return `compiled:${context.environment}`;
-}
-
-function isFullWebProfile(context = resolveWebBuildContext()) {
-    return Object.keys(ASSET_CAPABILITY_REQUIREMENTS)
-        .every((asset) => shouldIncludeAsset(asset, context));
 }
 
 function walkFiles(directory, files = []) {
@@ -429,7 +423,6 @@ module.exports = {
     getWebProfile,
     hasCapability,
     hasDeviceControl,
-    isFullWebProfile,
     parseDefines,
     parseIni,
     readWebResourceManifest,

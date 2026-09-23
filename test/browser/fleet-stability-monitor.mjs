@@ -27,6 +27,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isReadOnlyBatch, isReadOnlyMotorStatus } from '../../scripts/lib/read-only-device-requests.mjs';
+import { waitForMainShellStyles } from '../../scripts/lib/browser-main-style-check.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -192,6 +194,9 @@ const GENTLE_CYCLE_HEAP = 45000;
 const GENTLE_CYCLE_MAX_ALLOC = 12288;
 const HARD_SKIP_HEAP = RISK_GUARD_TRIGGER;
 const HARD_SKIP_MAX_ALLOC = 4096;
+const ACTIVE_MIN_HEAP = RISK_GUARD_TRIGGER;
+const ACTIVE_MIN_MAX_ALLOC = HARD_SKIP_MAX_ALLOC;
+const MEMORY_COOLDOWN_MS = 30_000;
 const MENU_DELAY_NORMAL = 1500;
 const MENU_DELAY_GENTLE = 3000;
 const NAVIGATION_ABORT_WINDOW_MS = 10_000;
@@ -209,6 +214,7 @@ const MENU_PAGE_ORDER = Object.freeze([
   'periph-exec',
   'protocol',
   'device-control',
+  'screen-panel',
   'rule-script',
   'logs',
   'users',
@@ -225,6 +231,7 @@ const CORE_MENU_PAGES = new Set([
 ]);
 const OPTIONAL_MENU_FEATURES = Object.freeze({
   'device-control': 'deviceControl',
+  'screen-panel': 'screenPanel',
   'rule-script': 'ruleScript',
   logs: 'logViewer',
   users: 'userAdmin',
@@ -542,6 +549,10 @@ async function browserRound(
     interactionRetries: 0,
     ignoredSession401: 0,
     ignoredNavigationAborts: 0,
+    blockedMutations: [],
+    readOnlyPosts: { batchGet: 0, motorStatus: 0 },
+    mainShellStyle: null,
+    mainShellStyleFailures: [],
   };
   const page = await context.newPage();
   let closing = false;
@@ -550,6 +561,34 @@ async function browserRound(
   let pageGeneration = 0;
   const requestGenerations = new WeakMap();
   page.setDefaultTimeout(30_000);
+  const baseOrigin = new URL(base).origin;
+  const isStatusRead = request => isReadOnlyMotorStatus(
+    request.method(), request.url(), request.postData(), request.headers()['content-type']);
+  const isBatchRead = request => isReadOnlyBatch(
+    request.method(), request.url(), request.postData(), request.headers()['content-type']);
+  // Route every network request so a future write endpoint outside /api cannot
+  // bypass the monitor's read-only boundary.
+  await page.route('**/*', async route => {
+    const request = route.request();
+    const target = new URL(request.url());
+    const sameOrigin = target.origin === baseOrigin;
+    const login = sameOrigin && request.method() === 'POST' &&
+      target.pathname === '/api/auth/login' && !target.search;
+    const batchRead = sameOrigin && isBatchRead(request);
+    const statusRead = sameOrigin && isStatusRead(request);
+    if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) || login || batchRead || statusRead) {
+      if (batchRead) round.readOnlyPosts.batchGet++;
+      if (statusRead) round.readOnlyPosts.motorStatus++;
+      await route.continue();
+      return;
+    }
+    round.blockedMutations.push({
+      method: request.method(),
+      route: target.pathname,
+      scope: sameOrigin ? 'device' : 'other-origin',
+    });
+    await route.abort('blockedbyclient');
+  });
   page.on('request', req => requestGenerations.set(req, pageGeneration));
   page.on('console', m => {
     if (m.type() === 'error') round.consoleErrors.push(m.text().slice(0, 300));
@@ -560,10 +599,15 @@ async function browserRound(
     const url = req.url();
     const failure = req.failure()?.errorText || '';
     const requestGeneration = requestGenerations.get(req);
+    // EventSource is a separate Playwright resource type. The shared Web UI
+    // intentionally closes /api/events when a page generation is replaced;
+    // classify that old-generation close exactly like fetch/xhr navigation
+    // cancellation. An EventSource failure in the current generation remains
+    // a real error and is still recorded below.
     const intentionalPageAbort = failure === 'net::ERR_ABORTED' &&
       Date.now() <= navigationAbortUntil &&
       Number.isInteger(requestGeneration) && requestGeneration < pageGeneration &&
-      ['fetch', 'xhr'].includes(req.resourceType()) &&
+      ['fetch', 'xhr', 'eventsource'].includes(req.resourceType()) &&
       url.startsWith(`${base}/api/`);
     if (intentionalPageAbort) {
       round.ignoredNavigationAborts++;
@@ -657,9 +701,34 @@ async function browserRound(
     } else {
       await page.waitForSelector('#app-container', { state: 'visible', timeout: 20_000 });
     }
+    authenticated = true;
+
+    try {
+      const style = await waitForMainShellStyles(page);
+      round.mainShellStyle = {
+        ok: true,
+        href: style.href,
+        ruleCount: style.ruleCount,
+        viewportWidth: style.viewportWidth,
+        wrapperDirection: style.computed.wrapperDirection,
+        sidebarWidth: style.rects.sidebar?.width ?? null,
+      };
+    } catch (error) {
+      const styleFailure = {
+        error: String(error?.message || error).slice(0, 1000),
+        issues: Array.isArray(error?.issues) ? error.issues.slice(0, 20) : [],
+        ruleCount: error?.evidence?.ruleCount ?? null,
+        href: error?.evidence?.href || '',
+      };
+      round.mainShellStyle = { ok: false, ...styleFailure };
+      round.mainShellStyleFailures.push(styleFailure);
+      throw error;
+    }
+
+    // Treat the application as available only after its structural stylesheet
+    // is both loaded and reflected in the computed shell layout.
     round.login.ok = true;
     round.login.ms = Date.now() - t0;
-    authenticated = true;
 
     // 自适应等待：modals 片段 / 首屏数据
     await page.waitForFunction(() => document.querySelector('.modal') !== null, { timeout: 10_000 }).catch(() => {});
@@ -731,6 +800,8 @@ async function browserRound(
   round.consoleErrors = round.consoleErrors.slice(0, 20);
   round.pageErrors = round.pageErrors.slice(0, 10);
   round.httpErrors = round.httpErrors.slice(0, 20);
+  round.blockedMutations = round.blockedMutations.slice(0, 20);
+  round.mainShellStyleFailures = round.mainShellStyleFailures.slice(0, 10);
   return round;
 }
 
@@ -755,6 +826,7 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
       context = await browserHolder.browser.newContext({
         viewport: OPTS.viewport,
         extraHTTPHeaders: { 'Accept-Language': 'zh-CN' },
+        serviceWorkers: 'block',
       });
     }
     contextBase = base;
@@ -858,6 +930,16 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
               attemptRound.interactionRetries += previousRound.interactionRetries || 0;
               attemptRound.ignoredSession401 += previousRound.ignoredSession401 || 0;
               attemptRound.ignoredNavigationAborts += previousRound.ignoredNavigationAborts || 0;
+              attemptRound.blockedMutations = [
+                ...(previousRound.blockedMutations || []),
+                ...(attemptRound.blockedMutations || []),
+              ].slice(0, 20);
+              attemptRound.readOnlyPosts.batchGet += previousRound.readOnlyPosts?.batchGet || 0;
+              attemptRound.readOnlyPosts.motorStatus += previousRound.readOnlyPosts?.motorStatus || 0;
+              attemptRound.mainShellStyleFailures = [
+                ...(previousRound.mainShellStyleFailures || []),
+                ...(attemptRound.mainShellStyleFailures || []),
+              ].slice(0, 10);
             }
             rec.round = attemptRound;
             if (cycleTimedOut) break;
@@ -885,7 +967,8 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
         lastWebguard503 = 0; // 降载轮不给设备加压，下轮恢复尝试
       }
 
-      // 4) 周期末再采样一次内存（反映浏览压力后的水位）
+      // 4) 负载结束立即采样。活动期允许正常的临时占用，但不得进入
+      // WebMemoryGuard 危险区、503、功能降级或重启。
       if (!cycleTimedOut) {
         const memAfter = await sampleMemory(probe.base);
         if (memAfter) {
@@ -893,7 +976,22 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
           if (observeUptime(memAfter, rec, cycle)) await dropContext();
         }
       }
-      const memory503 = Number(Boolean(rec.mem?.status503)) + Number(Boolean(rec.memAfter?.status503));
+
+      // 5) 关闭浏览器会话并冷却后再采样稳态水位。25.6KB/8KB 的
+      // 长稳门槛只应用于该样本，避免把可回收的活动期占用误判为泄漏。
+      if (!cycleTimedOut) {
+        await dropContext();
+        await sleep(MEMORY_COOLDOWN_MS);
+        if (!cycleTimedOut) {
+          const memCooldown = await sampleMemory(probe.base);
+          if (memCooldown) {
+            rec.memCooldown = memCooldown;
+            if (observeUptime(memCooldown, rec, cycle)) await dropContext();
+          }
+        }
+      }
+      const memory503 = [rec.mem, rec.memAfter, rec.memCooldown]
+        .reduce((count, sample) => count + Number(Boolean(sample?.status503)), 0);
       lastWebguard503 = (rec.round?.webguard503 || 0) + memory503;
     })();
 
@@ -1002,11 +1100,17 @@ function summarize(dev, cycles, events) {
     perPage[m.page].tries++;
     if (m.ok) { perPage[m.page].ok++; perPage[m.page].ms.push(m.ms); }
   }
-  const heaps = cycles.map(c => c.memAfter?.freeHeap ?? c.mem?.freeHeap).filter(v => Number.isFinite(v));
-  const maxAllocs = cycles.map(c => c.memAfter?.maxAlloc ?? c.mem?.maxAlloc).filter(v => Number.isFinite(v));
+  const activeHeaps = cycles.map(c => c.memAfter?.freeHeap ?? c.mem?.freeHeap).filter(v => Number.isFinite(v));
+  const activeMaxAllocs = cycles.map(c => c.memAfter?.maxAlloc ?? c.mem?.maxAlloc).filter(v => Number.isFinite(v));
+  const cooldownHeaps = cycles.map(c => c.memCooldown?.freeHeap).filter(v => Number.isFinite(v));
+  const cooldownMaxAllocs = cycles.map(c => c.memCooldown?.maxAlloc).filter(v => Number.isFinite(v));
+  // Keep the report's historical names tied to the actual steady-state series.
+  const heaps = cooldownHeaps;
+  const maxAllocs = cooldownMaxAllocs;
   const noMemBefore = cycles.map(c => c.mem?.noMemoryFeatures).filter(v => Number.isFinite(v));
   const noMemAfter = cycles.map(c => c.memAfter?.noMemoryFeatures).filter(v => Number.isFinite(v));
-  const noMemSamples = [...noMemBefore, ...noMemAfter];
+  const noMemCooldown = cycles.map(c => c.memCooldown?.noMemoryFeatures).filter(v => Number.isFinite(v));
+  const noMemSamples = [...noMemBefore, ...noMemAfter, ...noMemCooldown];
   const noMemPeak = noMemSamples.length ? Math.max(...noMemSamples) : null;
   const lastCycle = cycles[total - 1];
   const lastNoMemBefore = Number.isFinite(lastCycle?.mem?.noMemoryFeatures)
@@ -1022,7 +1126,10 @@ function summarize(dev, cycles, events) {
   const consoleErrs = rounds.flatMap(c => c.round.consoleErrors);
   const pageErrs = rounds.flatMap(c => c.round.pageErrors);
   const httpErrs = rounds.flatMap(c => c.round.httpErrors);
-  const memory503 = cycles.reduce((n, c) => n + Number(Boolean(c.mem?.status503)) + Number(Boolean(c.memAfter?.status503)), 0);
+  const memory503 = cycles.reduce((n, c) => n +
+    Number(Boolean(c.mem?.status503)) +
+    Number(Boolean(c.memAfter?.status503)) +
+    Number(Boolean(c.memCooldown?.status503)), 0);
   const webguard503 = rounds.reduce((n, c) => n + (c.round.webguard503 || 0), 0) + memory503;
   const domToasts = rounds.reduce((n, c) => n + (c.round.domErrorToasts || 0), 0);
   const first = cycles[0]?.t, last = cycles[total - 1]?.t;
@@ -1031,13 +1138,20 @@ function summarize(dev, cycles, events) {
   const windowMs = Number.isFinite(firstMs) && Number.isFinite(lastMs) ? Math.max(0, lastMs - firstMs) : 0;
   const skipped = cycles.filter(c => c.skipped);
   const cycleErrors = cycles.filter(c => c.error);
-  const statusErrors = cycles.flatMap(c => [c.mem?.error, c.memAfter?.error]).filter(Boolean);
+  const statusErrors = cycles.flatMap(c => [c.mem?.error, c.memAfter?.error, c.memCooldown?.error]).filter(Boolean);
   const probeRetries = cycles.reduce((n, c) => n + Math.max(0, Number(c.probe?.attempts || 0) - 1), 0);
   const browserRetries = cycles.reduce((n, c) => n + Number(c.browserRetries || 0), 0);
   const navigationRetries = rounds.reduce((n, c) => n + Number(c.round.navigationRetries || 0), 0);
   const interactionRetries = rounds.reduce((n, c) => n + Number(c.round.interactionRetries || 0), 0);
   const ignoredSession401 = rounds.reduce((n, c) => n + Number(c.round.ignoredSession401 || 0), 0);
   const ignoredNavigationAborts = rounds.reduce((n, c) => n + Number(c.round.ignoredNavigationAborts || 0), 0);
+  const blockedMutations = rounds.flatMap(c => c.round.blockedMutations || []);
+  const mainShellStyleFailures = rounds.flatMap(c => c.round.mainShellStyleFailures || []);
+  const readOnlyPosts = rounds.reduce((totals, c) => {
+    totals.batchGet += Number(c.round.readOnlyPosts?.batchGet || 0);
+    totals.motorStatus += Number(c.round.readOnlyPosts?.motorStatus || 0);
+    return totals;
+  }, { batchGet: 0, motorStatus: 0 });
   const menuSignatures = new Set(rounds
     .filter(c => c.round.login.ok)
     .map(c => [...(c.round.visibleMenus || [])].sort().join(',')));
@@ -1052,13 +1166,15 @@ function summarize(dev, cycles, events) {
   const expectedFailedPages = [...new Set(expectedMenuFailures.flatMap(coverage => coverage.failedExpected))];
   return {
     total, online, probeRtts, mdnsHits, rounds, logins, loginMs, perPage,
-    menuAll, menuOk, menuMs, heaps, maxAllocs, noMemBefore, noMemAfter,
+    menuAll, menuOk, menuMs, heaps, maxAllocs, activeHeaps, activeMaxAllocs,
+    cooldownHeaps, cooldownMaxAllocs, noMemBefore, noMemAfter, noMemCooldown,
     noMemPeak, lastNoMemBefore, lastNoMemAfter, lastNoMemTransition,
     reboots, events,
     consoleErrs, pageErrs, httpErrs, webguard503, domToasts, first, last, windowMs,
     skipped, cycleErrors, statusErrors, probeRetries, browserRetries,
     navigationRetries, interactionRetries, ignoredSession401,
-    ignoredNavigationAborts, menuSignatures, menuSetMismatches, expectedMenuFailures,
+    ignoredNavigationAborts, blockedMutations, mainShellStyleFailures, readOnlyPosts,
+    menuSignatures, menuSetMismatches, expectedMenuFailures,
     expectedMenuTotal, expectedMenuOk, expectedFailedPages,
     onlineRate: pct(online.length, total),
     loginRate: pct(logins.length, online.length),
@@ -1114,6 +1230,8 @@ function evaluateAcceptance(summaries) {
       reasons.push(`${p}: 运行时 no-memory 峰值 ${s.noMemPeak}，监测期间发生功能内存降级`);
     }
     if (s.httpErrs.length) reasons.push(`${p}: HTTP 4xx/5xx 或请求失败 ${s.httpErrs.length} 次`);
+    if (s.blockedMutations.length) reasons.push(`${p}: 阻断未知 API 写请求 ${s.blockedMutations.length} 次`);
+    if (s.mainShellStyleFailures.length) reasons.push(`${p}: 主框架样式未生效 ${s.mainShellStyleFailures.length} 次`);
     if (s.consoleErrs.length) reasons.push(`${p}: console error ${s.consoleErrs.length} 条`);
     if (s.pageErrs.length) reasons.push(`${p}: pageerror ${s.pageErrs.length} 条`);
     if (s.domToasts) reasons.push(`${p}: 页面错误提示 ${s.domToasts} 次`);
@@ -1123,11 +1241,19 @@ function evaluateAcceptance(summaries) {
     if (s.menuMs.length && percentile(s.menuMs, 0.95) > ACCEPT_MAX_MENU_P95_MS) {
       reasons.push(`${p}: 菜单响应 p95 ${Math.round(percentile(s.menuMs, 0.95))}ms 超过 ${ACCEPT_MAX_MENU_P95_MS}ms`);
     }
-    if (s.heaps.length !== s.online.length) reasons.push(`${p}: 有效内部 DRAM 样本 ${s.heaps.length}/${s.online.length}`);
+    if (s.activeHeaps.length !== s.online.length) reasons.push(`${p}: 活动期内部 DRAM 样本 ${s.activeHeaps.length}/${s.online.length}`);
+    if (s.activeHeaps.length && Math.min(...s.activeHeaps) < ACTIVE_MIN_HEAP) {
+      reasons.push(`${p}: 活动期内部 DRAM 最低 ${Math.min(...s.activeHeaps)}B，小于硬下限 ${ACTIVE_MIN_HEAP}B`);
+    }
+    if (s.activeMaxAllocs.length !== s.online.length) reasons.push(`${p}: 活动期最大连续块样本 ${s.activeMaxAllocs.length}/${s.online.length}`);
+    if (s.activeMaxAllocs.length && Math.min(...s.activeMaxAllocs) < ACTIVE_MIN_MAX_ALLOC) {
+      reasons.push(`${p}: 活动期最大连续块最低 ${Math.min(...s.activeMaxAllocs)}B，小于硬下限 ${ACTIVE_MIN_MAX_ALLOC}B`);
+    }
+    if (s.heaps.length !== s.online.length) reasons.push(`${p}: 冷却后内部 DRAM 样本 ${s.heaps.length}/${s.online.length}`);
     if (s.heaps.length && Math.min(...s.heaps) < ACCEPT_MIN_HEAP) {
       reasons.push(`${p}: 内部 DRAM 最低 ${Math.min(...s.heaps)}B，小于 ${ACCEPT_MIN_HEAP}B`);
     }
-    if (s.maxAllocs.length !== s.online.length) reasons.push(`${p}: 有效最大连续块样本 ${s.maxAllocs.length}/${s.online.length}`);
+    if (s.maxAllocs.length !== s.online.length) reasons.push(`${p}: 冷却后最大连续块样本 ${s.maxAllocs.length}/${s.online.length}`);
     if (s.maxAllocs.length && Math.min(...s.maxAllocs) < ACCEPT_MIN_MAX_ALLOC) {
       reasons.push(`${p}: 最大连续块最低 ${Math.min(...s.maxAllocs)}B，小于 ${ACCEPT_MIN_MAX_ALLOC}B`);
     }
@@ -1203,15 +1329,19 @@ function renderDeviceSection(dev, s) {
   // 3. 内存
   L.push('### 内存使用与风险');
   L.push('');
+  if (s.activeHeaps.length) {
+    L.push(`- 活动期 freeHeap：最低 **${(Math.min(...s.activeHeaps) / 1024).toFixed(1)}KB**；硬下限 ${(ACTIVE_MIN_HEAP / 1024).toFixed(1)}KB`);
+    if (s.activeMaxAllocs.length) L.push(`- 活动期最大连续块：最低 **${Math.min(...s.activeMaxAllocs)}B**；硬下限 ${ACTIVE_MIN_MAX_ALLOC}B`);
+  }
   if (s.heaps.length) {
     const min = Math.min(...s.heaps), max = Math.max(...s.heaps);
     const avg = s.heaps.reduce((a, b) => a + b, 0) / s.heaps.length;
-    L.push(`- freeHeap：min **${(min / 1024).toFixed(1)}KB** / avg ${(avg / 1024).toFixed(1)}KB / 最新 ${(s.lastHeap / 1024).toFixed(1)}KB / max ${(max / 1024).toFixed(1)}KB`);
-    if (s.maxAllocs.length) L.push(`- 最大连续块：最低 **${Math.min(...s.maxAllocs)}B** / 首尾窗口变化 ${Math.round(s.maxAllocTrendDrop)}B`);
-    L.push(`- 内部 DRAM 首尾窗口变化：${Math.round(s.heapTrendDrop)}B（正数表示下降）`);
+    L.push(`- 冷却 ${MEMORY_COOLDOWN_MS / 1000}s 后 freeHeap：min **${(min / 1024).toFixed(1)}KB** / avg ${(avg / 1024).toFixed(1)}KB / 最新 ${(s.lastHeap / 1024).toFixed(1)}KB / max ${(max / 1024).toFixed(1)}KB`);
+    if (s.maxAllocs.length) L.push(`- 冷却后最大连续块：最低 **${Math.min(...s.maxAllocs)}B** / 首尾窗口变化 ${Math.round(s.maxAllocTrendDrop)}B`);
+    L.push(`- 冷却后内部 DRAM 首尾窗口变化：${Math.round(s.heapTrendDrop)}B（正数表示下降）`);
     if (s.lastUptime !== null) L.push(`- 当前 uptime：${(s.lastUptime / 3600000).toFixed(2)}h`);
   } else {
-    L.push('无内存采样数据。');
+    L.push('无完整冷却后内存采样数据。');
   }
   if (s.total > 0) {
     const beforePeak = s.noMemBefore.length ? Math.max(...s.noMemBefore) : null;
@@ -1240,6 +1370,7 @@ function renderDeviceSection(dev, s) {
   L.push('');
   L.push(`- WebGuard 503 拒绝：**${s.webguard503}** 次　|　页面错误提示(toast)：${s.domToasts} 次`);
   L.push(`- HTTP 4xx/5xx/失败请求：${s.httpErrs.length} 次　|　console error：${s.consoleErrs.length} 条　|　pageerror：${s.pageErrs.length} 条`);
+  L.push(`- 阻断未知 API 写请求：${s.blockedMutations.length} 次　|　主框架样式失败：${s.mainShellStyleFailures.length} 次　|　只读 POST：batch ${s.readOnlyPosts.batchGet} / motor status ${s.readOnlyPosts.motorStatus}`);
   L.push(`- 探针重试：${s.probeRetries} 次　|　登录重试：${s.browserRetries} 次　|　导航/交互重试：${s.navigationRetries + s.interactionRetries} 次`);
   L.push(`- 已识别正常噪声：未登录会话探测 401 ${s.ignoredSession401} 次，页面切换主动取消 ${s.ignoredNavigationAborts} 次`);
   for (const [title, arr] of [['HTTP 错误 TOP', s.httpErrs], ['console error TOP', s.consoleErrs], ['pageerror TOP', s.pageErrs]]) {
@@ -1262,8 +1393,8 @@ function renderDeviceSection(dev, s) {
   const risks = [];
   if (s.onlineRate < 99.9) risks.push(`🔴 在线率 ${s.onlineRate.toFixed(1)}% < 100%，存在不可达周期`);
   if (s.reboots > 0) risks.push(`🔴 监测期内发生 ${s.reboots} 次重启`);
-  if (s.heaps.length) {
-    const min = Math.min(...s.heaps);
+  if (s.activeHeaps.length) {
+    const min = Math.min(...s.activeHeaps);
     if (min < RISK_GUARD_TRIGGER) risks.push(`🔴 freeHeap 最低 ${(min / 1024).toFixed(1)}KB 低于 WebGuard 触发线 20KB，API 会被 503 拒绝`);
     else if (min < RISK_GUARD_RECOVERY) risks.push(`🟠 freeHeap 最低 ${(min / 1024).toFixed(1)}KB 低于 WebGuard 恢复线 21KB，触发后难以自愈`);
     else if (min < RISK_WATCH) risks.push(`🟡 freeHeap 最低 ${(min / 1024).toFixed(1)}KB 处于观察线 30KB 以下，内存紧张`);
@@ -1273,6 +1404,8 @@ function renderDeviceSection(dev, s) {
   if (s.skipped.length > 0) risks.push(`🟠 ${s.skipped.length} 个周期被降载跳过，浏览器覆盖不完整`);
   if (s.cycleErrors.length + s.statusErrors.length > 0) risks.push(`🟠 周期/状态采样错误 ${s.cycleErrors.length + s.statusErrors.length} 次`);
   if (s.httpErrs.length > 0) risks.push(`🟠 存在 ${s.httpErrs.length} 次 HTTP 4xx/5xx 或请求失败`);
+  if (s.blockedMutations.length > 0) risks.push(`🔴 页面尝试了 ${s.blockedMutations.length} 次未知 API 写请求，已在发送前阻断`);
+  if (s.mainShellStyleFailures.length > 0) risks.push(`🔴 主框架样式 ${s.mainShellStyleFailures.length} 次未实际生效`);
   if (s.probeRetries + s.browserRetries + s.navigationRetries + s.interactionRetries > 0) risks.push('🟠 存在瞬时失败后重试，未达到无错误长期验收标准');
   if (s.online.length && s.loginRate < 100) risks.push(`🟠 登录通过率 ${s.loginRate.toFixed(1)}%，存在登录失败`);
   if (s.expectedMenuTotal > 0 && s.menuRate < 100) {
@@ -1286,11 +1419,28 @@ function renderDeviceSection(dev, s) {
   // 综合评级
   let grade = 'A（稳定）';
   if (s.onlineRate < 95 || s.reboots > 2 || s.loginRate < 80) grade = 'D（不稳定，需立即处理）';
-  else if ((s.heaps.length > 0 && Math.min(...s.heaps) < ACCEPT_MIN_HEAP) || (s.noMemPeak !== null && s.noMemPeak > 0) || s.onlineRate < 99 || s.reboots > 0 || s.loginRate < 95 || s.menuRate < 95 || s.cycleErrors.length > 0) grade = 'C（有明显风险）';
+  else if ((s.activeHeaps.length > 0 && Math.min(...s.activeHeaps) < ACTIVE_MIN_HEAP) || (s.heaps.length > 0 && Math.min(...s.heaps) < ACCEPT_MIN_HEAP) || (s.noMemPeak !== null && s.noMemPeak > 0) || s.onlineRate < 99 || s.reboots > 0 || s.loginRate < 95 || s.menuRate < 95 || s.cycleErrors.length > 0 || s.blockedMutations.length > 0 || s.mainShellStyleFailures.length > 0) grade = 'C（有明显风险）';
   else if (s.onlineRate < 100 || s.menuRate < 100 || s.webguard503 > 0 || s.httpErrs.length > 0 || s.consoleErrs.length > 0 || s.pageErrs.length > 0 || s.skipped.length > 0 || s.probeRetries + s.browserRetries + s.navigationRetries + s.interactionRetries > 0) grade = 'B（基本稳定，存在间歇性问题）';
   L.push(`**综合评级：${grade}**`);
   L.push('');
   return L.join('\n');
+}
+
+// Keep worker failure handling deterministic and independently testable. A
+// rejected device worker must remain visible in the report and force a strict
+// non-zero process result; a fulfilled worker is intentionally ignored here.
+export function collectWorkerErrors(workerResults, devices) {
+  return workerResults
+    .map((result, index) => result?.status === 'rejected'
+      ? `${devices[index]?.label || `device-${index + 1}`}: worker ${String(result.reason?.message || result.reason)}`
+      : null)
+    .filter(Boolean);
+}
+
+export function finalizeMonitorRun({ stopRequested, workerErrors }) {
+  const errors = Array.isArray(workerErrors) ? workerErrors : [];
+  const finished = !stopRequested && errors.length === 0;
+  return { finished, exitCode: finished ? 0 : 2 };
 }
 
 // ─── 主流程 ───────────────────────────────────────────
@@ -1350,20 +1500,23 @@ async function main() {
     await sleep(i * 30_000);
     await monitorDevice(dev, browserHolder, stopFlag);
   }));
-  const workerErrors = workerResults
-    .map((result, i) => result.status === 'rejected' ? `${DEVICES_ACTIVE[i].label}: worker ${String(result.reason?.message || result.reason)}` : null)
-    .filter(Boolean);
-  finished = !stopFlag.value && workerErrors.length === 0;
+  const workerErrors = collectWorkerErrors(workerResults, DEVICES_ACTIVE);
+  const runState = finalizeMonitorRun({ stopRequested: stopFlag.value, workerErrors });
+  finished = runState.finished;
 
   clearInterval(reportTimer);
   await browserHolder.browser.close().catch(() => {});
   const result = generateReport(workerErrors);
   log(`═══ 监测结束（${finished ? '完成' : '中断'}），验收=${result.verdict.ok ? 'PASS' : 'FAIL'}，最终报告: ${result.reportPath} ═══`);
-  if (!finished || !result.verdict.ok) process.exitCode = 2;
+  if (runState.exitCode !== 0 || !result.verdict.ok) process.exitCode = 2;
 }
 
-main().catch(e => {
-  console.error('监测器致命错误:', e);
-  try { generateReport(); } catch {}
-  process.exit(1);
-});
+const isMainModule = process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isMainModule) {
+  main().catch(e => {
+    console.error('监测器致命错误:', e);
+    try { generateReport(); } catch {}
+    process.exit(1);
+  });
+}

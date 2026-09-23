@@ -5,6 +5,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <vector>
+#include <atomic>
+#include <memory>
 #include "core/interfaces/ILoggerSystem.h"
 #include "esp_log.h"
 #include <freertos/semphr.h>
@@ -42,7 +44,14 @@ public:
     void enableSerialLogging(bool enable);
     void enableFileLogging(bool enable);
     bool isSerialEnabled() const { return serialEnabled; }
-    bool isFileLoggingEnabled() const { return fileLoggingEnabled; }
+    bool isFileLoggingEnabled() const {
+        return (fileLoggingState.load() & FILE_LOGGING_STATE_MASK) == static_cast<uint32_t>(FileLoggingState::Enabled);
+    }
+    // Includes a pending allocation/lock attempt, so memory degradation can
+    // cancel it before it becomes active.
+    bool isFileLoggingRequested() const {
+        return (fileLoggingState.load() & FILE_LOGGING_STATE_MASK) != static_cast<uint32_t>(FileLoggingState::Disabled);
+    }
 
     // ── 主日志接口（const char* 避免 String 拷贝）─────────────────────────
     void error  (const char* message, const char* module = "");
@@ -75,8 +84,10 @@ public:
     // 设置输出流
     void setOutputStream(Stream& stream) { outputStream = &stream; }
 
-    // 环形缓冲 flush（公开以便 TaskManager 定时调用）
+    // Explicit flush for shutdown/file management; producers only enqueue.
     void flushBuffer();
+    // Called from the main-loop task scheduler, never a logging producer.
+    void flushBufferIfDue();
 
     // ── 诊断最近日志（内存环形，不随 flush 清空）───────────────────────────
     // 将最近日志按时间顺序（最旧在前）拷贝到 out，每行以 '\n' 结尾，
@@ -89,7 +100,7 @@ public:
 
     // 日志文件管理
     bool   lockLogFiles(uint32_t timeoutMs = 250);
-    void   unlockLogFiles();
+    void   unlockLogFiles() const;
     bool   rotateLogFile(const char* newName = nullptr);
     bool   clearLogFile(const char* fileName = nullptr);
     size_t getLogFileSize() const;
@@ -123,13 +134,14 @@ private:
 
     // 环形缓冲内部方法
     void logToBuffer(const char* entry, size_t len);
-    void flushBufferInternal();  // 不拿锁版本，供 log() 内部调用
+    void flushBufferInternal();  // Consumer only; caller must hold _logMutex.
     bool rotateLogFileInternal(const char* newName);  // 调用方必须持有 _logMutex
     size_t bufferedDataSize() const;
     void checkLogFileSize();     // 检查文件大小并轮转
 
     // 诊断最近日志：将一行截断保存到环形（供 snapshotRecentLogs 读取）
     void captureRecentLine(const char* entry);
+    void cancelFileLoggingRequest();
 
     static const char* getLevelString(LogLevel level);
     
@@ -140,7 +152,11 @@ private:
     LogLevel currentLevel;
     Stream*  outputStream;
     bool     serialEnabled;
-    bool     fileLoggingEnabled;
+    enum class FileLoggingState : uint32_t { Disabled, Pending, Enabled };
+    static constexpr uint32_t FILE_LOGGING_STATE_MASK = 3;
+    // Low bits are state; upper bits identify cancellations. A disable followed
+    // by a new enable cannot be mistaken for the old pending allocation (ABA).
+    std::atomic<uint32_t> fileLoggingState;
     bool     initialized;
     bool     espLogCaptureEnabled;   // ESP-IDF 日志捕获开关
     
@@ -158,7 +174,7 @@ private:
 
     // ── 环形缓冲区 ──────────────────────────────────────────────────────────
     static constexpr size_t LOG_RING_BUFFER_SIZE = 2048;   // 2KB
-    static constexpr size_t LOG_FLUSH_THRESHOLD  = 1638;   // 80% 触发 flush
+    static constexpr size_t LOG_FLUSH_THRESHOLD  = 1638;   // Consumer flushes at 80%.
     static constexpr unsigned long LOG_FLUSH_INTERVAL_MS = 5000; // 5秒定时 flush
 
     struct LogRingBuffer {
@@ -168,7 +184,9 @@ private:
         unsigned long lastFlushMs = 0;
     };
 
-    LogRingBuffer _ringBuffer;
+    // Allocate only while file logging is enabled. Mutable permits deferred
+    // cleanup at the end of a const diagnostic snapshot holding the same lock.
+    mutable std::unique_ptr<LogRingBuffer> _ringBuffer;
     SemaphoreHandle_t _logMutex = nullptr;
 
     // ── 诊断用最近日志环形（静态内存，不 flush 到磁盘）──────────────────────

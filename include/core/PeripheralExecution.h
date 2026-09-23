@@ -53,7 +53,7 @@ enum class ExecActionType : uint8_t {
     ACTION_GPIO_TOGGLE = 30,        // 电平翻转（读当前电平取反写入：HIGH↔LOW，等价于 CALL_PERIPHERAL "toggle" 命令，无需 actionValue）
     ACTION_FEATURE_ENABLE = 31,     // 启用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
     ACTION_FEATURE_DISABLE = 32,    // 禁用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
-    ACTION_REMOTE_CHANNEL = 33,     // 受限远程通道控制（targetPeriphId=通道 ID；actionValue=on/off/trigger）
+    ACTION_REMOTE_CHANNEL = 33,     // Retired. Preserve ID; legacy rules stay paused.
     ACTION_REMOTE_READ = 34         // 受限远程数据读取（targetPeriphId=远程/天气来源 ID；actionValue 必须为空）
 };
 

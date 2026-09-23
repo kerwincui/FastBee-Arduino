@@ -73,7 +73,7 @@
                             <div class="fb-form-group">
                                 <label for="peripheral-name-input">名称</label>
                                 <input type="text" id="peripheral-name-input" class=""
-                                    placeholder="例如: LED、UART1" required>
+                                    placeholder="例如：进料光电、主继电器、温湿度传感器" required>
                             </div>
                             <div class="fb-form-group">
                                 <label for="peripheral-type-input">外设类型</label>
@@ -268,6 +268,15 @@
                                     <div class="fb-form-group input-only is-hidden">
                                         <label for="gpio-debounce-ms">去抖时间 (ms)</label>
                                         <input type="number" id="gpio-debounce-ms" value="50" min="0" max="5000" step="1">
+                                    </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label for="gpio-paired-input-id">互补输入 ID</label>
+                                        <input type="text" id="gpio-paired-input-id" maxlength="40" placeholder="di2">
+                                        <small>仅在一路填写；同电平或读取失败时报故障。留空关闭。</small>
+                                    </div>
+                                    <div class="fb-form-group input-only is-hidden">
+                                        <label for="gpio-pair-debounce-ms">组合状态确认时间 (ms)</label>
+                                        <input type="number" id="gpio-pair-debounce-ms" value="200" min="20" max="5000" step="1">
                                     </div>
                                     <div class="fb-form-group input-only is-hidden">
                                         <label for="gpio-report-mode">上报方式</label>
@@ -545,7 +554,7 @@
                                 <div id="display-params" class="peripheral-params-group is-hidden">
                                     <h4 class="u-mb-10">彩色显示与触摸</h4>
                                     <div class="u-hint-bar u-hint-bar-info">
-                                        仅列出当前固件支持的通用后端。显示与触摸接线会参与保存前资源预检；页面内容在“屏幕面板”中配置。
+                                        仅列出当前固件支持的通用后端。显示与触摸接线会参与保存前资源预检；页面内容在“设备屏幕”中配置。
                                     </div>
                                     <div class="fb-grid-2">
                                         <div class="fb-form-group">
@@ -797,7 +806,7 @@
                                         <label for="neopixel-count">灯珠数量</label>
                                         <input type="number" id="neopixel-count" class="" value="1"
                                             min="1" max="64">
-                                        <small>建议 ESP32 精简版先使用 1-16 颗，最大限制 64 颗</small>
+                                        <small>无 PSRAM 的 ESP32 设备建议先使用 1-16 颗，最大限制 64 颗</small>
                                     </div>
                                     <div class="fb-form-group">
                                         <label for="neopixel-brightness">默认亮度 (0-255)</label>
@@ -1051,37 +1060,15 @@
                         <div class="fb-form-group pe-base-name">
                             <label for="periph-exec-name">规则名称</label>
                             <input type="text" id="periph-exec-name" class=""
-                                placeholder="例如: 温度过高报警" required>
+                                placeholder="例如：温度过高报警、每天采集环境数据" required>
                         </div>
-                        <div class="pe-base-checks">
-                            <div class="fb-form-group fb-mb-0">
-                                <label class="fb-checkbox fb-m-0 fb-font-medium">
-                                    <input type="checkbox" id="periph-exec-report" checked>
-                                    <span>上报数据</span>
-                                </label>
-                            </div>
-                            <div class="fb-form-group fb-mb-0">
-                                <label class="fb-checkbox fb-m-0 fb-font-medium">
-                                    <input type="checkbox" id="periph-exec-enabled" checked>
-                                    <span>启用</span>
-                                </label>
-                            </div>
-                            <div class="fb-form-group fb-mb-0">
-                                <label class="fb-checkbox fb-m-0 fb-font-medium" title="仅允许屏幕面板调用后端判定为安全的动作">
-                                    <input type="checkbox" id="periph-exec-panel-control">
-                                    <span>允许面板控制</span>
-                                </label>
-                            </div>
-                            <div class="fb-form-group fb-mb-0">
-                                <label class="fb-checkbox fb-m-0 fb-font-medium" title="仅适用于 Modbus 采集、传感器读取或远程读取动作">
-                                    <input type="checkbox" id="periph-exec-record-history" disabled>
-                                    <span>记录最近 10 条</span>
-                                </label>
-                            </div>
-                            <button id="periph-exec-history-settings-link" type="button" class="fb-btn fb-btn-sm fb-hidden">
-                                管理最近记录
-                            </button>
-                        </div>
+                        <label class="fb-checkbox pe-rule-enabled"><input type="checkbox" id="periph-exec-enabled" checked><span>启用规则</span></label>
+                    </div>
+                    <div class="pe-rule-options" aria-label="规则附加选项">
+                        <label class="fb-checkbox" title="执行完成后向平台上报设备数据"><input type="checkbox" id="periph-exec-report" checked><span>执行后上报数据</span></label>
+                        <label class="fb-checkbox" title="用于设备屏幕的数值趋势；添加采集或读取动作后可开启"><input type="checkbox" id="periph-exec-record-history" disabled><span>保留最近 10 条记录</span></label>
+                        <label class="fb-checkbox" title="允许设备屏幕调用此规则中支持的安全动作"><input type="checkbox" id="periph-exec-panel-control"><span>允许设备屏幕控制</span></label>
+                        <button id="periph-exec-history-settings-link" type="button" class="fb-btn fb-btn-sm fb-hidden" title="打开设备屏幕的记录设置，当前编辑内容会保留">配置最近记录 ↗</button>
                     </div>
 
                     <!-- 第二部分：触发配置 (动态多组) -->

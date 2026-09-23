@@ -143,36 +143,29 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
                        filename.indexOf("users") >= 0 || filename.indexOf("auth") >= 0 ||
                        filename.indexOf("features") >= 0);
 
-    {
-        CacheLock lock(_cacheMutex);
-        if (lock) {
-            // 更新缓存：返回 false 表示文件超阈未缓存，需直接写磁盘
-            bool cached = updateCacheEntry(filename, config, 0);  // modTime=0 表示待写入
-
-            if (cached && !isCritical) {
-                // 非关键配置：标记为 dirty，稍后通过定时任务写入
-                ConfigCacheEntry* entry = findInCache(filename);
-                if (entry) {
-                    entry->dirty = true;
-                    entry->debounceUntil = millis() + 3000;
-                }
-                return true;  // 延迟写入
-            }
-            // 大文件或关键配置：继续执行立即写入
+    // Serialize the immediate commit with cache readers, deferred flushes and
+    // other saves. Publishing a candidate before a failed write makes a later
+    // load observe a generation that was never committed to disk.
+    CacheLock lock(_cacheMutex);
+    if (!lock) return false;
+    if (!isCritical && updateCacheEntry(filename, config, 0)) {
+        ConfigCacheEntry* entry = findInCache(filename);
+        if (entry) {
+            entry->dirty = true;
+            entry->debounceUntil = millis() + 3000;
         }
+        return true;  // Noncritical small documents retain debounced writes.
     }
 
-    // 关键配置或缓存超阈：立即写入（文件 I/O 不需要锁）
+    // Critical files never enter the cache before commit. Oversized documents
+    // also preserve a previous dirty generation until this write succeeds.
     bool result = flushToDisk(filename, config);
     if (result) {
-        CacheLock lock(_cacheMutex);
-        if (lock) {
-            ConfigCacheEntry* entry = findInCache(filename);
-            if (entry) {
-                entry->dirty = false;
-                entry->rawJson = "";
-                entry->lastLoadTime = 0;
-            }
+        ConfigCacheEntry* entry = findInCache(filename);
+        if (entry) {
+            entry->dirty = false;
+            entry->rawJson = "";
+            entry->lastLoadTime = 0;
         }
     }
     return result;

@@ -440,7 +440,7 @@ static uint8_t currentModbusTransferType() {
     auto lease = pm ? pm->acquireModbusHandler(pdMS_TO_TICKS(100))
                     : ProtocolManager::ModbusHandlerLease();
     ModbusHandler* handler = lease.get();
-    return handler ? handler->getConfig().transferType : 0;
+    return handler ? handler->getTransferType() : 0;
 #else
     return 0;
 #endif
@@ -1241,7 +1241,7 @@ bool MQTTClient::publishReportData(const String& payload) {
         auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(100));
         ModbusHandler* mh = modbusLease.get();
         if (!mh) break;
-        transferType = mh->getConfig().transferType;
+        transferType = mh->getTransferType();
         if (transferType != 1) break;
 
         // Raw passthrough is shared with ordinary structured property reports.

@@ -243,7 +243,10 @@
             var sidebarLogo = document.getElementById('sidebar-logo');
             if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
             var lazySrc = sidebarLogo.getAttribute('data-lazy-src');
-            if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
+            if (lazySrc && typeof window.__fastbeeLoadImageAsset === 'function') {
+                window.__fastbeeLoadImageAsset(sidebarLogo, lazySrc)
+                    .catch(function(error) { console.warn('[FastBee] Sidebar image unavailable:', error.message); });
+            } else if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
         }, 2000);
         if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
         return !dashboardPage.querySelector('[data-page-fallback]');

@@ -9,6 +9,7 @@
 // 前向声明
 class PeriphExecManager;
 class MQTTClient;
+struct PreparedSensorRead;
 
 // ========== Modbus 寄存器缓冲池 — 消除轮询路径动态分配 ==========
 // Task 4.2: PSRAM 设备扩展到 8 个缓冲区，支持更多并发轮询任务
@@ -89,7 +90,9 @@ public:
 
     // 执行传感器读取动作
     bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
-                                 bool recordHistory = false);
+                                 bool recordHistory = false,
+                                 const uint32_t* collectionStartedAt = nullptr,
+                                 PreparedSensorRead* prepared = nullptr);
 
     // 按传感器类别推断默认数据通道名（仅用于通道选择/LCD 条目等内部用途，
     // 不作为上报 ID；上报 ID 通用规则见 reportActionResults：显式 dataField 优先，
@@ -147,6 +150,9 @@ public:
     void releaseBuffer(ModbusBuffer* buf);
 
 private:
+    bool executeSensorReadGroup(const PeriphExecRule& rule, size_t first, size_t count,
+                                uint32_t collectionStartedAt, unsigned long deadlineAt,
+                                std::vector<ActionExecResult>& results);
     PeriphExecManager* _manager = nullptr;
     ActionResultsCallback _reportCallback = nullptr;
     std::function<String(const String&)> _modbusReadCallback = nullptr;

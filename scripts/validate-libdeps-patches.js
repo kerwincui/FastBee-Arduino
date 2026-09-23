@@ -58,6 +58,20 @@ function hasFinalBufferDrainContract(source) {
         !source.includes('// it was last piece of content\n            _state = RESPONSE_END;');
 }
 
+function hasAckTimeoutRecoveryContract(header, source) {
+    const ack = source.indexOf('void AsyncWebServerRequest::_onAck');
+    const reset = source.indexOf('_ackTimeoutRecoveryAttempted = false;', ack);
+    const timeout = source.indexOf('void AsyncWebServerRequest::_onTimeout');
+    const attempted = source.indexOf('!_ackTimeoutRecoveryAttempted', timeout);
+    const progress = source.indexOf('_response->_ack(this, 0, 0) > 0', attempted);
+    const close = source.indexOf('_client->close();', progress);
+    return header.includes('bool _ackTimeoutRecoveryAttempted = false;') &&
+        ack >= 0 && reset > ack && timeout > reset && attempted > timeout &&
+        progress > attempted && close > progress &&
+        source.includes('_response && !_response->_finished()') &&
+        source.includes('_client && _client->canSend()');
+}
+
 function hasAsyncTcpAdmissionContract(header, source) {
     const increment = source.indexOf('__atomic_fetch_add(&AsyncClient::_fastbee_accepted_count');
     const eventAllocation = source.indexOf('lwip_tcp_event_packet_t *e = new (std::nothrow) lwip_tcp_event_packet_t{LWIP_TCP_ACCEPT, c}');
@@ -80,6 +94,10 @@ function hasAsyncTcpAdmissionContract(header, source) {
         source.includes('accepted >= CONFIG_ASYNC_TCP_MAX_CONNECTIONS') &&
         source.includes('void AsyncClient::_fastbee_release_accepted()') &&
         source.includes('__atomic_exchange_n(') &&
+        source.includes('FASTBEE_ASYNC_TCP_ERROR_EVENT_POOL_SIZE') &&
+        source.includes('_fastbee_alloc_error_event(client)') &&
+        source.includes('_fastbee_release_error_event(evpkt)') &&
+        source.includes('emergency pool exhausted') &&
         increment >= 0 && eventAllocation > increment &&
         rollback > eventAllocation && cleanup > rollback &&
         tcpError >= 0 && tcpErrorRelease > tcpError &&
@@ -211,7 +229,11 @@ function checkRuntimePatchHook() {
         'hasPendingSendBuffer',
         'writable TCP space is authoritative liveness evidence',
         'ERR_CONTENT_LENGTH_MISMATCH under memory pressure',
+        'bool _ackTimeoutRecoveryAttempted = false;',
+        '_response->_ack(this, 0, 0) > 0',
         'CONFIG_ASYNC_TCP_MAX_CONNECTIONS', '__atomic_exchange_n(',
+        'FASTBEE_ASYNC_TCP_ERROR_EVENT_POOL_SIZE',
+        '_fastbee_alloc_error_event(client)', '_fastbee_release_error_event(evpkt)',
         'client->_fastbee_release_accepted();', 'c->_fastbee_release_accepted();',
         'delete c;']) {
         if (!hook.includes(marker)) {
@@ -254,17 +276,22 @@ function checkRuntimePatchHook() {
                     checkedWebServer++;
                     const header = path.join(libraryDir, 'src', 'WebResponseImpl.h');
                     const source = path.join(libraryDir, 'src', 'WebResponses.cpp');
-                    if (!fs.existsSync(header) || !fs.existsSync(source)) {
+                    const requestHeader = path.join(libraryDir, 'src', 'ESPAsyncWebServer.h');
+                    const requestSource = path.join(libraryDir, 'src', 'WebRequest.cpp');
+                    if (![header, source, requestHeader, requestSource].every(fs.existsSync)) {
                         ISSUES.push(`${envName}/ESPAsyncWebServer: expected source files missing`);
                     } else {
                         const headerText = readText(header);
                         const sourceText = readText(source);
+                        const requestHeaderText = readText(requestHeader);
+                        const requestSourceText = readText(requestSource);
                         if (!headerText.includes('FastBee patch: dynamic send buffer') ||
                             !sourceText.includes('kFallbackSizes') ||
                             !sourceText.includes('chunkCap') ||
                             !hasFileRetryContract(sourceText) ||
                             !hasSendProgressContract(sourceText) ||
-                            !hasFinalBufferDrainContract(sourceText)) {
+                            !hasFinalBufferDrainContract(sourceText) ||
+                            !hasAckTimeoutRecoveryContract(requestHeaderText, requestSourceText)) {
                             ISSUES.push(`${envName}/ESPAsyncWebServer v${CURRENT_WEB_SERVER_VERSION}: runtime patch not applied`);
                         }
                     }

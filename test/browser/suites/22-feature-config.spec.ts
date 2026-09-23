@@ -13,7 +13,7 @@ import type { Page } from '@playwright/test';
  * - 保存并重启端到端往返（mdns 开关，模式无关、失败态安全）
  *
  * 设计原则：
- * - 自适应固件变体：能力缺失自动 skip（lite/standard/full/unified 均可运行）
+ * - 自适应设备能力：能力缺失自动 skip，所有设备使用统一功能模型
  * - 非破坏性：除 FCFG-011 外均为本地切换不保存，不触发设备重启
  */
 

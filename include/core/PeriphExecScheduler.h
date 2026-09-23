@@ -1,6 +1,8 @@
 #ifndef PERIPH_EXEC_SCHEDULER_H
 #define PERIPH_EXEC_SCHEDULER_H
 
+#include "core/ComplementaryInputMonitor.h"
+
 #include <Arduino.h>
 #include <vector>
 #include <map>
@@ -156,6 +158,9 @@ unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心�
     unsigned long _lastButtonCheck = 0;
     std::map<String, ButtonRuntimeState> _buttonStates;
     ButtonEventConfig _buttonConfig;
+    uint32_t _pairConfigVersion = UINT32_MAX;
+    std::map<String, FastBee::ComplementaryInputMonitor> _pairedInputStates;
+    void checkComplementaryInputs(uint32_t now);
 
     // UART receive buffers. Only UARTs referenced by enabled rules are polled.
     unsigned long _lastSerialCheck = 0;

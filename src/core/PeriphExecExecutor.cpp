@@ -8,7 +8,10 @@
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
+#include <cctype>
+#include <cstring>
 #include "core/PeriphExecExecutor.h"
+#include "core/MotorControlService.h"
 #include "core/PeriphExecManager.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
 #include "protocols/RemoteResourceManager.h"
@@ -31,6 +34,7 @@
 #include "core/MemoryBudget.h"
 #include "core/RuntimeFeatureManager.h"
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
 #if FASTBEE_ENABLE_SENSOR_DRIVER
@@ -49,7 +53,55 @@
 #endif
 #include <freertos/task.h>
 
+struct PreparedSensorRead {
+    ObservationUpdate observation;
+    uint32_t configVersion = 0;
+    float processed = 0;
+    uint8_t decimals = 0;
+};
+
 namespace {
+size_t sensorReadGroupSize(const PeriphExecRule& rule, size_t first) {
+    const auto& initial = rule.actions[first];
+    if (first + 1 >= rule.actions.size() || initial.syncDelayMs || initial.useReceivedValue ||
+        initial.targetPeriphId.isEmpty()) return 1;
+    const auto& next = rule.actions[first + 1];
+    if (next.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
+        next.syncDelayMs || next.useReceivedValue || next.execMode != initial.execMode ||
+        next.targetPeriphId != initial.targetPeriphId) return 1;
+    PeripheralConfig config;
+    if (!PeripheralManager::getInstance().getPeripheralSnapshot(initial.targetPeriphId, config) ||
+        !config.enabled || config.type != PeripheralType::SENSOR_GENERIC) return 1;
+    const auto* metadata = FastBee::DriverRegistry::getInstance().getMetadata(config.params.sensor.driver);
+    const size_t limit = metadata ? std::min<size_t>(4, metadata->activeChannelCount(config.params.sensor.mode)) : 0;
+    if (limit < 2) return 1;
+    String channels[4];
+    String mappings[4];
+    size_t count = 0;
+    for (size_t i = first; i < rule.actions.size() && count < limit; ++i) {
+        const auto& action = rule.actions[i];
+        if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
+            action.syncDelayMs || action.useReceivedValue || action.execMode != initial.execMode ||
+            action.targetPeriphId != initial.targetPeriphId) break;
+        JsonDocument parameters;
+        if (deserializeJson(parameters, action.actionValue) ||
+            initial.targetPeriphId != (parameters["periphId"] | "")) break;
+        const char* channel = parameters["channelField"] | "";
+        String selected, error;
+        if (!channel[0] || !FastBee::resolveSensorChannel(config.params.sensor.driver,
+                config.params.sensor.mode, channel, selected, error)) break;
+        bool duplicate = false;
+        const char* mapping = parameters["dataField"] | "";
+        for (size_t j = 0; j < count; ++j) {
+            duplicate |= channels[j] == selected || (mapping[0] && mappings[j] == mapping);
+        }
+        if (duplicate) break;
+        mappings[count] = mapping;
+        channels[count++] = selected;
+    }
+    return count > 1 ? count : 1;
+}
+
 bool tryParseBoolLike(const String& rawValue, bool& outValue) {
     return StringUtils::tryParseBoolLike(rawValue, outValue);
 }
@@ -89,50 +141,6 @@ String buildModbusReportValue(uint16_t channel,
     return String(buf);
 }
 
-#if FASTBEE_ENABLE_MODBUS
-struct MotorSoftLimitDecision {
-    bool enabled = false;
-    bool allowed = true;
-    uint16_t pulse = 0;
-    int32_t nextPosition = 0;
-};
-
-MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
-                                              const char* action,
-                                              uint16_t requestedValue) {
-    MotorSoftLimitDecision d;
-    d.nextPosition = dev.motorCurrentPosition;
-    if (!dev.hasMotorSoftLimit() ||
-        (strcmp(action, "forward") != 0 && strcmp(action, "reverse") != 0)) {
-        return d;
-    }
-
-    d.enabled = true;
-    int32_t desiredPulse = requestedValue > 1 ? requestedValue : 0;
-    if (desiredPulse <= 0 && dev.motorLastPulse > 0) desiredPulse = dev.motorLastPulse;
-    if (desiredPulse <= 0 && dev.motorMoveStep > 0) desiredPulse = dev.motorMoveStep;
-    if (desiredPulse <= 0) {
-        d.allowed = false;
-        return d;
-    }
-
-    int32_t room = (strcmp(action, "forward") == 0)
-        ? (dev.motorMaxPosition - dev.motorCurrentPosition)
-        : (dev.motorCurrentPosition - dev.motorMinPosition);
-    if (room <= 0) {
-        d.allowed = false;
-        return d;
-    }
-
-    if (desiredPulse > room) desiredPulse = room;
-    if (desiredPulse > 65535) desiredPulse = 65535;
-    d.pulse = static_cast<uint16_t>(desiredPulse);
-    d.nextPosition = (strcmp(action, "forward") == 0)
-        ? dev.motorCurrentPosition + desiredPulse
-        : dev.motorCurrentPosition - desiredPulse;
-    return d;
-}
-#endif
 
 /** 判断动作是否产生可作为设备属性上报的控制结果。
  *  采集类（SENSOR_READ/MODBUS_POLL）在调用处单独标记；系统指令、瞬时传输、
@@ -415,22 +423,11 @@ void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
 
 bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue,
                                            const String& receivedValue) {
-#if FASTBEE_ENABLE_REMOTE_RESOURCES
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) {
-        String normalized = effectiveValue;
-        normalized.trim();
-        normalized.toLowerCase();
-        if (normalized != "on" && normalized != "off" && normalized != "trigger") return false;
-        String status;
-        String error;
-        const bool accepted = FastBee::RemoteResourceManager::instance().execute(
-            action.targetPeriphId, normalized == "on", status, error);
-        if (!accepted) {
-            LOGGER.warningf("[PeriphExec] Remote channel '%s' rejected: %s",
-                            action.targetPeriphId.c_str(), error.c_str());
-        }
-        return accepted;
+        LOGGER.warning("[PeriphExec] Remote channel action is retired");
+        return false;
     }
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ)) {
         String error;
         const bool accepted = FastBee::RemoteResourceManager::instance().requestRead(
@@ -483,6 +480,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     size_t* reportCountOut, bool* completedAllOut, unsigned long deadlineAt,
     AsyncExecResult* traceOut) {
 
+    const uint32_t collectionStartedAt = static_cast<uint32_t>(millis());
     if (completedAllOut) *completedAllOut = true;
     if (traceOut) {
         traceOut->actionCount = static_cast<uint8_t>(
@@ -574,9 +572,27 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             delay(delayMs);
         }
 
-        // 确定有效值：useReceivedValue 时用接收值，否则用 actionValue
-        String effectiveValue = (action.useReceivedValue && !receivedValue.isEmpty())
-                                ? receivedValue : action.actionValue;
+        // Received values keep their legacy direct-replacement behavior. The
+        // only templates recognized here are the bounded panel-safe forms.
+        String effectiveValue = action.actionValue;
+        if (action.useReceivedValue && !receivedValue.isEmpty()) {
+            if (effectiveValue == "$value") {
+                effectiveValue = receivedValue;
+            } else if (action.actionType == static_cast<uint8_t>(
+                           ExecActionType::ACTION_MODBUS_REG_WRITE) &&
+                       effectiveValue.endsWith(":$value")) {
+                const String address = effectiveValue.substring(
+                    0, effectiveValue.length() - strlen(":$value"));
+                bool validAddress = !address.isEmpty() && address.length() <= 5;
+                for (size_t i = 0; validAddress && i < address.length(); ++i) {
+                    validAddress = isdigit(static_cast<unsigned char>(address.charAt(i)));
+                }
+                effectiveValue = validAddress && address.toInt() <= 65535
+                    ? address + ":" + receivedValue : receivedValue;
+            } else {
+                effectiveValue = receivedValue;
+            }
+        }
 
         LOGGER.infof("[PeriphExec] Executing action: type=%d on %s, value=%s (useRecv=%d)",
             action.actionType, action.targetPeriphId.c_str(),
@@ -587,8 +603,30 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         // 标记本次动作是否属于采集类（可上报实时监测）
         bool isReportableAction = false;
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            const size_t groupCount = sensorReadGroupSize(rule, actionIndex);
+            if (groupCount > 1) {
+                const bool committed = executeSensorReadGroup(rule, actionIndex, groupCount,
+                    collectionStartedAt, deadlineAt, actionResults);
+                for (size_t i = 0; i < actionResults.size(); ++i) {
+                    const auto& result = actionResults[i];
+                    appendActionTrace(traceOut, actionIndex + i, rule.actions[actionIndex + i],
+                        result.actualValue, result.success, millis() - actionStartedAt, 1, result.remark);
+                }
+                results.insert(results.end(), actionResults.begin(), actionResults.end());
+                reportableResults.insert(reportableResults.end(), actionResults.begin(), actionResults.end());
+                if (!committed && traceOut && traceOut->errorCode == AsyncExecError::NONE) {
+                    traceOut->errorCode = operationDeadlineReached(deadlineAt)
+                        ? AsyncExecError::DEADLINE_EXCEEDED : AsyncExecError::ACTION_FAILED;
+                }
+                actionIndex += groupCount - 1;
+                if (operationDeadlineReached(deadlineAt)) {
+                    if (completedAllOut) *completedAllOut = false;
+                    break;
+                }
+                continue;
+            }
             ActionExecResult ar;
-            ok = executeSensorReadAction(action, ar, rule.recordHistory);
+            ok = executeSensorReadAction(action, ar, rule.recordHistory, &collectionStartedAt);
             ar.success = ok;
             ar.remark = ok ? "success" : "sensor_read_failed";
             actionResults.push_back(ar);
@@ -1430,94 +1468,37 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     }
                 } else if (devType == "motor") {
-                    // 电机控制：forward/reverse/stop
+                    // Accepted is not completed: await the shared command result.
                     const char* act = cv["a"] | "stop";
-                    uint8_t motorRegIdx = 2; // 默认停止寄存器
-                    if (strcmp(act, "forward") == 0) motorRegIdx = 0;
-                    else if (strcmp(act, "reverse") == 0) motorRegIdx = 1;
-                    else motorRegIdx = 2; // stop
-                    uint16_t regAddr = dev.motorRegs[motorRegIdx];
-                    uint16_t motorVal = cv["v"] | 1;
-                    MotorSoftLimitDecision limitDecision = evaluateMotorSoftLimit(dev, act, motorVal);
-                    if (limitDecision.enabled && !limitDecision.allowed) {
-                        LOGGER.warningf("[PeriphExec] Motor ctrl blocked by soft limit: dev=%d act=%s pos=%ld min=%ld max=%ld",
-                                        devIdx, act,
-                                        static_cast<long>(dev.motorCurrentPosition),
-                                        static_cast<long>(dev.motorMinPosition),
-                                        static_cast<long>(dev.motorMaxPosition));
-                        if (controlResults) {
-                            char idBuf[16];
-                            snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
-                            appendActionResult(*controlResults, idBuf, "0", false, "motor_soft_limit");
-                        }
-                        continue;
-                    }
-                    if (limitDecision.enabled && dev.motorRegs[4] != 0) {
-                        OneShotResult pulseRes;
-                        if (!writeRegisterWithinBudget(
-                                dev.slaveAddress, dev.motorRegs[4],
-                                limitDecision.pulse, pulseRes)) {
-                            allOperationsComplete = false;
-                            if (controlResults) {
-                                appendActionResult(*controlResults,
-                                                   "modbus:" + String(devIdx), "", false,
-                                                   "modbus_ctrl_deadline");
-                            }
+                    if (strcmp(act, "forward") && strcmp(act, "reverse") && strcmp(act, "stop")) act = "stop";
+                    const uint16_t motorValue = cv["v"] | 1;
+                    auto& motors = MotorControlService::instance();
+                    char requestId[64];
+                    snprintf(requestId, sizeof(requestId), "rule-%08lx-%08lx",
+                             static_cast<unsigned long>(millis()), static_cast<unsigned long>(esp_random()));
+                    uint32_t operationId = 0; String error;
+                    const String ref = motors.referenceForSlave(dev.slaveAddress);
+                    bool accepted = motors.submitRule(ref, String(act), motorValue, String(requestId),
+                                                       remainingBatchBudgetMs(), timeout, operationId, error);
+                    bool ok = false;
+                    while (accepted && remainingBatchBudgetMs()) {
+                        JsonDocument result;
+                        if (motors.operation(operationId, result.to<JsonObject>()) && !(result["pending"] | true)) {
+                            ok = result["success"] | false;
+                            error = result["error"] | "";
                             break;
                         }
-                        if (pulseRes.error != ONESHOT_SUCCESS) {
-                            LOGGER.warningf("[PeriphExec] Motor ctrl failed to write bounded pulse: dev=%d pulse=%u",
-                                            devIdx, static_cast<unsigned int>(limitDecision.pulse));
-                            if (controlResults) {
-                                char idBuf[16];
-                                snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
-                                appendActionResult(*controlResults, idBuf, "0", false, "modbus_write_failed");
-                            }
-                            continue;
-                        }
-                        motorVal = 1;
+                        vTaskDelay(pdMS_TO_TICKS(20));
                     }
-                    OneShotResult res;
-                    if (!writeRegisterWithinBudget(dev.slaveAddress, regAddr,
-                                                   motorVal, res)) {
-                        allOperationsComplete = false;
-                        if (controlResults) {
-                            appendActionResult(*controlResults,
-                                               "modbus:" + String(devIdx), "", false,
-                                               "modbus_ctrl_deadline");
-                        }
-                        break;
-                    }
-                    bool ok = (res.error == ONESHOT_SUCCESS);
-                    if (ok) {
-                        if (limitDecision.enabled) {
-                            modbus->updateMotorRuntime(devIdx, limitDecision.nextPosition, limitDecision.pulse);
-                        } else if (motorRegIdx == 4) {
-                            modbus->updateMotorRuntime(devIdx, dev.motorCurrentPosition, motorVal);
-                        }
-                    }
+                    if (!ok && error.isEmpty()) error = "motor_result_unconfirmed";
+                    allOperationsComplete = allOperationsComplete && ok;
                     anySuccess = anySuccess || ok;
-                    LOGGER.infof("[PeriphExec] Motor ctrl: slave=%d act=%s reg=%d val=%d ok=%d",
-                        dev.slaveAddress, act, regAddr, motorVal, ok);
                     if (controlResults) {
-                        // 电机操作上报数值格式: 1=正转 2=反转 0=停止
-                        int motorNumVal = 0;
-                        if (strcmp(act, "forward") == 0) motorNumVal = 1;
-                        else if (strcmp(act, "reverse") == 0) motorNumVal = 2;
-                        char idBuf[16], valBuf[8];
-                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
-                        snprintf(valBuf, sizeof(valBuf), "%d", motorNumVal);
-                        appendActionResult(*controlResults, idBuf, valBuf, ok,
-                                           ok ? "success" : "modbus_write_failed");
+                        const char* commandValue = !strcmp(act, "forward") ? "1" : !strcmp(act, "reverse") ? "2" : "0";
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx), commandValue,
+                                           ok, ok ? String("success") : error);
                     }
-                    // 控制成功后触发 mc: 事件
-                    if (ok && _manager) {
-                        char mcIdBuf[16];
-                        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
-                        char mcDataBuf[96];
-                        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"%s\"}", devIdx, act);
-                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
-                    }
+                    // Only the shared service emits the motor-result event.
                 }
             }
         }
@@ -1649,8 +1630,57 @@ String PeriphExecExecutor::resolveChannelField(const String& category, const Str
     return periphId;
 }
 
+bool PeriphExecExecutor::executeSensorReadGroup(const PeriphExecRule& rule,
+    size_t first, size_t count, uint32_t collectionStartedAt, unsigned long deadlineAt,
+    std::vector<ActionExecResult>& results) {
+    if (count < 2 || count > 4 || first + count > rule.actions.size()) return false;
+    std::unique_ptr<PreparedSensorRead[]> prepared(new (std::nothrow) PreparedSensorRead[count]);
+    try { results.resize(count); } catch (const std::bad_alloc&) { return false; }
+    bool ready = static_cast<bool>(prepared);
+    const ObservationUpdate* updates[4] = {};
+    for (size_t i = 0; i < count; ++i) {
+        results[i].targetPeriphId = rule.actions[first + i].targetPeriphId;
+        if (!ready) continue;
+        // Keep the same per-action memory/deadline admission, including when
+        // the first physical conversion temporarily consumes internal RAM.
+        auto* framework = FastBeeFramework::getInstance();
+        auto* monitor = framework ? framework->getHealthMonitor() : nullptr;
+        if (operationDeadlineReached(deadlineAt) ||
+            (monitor && monitor->isMemoryCritical()) ||
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM ||
+            heap_caps_get_free_size(MALLOC_CAP_8BIT) < 4096) {
+            ready = false;
+            continue;
+        }
+        ready = executeSensorReadAction(rule.actions[first + i], results[i],
+            rule.recordHistory, &collectionStartedAt, &prepared[i]);
+        updates[i] = &prepared[i].observation;
+        if (ready && (prepared[i].configVersion != prepared[0].configVersion ||
+            updates[i]->sampleTimestamp != prepared[0].observation.sampleTimestamp)) ready = false;
+    }
+    const bool committed = ready && !operationDeadlineReached(deadlineAt) &&
+        PeriphExecManager::getInstance().upsertSensorObservationBatch(
+            updates, count, prepared[0].configVersion);
+    for (size_t i = 0; i < count; ++i) {
+        results[i].success = committed;
+        results[i].remark = committed ? "success" : "sensor_group_not_published";
+        if (!committed) results[i].actualValue = "";
+#if FASTBEE_ENABLE_LCD
+        if (committed && LCDManager::getInstance().isInitialized() &&
+            !prepared[i].observation.label.isEmpty()) {
+            const auto& value = prepared[i].observation;
+            LCDManager::getInstance().updateSensorEntry(value.sourceRef, value.label,
+                prepared[i].processed, value.unit, prepared[i].decimals, prepared[i].configVersion);
+        }
+#endif
+    }
+    return committed;
+}
+
 bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
-                                                 bool recordHistory) {
+                                                 bool recordHistory,
+                                                 const uint32_t* collectionStartedAt,
+                                                 PreparedSensorRead* prepared) {
     String actionVal = action.actionValue;
     if (actionVal.isEmpty() || actionVal.charAt(0) != '{') {
         LOGGER.warning("[PeriphExec] Sensor read: empty or invalid actionValue");
@@ -2040,7 +2070,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         if (!FastBee::SensorDriverCache::instance().readChannel(
                 String(periphId), cfg.params.sensor.driver, sda,
                 driverParamsBuffer.c_str(), dataField, rawValue, detectedUnit, sensorError,
-                sensorMaxAgeMs, &sensorSampleTimestamp, sensorConfigVersion)) {
+                sensorMaxAgeMs, &sensorSampleTimestamp, sensorConfigVersion, collectionStartedAt)) {
             return failed(sensorError);
         }
         if (!detectedUnit.isEmpty()) unit = detectedUnit.c_str();
@@ -2059,6 +2089,23 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     // 未显式配置时留空，上报路径将回退用外设配置 id 作为物模型标识符，
     // 使平台物模型 ID 始终与设备外设配置 id 动态匹配，而非写死的默认字段
     result.dataField = explicitFieldStr;
+
+    if (prepared) {
+        auto& value = prepared->observation;
+        value.sourceRef = String(periphId) + "_" + String(dataField);
+        value.label = label; value.value = result.actualValue; value.unit = unit;
+        value.dataField = explicitFieldStr; value.periphId = periphId;
+        value.sourceRevision = value.periphId + ":" + value.dataField + ":" + value.unit;
+        value.sampleTimestamp = sensorSampleTimestamp;
+        value.sampleIdentity = sensorSampleTimestamp;
+        value.maxAgeMs = sensorMaxAgeMs; value.recordable = recordHistory;
+        prepared->configVersion = sensorConfigVersion;
+        prepared->processed = processed; prepared->decimals = decimals;
+        return value.value == result.actualValue && value.label == label && value.unit == unit &&
+            value.periphId == periphId && value.dataField == explicitFieldStr &&
+            value.sourceRef == String(periphId) + "_" + String(dataField) &&
+            value.sourceRevision == value.periphId + ":" + value.dataField + ":" + value.unit;
+    }
 
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
         periphId, category, rawValue, result.actualValue.c_str(), unit, label);

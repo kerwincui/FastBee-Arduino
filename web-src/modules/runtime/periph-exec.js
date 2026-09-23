@@ -203,15 +203,8 @@
             if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
             var historySettingsLink = document.getElementById('periph-exec-history-settings-link');
             if (historySettingsLink) historySettingsLink.addEventListener('click', () => {
-                this.closePeriphExecModal();
-                Promise.resolve(this.changePage('screen-panel')).then(() => {
-                    if (typeof this._spSwitchTopTab === 'function') this._spSwitchTopTab('sp-config');
-                    var settings = document.querySelector('.sp-history-settings');
-                    if (settings) {
-                        settings.open = true;
-                        settings.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                    }
-                });
+                window.open(window.location.pathname + '?page=screen-panel&tab=history', '_blank', 'noopener');
+
             });
             var triggerContainer = document.getElementById('periph-exec-triggers');
             if (triggerContainer) {
@@ -375,15 +368,10 @@
             this._peRemoteChannels = [];
             this._peWeatherSources = [];
             this._peRemoteResourcesAvailable = false;
-            return apiGet('/api/remote-resources/config').then(function(response) {
+            return apiGet('/api/screen-panel/weather').then(function(response) {
                 if (ensureActive) ensureActive();
                 var data = response && response.success && response.data ? response.data : {};
-                self._peRemoteChannels = (Array.isArray(data.remoteChannels) ? data.remoteChannels : []).filter(function(item) {
-                    return item && item.enabled === true && (item.type === 'switch' || item.type === 'action') && item.id;
-                });
-                self._peWeatherSources = (Array.isArray(data.weatherSources) ? data.weatherSources : []).filter(function(item) {
-                    return item && item.enabled === true && item.id;
-                });
+                self._peWeatherSources = data.enabled && data.id ? [{ id: data.id, label: '心知天气', enabled: true }] : [];
                 self._peRemoteResourcesAvailable = true;
             }).catch(function(error) {
                 if (error && error._pageAborted) throw error;
@@ -674,6 +662,9 @@
             if (index < 0) return;
             if (target.classList.contains('pe-target-periph')) {
                 this._onTargetPeriphChange(target, index);
+                if (typeof this._syncRemoteActionValueState === 'function') {
+                    this._syncRemoteActionValueState(this._getPeriphExecBlock('periph-exec-actions', index));
+                }
                 if (typeof this._syncConfiguredSensorAction === 'function') {
                     var block = this._getPeriphExecBlock('periph-exec-actions', index);
                     var channel = block?.querySelector('.pe-sensor-channel-field');
@@ -769,6 +760,15 @@
                 } else if (actionType === 21) {
                     // 触发设备事件：从事件下拉框取值
                     actionValue = item.querySelector('.pe-trigger-event-select')?.value || '';
+                } else if (actionType === 33) {
+                    var remoteTarget = item.querySelector('.pe-target-periph')?.value || '';
+                    var remoteChannel = (this._peRemoteChannels || []).find(function(channel) {
+                        return String(channel.id) === String(remoteTarget);
+                    });
+                    actionValue = useReceivedValue ? '' :
+                        (remoteChannel && remoteChannel.type === 'number'
+                            ? (item.querySelector('.pe-action-value')?.value || '')
+                            : (item.querySelector('.pe-remote-action-value')?.value || ''));
                 } else {
                     actionValue = item.querySelector('.pe-action-value')?.value || '';
                 }
@@ -1163,16 +1163,22 @@
             if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
             const filterSel = document.getElementById('periph-exec-filter-periph');
             const filterVal = filterSel ? filterSel.value : '';
+            if (this._peListFilter !== filterVal) {
+                this._peCurrentPage = 1;
+                this._peListFilter = filterVal;
+            }
+            const requestSequence = this._peListSequence = (this._peListSequence || 0) + 1;
 
             this.renderEmptyTableRow(tbody, 7, '加载中...');
 
-            const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
+            const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize + (filterVal ? '&filter=' + encodeURIComponent(filterVal) : '');
 
             // The dynamic filter options are secondary UI. Fetch the rules as
             // the only first-screen API request; filter options load when the
             // user focuses the selector, after the page is already usable.
-            apiGet(apiUrl)
+            return apiGet(apiUrl)
                 .then(execRes => {
+                    if (requestSequence !== this._peListSequence) return;
                     // /api/periph-exec exposes the runtime degradation snapshot
                     // in its chunked header. Keep the page-level warning and
                     // request governor in sync with the device guard state.
@@ -1186,6 +1192,11 @@
                     }
                     const currentPage = execRes && execRes.page ? execRes.page : 1;
                     const currentPageSize = execRes && execRes.pageSize ? execRes.pageSize : 10;
+                    const lastPage = Math.max(1, Math.ceil(this._peTotalRules / currentPageSize));
+                    if (execRes && execRes.success) {
+                        this._peCurrentPage = Math.min(currentPage, lastPage);
+                        if (currentPage > lastPage) return this.loadPeriphExecPage();
+                    }
                     
                     if (!execRes || !execRes.success || !execRes.data || execRes.data.length === 0) {
                         this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
@@ -1193,14 +1204,6 @@
                         return;
                     }
                     let rules = execRes.data;
-                    if (filterVal) {
-                        if (filterVal.startsWith('trigger:')) {
-                            const triggerType = parseInt(filterVal.split(':')[1], 10);
-                            rules = rules.filter(r => r.triggerSummary === triggerType);
-                        } else {
-                            rules = rules.filter(r => r.targetPeriphName === filterVal);
-                        }
-                    }
                     rules.sort((a, b) => {
                         if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
                         return (a.name || '').localeCompare(b.name || '', 'zh');
@@ -1253,6 +1256,7 @@
                     this.applyDeveloperModeState(tbody);
                 })
                 .catch(() => {
+                    if (requestSequence !== this._peListSequence) return;
                     this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                     this._renderPeriphExecPagination(0, 1, 10);
                 });

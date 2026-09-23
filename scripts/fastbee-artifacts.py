@@ -174,6 +174,39 @@ def find_partition_offset(*subtypes):
     return None
 
 
+def validate_firmware_capacity(firmware_path):
+    """Check the final BIN, including image headers/digest, before publishing it."""
+    slots = []
+    with open(partition_table_path(), "r", encoding="utf-8-sig") as fp:
+        lines = (raw.split("#", 1)[0].strip() for raw in fp)
+        for row in csv.reader(line for line in lines if line):
+            cells = [cell.strip() for cell in row]
+            if len(cells) < 5 or cells[1].lower() not in ("app", "0", "0x00", "0x0"):
+                continue
+            # A dedicated test image is not a factory/OTA destination.
+            if cells[2].lower() in ("test", "0x20", "32"):
+                continue
+            size_text = cells[4].upper()
+            multiplier = {"K": 1024, "M": 1024 * 1024}.get(size_text[-1:], 1)
+            size = parse_int(size_text[:-1] if multiplier != 1 else size_text) * multiplier
+            if size <= 0:
+                raise RuntimeError("Invalid application partition size: {}".format(cells[0]))
+            slots.append((cells[0], size))
+    if not slots:
+        raise RuntimeError("No factory/OTA application partition found")
+    name, capacity = min(slots, key=lambda slot: slot[1])
+    actual = os.path.getsize(firmware_path)
+    if actual <= 0 or actual > capacity:
+        raise RuntimeError(
+            "Firmware BIN {} bytes does not fit application partition {} ({} bytes; excess {} bytes)".format(
+                actual, name, capacity, max(0, actual - capacity)
+            )
+        )
+    print("[FastBee] Final BIN capacity: {} / {} bytes ({} bytes free)".format(
+        actual, capacity, capacity - actual))
+    return capacity - actual
+
+
 def prepare_filesystem_staging():
     if not has_target(*FS_TARGETS):
         return
@@ -374,6 +407,7 @@ def archive_common_outputs(out_dir):
 
 def archive_firmware(target, source, env):
     firmware_path = normalize_path(target[0])
+    validate_firmware_capacity(firmware_path)
     out_dir = build_dist_dir()
     archive_common_outputs(out_dir)
     copy_if_exists(firmware_path, out_dir, "firmware.bin")
@@ -389,12 +423,19 @@ def archive_firmware(target, source, env):
 
 def archive_filesystem(target, source, env):
     fs_path = normalize_path(target[0])
+    firmware_path = os.path.join(normalize_path(env.subst("$BUILD_DIR")), "{}.bin".format(env.subst("$PROGNAME")))
+    available_firmware = resolve_image_path(
+        firmware_path,
+        out_dir=os.path.join(project_dir(), "dist", "firmware", pio_env_name()),
+        dest_name="firmware.bin",
+    )
+    if available_firmware:
+        validate_firmware_capacity(available_firmware)
     out_dir = build_dist_dir()
     archive_common_outputs(out_dir)
     copy_if_exists(fs_path, out_dir, "littlefs.bin")
     copy_if_exists(fs_path, out_dir, "factory-littlefs.bin")
     archive_web_assets(out_dir)
-    firmware_path = os.path.join(normalize_path(env.subst("$BUILD_DIR")), "{}.bin".format(env.subst("$PROGNAME")))
     write_manifest(out_dir, firmware_path, include_fs=True)
     factory_fs_path = os.path.join(out_dir, "factory-with-fs.bin")
     try:

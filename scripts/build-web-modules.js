@@ -92,7 +92,7 @@ const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
     'pages/logs.html'
-    // 保留 pages/fragments/device-ota.html：OTA 在线升级/本地上传是 lite 必备能力
+    // 保留 pages/fragments/device-ota.html：OTA 在线升级/本地上传按目标能力提供
     // （分片仅 ~1.7KB gz，device-ota.js 已在 DIRECT_RUNTIME_MODULES 发布）
 ]);
 const LITE_STATIC_SKIP = new Set([
@@ -358,7 +358,7 @@ function normalizePath(relPath) {
 function compiledModuleSequences(context = BUILD_CONTEXT) {
     const capabilities = context.compiledCapabilities;
     const sequences = {};
-    if (capabilities.mqtt || capabilities.modbus || capabilities.remoteResources) {
+    if (capabilities.mqtt || capabilities.modbus) {
         sequences.protocol = ['protocol'];
     }
     if (capabilities.modbus) {
@@ -428,8 +428,7 @@ function transformAppSourceContent(fileName, content) {
 
     if (fileName === 'state-session.js') {
         const preloadPages = ['device-page', 'network-page', 'peripheral-page'];
-        if (BUILD_CONTEXT.compiledCapabilities.mqtt || BUILD_CONTEXT.compiledCapabilities.modbus ||
-            BUILD_CONTEXT.compiledCapabilities.remoteResources) {
+        if (BUILD_CONTEXT.compiledCapabilities.mqtt || BUILD_CONTEXT.compiledCapabilities.modbus) {
             preloadPages.push('protocol-page');
         }
         const replacement = `PageLoader.preloadPages(${JSON.stringify(preloadPages)}, self._pageMapping, { delayMs: 1200 })`;
@@ -439,12 +438,12 @@ function transformAppSourceContent(fileName, content) {
     }
 
     if (fileName === 'state.js' && !BUILD_CONTEXT.compiledCapabilities.mqtt &&
-        (BUILD_CONTEXT.compiledCapabilities.modbus || BUILD_CONTEXT.compiledCapabilities.remoteResources)) {
+        BUILD_CONTEXT.compiledCapabilities.modbus) {
         const mqttDefault = "this.loadProtocolConfig('mqtt');";
         if (!content.includes(mqttDefault)) {
             throw new Error('Unable to select the protocol default tab');
         }
-        const defaultTab = BUILD_CONTEXT.compiledCapabilities.modbus ? 'modbus-rtu' : 'remote-resources';
+        const defaultTab = BUILD_CONTEXT.compiledCapabilities.modbus ? 'modbus-rtu' : 'mqtt';
         return content.replace(mqttDefault, `this.loadProtocolConfig('${defaultTab}');`);
     }
 
@@ -457,6 +456,8 @@ const RUNTIME_SUB_DIRS = ['protocol', 'device-control'];
 function syncDirectRuntimeModules() {
     const results = [];
     const noMinify = process.argv.includes('--no-minify');
+    const panelNameCache = {};
+    const panelPropertyRegex = /^(?:_sp|_screenPanel|savedConfig$|historyConfig$|historyStatus$|choiceCapabilities$|previewPageId$|selectedPageId$|selectedCardId$|draftTimer$|stateTimer$|dirty$|pointer$|undo$|redo$|histories$|startX$|startY$|startRect$|startDisplayRect$|snapshot$|moved$)/;
 
     // 1. Sync top-level entry files
     // 统一架构：始终发布所有顶层模块
@@ -474,11 +475,21 @@ function syncDirectRuntimeModules() {
         }
 
         const raw = readUtf8(sourceFile);
-        // The action editor keeps its public AppState methods/property names.
-        // Parse and shorten local bindings only to fit its expanded action set
-        // without raising the shared asset budget or unsafe text rewrites.
-        const content = noMinify ? raw : (['periph-exec-form.js', 'peripherals.js'].includes(fileName)
-            ? minify_sync(raw, { compress: false, mangle: true }).code
+        const panelModule = fileName === 'screen-panel-model.js' || fileName === 'screen-panel.js';
+        // Panel modules share a cache so private editor properties keep the same
+        // names across the model and view. Cross-module/public entry points stay stable.
+        const content = noMinify ? raw : ([
+            'periph-exec-form.js', 'peripherals.js',
+            'screen-panel-model.js', 'screen-panel.js'
+        ].includes(fileName)
+            ? minify_sync(raw, panelModule ? {
+                compress: { passes: 3 },
+                mangle: { properties: {
+                    regex: panelPropertyRegex,
+                    reserved: ['_spModel', '_screenPanelModelHelpers', '_spSetupEvents', '_spSwitchTopTab']
+                } },
+                nameCache: panelNameCache
+            } : { compress: { passes: 2 }, mangle: true }).code
             : minifyJS(raw));
         writeUtf8(publishFile, content);
 
@@ -750,7 +761,6 @@ const SUBDIR_BUNDLES = [
         order: [
             'common.js',
             { file: 'mqtt-config.js', requirements: ['mqtt'] },
-            { file: 'remote-resources.js', requirements: ['remoteResources'] },
             'protocol-lite-config.js'
         ]
     },
@@ -764,22 +774,19 @@ const SUBDIR_BUNDLES = [
         outName: 'protocol-modbus-rtu.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-config.js'],
-        skipProfiles: ['lite']
+        order: ['modbus-config.js']
     },
     {
         outName: 'protocol-modbus-control.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-control.js', 'modbus-relay-motor.js'],
-        skipProfiles: ['lite']
+        order: ['modbus-control.js', 'modbus-relay-motor.js']
     },
     {
         outName: 'device-control.js',
         entry: 'device-control.js',
         subDir: 'device-control',
         order: ['core.js'],
-        skipProfiles: ['lite'],
         skipWithoutDC: true
     },
     {
@@ -787,7 +794,6 @@ const SUBDIR_BUNDLES = [
         entry: null,
         subDir: 'device-control',
         order: ['render.js', 'layout.js'],
-        skipProfiles: ['lite'],
         skipWithoutDC: true
     },
     {
@@ -795,7 +801,6 @@ const SUBDIR_BUNDLES = [
         entry: null,
         subDir: 'device-control',
         order: ['modbus-ops.js', 'modbus-ctrl.js'],
-        skipProfiles: ['lite'],
         skipWithoutDC: true
     },
     {
@@ -868,7 +873,13 @@ function buildSubdirBundles() {
 
         const header = `/* AUTO-GENERATED bundle: ${bundle.outName} (entry + sub-modules merged). DO NOT EDIT. */\n`;
         const raw = header + parts.join('\n\n') + '\n';
-        const content = noMinify ? raw : minifyJS(raw);
+        // The protocol entry bundles MQTT, Modbus tab orchestration and the
+        // optional remote-resource editor. Mangle only local bindings so the
+        // public AppState/API property names remain stable while the full S3
+        // profile stays inside its per-bundle Flash budget.
+        const content = noMinify ? raw : (bundle.outName === 'protocol.js'
+            ? minify_sync(raw, { compress: false, mangle: true }).code
+            : minifyJS(raw));
 
         const outPath = path.join(PUBLISH_MODULE_DIR, bundle.outName);
         writeUtf8(outPath, content);

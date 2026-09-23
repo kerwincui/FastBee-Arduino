@@ -460,9 +460,9 @@ private:
     static constexpr unsigned long STA_LOST_REBOOT_MS = 300000; // 5 分钟持续失联才重启回退 AP
     static constexpr unsigned long STA_ONLY_RETRY_INTERVAL_MS = 120000; // 禁止 AP 时避免认证风暴
 
-    // ── 网关可达性观测与自适应恢复 ───────────────────────────────────
-    // 从未响应过 ICMP 的路由器只做告警；若本次 STA 会话已确认网关可响应，随后
-    // 连续多轮无回包，则判定为僵尸关联并仅重连 WiFi，不重启整机。
+    // ── 网关可达性观测 ───────────────────────────────────────────────
+    // ICMP 只用于诊断。路由器或 AP 可能限速/丢弃 echo，不能仅凭 ping 失败
+    // 主动断开仍可提供局域网 Web 服务的 STA 连接。
     bool probeGatewayReachable();
     void resetGatewayWatchdog();
     static void gwPingOnSuccess(void* handle, void* args);
@@ -474,14 +474,10 @@ private:
     volatile bool _gwProbeResult = false; // 上一轮 ping 是否收到回包
     unsigned long _gwProbeStart = 0;
     void* _gwPingHandle = nullptr;        // esp_ping_handle_t
-    // ICMP 可能被家用路由器/mesh/AP 丢弃或限速，不能把短时无回包当成
-    // 僵尸关联。降低探测频率并要求至少 5 个连续失败（约 5 分钟）后，
-    // 才执行 STA-only 恢复，避免网页压力或弱信号瞬断被放大成断网。
+    // ICMP 可能被家用路由器/mesh/AP 丢弃或限速，因此只保留低频诊断。
     static constexpr unsigned long GW_PROBE_INTERVAL_MS = 60000;   // 探测间隔 60s
     static constexpr unsigned long GW_PROBE_TIMEOUT_MS = 8000;     // 单轮探测超时兜底（ping 自身 2s）
     static constexpr uint8_t GW_PROBE_WARNING_THRESHOLD = 3;       // 连续 3 次失败后降频输出观测告警
-    static constexpr uint8_t GW_PROBE_RECOVERY_THRESHOLD = 5;      // 已有成功基线后连续失败 5 次，仅重连 STA
-    static constexpr uint8_t GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD = 5; // 无基线但持续无数据面也仅重连 STA
 };
 
 #endif

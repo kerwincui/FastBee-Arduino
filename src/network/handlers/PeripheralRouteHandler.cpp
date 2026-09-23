@@ -108,6 +108,8 @@ void addDigitalInputParams(JsonObject params, const PeripheralConfig& config) {
     params["invertLogic"] = config.params.gpio.invertLogic;
     params["debounceMs"] = config.params.gpio.debounceMs ? config.params.gpio.debounceMs : 50;
     params["reportMode"] = config.params.gpio.reportMode;
+    params["pairedInputId"] = config.params.gpio.pairedInputId;
+    params["pairDebounceMs"] = config.params.gpio.pairDebounceMs ? config.params.gpio.pairDebounceMs : 200;
 }
 
 void addAnalogInputParams(JsonObject params, const PeripheralConfig& config, bool includeAdvanced = true) {
@@ -249,6 +251,8 @@ void addDisplayParams(JsonObject params, const PeripheralConfig& config) {
     params["controlResetMask"] = display.controlResetMask;
     params["controlBacklightMask"] = display.controlBacklightMask;
     params["controlEnableMask"] = display.controlEnableMask;
+    params["controlBuzzerMask"] = display.controlBuzzerMask;
+    params["touchBuzzerDurationMs"] = display.touchBuzzerDurationMs;
     params["controlInactiveMask"] = display.controlInactiveMask;
     params["controlTouchIntMask"] = display.controlTouchIntMask;
     JsonObject pins = params["pins"].to<JsonObject>();
@@ -270,6 +274,20 @@ void addDisplayParams(JsonObject params, const PeripheralConfig& config) {
     pins["rgbPclk"] = display.rgbPclk;
     pins["controlSda"] = display.controlSda;
     pins["controlScl"] = display.controlScl;
+}
+
+// Match PeripheralManager's protocol-owned UART reservation. This is a
+// configuration capability, independent of whether the catalog has been fetched.
+void addPeripheralDiagnosticCapability(JsonObject target, const PeripheralConfig& config) {
+    target["implemented"] = isPeripheralTypeImplemented(config.type);
+    if (!config.enabled) target["diagnosticBlockedReason"] = "disabled";
+    if (config.type == PeripheralType::UART) {
+        String id = config.id;
+        id.toLowerCase();
+        if (id.startsWith("modbus") || id.startsWith("rs485")) {
+            target["diagnosticBlockedReason"] = "protocol.modbus";
+        }
+    }
 }
 
 void addUartRuntime(JsonObject target, const PeripheralRuntimeState& runtime) {
@@ -503,6 +521,17 @@ void applyDigitalInputParams(WebHandlerContext* ctx, AsyncWebServerRequest* requ
         reportMode = static_cast<int>(DigitalReportMode::ON_CHANGE);
     }
     config.params.gpio.reportMode = static_cast<uint8_t>(reportMode);
+    const String peerId = ctx->getParamValue(request, "pairedInputId", config.params.gpio.pairedInputId);
+    if (peerId.length() >= sizeof(config.params.gpio.pairedInputId)) {
+        // Keep invalid input detectable by validateConfig; never silently target
+        // a different peripheral by truncating the requested ID.
+        memset(config.params.gpio.pairedInputId, '?', sizeof(config.params.gpio.pairedInputId));
+    } else {
+        peerId.toCharArray(config.params.gpio.pairedInputId, sizeof(config.params.gpio.pairedInputId));
+    }
+    const int pairMs = ctx->getParamInt(request, "pairDebounceMs", config.params.gpio.pairDebounceMs);
+    config.params.gpio.pairDebounceMs = (pairMs == 0 || (pairMs >= 20 && pairMs <= 5000))
+        ? static_cast<uint16_t>(pairMs) : UINT16_MAX;
 }
 
 void applyAnalogInputParams(WebHandlerContext* ctx, AsyncWebServerRequest* request,
@@ -794,11 +823,17 @@ bool applyDisplayRequestParameters(WebHandlerContext* ctx,
     READ_DISPLAY_EXTRA(controlResetMask, 0, 255);
     READ_DISPLAY_EXTRA(controlBacklightMask, 0, 255);
     READ_DISPLAY_EXTRA(controlEnableMask, 0, 255);
+    READ_DISPLAY_EXTRA(controlBuzzerMask, 0, 255);
+    READ_DISPLAY_EXTRA(touchBuzzerDurationMs, 20, 150);
     READ_DISPLAY_EXTRA(controlInactiveMask, 0, 255);
     READ_DISPLAY_EXTRA(controlTouchIntMask, 0, 255);
 #undef READ_DISPLAY_EXTRA
     if (!params.controlMasksDisjoint()) {
         error = "DISPLAY_CONTROL_INVALID: control masks must be disjoint";
+        return false;
+    }
+    if (params.controlBuzzerMask && control != "ch32v003") {
+        error = "DISPLAY_CONTROL_INVALID: buzzer mask requires ch32v003";
         return false;
     }
     if (!params.controlTouchSyncValid()) {
@@ -1323,7 +1358,7 @@ void addPeripheralTypeDescriptorDetails(JsonObject typeObj,
             ili9341["maxWidth"] = 320;
             ili9341["minHeight"] = 128;
             ili9341["maxHeight"] = 320;
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if CHIP_IS_ESP32S3
             JsonObject st7701 = drivers.add<JsonObject>();
             st7701["backend"] = "rgb";
             st7701["driver"] = "st7701";
@@ -2324,7 +2359,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         doc["typeName"] = getPeripheralTypeName(config.type);
         doc["category"] = getCategoryName(getPeripheralCategory(config.type));
         doc["enabled"] = config.enabled;
-        doc["implemented"] = isPeripheralTypeImplemented(config.type);
+        addPeripheralDiagnosticCapability(doc.as<JsonObject>(), config);
         addPassiveBuzzerFlag(doc, config);
 
         if (config.type == PeripheralType::UART) {
@@ -2457,6 +2492,10 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     // 如果连单条序列化都无法完成，由下方 isListMemoryCriticallyLow() 返回 503。
     int effectivePageSize = pageSize;
 
+    // Deletion/filter changes can remove the requested page. Clamp before
+    // multiplying to also avoid overflow from an excessively large page.
+    page = std::min(page, std::max(1, (total + effectivePageSize - 1) / effectivePageSize));
+
     // 计算分页范围（统一使用 effectivePageSize）
     int startIdx = (page - 1) * effectivePageSize;
     int endIdx = (startIdx < total) ? std::min(startIdx + effectivePageSize, total) : startIdx;
@@ -2488,7 +2527,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         itemDoc["typeName"] = getPeripheralTypeName(config.type);
         itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
         itemDoc["enabled"] = config.enabled;
-        itemDoc["implemented"] = isPeripheralTypeImplemented(config.type);
+        addPeripheralDiagnosticCapability(itemDoc.as<JsonObject>(), config);
         addPassiveBuzzerFlag(itemDoc, config);
 
         if (!compact) {
@@ -2717,6 +2756,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     data["type"] = static_cast<int>(config->type);
     data["typeName"] = getPeripheralTypeName(config->type);
     data["enabled"] = config->enabled;
+    addPeripheralDiagnosticCapability(data, *config);
     addPassiveBuzzerFlag(data, *config);
 
     JsonArray pins = data["pins"].to<JsonArray>();

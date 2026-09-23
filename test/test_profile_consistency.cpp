@@ -2,12 +2,12 @@
  * @file test_profile_consistency.cpp
  * @brief 统一架构（Unified Architecture v2.0）配置矩阵一致性守卫
  *
- * 2026-08 环境整合后不再有 lite/standard/full 预设，所有出厂环境引用
+ * 2026-08 环境整合后不再有产品档位预设，所有出厂环境引用
  * [unified_flags] 编译全部功能模块，由运行时 FeatureBudget 门控。
  * 本文件防止后续改动无意中破坏整合后的矩阵：
  * 1. unified_flags 完整性守卫（重型功能必须为 1，外部网络适配器按环境选择）
- * 2. 已删除预设段守卫（lite/standard/full_flags 等不得复活）
- * 3. 统一 Web 镜像守卫（出厂一律 full 档，无 profile 区分）
+ * 2. 已删除产品档位预设段守卫
+ * 3. Web 资源按目标能力生成，不以产品档位区分
  * 4. env lib_deps/lib_ignore 守卫（统一编译需要全部外设库；S3 排除红外库）
  * 5. OTA 策略守卫（无 PSRAM 的 4MB 环境必须显式关闭 OTA）
  * 6. Web 构建设备大屏门控守卫（保持不变）
@@ -124,8 +124,8 @@ void test_legacy_profile_sections_removed() {
 
     // Shared source filters are intentionally retained for all unified envs.
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[standard_src_filter]") != std::string::npos &&
-        pio.find("[standard_ota_src_filter]") != std::string::npos,
+        pio.find("[all_src_filter]") != std::string::npos &&
+        pio.find("[all_ota_src_filter]") != std::string::npos,
         "shared source filters must remain available to unified environments");
 
     // -unified 后缀环境已并入同名基础环境
@@ -138,7 +138,7 @@ void test_legacy_profile_sections_removed() {
 
 // ========== 3. 编译能力驱动的 Web 镜像守卫 ==========
 
-void test_unified_web_image_full_profile() {
+void test_unified_web_image_capabilities() {
     TestLog::testStart("Web image follows resolved PlatformIO capabilities");
 
     std::string py = readProjectFile("scripts/fastbee-artifacts.py");
@@ -283,8 +283,8 @@ void test_network_adapter_compile_matrix() {
                 section.find("SSLClient") == std::string::npos,
                 (std::string("[") + profile.env + "] disabled adapter profile must omit cellular libraries").c_str());
             TEST_ASSERT_TRUE_MESSAGE(
-                section.find("${lite_src_filter.build_src_filter}") != std::string::npos,
-                (std::string("[") + profile.env + "] must use lite adapter source filter").c_str());
+                section.find("${wifi_only_src_filter.build_src_filter}") != std::string::npos,
+                (std::string("[") + profile.env + "] must use Wi-Fi-only adapter source filter").c_str());
         }
     }
 
@@ -432,7 +432,7 @@ void test_profile_consistency_group() {
     TestLog::groupStart("Profile Consistency Tests");
     RUN_TEST(test_unified_flags_complete_feature_set);
     RUN_TEST(test_legacy_profile_sections_removed);
-    RUN_TEST(test_unified_web_image_full_profile);
+    RUN_TEST(test_unified_web_image_capabilities);
     RUN_TEST(test_env_lib_deps_unified_build);
     RUN_TEST(test_network_adapter_compile_matrix);
     RUN_TEST(test_ota_policy_follows_hardware);

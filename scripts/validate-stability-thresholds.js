@@ -5,7 +5,6 @@ const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const THRESHOLDS_PATH = path.join(ROOT_DIR, 'scripts', 'device-stability-thresholds.json');
-const PROFILES = ['lite', 'standard', 'full', 'unified'];
 const REQUIRED_FIELDS = [
     'maxFailureRatePercent',
     'maxP95LatencyMs',
@@ -28,8 +27,8 @@ function sorted(values) {
     return Array.from(values).sort();
 }
 
-function validateProfileThresholds(presetName, profile, thresholds, issues) {
-    const label = `presets.${presetName}.profiles.${profile}`;
+function validateHardwareThresholds(presetName, hardware, thresholds, issues) {
+    const label = `presets.${presetName}.${hardware}`;
     if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
         issues.push(`${label}: must be an object`);
         return;
@@ -74,63 +73,21 @@ function validateProfileThresholds(presetName, profile, thresholds, issues) {
         issues.push(`${label}.maxHeapMaxAllocDropBytes: must be > 0`);
     }
 
-    if (profile === 'full') {
+    if (hardware === 'psramThresholds') {
         if (thresholds.minPsramFreeBytes <= 0) {
-            issues.push(`${label}.minPsramFreeBytes: full profile must enforce PSRAM free minimum`);
+            issues.push(`${label}.minPsramFreeBytes: PSRAM hardware must enforce PSRAM free minimum`);
         }
         if (thresholds.maxPsramFreeDropBytes <= 0) {
-            issues.push(`${label}.maxPsramFreeDropBytes: full profile must enforce PSRAM drop maximum`);
+            issues.push(`${label}.maxPsramFreeDropBytes: PSRAM hardware must enforce PSRAM drop maximum`);
         }
     } else {
         if (thresholds.minPsramFreeBytes !== 0) {
-            issues.push(`${label}.minPsramFreeBytes: non-full profiles must not require PSRAM`);
+            issues.push(`${label}.minPsramFreeBytes: internal DRAM hardware must not require PSRAM`);
         }
         if (thresholds.maxPsramFreeDropBytes !== 0) {
-            issues.push(`${label}.maxPsramFreeDropBytes: non-full profiles must not require PSRAM`);
+            issues.push(`${label}.maxPsramFreeDropBytes: internal DRAM hardware must not require PSRAM`);
         }
     }
-}
-
-function checkMonotonic(profiles, field, direction, issues) {
-    const lite = profiles.lite;
-    const standard = profiles.standard;
-    const full = profiles.full;
-    if (!lite || !standard || !full) return;
-    if (!(field in lite) || !(field in standard) || !(field in full)) return;
-
-    const l = lite[field], s = standard[field], f = full[field];
-    if (direction === 'asc') {
-        if (s < l) issues.push(`release: standard.${field} (${s}) must be >= lite (${l})`);
-        if (f < s) issues.push(`release: full.${field} (${f}) must be >= standard (${s})`);
-    } else {
-        if (s > l) issues.push(`release: standard.${field} (${s}) must be <= lite (${l})`);
-        if (f > s) issues.push(`release: full.${field} (${f}) must be <= standard (${s})`);
-    }
-}
-
-function validateReleaseOrdering(releaseProfiles, issues) {
-    const lite = releaseProfiles.lite;
-    const standard = releaseProfiles.standard;
-    const full = releaseProfiles.full;
-    if (!lite || !standard || !full) return;
-
-    // Minimums: full >= standard >= lite (more features need more memory)
-    checkMonotonic(releaseProfiles, 'minHeapFreeBytes', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'minHeapMaxAllocBytes', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'minPsramFreeBytes', 'asc', issues);
-
-    // Drop allowances: full >= standard >= lite (more features tolerate more drift)
-    checkMonotonic(releaseProfiles, 'maxHeapFreeDropBytes', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'maxHeapMaxAllocDropBytes', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'maxPsramFreeDropBytes', 'asc', issues);
-
-    // Latency: full >= standard >= lite (full builds may be slower under load)
-    checkMonotonic(releaseProfiles, 'maxP95LatencyMs', 'asc', issues);
-
-    // Failure budgets: should be consistent (all 0 for release), but if relaxed, full >= standard >= lite
-    checkMonotonic(releaseProfiles, 'maxFailureRatePercent', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'maxEndpointFailureRatePercent', 'asc', issues);
-    checkMonotonic(releaseProfiles, 'maxConsecutiveFailures', 'asc', issues);
 }
 
 function main() {
@@ -151,25 +108,15 @@ function main() {
         if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(presetName)) {
             issues.push(`invalid preset name '${presetName}'`);
         }
-        const profiles = preset && preset.profiles;
-        if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) {
-            issues.push(`presets.${presetName}.profiles: must be an object`);
-            return;
-        }
-
-        const actualProfiles = Object.keys(profiles);
-        const extraProfiles = actualProfiles.filter((profile) => !PROFILES.includes(profile));
-        const missingProfiles = PROFILES.filter((profile) => !actualProfiles.includes(profile));
-        if (extraProfiles.length > 0) {
-            issues.push(`presets.${presetName}.profiles: unexpected ${sorted(extraProfiles).join(', ')}`);
-        }
-        if (missingProfiles.length > 0) {
-            issues.push(`presets.${presetName}.profiles: missing ${missingProfiles.join(', ')}`);
-        }
-
-        PROFILES.forEach((profile) => validateProfileThresholds(presetName, profile, profiles[profile], issues));
-        if (presetName === 'release') {
-            validateReleaseOrdering(profiles, issues);
+        if (preset.profiles) issues.push(`presets.${presetName}: product editions are not supported`);
+        validateHardwareThresholds(presetName, 'thresholds', preset.thresholds, issues);
+        validateHardwareThresholds(presetName, 'psramThresholds', preset.psramThresholds, issues);
+        if (preset.thresholds && preset.psramThresholds) {
+            for (const field of ['minHeapFreeBytes', 'minHeapMaxAllocBytes']) {
+                if (preset.psramThresholds[field] < preset.thresholds[field]) {
+                    issues.push(`presets.${presetName}: PSRAM hardware must not weaken ${field}`);
+                }
+            }
         }
     });
 
@@ -180,7 +127,7 @@ function main() {
     }
 
     const presetCount = Object.keys(doc.presets || {}).length;
-    console.log(`FastBee stability thresholds OK: presets=${presetCount}, profiles=${PROFILES.length}`);
+    console.log(`FastBee stability thresholds OK: presets=${presetCount}, hardwareGuards=2`);
 }
 
 main();

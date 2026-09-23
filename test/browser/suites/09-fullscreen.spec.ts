@@ -4,7 +4,7 @@ test.describe('Suite-09: 设备大屏', () => {
 
   test.beforeEach(async ({ authPage }) => {
     const caps = await detectDeviceCapabilities(authPage);
-    test.skip(!caps?.hasFullscreen, '设备不支持大屏页面（精简版无此功能）');
+    test.skip(!caps?.hasFullscreen, '设备不支持大屏页面');
   });
 
   test('SCR-001: 打开设备大屏 @quick', async ({ authPage, navigateTo }) => {

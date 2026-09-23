@@ -142,6 +142,8 @@ bool isAllowedConfigImportFileName(const String& name) {
 bool isKnownRuntimeConfigFileName(const String& name) {
     if (isAllowedConfigImportFileName(name) || isIgnoredConfigImportFileName(name)) return true;
     if (name == "network.json" || name == "protocol.json" ||
+        name == "screen_panel.json.touch-v1.bak" ||
+        name == "protocol.pre-screen-weather.json" || name == "periph_exec.pre-screen-remote.json" ||
         name == "auth.json" || name == "users.json") return true;
     static const char* const generationSuffixes[] = {
         ".factory.tmp", ".import.tmp", ".bak", ".tmp"
@@ -157,6 +159,7 @@ bool isKnownRuntimeConfigFileName(const String& name) {
 
 bool isSensitiveRuntimeConfigPath(const String& path) {
     return path == "/config/network.json" || path == "/config/protocol.json" ||
+           path == "/config/protocol.pre-screen-weather.json" ||
            path == "/config/auth.json" || path == "/config/users.json";
 }
 
@@ -1239,6 +1242,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "/config/provision.json", "/config/ble_provision.json",
             "/config/ir_keys.json", "/config/rf_keys.json",
             "/config/screen_panel.json", "/config/point_history.json",
+            "/config/screen_panel.json.touch-v1.bak",
+            "/config/protocol.pre-screen-weather.json", "/config/periph_exec.pre-screen-remote.json",
             "/data/point_history.json"
         };
         bool historyDeleted = true;

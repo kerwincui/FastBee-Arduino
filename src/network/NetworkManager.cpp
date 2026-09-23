@@ -1124,8 +1124,8 @@ void FBNetworkManager::update() {
         lastConflictCheck = currentTime;
     }
 
-    // 网关 ICMP 使用会话内成功基线做自适应判断。完全不响应 echo 的路由器始终
-    // 只告警；已经成功过、随后连续多轮无回包，才视为 WiFi 僵尸关联并重连 STA。
+    // 网关 ICMP 只提供诊断。家用路由器、mesh 或 AP 可能在 TCP 仍健康时
+    // 丢弃 echo，因此这里绝不依据 ping 结果主动断开 STA。
     auto* gatewayFw = FastBeeFramework::getInstance();
     auto* gatewayWeb = gatewayFw ? gatewayFw->getWebConfigManager() : nullptr;
     const bool deferGatewayProbeForWeb =
@@ -1156,36 +1156,12 @@ void FBNetworkManager::update() {
             _gwArpFailCount = 0;
         } else {
             if (_gwArpFailCount < 255) _gwArpFailCount++;
-            // A session that never established an ICMP baseline can still be a
-            // false CONNECTED state (DHCP/IP is present but ARP/TCP is dead).
-            // Recover it with a STA-only reconnect after the same bounded number
-            // of failures; never escalate this path to reboot or AP fallback.
-            const uint8_t recoveryThreshold = _gwProbeEverSucceeded
-                ? GW_PROBE_RECOVERY_THRESHOLD
-                : GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD;
-            const bool recoverZombie =
-                _gwArpFailCount >= recoveryThreshold;
-            if (recoverZombie) {
-                Serial.printf("[NET] Gateway data path lost (baseline=%s, %d probes), reconnecting STA without reboot or AP fallback\n",
-                              _gwProbeEverSucceeded ? "confirmed" : "unknown",
-                              (int)_gwArpFailCount);
-                LOG_WARNINGF("NetworkManager: Gateway data path lost (baseline=%s, %d probes), reconnecting STA without reboot or AP fallback",
-                             _gwProbeEverSucceeded ? "confirmed" : "unknown",
-                             (int)_gwArpFailCount);
-                _gwArpFailCount = 0;
-                _gwProbeEverSucceeded = false;
-                wasConnected = false;
-                statusInfo.status = NetworkStatus::DISCONNECTED;
-                statusInfo.reconnectAttempts = 0;
-                lastReconnectAttempt = 0;
-                _staDisconnectedSince = currentTime;
-                WiFi.disconnect(false);
-            } else if (_gwArpFailCount <= GW_PROBE_WARNING_THRESHOLD ||
+            if (_gwArpFailCount <= GW_PROBE_WARNING_THRESHOLD ||
                 (_gwArpFailCount % 20) == 0) {
-                Serial.printf("[NET] Gateway ping unanswered (%d, baseline=%s, pending STA-only recovery)\n",
+                Serial.printf("[NET] Gateway ping unanswered (%d, baseline=%s, advisory only)\n",
                               (int)_gwArpFailCount,
                               _gwProbeEverSucceeded ? "confirmed" : "unknown");
-                LOG_WARNINGF("NetworkManager: Gateway ping unanswered (%d, baseline=%s, pending STA-only recovery)",
+                LOG_WARNINGF("NetworkManager: Gateway ping unanswered (%d, baseline=%s, advisory only)",
                              (int)_gwArpFailCount,
                              _gwProbeEverSucceeded ? "confirmed" : "unknown");
             }

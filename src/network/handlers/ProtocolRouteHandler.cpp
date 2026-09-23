@@ -2,6 +2,10 @@
 #include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+#include "core/PeriphExecManager.h"
+#include "core/AsyncExecTypes.h"
+#endif
 #include "systems/LoggerSystem.h"
 #if FASTBEE_ENABLE_MODBUS
 #include "./network/handlers/ModbusRouteHandler.h"
@@ -46,6 +50,89 @@ T clampProtocolValue(T value, T minVal, T maxVal) {
 
 bool hasProtocolParam(AsyncWebServerRequest* request, const char* key) {
     return request && (request->hasParam(key, true) || request->hasParam(key, false));
+}
+
+// Deleting an array entry also renumbers every subsequent execution target.
+// Reject affected references instead of silently redirecting an existing rule.
+bool validateModbusArrayUpdate(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                               JsonArrayConst previous, const String& submitted,
+                               bool tasks) {
+    if (submitted.isEmpty()) return true;
+    JsonDocument incoming;
+    if (deserializeJson(incoming, submitted) || !incoming.is<JsonArray>()) {
+        ctx->sendError(request, 400, "Modbus tasks/devices must be a JSON array");
+        return false;
+    }
+    JsonArrayConst next = incoming.as<JsonArrayConst>();
+    const size_t maxCount = tasks ? Protocols::MODBUS_MAX_POLL_TASKS : 8;
+    if (next.size() > maxCount) {
+        ctx->sendError(request, 400, "Too many Modbus tasks/devices");
+        return false;
+    }
+    for (JsonVariantConst item : next) {
+        if (!item.is<JsonObjectConst>()) {
+            ctx->sendError(request, 400, "Each Modbus task/device must be an object");
+            return false;
+        }
+    }
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    if (next.size() >= previous.size()) return true;
+    auto affected = [&](int index) {
+        if (index < 0 || static_cast<size_t>(index) >= previous.size()) return false;
+        if (static_cast<size_t>(index) >= next.size()) return true;
+        // Only a shortened list needs this guard. Ordinary edits to addresses,
+        // function codes or mappings do not rename positional references.
+        const char* fields[] = {"slaveAddress", "deviceType", "name", "sensorId",
+                                "functionCode", "startAddress", "quantity"};
+        for (const char* field : fields) {
+            if (previous[index][field].as<String>() != next[index][field].as<String>()) return true;
+        }
+        return false;
+    };
+    const String prefix = tasks ? "modbus-task:" : "modbus:";
+    auto affectedId = [&](const String& id) {
+        return id.startsWith(prefix) && affected(id.substring(prefix.length()).toInt());
+    };
+    auto& manager = PeriphExecManager::getInstance();
+    MutexGuard lock(manager.getRulesMutex(), pdMS_TO_TICKS(2000));
+    if (!lock.isLocked()) {
+        ctx->sendError(request, 503, "Execution rules are busy; retry deletion shortly");
+        return false;
+    }
+    for (const auto& entry : manager.getRules()) {
+        const auto& rule = entry.second;
+        bool conflict = false;
+        for (const auto& trigger : rule.triggers) conflict |= affectedId(trigger.triggerPeriphId);
+        for (const auto& action : rule.actions) {
+            conflict |= affectedId(action.targetPeriphId);
+            if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) continue;
+            JsonDocument value;
+            if (!deserializeJson(value, action.actionValue) && value.is<JsonObject>()) {
+                if (tasks) {
+                    for (JsonVariantConst index : value["poll"].as<JsonArrayConst>()) conflict |= affected(index.as<int>());
+                } else {
+                    for (JsonVariantConst control : value["ctrl"].as<JsonArrayConst>()) conflict |= affected(control["d"] | 0);
+                }
+            } else if (tasks && !action.actionValue.startsWith("{")) {
+                int start = 0;
+                while (start < static_cast<int>(action.actionValue.length())) {
+                    int end = action.actionValue.indexOf(',', start);
+                    if (end < 0) end = action.actionValue.length();
+                    String token = action.actionValue.substring(start, end);
+                    token.trim();
+                    if (!token.isEmpty()) conflict |= affected(token.toInt());
+                    start = end + 1;
+                }
+            }
+        }
+        if (conflict) {
+            ctx->sendError(request, 409, String("删除会改变外设执行规则的 Modbus 索引，请先调整规则：") +
+                           rule.name + " (" + rule.id + ")");
+            return false;
+        }
+    }
+#endif
+    return true;
 }
 
 void ensureFastBeeOtaTopic(JsonArray topics,
@@ -786,6 +873,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // Modbus RTU Master 轮询任务
     // 仅在前端实际发送了 tasks 数据时才清空并重建数组，避免从其他标签页保存时误删现有配置
     String masterTasksJson = GP("modbusRtu_master_tasks", "");
+    if (!validateModbusArrayUpdate(ctx, request, doc["modbusRtu"]["master"]["tasks"].as<JsonArrayConst>(), masterTasksJson, true)) return;
     if (masterTasksJson.length() > 0) {
     JsonArray masterTasks = doc["modbusRtu"]["master"]["tasks"].to<JsonArray>();
     if (masterTasksJson.length() > 2) {
@@ -833,6 +921,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // Modbus RTU Master 子设备
     // 仅在前端实际发送了 devices 数据时才清空并重建数组
     String masterDevicesJson = GP("modbusRtu_master_devices", "");
+    if (!validateModbusArrayUpdate(ctx, request, doc["modbusRtu"]["master"]["devices"].as<JsonArrayConst>(), masterDevicesJson, false)) return;
     if (masterDevicesJson.length() > 0) {
     JsonArray masterDevices = doc["modbusRtu"]["master"]["devices"].to<JsonArray>();
     if (masterDevicesJson.length() > 2) {

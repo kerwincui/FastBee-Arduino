@@ -27,6 +27,10 @@
 .PARAMETER BrowserTests
     是否执行 Playwright 浏览器自动化测试（默认开启，可用 -BrowserTests:$false 关闭）。
 
+.PARAMETER ReadOnly
+    启用只读验收模式。该模式传递给 smoke-test-device.ps1，跳过 NTP 同步与配置
+    导入/持久化回读；默认关闭以兼容现有全量冒烟测试。
+
 .PARAMETER MonitorMinutes
     长稳监测时长（分钟）。0=不执行（默认）。监测期间每 MonitorIntervalSec 秒
     轮询全部设备，统计在线率、响应时间 p50/p95、heap 波动、重启与自愈（掉线后恢复）事件。
@@ -39,6 +43,9 @@
 
 .EXAMPLE
     .\scripts\run-device-fleet-tests.ps1 -BrowserTests:$false -MonitorMinutes 240
+
+.EXAMPLE
+    .\scripts\run-device-fleet-tests.ps1 -DeviceConfig artifacts\current-device-fleet.json -ReadOnly
 #>
 
 [CmdletBinding()]
@@ -56,6 +63,8 @@ param(
 
     [bool]$BrowserTests = $true,
 
+    [switch]$ReadOnly,
+
     [ValidateRange(0, 2147483647)]
     [int64]$MinHeapFreeBytes = 25600,
 
@@ -68,6 +77,15 @@ param(
     [ValidateRange(0, 2147483647)]
     [int64]$MaxHeapMaxAllocDropBytes = 12000,
 
+    [ValidateRange(0, 2147483647)]
+    [int64]$ActiveMinHeapFreeBytes = 20480,
+
+    [ValidateRange(0, 2147483647)]
+    [int64]$ActiveMinHeapMaxAllocBytes = 4096,
+
+    [ValidateRange(30, 60)]
+    [int]$MemoryCooldownSeconds = 30,
+
     [int]$MonitorMinutes = 0,
     [int]$MonitorIntervalSec = 60
 )
@@ -75,6 +93,7 @@ param(
 $ErrorActionPreference = "Continue"
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
+$acceptanceMode = if ($ReadOnly) { "ReadOnly" } else { "Full" }
 
 # ─── 从 JSON 加载设备舰队（地址可随测试台变化） ─────────────
 
@@ -140,6 +159,7 @@ Write-Host "=============================================================" -Fore
 Write-Host "  FastBee 多设备舰队快速测试 (STA + mDNS 映射 + API + 浏览器)" -ForegroundColor Cyan
 Write-Host "=============================================================" -ForegroundColor Cyan
 Write-Host "  设备数量: $($Devices.Count)   期望 SSID: $Ssid   浏览器测试: $BrowserTests   长稳监测: $MonitorMinutes min"
+Write-Host "  验收模式: $acceptanceMode   ReadOnly: $([bool]$ReadOnly)"
 foreach ($dev in $Devices) {
     Write-Host "    - $($dev.Label): $($dev.IP) ($($dev.Domain), profile=$($dev.Profile))"
 }
@@ -184,7 +204,7 @@ function Get-FleetSnapshot {
     $info = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/info"
     $status = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/status"
     $metrics = Invoke-FleetApi -BaseUrl $BaseUrl -Session $Session -Path "/api/system/metrics"
-    $snap = @{ heapFree = $null; heapMaxAlloc = $null; uptime = $null; psramFree = $null }
+    $snap = @{ heapFree = $null; heapMaxAlloc = $null; uptime = $null; psramFree = $null; noMemoryFeatures = $null }
     $metricsData = if ($metrics -and $metrics.data) { $metrics.data } else { $metrics }
     if ($metricsData -and $metricsData.heap) {
         if ($null -ne $metricsData.heap.dram_free) { $snap.heapFree = [int64]$metricsData.heap.dram_free }
@@ -210,6 +230,11 @@ function Get-FleetSnapshot {
     }
     if ($null -eq $snap.uptime -and $status -and $status.data -and $null -ne $status.data.uptime) {
         $snap.uptime = [int64]$status.data.uptime
+    }
+    if ($status -and $status.data -and $status.data.features) {
+        $snap.noMemoryFeatures = @($status.data.features.PSObject.Properties | Where-Object {
+            [string]$_.Value -eq "no-memory"
+        }).Count
     }
     return $snap
 }
@@ -318,6 +343,8 @@ foreach ($dev in $Devices) {
         IP = $dev.IP
         Domain = $dev.Domain
         Profile = $dev.Profile
+        AcceptanceMode = $acceptanceMode
+        ReadOnly = [bool]$ReadOnly
         StaOk = $false
         MdnsRequired = -not [string]::IsNullOrWhiteSpace([string]$dev.Domain)
         MdnsOk = $false
@@ -329,6 +356,8 @@ foreach ($dev in $Devices) {
         HeapAfter = $null
         HeapMaxAllocBefore = $null
         HeapMaxAllocAfter = $null
+        HeapCooldown = $null
+        HeapMaxAllocCooldown = $null
         HeapDropBytes = $null
         HeapMaxAllocDropBytes = $null
         HeapDropKB = $null
@@ -400,6 +429,9 @@ foreach ($dev in $Devices) {
         "-Username", $Username, "-Password", $Password,
         "-RequireNetworkConnected"
     )
+    if ($ReadOnly) {
+        $smokeArgs += "-ReadOnly"
+    }
     $smokeOut = & powershell @smokeArgs 2>&1
     $smokeExit = $LASTEXITCODE
     $smokeText = ($smokeOut | Out-String)
@@ -444,7 +476,8 @@ foreach ($dev in $Devices) {
         }
     }
 
-    # 7) 测试后快照 + 泄漏/重启检测
+    # 7) 负载结束立即采样。这里使用 WebMemoryGuard 的硬下限，允许
+    # 浏览器/API 活动期间出现可恢复的临时占用。
     $session2 = Invoke-FleetLogin -BaseUrl $baseUrl
     if (-not $session2) { $session2 = $session }
     $after = Get-FleetSnapshot -BaseUrl $baseUrl -Session $session2
@@ -452,25 +485,56 @@ foreach ($dev in $Devices) {
     $entry.HeapMaxAllocAfter = $after.heapMaxAlloc
     $entry.UptimeAfter = $after.uptime
 
-    if ($null -ne $before.heapFree -and $null -ne $after.heapFree) {
-        $entry.HeapDropBytes = [int64]($before.heapFree - $after.heapFree)
+    # 8) 主动释放测试会话，冷却 30-60 秒后再采样稳态。25.6KB/8KB
+    # 以及首尾下降门槛只用于该冷却样本，不能用活动期水位判断泄漏。
+    foreach ($logoutSession in @($session, $session2)) {
+        if ($null -eq $logoutSession) { continue }
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/api/auth/logout" -Method POST -WebSession $logoutSession `
+                -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
+        } catch { }
+    }
+    Start-Sleep -Seconds $MemoryCooldownSeconds
+    $cooldownSession = Invoke-FleetLogin -BaseUrl $baseUrl
+    $cooldown = if ($cooldownSession) {
+        Get-FleetSnapshot -BaseUrl $baseUrl -Session $cooldownSession
+    } else {
+        @{ heapFree = $null; heapMaxAlloc = $null; uptime = $null; psramFree = $null; noMemoryFeatures = $null }
+    }
+    $entry.HeapCooldown = $cooldown.heapFree
+    $entry.HeapMaxAllocCooldown = $cooldown.heapMaxAlloc
+    if ($cooldownSession) {
+        try {
+            Invoke-WebRequest -Uri "$baseUrl/api/auth/logout" -Method POST -WebSession $cooldownSession `
+                -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
+        } catch { }
+    }
+
+    if ($null -ne $before.heapFree -and $null -ne $cooldown.heapFree) {
+        $entry.HeapDropBytes = [int64]($before.heapFree - $cooldown.heapFree)
         $entry.HeapDropKB = [Math]::Round($entry.HeapDropBytes / 1024, 1)
     }
-    if ($null -ne $before.heapMaxAlloc -and $null -ne $after.heapMaxAlloc) {
-        $entry.HeapMaxAllocDropBytes = [int64]($before.heapMaxAlloc - $after.heapMaxAlloc)
+    if ($null -ne $before.heapMaxAlloc -and $null -ne $cooldown.heapMaxAlloc) {
+        $entry.HeapMaxAllocDropBytes = [int64]($before.heapMaxAlloc - $cooldown.heapMaxAlloc)
     }
 
     $heapIssues = New-Object System.Collections.Generic.List[string]
-    if ($null -eq $before.heapFree -or $null -eq $after.heapFree -or
-        $null -eq $before.heapMaxAlloc -or $null -eq $after.heapMaxAlloc) {
+    if ($null -eq $before.heapFree -or $null -eq $after.heapFree -or $null -eq $cooldown.heapFree -or
+        $null -eq $before.heapMaxAlloc -or $null -eq $after.heapMaxAlloc -or $null -eq $cooldown.heapMaxAlloc) {
         $heapIssues.Add("required DRAM metrics unavailable")
     }
     else {
-        if ($after.heapFree -lt $MinHeapFreeBytes) {
-            $heapIssues.Add("heap free $($after.heapFree)B below minimum ${MinHeapFreeBytes}B")
+        if ($after.heapFree -lt $ActiveMinHeapFreeBytes) {
+            $heapIssues.Add("active heap free $($after.heapFree)B below hard minimum ${ActiveMinHeapFreeBytes}B")
         }
-        if ($after.heapMaxAlloc -lt $MinHeapMaxAllocBytes) {
-            $heapIssues.Add("largest allocation $($after.heapMaxAlloc)B below minimum ${MinHeapMaxAllocBytes}B")
+        if ($after.heapMaxAlloc -lt $ActiveMinHeapMaxAllocBytes) {
+            $heapIssues.Add("active largest allocation $($after.heapMaxAlloc)B below hard minimum ${ActiveMinHeapMaxAllocBytes}B")
+        }
+        if ($cooldown.heapFree -lt $MinHeapFreeBytes) {
+            $heapIssues.Add("cooldown heap free $($cooldown.heapFree)B below minimum ${MinHeapFreeBytes}B")
+        }
+        if ($cooldown.heapMaxAlloc -lt $MinHeapMaxAllocBytes) {
+            $heapIssues.Add("cooldown largest allocation $($cooldown.heapMaxAlloc)B below minimum ${MinHeapMaxAllocBytes}B")
         }
         if ($entry.HeapDropBytes -gt $MaxHeapDropBytes) {
             $heapIssues.Add("heap drop $($entry.HeapDropBytes)B exceeds ${MaxHeapDropBytes}B")
@@ -478,13 +542,18 @@ foreach ($dev in $Devices) {
         if ($entry.HeapMaxAllocDropBytes -gt $MaxHeapMaxAllocDropBytes) {
             $heapIssues.Add("largest allocation drop $($entry.HeapMaxAllocDropBytes)B exceeds ${MaxHeapMaxAllocDropBytes}B")
         }
+        if (($null -ne $after.noMemoryFeatures -and $after.noMemoryFeatures -gt 0) -or
+            ($null -ne $cooldown.noMemoryFeatures -and $cooldown.noMemoryFeatures -gt 0)) {
+            $heapIssues.Add("runtime feature degraded to no-memory")
+        }
     }
     $entry.HeapOk = ($heapIssues.Count -eq 0)
     if (-not $entry.HeapOk) {
         $entry.Errors += "heap gate failed: $($heapIssues -join '; ')"
         Write-Host "  [X] DRAM: $($heapIssues -join '; ')" -ForegroundColor Red
     }
-    if ($null -ne $before.uptime -and $null -ne $after.uptime -and $after.uptime -lt $before.uptime) {
+    if (($null -ne $before.uptime -and $null -ne $after.uptime -and $after.uptime -lt $before.uptime) -or
+        ($null -ne $after.uptime -and $null -ne $cooldown.uptime -and $cooldown.uptime -lt $after.uptime)) {
         $entry.Rebooted = $true
         $entry.Errors += "device rebooted during test"
         Write-Host "  [X] 设备在测试期间重启!" -ForegroundColor Red
@@ -492,8 +561,8 @@ foreach ($dev in $Devices) {
 
     $sw.Stop(); $entry.DurationSec = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
     $fleetResults += [pscustomobject]$entry
-    if ($null -ne $before.heapFree -and $null -ne $after.heapFree) {
-        Write-Host "  heap: $([Math]::Round($before.heapFree/1024,1))KB -> $([Math]::Round($after.heapFree/1024,1))KB (drop $($entry.HeapDropKB)KB), 耗时 $($entry.DurationSec)s" -ForegroundColor DarkCyan
+    if ($null -ne $before.heapFree -and $null -ne $after.heapFree -and $null -ne $cooldown.heapFree) {
+        Write-Host "  heap: baseline $([Math]::Round($before.heapFree/1024,1))KB -> active $([Math]::Round($after.heapFree/1024,1))KB -> cooldown $([Math]::Round($cooldown.heapFree/1024,1))KB (steady drop $($entry.HeapDropKB)KB), 耗时 $($entry.DurationSec)s" -ForegroundColor DarkCyan
     }
     Write-Host ""
 }
@@ -504,7 +573,7 @@ Write-Host "=============================================================" -Fore
 Write-Host "  舰队测试汇总" -ForegroundColor Cyan
 Write-Host "=============================================================" -ForegroundColor Cyan
 
-$fleetResults | Format-Table Label, IP, StaOk, MdnsOk, SmokePassed, SmokeTotal, SmokeFailed, BrowserOk, HeapOk, HeapDropKB, Rebooted, DurationSec -AutoSize | Out-String | Write-Host
+$fleetResults | Format-Table Label, IP, AcceptanceMode, ReadOnly, StaOk, MdnsOk, SmokePassed, SmokeTotal, SmokeFailed, BrowserOk, HeapAfter, HeapCooldown, HeapOk, HeapDropKB, Rebooted, DurationSec -AutoSize | Out-String | Write-Host
 
 $failedDevices = @($fleetResults | Where-Object {
     $mdnsGate = (-not $_.MdnsRequired) -or ($_.MdnsOk -eq $true)
@@ -666,6 +735,7 @@ if ($MonitorMinutes -gt 0) {
 Write-Host ""
 Write-Host "  JSON 报告: $jsonPath"
 Write-Host "  CSV  报告: $csvPath"
+Write-Host "  验收模式: $acceptanceMode   ReadOnly: $([bool]$ReadOnly)"
 $totalDuration = (Get-Date) - $startTime
 Write-Host "  总耗时: $([Math]::Round($totalDuration.TotalMinutes, 1)) min"
 

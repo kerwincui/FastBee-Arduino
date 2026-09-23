@@ -20,15 +20,15 @@
 | `test-screen-panel-browser-device.mjs` | 实机浏览器导航、配置草稿和桌面/手机截图检查；默认只读。显式 `--exercise-switch` 仅在未绑定显示外设时临时启用面板，最终恢复原开关，不保存布局或执行控制 | `node scripts/test-screen-panel-browser-device.mjs --url=http://<device-ip> --output=artifacts/panel-browser` |
 | `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -Rounds 100` |
 | `run-device-fleet-tests.ps1` | 对多台设备执行 STA/mDNS/API/资源汇总；支持 JSON 编队配置 | `powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false` |
-| `long-term-device-monitor.ps1` | 仓库实验室五台固定设备的串口、STA HTTP、重启和覆盖缺口长期监测；异常以非零退出码结束 | `powershell -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 -DurationHours 8 -IntervalSeconds 60` |
-| `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收；支持部署后 live fleet JSON | 见下方 8 小时严格验收命令 |
+| `long-term-device-monitor.ps1` | 严格只读的串口、STA HTTP GET、重启和覆盖缺口长期监测；支持 live fleet、逐设备 P95/P99、curl 18/28/HTTP 503、连续失败/恢复及断点续跑 | 见下方 24/72 小时严格只读命令 |
+| `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收；支持部署后 live fleet JSON。它会登录和注销，因此不属于零 POST 的严格只读监控 | 见下方 8 小时 Web 功能验收命令 |
 | `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://<device-sta-ip> --user admin --pass 123456 --allow-begin` |
 
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
 
-`device-fleet.example.json` 中的五组 IP 与串口是当前实验室拓扑示例，不是设备的固定分配，也不声明菜单验收意图。使用 `run-device-fleet-tests.ps1` 或 `fleet-stability-monitor.mjs --device-config` 前先生成本次部署的 live fleet 文件；每项必须包含 `label`、`ip`、`profile`、`domain`、`serial`。可选的 `expectedMenus` 是非空菜单名数组：配置后作为硬验收契约，即使设备因 `no-memory` 降级并隐藏菜单也会判定失败；省略时继续按 `/api/system/status` 的运行时功能状态推导菜单，仅用于兼容受限设备、旧清单或探索性监测。正式验收必须根据部署前已确认的 `features.json` 配置意图或部署清单显式生成 `expectedMenus`；不能在故障发生后从已经降级的运行态反推期望集合。用户明确关闭可选菜单时，契约应只列出实际要求的 7 个核心菜单，不能按 S3 等硬件型号强制写成 11 个。`long-term-device-monitor.ps1` 当前直接绑定该实验室测试台，不适合作为通用设备发现入口。
+`device-fleet.example.json` 中的五组 IP 与串口是当前实验室拓扑示例，不是设备的固定分配，也不声明菜单验收意图。使用 `run-device-fleet-tests.ps1`、`long-term-device-monitor.ps1 -FleetFile` 或 `fleet-stability-monitor.mjs --device-config` 前先生成本次部署的 live fleet 文件；每项必须包含 `label`、`ip`、`profile`、`domain`、`serial`。可选的 `expectedMenus` 是非空菜单名数组：配置后作为硬验收契约，即使设备因 `no-memory` 降级并隐藏菜单也会判定失败；省略时继续按 `/api/system/status` 的运行时功能状态推导菜单，仅用于兼容受限设备、旧清单或探索性监测。正式验收必须根据部署前已确认的 `features.json` 配置意图或部署清单显式生成 `expectedMenus`；不能在故障发生后从已经降级的运行态反推期望集合。用户明确关闭可选菜单时，契约应只列出实际要求的 7 个核心菜单，不能按 S3 等硬件型号强制写成 11 个。
 
-### 8 小时严格验收
+### 8 小时 Web 功能验收
 
 每次使用新的输出目录；`--min-duration-hours 8` 会按每台设备首末样本的实际时间窗执行门禁，不能用较多但不足 8 小时的周期代替。命令完成后只有退出码为 0 且 `fleet-stability-verdict.json` 为 `PASS` 才算通过：
 
@@ -42,6 +42,27 @@ node test/browser/fleet-stability-monitor.mjs `
 ```
 
 严格门禁要求 live fleet 中选定的设备全时段在线、浏览器每周期完整覆盖、登录和期望菜单成功，无重试、HTTP/控制台/页面错误、WebGuard 503、任何 `no-memory` 功能降级或异常重启；同时检查内部 DRAM、最大连续块、响应 p95 及其首尾趋势。报告分别保留周期前、周期后的 `no-memory` 历史峰值，并只把最后一个周期的采样标为“最新/最终”；最后周期缺采样时明确显示“无采样”，不会拿较早值冒充当前值。配置包含非空 `domain` 时监测器优先验证该域名，并以同项 `ip` 作为回退；任何域名失败后回退都会计入严格门禁。该命令本身是验收方法，不代表设备已经通过真机测试。
+
+### 24/72 小时严格只读验收
+
+该入口只发送公开 HTTP GET，并以 `--dtr 0 --rts 0` 读取串口，不登录、不注销、不执行外设动作、不重启、不修改配置。`summary.json` 按设备记录检查/周期成功率、P95/P99、HTTP 状态码、curl 18/28、HTTP 503、连续失败和恢复。中断后用原 live fleet 和运行目录续跑；停机间隔不计入要求的监控活跃时长。
+
+```powershell
+$fleetConfig = "artifacts/current-device-fleet-20260920.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 `
+  -DurationHours 24 -IntervalSeconds 60 -HttpTimeoutSec 10 -SerialSeconds 8 `
+  -FleetFile $fleetConfig -OutputDir artifacts\long-term-monitor-final-24h
+
+# 中断后从 state.json 对应的运行目录继续，不新建一轮：
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 `
+  -ResumeRunDir artifacts\long-term-monitor-final-24h\<run-id> `
+  -FleetFile $fleetConfig
+
+# 24 小时 summary.json 为 completed、durationComplete=true、exitCode=0 后再启动 72 小时：
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 `
+  -DurationHours 72 -IntervalSeconds 60 -HttpTimeoutSec 10 -SerialSeconds 8 `
+  -FleetFile $fleetConfig -OutputDir artifacts\long-term-monitor-final-72h
+```
 
 ## 测试矩阵
 
@@ -79,6 +100,8 @@ node test/browser/fleet-stability-monitor.mjs `
 
 ## Web 资源处理
 
+`data/www/assets/logo.png` 和 `data/www/assets/favicon.ico` 是受 Git 跟踪的源资产，属于 `data/www` 生成目录中的例外。隔离构建或复制源码时必须保留这两个文件；发布前还应校验页面图片引用与资源清单对应，避免登录页和侧边栏出现图片 404。
+
 | 脚本 | 说明 |
 |------|------|
 | `build-app-bundle.js`、`build-admin-bundle.js`、`build-web-modules.js` | 从 `web-src` 生成 Web 模块；HTML/JS/CSS 源文件仍只在 `web-src` 维护 |
@@ -90,7 +113,7 @@ node test/browser/fleet-stability-monitor.mjs `
 | `validate-config-defaults.js` | 校验默认外设模板、执行规则和环境编译裁剪后的引用安全性 |
 | `web-smoke-test.js` | 校验生成后的 Web 资源引用和启动资源 |
 | `test-gzip-www-contract.js` | 校验 `web-src` HTML 与发布 gzip 一一对应，并确保发布目录和 LittleFS staging 不含原始 HTML/JS/CSS |
-| `web-profile.js` | Web 资源构建固定使用 `full` 资产集；运行时可选菜单仍按功能的 `active` 状态显示 |
+| `web-profile.js` | 统一 Web 按目标实际编译能力生成资源；运行时可选菜单按功能的 `active` 状态显示 |
 | `web-asset-report.js` | 统一 Web 资源体积报告；`--source` 查看源文件体积，`--json` 输出 JSON |
 
 ## 维护诊断

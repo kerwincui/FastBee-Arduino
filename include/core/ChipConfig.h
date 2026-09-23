@@ -11,7 +11,12 @@
 #include "sdkconfig.h"
 #endif
 
+#ifdef __cplusplus
 #include <cstdint>
+#else
+#include <stdbool.h>
+#include <stdint.h>
+#endif
 
 // ========== 芯片能力定义 ==========
 

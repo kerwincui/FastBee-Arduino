@@ -999,8 +999,10 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
         (data[firstPayloadByte] == '[' || data[firstPayloadByte] == '{');
     // Snapshot the wire encoding while the producing Modbus handler is still
     // alive. Queue consumers must not infer it again after a hot restart.
+    // Read only the encoding byte: getConfig() copies the full polling table
+    // onto the worker stack and overflows it when a poll returns valid data.
     const bool rawRtuPayload = modbusHandler &&
-        modbusHandler->getConfig().transferType == 1 && !structuredPayload;
+        modbusHandler->getTransferType() == 1 && !structuredPayload;
 
     // 1. MQTT 上报（所有来源都上报）
 #if FASTBEE_ENABLE_MQTT
@@ -1747,7 +1749,7 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
     }
 
     LOG_INFOF("[Modbus] OneShot: executing %d task(s) from MQTT command", tasks.size());
-    const bool rawTransfer = activeModbus->getConfig().transferType == 1;
+    const bool rawTransfer = activeModbus->getTransferType() == 1;
 
     // 逐任务执行
     for (JsonVariant tv : tasks) {

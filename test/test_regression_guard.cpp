@@ -1003,16 +1003,18 @@ void test_regression_no_psram_ntp_uses_sntp_fallback() {
 
     std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
     TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
-    TEST_ASSERT_TRUE_MESSAGE(src.find("ESP.getPsramSize() == 0") != std::string::npos,
-        "NTP path must detect no-PSRAM targets");
-    TEST_ASSERT_TRUE_MESSAGE(src.find("HTTP NTP skipped on no-PSRAM target") != std::string::npos,
-        "No-PSRAM HTTP NTP fallback must be observable in logs");
-    TEST_ASSERT_TRUE_MESSAGE(src.find("httpNtpConfigured && !noPsram") != std::string::npos,
-        "Synchronous HTTP NTP must be gated off without PSRAM");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("ESP.getPsramSize() > 0") != std::string::npos,
+        "HTTP NTP fallback must detect PSRAM-capable targets");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("ntpHttpFallbackAttempts < 2") != std::string::npos,
+        "HTTP NTP fallback must be bounded");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("framework->ntpRetryCount >= 3") != std::string::npos,
+        "HTTP NTP fallback must wait for asynchronous SNTP retries");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("TimeUtils::syncNTPFromHTTP") != std::string::npos,
+        "PSRAM NTP fallback must use the shared HTTP time helper");
     TEST_ASSERT_TRUE_MESSAGE(src.find("configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr)") != std::string::npos,
         "No-PSRAM fallback must configure asynchronous SNTP");
     TEST_ASSERT_TRUE_MESSAGE(src.find("String primaryServer = httpNtpConfigured ? s2Str : s1Str") != std::string::npos,
-        "HTTP NTP URL must be replaced by a DNS NTP host on no-PSRAM targets");
+        "HTTP NTP URL must be replaced by a DNS NTP host for the initial SNTP attempt");
     TEST_ASSERT_TRUE_MESSAGE(src.find("primaryServer = \"pool.ntp.org\"") != std::string::npos,
         "SNTP fallback must have a safe DNS hostname when config is missing");
 
@@ -2304,8 +2306,19 @@ static void test_regression_modbus_restart_distinguishes_intentional_idle() {
 /**
  * @brief F16R8 示例中的未接线 Modbus 模板必须保持默认禁用
  */
-static void test_regression_s3_f16r8_modbus_templates_remain_disabled() {
-    TestLog::testStart("Regression: S3 F16R8 Modbus Templates Remain Disabled");
+static void test_regression_factory_modbus_disabled_and_com15_explicit_topology() {
+    TestLog::testStart("Regression: Factory Modbus OFF and COM15 Explicit Read-Only Polling");
+
+    const std::string factoryText = readRegressionSrcFile("data/config/protocol.json");
+    TEST_ASSERT_FALSE_MESSAGE(factoryText.empty(), "Cannot read factory protocol defaults");
+    JsonDocument factory;
+    TEST_ASSERT_FALSE_MESSAGE(deserializeJson(factory, factoryText), "Factory protocol must be valid JSON");
+    TEST_ASSERT_TRUE_MESSAGE(factory["modbusRtu"]["enabled"].is<bool>(), "Factory Modbus enabled flag is required");
+    TEST_ASSERT_FALSE_MESSAGE(factory["modbusRtu"]["enabled"].as<bool>(), "Factory defaults must not activate a field bus");
+    TEST_ASSERT_TRUE(factory["modbusRtu"]["master"]["tasks"].is<JsonArrayConst>());
+    TEST_ASSERT_TRUE(factory["modbusRtu"]["master"]["devices"].is<JsonArrayConst>());
+    TEST_ASSERT_EQUAL_UINT(0, factory["modbusRtu"]["master"]["tasks"].size());
+    TEST_ASSERT_EQUAL_UINT(0, factory["modbusRtu"]["master"]["devices"].size());
 
     const std::string configText =
         readRegressionSrcFile("docs/ecm50a-s3-f16r8/protocol.json");
@@ -2319,18 +2332,55 @@ static void test_regression_s3_f16r8_modbus_templates_remain_disabled() {
 
     const JsonArrayConst tasks = doc["modbusRtu"]["master"]["tasks"].as<JsonArrayConst>();
     const JsonArrayConst devices = doc["modbusRtu"]["master"]["devices"].as<JsonArrayConst>();
-    TEST_ASSERT_GREATER_THAN_MESSAGE(0, tasks.size(), "F16R8 must ship sensor polling templates");
-    TEST_ASSERT_GREATER_THAN_MESSAGE(0, devices.size(), "F16R8 must ship sub-device templates");
-    for (JsonObjectConst task : tasks) {
-        TEST_ASSERT_FALSE_MESSAGE(task["enabled"] | true,
-                                  "unverified polling templates must remain disabled");
+    // This is the user-authorized COM15 field configuration, not factory defaults.
+    TEST_ASSERT_EQUAL_UINT(5, tasks.size());
+    // Sensor addresses 1..5 are represented by read-only tasks, not duplicate
+    // control devices. The relay at address 6 is control-device index 0.
+    TEST_ASSERT_EQUAL_UINT(1, devices.size());
+    for (size_t index = 0; index < tasks.size(); ++index) {
+        JsonObjectConst task = tasks[index];
+        TEST_ASSERT_TRUE_MESSAGE(task["enabled"] | false, "COM15 configured sensor polling must remain enabled");
+        TEST_ASSERT_EQUAL_UINT(index + 1, task["slaveAddress"].as<unsigned>());
+        const unsigned code = task["functionCode"] | 0U;
+        TEST_ASSERT_TRUE_MESSAGE(code == 3 || code == 4, "Periodic polling must use read-only Modbus function codes");
     }
-    for (JsonObjectConst device : devices) {
-        TEST_ASSERT_FALSE_MESSAGE(device["enabled"] | true,
-                                  "unverified sub-device templates must remain disabled");
+    for (size_t index = 0; index < devices.size(); ++index) {
+        JsonObjectConst device = devices[index];
+        TEST_ASSERT_TRUE_MESSAGE(device["enabled"] | false, "COM15 authorized device topology must remain enabled");
+        TEST_ASSERT_EQUAL_UINT(6, device["slaveAddress"].as<unsigned>());
+        TEST_ASSERT_EQUAL_STRING("relay", device["deviceType"] | "");
+        TEST_ASSERT_EQUAL_UINT(2, device["channelCount"].as<unsigned>());
+        TEST_ASSERT_EQUAL_UINT(0, device["coilBase"].as<unsigned>());
+        TEST_ASSERT_EQUAL_UINT(0, device["controlProtocol"].as<unsigned>());
     }
 
-    TestLog::step("all F16R8 sensor and relay templates remain opt-in until physical wiring is verified");
+    JsonDocument execution;
+    const std::string executionText = readRegressionSrcFile("docs/ecm50a-s3-f16r8/periph_exec.json");
+    TEST_ASSERT_FALSE_MESSAGE(executionText.empty(), "COM15 execution configuration is required");
+    TEST_ASSERT_FALSE_MESSAGE(deserializeJson(execution, executionText), "COM15 execution configuration must be valid JSON");
+    size_t relayRules = 0;
+    for (JsonObjectConst rule : execution["rules"].as<JsonArrayConst>()) {
+        const std::string id = rule["id"] | "";
+        if (id != "s3_modbus_relay" && id != "s3_modbus_relay_off") continue;
+        ++relayRules;
+        const JsonArrayConst triggers = rule["triggers"].as<JsonArrayConst>();
+        const JsonArrayConst actions = rule["actions"].as<JsonArrayConst>();
+        TEST_ASSERT_EQUAL_UINT(1, triggers.size());
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(0, triggers[0]["triggerType"] | 255U, "Relay control must require explicit platform invocation, never a timer");
+        TEST_ASSERT_EQUAL_STRING("modbus:0", triggers[0]["triggerPeriphId"] | "");
+        TEST_ASSERT_EQUAL_UINT(1, actions.size());
+        TEST_ASSERT_EQUAL_STRING("modbus:0", actions[0]["targetPeriphId"] | "");
+        TEST_ASSERT_EQUAL_UINT(18, actions[0]["actionType"].as<unsigned>());
+        JsonDocument command;
+        TEST_ASSERT_FALSE_MESSAGE(deserializeJson(command, actions[0]["actionValue"] | ""),
+                                  "Relay command must contain explicit control JSON");
+        TEST_ASSERT_EQUAL_UINT(1, command["ctrl"].size());
+        TEST_ASSERT_EQUAL_UINT(0, command["ctrl"][0]["d"].as<unsigned>());
+        TEST_ASSERT_EQUAL_UINT(0, command["ctrl"][0]["c"].as<unsigned>());
+        TEST_ASSERT_EQUAL_STRING(id == "s3_modbus_relay" ? "on" : "off", command["ctrl"][0]["a"] | "");
+    }
+    TEST_ASSERT_EQUAL_UINT(2, relayRules);
+    TestLog::step("factory bus stays OFF; COM15 sensors poll read-only and relay rules require explicit invocation");
     TestLog::testEnd(true);
 }
 
@@ -2474,7 +2524,7 @@ static void test_regression_mdns_async_restart() {
  * @brief 声明了 src_filter 的环境必须排除未启用网络适配器的 .cpp 文件
  *
  * Unified Architecture v2.0 后，未声明 build_src_filter 的环境编译全部源码，
- * 功能关闭靠运行时门控；只有引用 [lite_src_filter] 的环境（C3/C6）在编译期
+ * 功能关闭靠运行时门控；只有引用 [wifi_only_src_filter] 的环境（C3/C6）在编译期
  * 排除 CellularAdapter.cpp 和 EthernetAdapter.cpp，
  * 防止 PlatformIO LDF 扫描并拉入 TinyGSM/SSLClient 等不必要的库依赖。
  */
@@ -2484,30 +2534,30 @@ void test_regression_src_filter_excludes_unused_adapters() {
     std::string pio = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
 
-    // lite_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
+    // wifi_only_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[lite_src_filter]") != std::string::npos,
-        "platformio.ini must have [lite_src_filter] section");
-    auto litePos = pio.find("[lite_src_filter]");
-    auto liteEnd = pio.find("\n[", litePos + 1);
-    std::string liteSection = pio.substr(litePos,
-        liteEnd == std::string::npos ? std::string::npos : liteEnd - litePos);
+        pio.find("[wifi_only_src_filter]") != std::string::npos,
+        "platformio.ini must have [wifi_only_src_filter] section");
+    auto wifiOnlyPos = pio.find("[wifi_only_src_filter]");
+    auto wifiOnlyEnd = pio.find("\n[", wifiOnlyPos + 1);
+    std::string wifiOnlySection = pio.substr(wifiOnlyPos,
+        wifiOnlyEnd == std::string::npos ? std::string::npos : wifiOnlyEnd - wifiOnlyPos);
     TEST_ASSERT_TRUE_MESSAGE(
-        liteSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
-        "lite_src_filter must exclude CellularAdapter.cpp");
+        wifiOnlySection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
+        "wifi_only_src_filter must exclude CellularAdapter.cpp");
     TEST_ASSERT_TRUE_MESSAGE(
-        liteSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
-        "lite_src_filter must exclude EthernetAdapter.cpp");
-    TestLog::step("lite_src_filter excludes CellularAdapter + EthernetAdapter");
+        wifiOnlySection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
+        "wifi_only_src_filter must exclude EthernetAdapter.cpp");
+    TestLog::step("wifi_only_src_filter excludes CellularAdapter + EthernetAdapter");
 
     // Shared source-filter aliases remain intentionally centralized so all
     // firmware environments resolve the same full source set.
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[standard_src_filter]") != std::string::npos,
-        "[standard_src_filter] must remain the shared full-source filter");
+        pio.find("[all_src_filter]") != std::string::npos,
+        "[all_src_filter] must remain the shared source filter");
     TEST_ASSERT_TRUE_MESSAGE(
-        pio.find("[standard_ota_src_filter]") != std::string::npos,
-        "[standard_ota_src_filter] must remain the shared full-source filter");
+        pio.find("[all_ota_src_filter]") != std::string::npos,
+        "[all_ota_src_filter] must remain the shared source filter");
     TestLog::step("shared src_filter sections stay centralized");
 
     TestLog::testEnd(true);
@@ -2561,8 +2611,8 @@ void test_regression_non_cellular_envs_no_tinygsm_sslclient() {
             TEST_ASSERT_TRUE_MESSAGE(section.find("TinyGSM") == std::string::npos &&
                 section.find("SSLClient") == std::string::npos,
                 (std::string(profile.env) + " must omit cellular dependencies").c_str());
-            TEST_ASSERT_TRUE_MESSAGE(section.find("${lite_src_filter.build_src_filter}") != std::string::npos,
-                (std::string(profile.env) + " must use lite source filter").c_str());
+            TEST_ASSERT_TRUE_MESSAGE(section.find("${wifi_only_src_filter.build_src_filter}") != std::string::npos,
+                (std::string(profile.env) + " must use the Wi-Fi-only source filter").c_str());
         }
     }
 
@@ -3216,12 +3266,12 @@ void test_regression_boot_report_gated_and_throttled_in_source() {
 }
 
 // ========== Scheduler web-reserve 堆口径源码回归保护 ==========
-// checkTimers 的暂停/恢复检查必须使用 8BIT DRAM 口径，与静态资源门控
-// （WebHandlerContext）、STATUS 日志一致。不得使用 MALLOC_CAP_INTERNAL：
+// checkTimers 的暂停/恢复检查必须使用 INTERNAL | 8BIT DRAM 口径，
+// 与 Web/network 准入一致。不得仅使用 MALLOC_CAP_INTERNAL：
 // INTERNAL 含 IRAM/RTC 不可 malloc 内存，虚高约 28KB（实测 INTERNAL=36KB
 // 但 8BIT 仅 8KB/blk8 仅 1.7KB），用 INTERNAL 判暂停会触发太晚——8BIT 早已
 // 被定时器规则切碎，静态门控(2KB)把登录页资源全拒，AP 配网页面加载不全。
-// 也不得用 MALLOC_CAP_DEFAULT（跨堆取最小，被极小 IRAM 堆拉低造成永久误暂停）。
+// 单独 8BIT 会计入 PSRAM；DEFAULT 也不能替代内部字节内存指标。
 void test_regression_scheduler_web_reserve_uses_8bit_heap_in_source() {
     TestLog::testStart("Scheduler web-reserve heap basis (8BIT source guard)");
 
@@ -3232,14 +3282,25 @@ void test_regression_scheduler_web_reserve_uses_8bit_heap_in_source() {
     TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos, "checkTimers must exist");
     std::string body = sched.substr(fnPos);
 
-    // 暂停判定必须用 8BIT（DRAM）口径，与静态资源门控一致
+    // 暂停判定复用内部字节内存封装，不能将 PSRAM 当作网络可用 DRAM。
     TEST_ASSERT_TRUE_MESSAGE(
-        body.find("heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)") != std::string::npos,
-        "web-reserve check must measure largest block with MALLOC_CAP_8BIT");
+        body.find("largestBlock = FastBee::MemoryBudget::dram8Largest()") != std::string::npos,
+        "web-reserve largest block must use dram8Largest");
     TEST_ASSERT_TRUE_MESSAGE(
-        body.find("heap_caps_get_free_size(MALLOC_CAP_8BIT)") != std::string::npos,
-        "web-reserve check must measure free heap with MALLOC_CAP_8BIT");
-    TestLog::step("largest block + free heap measured with 8BIT basis");
+        body.find("freeHeap = FastBee::MemoryBudget::dram8Free()") != std::string::npos,
+        "web-reserve free heap must use dram8Free");
+    const std::string budget = readRegressionSrcFile("include/core/MemoryBudget.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        budget.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)") != std::string::npos,
+        "dram8Largest must exclude PSRAM and non-byte internal regions");
+    TEST_ASSERT_TRUE_MESSAGE(
+        budget.find("heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)") != std::string::npos,
+        "dram8Free must exclude PSRAM and non-byte internal regions");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)") == std::string::npos &&
+        body.find("heap_caps_get_free_size(MALLOC_CAP_8BIT)") == std::string::npos,
+        "web-reserve must not count PSRAM through bare 8BIT queries");
+    TestLog::step("largest block + free heap use INTERNAL | 8BIT helpers");
 
     // 不得回退到 INTERNAL 口径（虚高约 28KB，暂停触发太晚）
     TEST_ASSERT_TRUE_MESSAGE(
@@ -3545,6 +3606,7 @@ void test_regression_s3_octal_psram_pins_reserved() {
 
     // isValidPin 必须委托集中式硬件策略，避免业务模块复制芯片宏分支
     std::string periphMgr = readRegressionSrcFile("src/core/PeripheralManager.cpp");
+    periphMgr += readRegressionSrcFile("src/core/PeripheralManagerDiagnostics.cpp");
     TEST_ASSERT_FALSE_MESSAGE(periphMgr.empty(), "Cannot read PeripheralManager.cpp");
     size_t validPinPos = periphMgr.find("bool PeripheralManager::isValidPin");
     TEST_ASSERT_TRUE_MESSAGE(validPinPos != std::string::npos, "isValidPin must exist");
@@ -3700,7 +3762,7 @@ void test_regression_static_max_inflight_at_least_3() {
 /**
  * @brief 源码回归：platformio.ini 中 FASTBEE_ENABLE_RULE_SCRIPT 宏值一致性
  * Unified Architecture v2.0：[unified_flags] 统一设 1，所有出厂环境编入规则脚本，
- * 运行时 FeatureBudget 门控。原 lite/standard/full 预设段已于 2026-08-27 删除。
+ * 运行时 FeatureBudget 门控。旧的产品档位预设段已于 2026-08-27 删除。
  */
 void test_regression_rule_script_feature_flag_consistency() {
     TestLog::testStart("Source: FASTBEE_ENABLE_RULE_SCRIPT flag consistency (unified)");
@@ -3734,38 +3796,38 @@ void test_regression_rule_script_feature_flag_consistency() {
 }
 
 /**
- * @brief 源码回归：lite_src_filter 统一编译范围守卫。
- * Unified Architecture v2.0：lite_src_filter 以 +<*> 编入全部源码（含
+ * @brief 源码回归：wifi_only_src_filter 统一编译范围守卫。
+ * Unified Architecture v2.0：wifi_only_src_filter 以 +<*> 编入全部源码（含
  * RuleScriptManager），仅排除未启用的网络适配器；规则脚本由运行时门控，
- * Web 镜像统一 full 档，前端页面始终存在，不再需要编译期裁剪。
+ * Web 镜像按设备能力生成，前端页面始终由能力状态控制，不再按产品档位裁剪。
  */
-void test_regression_lite_src_filter_excludes_rule_script() {
-    TestLog::testStart("Source: lite_src_filter unified compile scope");
+void test_regression_wifi_only_src_filter_excludes_rule_script() {
+    TestLog::testStart("Source: wifi_only_src_filter unified compile scope");
 
     std::string ini = readRegressionSrcFile("platformio.ini");
     TEST_ASSERT_FALSE_MESSAGE(ini.empty(), "cannot read platformio.ini");
 
-    size_t filterPos = ini.find("[lite_src_filter]");
+    size_t filterPos = ini.find("[wifi_only_src_filter]");
     TEST_ASSERT_TRUE_MESSAGE(filterPos != std::string::npos,
-        "[lite_src_filter] section not found");
+        "[wifi_only_src_filter] section not found");
     size_t filterEnd = ini.find("\n[", filterPos + 1);
     std::string filterBlock = ini.substr(filterPos,
         filterEnd == std::string::npos ? std::string::npos : filterEnd - filterPos);
 
     TEST_ASSERT_TRUE_MESSAGE(
         filterBlock.find("+<*>") != std::string::npos,
-        "lite_src_filter must include all sources (+<*>) under unified architecture");
-    TestLog::step("lite_src_filter includes all sources (+<*>)");
+        "wifi_only_src_filter must include all sources (+<*>) under unified architecture");
+    TestLog::step("wifi_only_src_filter includes all sources (+<*>)");
 
     TEST_ASSERT_TRUE_MESSAGE(
         filterBlock.find("-<core/RuleScriptManager.cpp>") == std::string::npos,
-        "lite_src_filter must NOT exclude RuleScriptManager.cpp (unified compile)");
+        "wifi_only_src_filter must NOT exclude RuleScriptManager.cpp (unified compile)");
     TestLog::step("RuleScriptManager.cpp compiled in unified build");
 
     TEST_ASSERT_TRUE_MESSAGE(
         filterBlock.find("-<network/CellularAdapter.cpp>") != std::string::npos &&
         filterBlock.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
-        "lite_src_filter must keep excluding unused network adapters");
+        "wifi_only_src_filter must keep excluding unused network adapters");
     TestLog::step("unused network adapters still excluded");
 
     TestLog::testEnd(true);
@@ -3910,7 +3972,8 @@ void test_regression_factory_features_are_memory_safe() {
         logger.find("#if FASTBEE_USE_PSRAM") != std::string::npos &&
         logger.find("LOGGER_STARTUP_FILE_LOGGING = (FASTBEE_ENABLE_FILE_LOGGING != 0)") != std::string::npos &&
         logger.find("LOGGER_STARTUP_FILE_LOGGING = false") != std::string::npos &&
-        logger.find("fileLoggingEnabled(LOGGER_STARTUP_FILE_LOGGING)") != std::string::npos,
+        logger.find("fileLoggingState(static_cast<uint32_t>(LOGGER_STARTUP_FILE_LOGGING") != std::string::npos &&
+        logger.find("? FileLoggingState::Pending : FileLoggingState::Disabled)") != std::string::npos,
         "no-PSRAM logger must defer file logging until runtime features are loaded");
 
     std::string status = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
@@ -3975,11 +4038,18 @@ void test_regression_logger_reliability_guards() {
     const size_t flushPublicStart = logger.find("void LoggerSystem::flushBuffer()", flushStart);
     const std::string flush = logger.substr(flushStart, flushPublicStart - flushStart);
     TEST_ASSERT_TRUE_MESSAGE(
-        flush.find("if (!fileLoggingEnabled) return") != std::string::npos,
+        flush.find("if (!isFileLoggingEnabled()) return;") != std::string::npos &&
+        flush.find("if (!isFileLoggingEnabled()) return;") < flush.find("LittleFS.open"),
         "buffer flush must stop immediately when file logging is disabled");
+    const size_t openFailureStart = flush.find("if (!logFile)");
+    const size_t openFailureEnd = flush.find("return;", openFailureStart);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, openFailureStart, "file-open failure guard missing");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, openFailureEnd, "file-open failure must stop retrying");
+    const std::string openFailure = flush.substr(openFailureStart, openFailureEnd - openFailureStart);
     TEST_ASSERT_TRUE_MESSAGE(
-        flush.find("_ringBuffer.readPos = _ringBuffer.writePos") != std::string::npos,
-        "a file-open failure must discard the retrying buffer");
+        openFailure.find("cancelFileLoggingRequest()") != std::string::npos &&
+        openFailure.find("_ringBuffer->readPos = _ringBuffer->writePos") != std::string::npos,
+        "a file-open failure must cancel pending file logging and discard the retrying buffer");
 
     TEST_ASSERT_TRUE_MESSAGE(
         logger.find("findNextBackupSequence") != std::string::npos &&
@@ -4668,7 +4738,7 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_mqtt_disabled_rejects_reconnect);
     RUN_TEST(test_regression_modbus_deferred_restart_before_heap_guard);
     RUN_TEST(test_regression_modbus_restart_distinguishes_intentional_idle);
-    RUN_TEST(test_regression_s3_f16r8_modbus_templates_remain_disabled);
+    RUN_TEST(test_regression_factory_modbus_disabled_and_com15_explicit_topology);
     RUN_TEST(test_regression_modbus_raw_125_registers_dispatch_per_frame);
     RUN_TEST(test_regression_mqtt_summary_default_json);
     RUN_TEST(test_regression_fastbee_ota_mqtt_defaults);
@@ -4726,7 +4796,7 @@ RUN_TEST(test_regression_scheduler_web_reserve_hysteresis_thresholds_in_source);
 
     // 规则脚本 feature flag + 构建一致性回归保护
     RUN_TEST(test_regression_rule_script_feature_flag_consistency);
-    RUN_TEST(test_regression_lite_src_filter_excludes_rule_script);
+    RUN_TEST(test_regression_wifi_only_src_filter_excludes_rule_script);
     RUN_TEST(test_regression_rule_script_gated_in_firmware);
     RUN_TEST(test_regression_unified_web_bundles_rule_script);
     RUN_TEST(test_regression_factory_features_are_memory_safe);

@@ -24,6 +24,7 @@
 #include "systems/LoggerSystem.h"
 #include "utils/HeapFragmentation.h"
 #include "core/PeripheralManager.h"
+#include "core/SensorConfigEpoch.h"
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <WiFi.h>
@@ -79,13 +80,6 @@ bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
         return true;
     }
 
-    // 滞回：已暂停时用更宽松的恢复条件，未暂停时用更敏感的暂停条件
-    if (currentlySuspended) {
-        // 恢复需同时满足：空闲堆与最大块都回到安全区
-        return !(freeHeap >= WEB_RESERVE_RESUME_FREE_HEAP_BYTES &&
-                 largestBlock >= WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES);
-    }
-
     if (freeHeap < WEB_RESERVE_SUSPEND_FREE_HEAP_BYTES) {
         return true;
     }
@@ -99,8 +93,18 @@ bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
         return true;
     }
 
-    return fragmentation >= WEB_RESERVE_FRAGMENTATION_PERCENT &&
-           largestBlock < WEB_RESERVE_FRAGMENTED_BLOCK_BYTES;
+    if (fragmentation >= WEB_RESERVE_FRAGMENTATION_PERCENT &&
+        largestBlock < WEB_RESERVE_FRAGMENTED_BLOCK_BYTES) {
+        return true;
+    }
+
+    // Recovery must clear every suspension condition, including fragmentation.
+    // Otherwise one unchanged heap snapshot can alternate suspended/resumed.
+    if (currentlySuspended) {
+        return !(freeHeap >= WEB_RESERVE_RESUME_FREE_HEAP_BYTES &&
+                 largestBlock >= WEB_RESERVE_RESUME_LARGEST_BLOCK_BYTES);
+    }
+    return false;
 }
 }
 
@@ -202,7 +206,7 @@ void PeriphExecScheduler::checkTimers() {
     // 心跳放行：暂停期间每 120s 放行一次（CRITICAL 或 DRAM 低于外设执行
     // 门控时除外），保证遥测定时规则在长期 SEVERE 机型上不完全停摆
     if (_memoryPressurePaused) {
-        const uint32_t pausedDram = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        const uint32_t pausedDram = FastBee::MemoryBudget::dram8Free();
         MemoryGuardLevel pausedLevel = MemoryGuardLevel::NORMAL;
         auto* pausedFw = FastBeeFramework::getInstance();
         if (pausedFw && pausedFw->getHealthMonitor()) {
@@ -240,11 +244,11 @@ void PeriphExecScheduler::checkTimers() {
         }
     }
 
-    // 8BIT DRAM 口径，与静态资源门控(WebHandlerContext)、STATUS 日志一致：
-    // INTERNAL 含 IRAM/RTC 不可 malloc 内存，虚高约 28KB（INTERNAL=36KB 但 8BIT 仅 8KB），
-    // 用 INTERNAL 判暂停会触发太晚——8BIT 早已被定时器切碎，登录页资源被静态门控全拒。
-    const uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    // Match Web/network admission: only byte-addressable internal DRAM can
+    // satisfy their allocations. INTERNAL alone includes non-8-bit regions;
+    // 8BIT alone includes PSRAM and can mask exhausted internal memory.
+    const uint32_t freeHeap = FastBee::MemoryBudget::dram8Free();
+    const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
     const uint8_t fragmentation = calculateHeapFragmentationPercent(freeHeap, largestBlock);
 
     if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation,
@@ -636,6 +640,8 @@ void PeriphExecScheduler::checkButtonEvents() {
     if (now - _lastButtonCheck < 20) return;
     _lastButtonCheck = now;
 
+    checkComplementaryInputs(static_cast<uint32_t>(now));
+
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     for (auto it = _buttonStates.begin(); it != _buttonStates.end();) {
@@ -811,6 +817,64 @@ void PeriphExecScheduler::checkButtonEvents() {
         state.currentState = logicalLevel;
         state.lastChangeTime = now;
         handleStableDigitalInputChange(config, logicalLevel);
+    }
+}
+
+void PeriphExecScheduler::checkComplementaryInputs(uint32_t now) {
+    if (!_manager || !_manager->isInitialized()) return;
+    auto& pm = PeripheralManager::getInstance();
+    const uint32_t version = FastBee::SensorConfigEpoch::current();
+    if (version != _pairConfigVersion) {
+        _pairedInputStates.clear();
+        pm.forEachPeripheral([this](const PeripheralConfig& config) {
+            if (config.enabled && isGpioDigitalInputType(config.type) &&
+                config.params.gpio.pairedInputId[0]) {
+                _pairedInputStates.emplace(config.id, FastBee::ComplementaryInputMonitor{});
+            }
+        });
+        _pairConfigVersion = version;
+    }
+    // Read and publish outside forEachPeripheral's manager lock.
+    for (auto& entry : _pairedInputStates) {
+        PeripheralConfig primary, peer;
+        if (!pm.getPeripheralSnapshot(entry.first, primary) || !primary.enabled ||
+            !isGpioDigitalInputType(primary.type) || !primary.params.gpio.pairedInputId[0]) continue;
+        const bool peerValid = pm.getPeripheralSnapshot(primary.params.gpio.pairedInputId, peer) &&
+            peer.enabled && isGpioDigitalInputType(peer.type);
+        const GPIOState a = pm.readPin(primary.id);
+        const GPIOState b = peerValid ? pm.readPin(peer.id) : GPIOState::STATE_UNDEFINED;
+        if (FastBee::SensorConfigEpoch::current() != version) return;
+        const int first = a == GPIOState::STATE_UNDEFINED ? -1 : a == GPIOState::STATE_HIGH;
+        const int second = b == GPIOState::STATE_UNDEFINED ? -1 : b == GPIOState::STATE_HIGH;
+        const uint16_t stableMs = primary.params.gpio.pairDebounceMs ? primary.params.gpio.pairDebounceMs : 200;
+        const bool entered = entry.second.sample(first, second, now, stableMs);
+        bool publishReady = false;
+#if FASTBEE_ENABLE_MQTT
+        MQTTClient* mqtt = getMqttClient();
+        publishReady = entry.second.publishDue(now) && mqtt && mqtt->getIsConnected();
+#endif
+        if (!entered && !publishReady) continue;
+        StaticJsonDocument<256> details;
+        details["source"] = primary.id;
+        details["peer"] = primary.params.gpio.pairedInputId;
+        details["first"] = first;
+        details["second"] = second;
+        String payload;
+        serializeJson(details, payload);
+        const EventDef* event = findStaticEvent("break_down");
+        if (entered) {
+            LOGGER.warningf("[PeriphExec] Complementary input fault: %s / %s (%d,%d)",
+                            primary.id.c_str(), primary.params.gpio.pairedInputId, first, second);
+            _manager->dispatchEventMatchedRules("break_down", payload);
+        }
+#if FASTBEE_ENABLE_MQTT
+        if (publishReady) {
+            entry.second.published(now, _manager->notifyMqttEventPublish(
+                "break_down", event ? String(event->name) : String("Device fault"), payload));
+        }
+#else
+        (void)event;
+#endif
     }
 }
 

@@ -16,7 +16,7 @@ const WIFI_MANAGER_HEADER = path.join(ROOT_DIR, 'include', 'network', 'WiFiManag
 const SYSTEM_ROUTE_FILE = path.join(ROOT_DIR, 'src', 'network', 'handlers', 'SystemRouteHandler.cpp');
 const README_FILE = path.join(ROOT_DIR, 'README.md');
 const README_EN_FILE = path.join(ROOT_DIR, 'README.en.md');
-const PROFILES = ['lite', 'standard', 'full', 'unified'];
+const PROFILES = ['unified'];
 const DISABLED_RULE_TEMPLATE_PREFIXES = [
     'exec_stepper_',
     'exec_adc_voltage_',

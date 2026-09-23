@@ -586,7 +586,7 @@ function buildPublishStage() {
     console.log('\n[Step 1] Generating SW manifest...');
     generateManifest();
 
-    // 统一架构：始终生成 SW（无精简版模式）
+    // 统一架构：始终生成 SW，能力差异由设备状态控制。
 
     deleteOldGzFiles();
     compressAllFiles();

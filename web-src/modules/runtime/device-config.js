@@ -869,6 +869,10 @@
         async _importConfigTransferEntry(item) {
             const entry = this._validateConfigTransferEntry(item);
 
+            if (entry.name === 'periph_exec.json') {
+                return this._importExecutionConfig(entry);
+            }
+
             // 字段过滤容错：读取设备当前配置作为 schema，过滤导入文件中的多余字段
             let filteredContent = entry.content;
             if (typeof window.filterConfigFields === 'function') {
@@ -942,6 +946,57 @@
                 Notification.info(t('dc-transfer-cleaned-prefix', '已自动清理') + cleanedCount + t('dc-transfer-cleaned-suffix', ' 个残留配置文件'), t('dc-transfer-import-title-short', '配置导入'));
             }
             return { success: true, name: entry.name };
+        },
+
+        async _importExecutionConfig(entry) {
+            const size = this._configTransferByteLength(entry.content);
+            if (size > 96 * 1024) throw new Error('外设执行配置最大为 96 KB');
+            // Preserve the complete document. The current device's rules are
+            // data, not a schema for silently filtering another configuration.
+            const random = new Uint8Array(16);
+            window.crypto.getRandomValues(random);
+            const session = Array.from(random, value => value.toString(16).padStart(2, '0')).join('');
+            const chunks = this._splitConfigTransferChunks(entry.content, CONFIG_IMPORT_CHUNK_BYTES);
+            let offset = 0;
+            let finalState = null;
+            for (const chunk of chunks) {
+                const end = offset + this._configTransferByteLength(chunk);
+                const payload = { session, offset: String(offset), size: String(size), chunk };
+                let response;
+                for (let attempt = 0; ; attempt++) {
+                    try {
+                        response = await apiPost('/api/periph-exec/import-chunk', payload, 30000);
+                        if (!response || !response.success) throw new Error(response && response.error || '外设执行导入失败');
+                        break;
+                    } catch (error) {
+                        const status = error && error.status;
+                        if ((status >= 400 && status < 500) || attempt >= CONFIG_IMPORT_CHUNK_RETRIES) {
+                            const reason = error && error.data && error.data.error || error && error.message || '未知错误';
+                            const hints = {
+                                CONFIG_MEMORY_PRESSURE: '可用内存不足，原配置已保留。请等待设备空闲后重试',
+                                CONFIG_PENDING_RESTART: '已有配置待应用，请先重启设备',
+                                CONFIG_RULE_COUNT: '规则数量超过当前硬件容量，原配置已保留',
+                                CONFIG_DUPLICATE_ID: '存在重复的规则 ID，原配置已保留',
+                                CONFIG_COMMIT_FAILED: '配置写入失败，原配置已保留'
+                            };
+                            throw new Error(hints[reason] || '外设执行配置未导入：' + reason);
+                        }
+                        // The same session/range is idempotent, including a lost
+                        // final response. Never restart or replay rule actions.
+                        const retryAfter = Number(error && error.data && error.data.retryAfter);
+                        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+                            ? Math.min(retryAfter, 30) * 1000 : 500 * (attempt + 1);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+                finalState = response.data;
+                if (!finalState || finalState.received !== end) throw new Error('设备返回的配置接收长度不一致');
+                offset = end;
+            }
+            if (!finalState.saved || !finalState.restartRequired || finalState.applied !== false) {
+                throw new Error('未确认完整配置已保存，请勿将导入视为成功');
+            }
+            return { success: true, name: entry.name, restartRequired: true, applied: false };
         },
 
         _readSelectedConfigEntries(selectedFiles) {
@@ -1090,13 +1145,18 @@
                 })
                 .then(async (files) => {
                     if (!files.length) throw new Error(t('dc-transfer-none-selected', '未选择任何配置文件'));
+                    let restartRequired = false;
                     for (let i = 0; i < files.length; i++) {
                         const item = files[i];
                         this._setConfigTransferStatus(t('dc-transfer-importing', '正在导入') + ' ' + item.name + ' (' + (i + 1) + '/' + files.length + ')...');
-                        await this._importConfigTransferEntry(item);
+                        const result = await this._importConfigTransferEntry(item);
+                        restartRequired = restartRequired || !!result.restartRequired;
                     }
-                    this._setConfigTransferStatus(t('dc-transfer-import-done-prefix', '配置导入完成：') + files.length + t('dc-transfer-import-done-suffix', ' 个文件，建议重启设备使配置完全生效'));
-                    Notification.success(t('dc-transfer-import-done', '配置导入完成，建议重启设备'), t('dc-transfer-title', '配置导入/导出'));
+                    const message = restartRequired
+                        ? '配置已保存，外设执行尚未应用；请重启设备后生效'
+                        : t('dc-transfer-import-done', '配置导入完成，建议重启设备');
+                    this._setConfigTransferStatus(message);
+                    Notification.success(message, t('dc-transfer-title', '配置导入/导出'));
                     if (typeof window.apiInvalidateCache === 'function') {
                         window.apiInvalidateCache();
                     }

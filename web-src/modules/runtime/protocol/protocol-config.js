@@ -10,15 +10,13 @@
         _protocolFragmentMap: {
             'mqtt': { container: 'mqtt-fragment-container', fragment: 'protocol-mqtt' },
             'modbus-rtu': { container: 'modbus-rtu-fragment-container', fragment: 'protocol-modbus-rtu' },
-            'remote-resources': { container: 'remote-resources-fragment-container', fragment: 'protocol-remote-resources' }
         },
 
         loadProtocolConfig(tabId, options) {
             var self = this;
-            if (tabId === 'remote-resources' && typeof this._loadRemoteResourcesTab === 'function') {
-                this._stopMasterStatusRefresh();
-                if (typeof this._stopMqttStatusPolling === 'function') this._stopMqttStatusPolling();
-                return this._loadRemoteResourcesTab(options);
+            if (tabId === 'remote-resources') {
+                this.changePage('screen-panel');
+                return Promise.resolve();
             }
             if (tabId === 'modbus-rtu' &&
                 typeof ModuleLoader !== 'undefined' &&
@@ -129,7 +127,7 @@
                 }
                 this.onModbusModeChange('master');
                 if (rtu.master) {
-                    this._masterTasks = rtu.master.tasks || [];
+                    this._masterTasks = JSON.parse(JSON.stringify(rtu.master.tasks || []));
                     this._modbusDevices = rtu.master.devices || [];
                 } else {
                     this._masterTasks = [];
@@ -368,15 +366,17 @@
                                 }
                             }
                         }
+                        return true;
                     } else {
                         Notification.error(res?.message || '保存失败', '通信协议配置');
+                        return false;
                     }
                 })
                 .catch(err => {
                     console.error('saveProtocolConfig error:', err);
                     if (typeof window.apiNotifyError === 'function') {
                         window.apiNotifyError(err, '保存失败', '通信协议配置');
-                        return;
+                        return false;
                     }
                     if (err && err.name === 'AbortError') {
                         Notification.error('保存超时，设备可能正忙，请稍后重试', '通信协议配置');
@@ -389,6 +389,7 @@
                     } else {
                         Notification.error('保存失败', '通信协议配置');
                     }
+                    return false;
                 });
         },
 

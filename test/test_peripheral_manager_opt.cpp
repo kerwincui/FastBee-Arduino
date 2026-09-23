@@ -809,6 +809,7 @@ static void test_srclk_healthmonitor_exposes_isr_stats() {
 static void test_srclk_periphmanager_isr_hardening() {
     std::string src = readOptSrcFile("src/core/PeripheralManager.cpp");
     src += readOptSrcFile("src/core/PeripheralManagerIo.cpp");
+    src += readOptSrcFile("src/core/PeripheralManagerDiagnostics.cpp");
     if (src.empty()) {
         TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
         return;

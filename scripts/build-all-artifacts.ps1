@@ -2,7 +2,7 @@
 # ==========================================
 # Unified Architecture v2.0 - Single Firmware Variant
 #
-# BUILD MATRIX (All environments use unified full profile):
+# BUILD MATRIX (One firmware architecture across hardware targets):
 #   • esp32-F4R0       → ESP32 Classic, 4MB Flash, no PSRAM
 #   • esp32-F8R0       → ESP32 Classic, 8MB Flash, no PSRAM
 #   • esp32-F8R8       → ESP32 Classic/WROVER, 8MB Flash + 8MB PSRAM
@@ -13,7 +13,7 @@
 #   • esp32s3-F8R8     → ESP32-S3, 8MB Flash + 8MB PSRAM
 #   • esp32s3-F16R8    → ESP32-S3, 16MB Flash + 8MB PSRAM
 #
-# DEPRECATED: No longer distinguish lite/standard/full product tiers
+# DEPRECATED: Product editions were removed; use the unified capability model.
 #              All features compile into single firmware; runtime budget control via FeatureBudget
 #
 # USAGE:
@@ -58,7 +58,7 @@ $ErrorActionPreference = "Stop"
 
 # All supported targets use the same unified runtime/web profile. Keep this
 # explicit so manifest commands do not depend on an undefined shell variable.
-$Profile = "full"
+$Profile = "unified"
 
 function ConvertTo-Hashtable {
     param([Parameter(Mandatory = $true, ValueFromPipeline = $true)][object]$InputObject)
@@ -393,7 +393,7 @@ $ReleaseManifest = [ordered]@{
 }
 
 foreach ($EnvName in $Environments) {
-    # 所有环境统一编译 Full profile (无 Profile 概念了)
+    # 所有硬件目标使用统一固件架构。
     $ReleaseName = [string]$OutputNameByEnv[$EnvName]
     if ([string]::IsNullOrWhiteSpace($ReleaseName)) {
         throw "Missing release file name mapping for $EnvName"

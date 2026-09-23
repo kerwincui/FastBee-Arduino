@@ -935,7 +935,7 @@ void test_source_code_c3_platformio_config() {
 
 /**
  * @brief 源码回归：ESP32-C6 专用资源配置文件
- * 回归：C6之前落入esp32-lite默认分支，资源限制过低（16条执行规则）
+ * 回归：C6之前落入经典 ESP32 默认分支，资源限制过低（16条执行规则）
  */
 void test_source_code_c6_resource_profile() {
     TestLog::testStart("Source: ESP32-C6 Resource Profile");
@@ -951,11 +951,11 @@ void test_source_code_c6_resource_profile() {
         "ResourceProfile.h must have ESP32-C6 specific branch");
     TestLog::step("CONFIG_IDF_TARGET_ESP32C6 branch present");
 
-    // C6 profile 名称应为 "esp32c6-mid"
+    // 资源名称仅标识芯片，不表示固件产品档位。
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("esp32c6-mid") != std::string::npos,
-        "C6 profile name must be 'esp32c6-mid'");
-    TestLog::step("Profile name 'esp32c6-mid' confirmed");
+        content.find("NAME = \"esp32c6\"") != std::string::npos,
+        "C6 resource name must identify the chip as 'esp32c6'");
+    TestLog::step("Chip resource name 'esp32c6' confirmed");
 
     // C6 外设上限 = 24
     auto c6Pos = content.find("CONFIG_IDF_TARGET_ESP32C6");
@@ -2186,7 +2186,7 @@ void test_source_code_resource_profile_explicit_profiles() {
     TestLog::step("platformio.ini unified matrix configuration present");
 
     // Legacy profile sections are deprecated (commented out in platformio.ini)
-    // No need to verify lite/standard/full sections exist anymore
+    // No product-edition sections are expected after environment consolidation.
 
     TEST_ASSERT_TRUE_MESSAGE(
         flags.find("FASTBEE_PROFILE_LITE") == std::string::npos &&

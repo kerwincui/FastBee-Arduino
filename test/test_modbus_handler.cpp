@@ -97,7 +97,7 @@ enum OneShotError : uint8_t {
     ONESHOT_BUSY            = 5
 };
 
-// 精简版 ModbusSubDevice（用于测试默认值和 hasMotorSoftLimit）
+// ModbusSubDevice 测试替身（用于测试默认值和 hasMotorSoftLimit）
 struct TestModbusSubDevice {
     char     name[32];
     uint8_t  slaveAddress;

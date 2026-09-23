@@ -61,7 +61,7 @@ enum class RestartReason : uint8_t {
     FACTORY_RESET       = 14,
 };
 
-// 镜像 PreRestartSnapshot 结构体（精简版）
+// 镜像 PreRestartSnapshot 结构体（测试所需字段）
 struct PreRestartSnapshot {
     uint32_t magic;
     uint32_t timestamp;

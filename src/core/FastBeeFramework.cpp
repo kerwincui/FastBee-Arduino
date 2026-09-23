@@ -1260,12 +1260,15 @@ bool FastBeeFramework::addSystemTasks() {
     if (!taskManager->addTask("ntp_sync", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (!framework) return;
+        constexpr const char* HTTP_NTP_FALLBACK_URL =
+            "http://iot.fastbee.cn/prod-api/iot/tool/ntp";
 
         // 冷却到期后重置计数，允许重新尝试 NTP 同步
         if (framework->ntpRetryCount >= 10 && framework->ntpGiveUpTimeMs > 0) {
             if (millis() - framework->ntpGiveUpTimeMs > 30UL * 60 * 1000) {
                 framework->ntpRetryCount = 0;
                 framework->ntpGiveUpTimeMs = 0;
+                framework->ntpHttpFallbackAttempts = 0;
                 framework->ntpSyncPending = true;
                 LOG_INFO("[NTP] Cooldown expired (30min), retrying NTP sync");
             }
@@ -1302,6 +1305,42 @@ bool FastBeeFramework::addSystemTasks() {
                 // 同步失败，重试
                 framework->ntpRetryCount++;
                 if (framework->ntpRetryCount < 10) {
+                    // Some field networks allow ordinary HTTP but filter
+                    // DNS/UDP 123. On PSRAM devices the bounded HTTP helper
+                    // is safe to run here; no-PSRAM targets remain strictly
+                    // asynchronous and keep the original SNTP path.
+                    if (framework->ntpRetryCount >= 3 &&
+                        framework->ntpHttpFallbackAttempts < 2 &&
+                        ESP.getPsramSize() > 0) {
+                        ++framework->ntpHttpFallbackAttempts;
+                        LOG_INFOF("[NTP] SNTP failed; trying HTTP fallback %u/2",
+                                  static_cast<unsigned>(framework->ntpHttpFallbackAttempts));
+                        if (TimeUtils::syncNTPFromHTTP(
+                                HTTP_NTP_FALLBACK_URL, 3000)) {
+                            LOG_INFO("[NTP] HTTP fallback sync successful");
+                            framework->ntpSyncStarted = false;
+                            framework->ntpSyncPending = false;
+                            framework->ntpSynced = true;
+                            framework->ntpRetryCount = 0;
+                            framework->ntpHttpFallbackAttempts = 0;
+                            framework->ntpGiveUpTimeMs = 0;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+                            char timeStr[32];
+                            struct tm syncedInfo{};
+                            time_t syncedNow = time(nullptr);
+                            if (localtime_r(&syncedNow, &syncedInfo)) {
+                                strftime(timeStr, sizeof(timeStr),
+                                         "%Y-%m-%d %H:%M:%S", &syncedInfo);
+                            } else {
+                                strlcpy(timeStr, "http", sizeof(timeStr));
+                            }
+                            PeriphExecManager::getInstance().triggerEvent(
+                                EventType::EVENT_NTP_SYNCED, timeStr);
+#endif
+                            return;
+                        }
+                        LOG_WARNING("[NTP] HTTP fallback did not return a valid time");
+                    }
                     LOG_WARNINGF("[NTP] Sync failed (attempt %d/10), will retry", framework->ntpRetryCount);
                     framework->ntpSyncPending = true;  // 标记需要重试
                 } else {
@@ -1437,10 +1476,11 @@ bool FastBeeFramework::addSystemTasks() {
 #endif
 
 #if FASTBEE_ENABLE_LOGGER
-    // 日志环形缓冲定时 flush 任务（每5秒）
+    // Drain on the main-loop stack at 80% capacity or after 5 seconds.
+    // Polling does not touch flash until either condition is met.
     if (!taskManager->addTask("log_flush", [](void* param) {
-        LOGGER.flushBuffer();
-    }, nullptr, 5000)) {
+        LOGGER.flushBufferIfDue();
+    }, nullptr, 500)) {
         LOG_WARNING("Failed to add log flush task");
     }
 #endif
@@ -1746,43 +1786,18 @@ void FastBeeFramework::syncTimeFromConfig() {
     // without PSRAM this can monopolize the task runner when the remote host
     // is unreachable, starving AsyncTCP and making the Web UI appear offline.
     // Keep time synchronization available through asynchronous SNTP instead.
-    const bool noPsram = (ESP.getPsramSize() == 0);
     const bool httpNtpConfigured = s1Str.startsWith("http://") || s1Str.startsWith("https://");
-    if (httpNtpConfigured && noPsram) {
-        LOG_WARNING("[NTP] HTTP NTP skipped on no-PSRAM target; using asynchronous SNTP fallback");
-    }
-
-    if (httpNtpConfigured && !noPsram) {
-        // HTTP NTP同步
-        long long ts = 0;
-        if (TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000)) {
-            LOG_INFO("[NTP] HTTP sync successful");
-            // HTTP同步成功后，重新应用时区设置
-            tzset();
-        }
-        // 同时启动标准NTP作为备份
-        const char* backupServer = s2Str.isEmpty() ||
-            s2Str.startsWith("http://") || s2Str.startsWith("https://")
-            ? "pool.ntp.org" : s2Str.c_str();
-        configTzTime(tz, backupServer, "time.google.com", nullptr);
-    } else {
-        // 标准NTP同步（异步，需要等待后台完成）
-        // HTTP URL 不是合法的 SNTP 主机名；无 PSRAM 时用配置中的第二
-        // 个 DNS NTP 主机作为首选，保证回退路径仍真正可用。
-        String primaryServer = httpNtpConfigured ? s2Str : s1Str;
-        if (primaryServer.isEmpty() || primaryServer.startsWith("http://") ||
-            primaryServer.startsWith("https://")) {
-            primaryServer = "pool.ntp.org";
-        }
-        String secondaryServer = httpNtpConfigured ? String("time.google.com") : s2Str;
-        if (secondaryServer.isEmpty() || secondaryServer.startsWith("http://") ||
-            secondaryServer.startsWith("https://")) {
-            secondaryServer = "time.google.com";
-        }
-        LOG_INFOF("[NTP] Starting SNTP sync with %s, %s",
-                  primaryServer.c_str(), secondaryServer.c_str());
-        configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr);
-    }
+    // Standard SNTP remains the first path for every target. HTTP fallback is
+    // attempted by the retry task only after three failed asynchronous tries.
+    String primaryServer = httpNtpConfigured ? s2Str : s1Str;
+    if (primaryServer.isEmpty() || primaryServer.startsWith("http://") ||
+        primaryServer.startsWith("https://")) primaryServer = "pool.ntp.org";
+    String secondaryServer = httpNtpConfigured ? String("time.google.com") : s2Str;
+    if (secondaryServer.isEmpty() || secondaryServer.startsWith("http://") ||
+        secondaryServer.startsWith("https://")) secondaryServer = "time.google.com";
+    LOG_INFOF("[NTP] Starting SNTP sync with %s, %s",
+              primaryServer.c_str(), secondaryServer.c_str());
+    configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr);
 
     // 确保时区设置生效
     tzset();

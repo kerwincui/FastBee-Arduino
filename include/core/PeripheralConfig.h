@@ -166,14 +166,20 @@ struct DisplayConfigParams {
     char controlBackend[16];      // none / tca9554 / ch32v003
     int8_t controlSda, controlScl;
     uint8_t controlAddress, controlResetMask, controlBacklightMask, controlEnableMask;
+    uint8_t controlBuzzerMask;   // Optional active-high buzzer output; CH32V003 only.
+    uint8_t touchBuzzerDurationMs; // Touch feedback duration (20..150 ms), not volume.
     uint8_t controlInactiveMask; // Explicit outputs to hold low; never infer unclaimed pins.
     uint8_t controlTouchIntMask; // Optional GT911 INT on control expander; low during reset, then input.
 
     bool controlMasksDisjoint() const {
         return !(controlResetMask & controlEnableMask) &&
                !(controlBacklightMask & (controlResetMask | controlEnableMask)) &&
-               !(controlInactiveMask & (controlResetMask | controlEnableMask | controlBacklightMask)) &&
-               !(controlTouchIntMask & (controlResetMask | controlEnableMask | controlBacklightMask | controlInactiveMask));
+               !(controlBuzzerMask & (controlResetMask | controlEnableMask | controlBacklightMask)) &&
+               !(controlInactiveMask & (controlResetMask | controlEnableMask |
+                                         controlBacklightMask | controlBuzzerMask)) &&
+               !(controlTouchIntMask & (controlResetMask | controlEnableMask |
+                                         controlBacklightMask | controlBuzzerMask |
+                                         controlInactiveMask));
     }
 
     bool controlTouchSyncValid() const {
@@ -233,7 +239,7 @@ struct PeripheralConfig {
             bool msbFirst;        // true=MSB, false=LSB
         } spi;
         
-        // GPIO参数（精简版：仅保留硬件初始化参数）
+        // GPIO 参数：保留硬件初始化所需字段。
         struct {
             GPIOState initialState;
             uint8_t pwmChannel;       // PWM通道 (0-15)
@@ -250,6 +256,8 @@ struct PeripheralConfig {
             bool invertLogic;         // 逻辑反相（用户看到的高低电平）
             uint16_t debounceMs;      // 0=使用安全默认 50ms
             uint8_t reportMode;       // 0=状态变化, 1=周期, 2=仅规则事件
+            char pairedInputId[41];   // Optional complementary DI; configure on one input only
+            uint16_t pairDebounceMs;  // 0=200ms, otherwise 20..5000ms
             uint8_t ioSource;         // 0=native GPIO, 1=IO expander channel
             char providerId[41];      // Parent peripheral ID; never an MCU pin
             uint8_t channel;          // PCF8574 P0..P7
@@ -631,6 +639,8 @@ inline void initializeDisplayDefaults(PeripheralConfig& config) {
     config.params.display.touchRst = -1;
     copyPeripheralConfigText(config.params.display.rgbInitProfile, "st7701_type1");
     copyPeripheralConfigText(config.params.display.controlBackend, "none");
+    config.params.display.controlBuzzerMask = 0;
+    config.params.display.touchBuzzerDurationMs = 30;
     config.params.display.controlInactiveMask = 0;
     config.params.display.controlTouchIntMask = 0;
     memset(config.params.display.rgbDataPins, -1, sizeof(config.params.display.rgbDataPins));

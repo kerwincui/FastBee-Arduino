@@ -9,6 +9,7 @@
 #include "./protocols/ProtocolManager.h"
 #include "./protocols/ModbusHandler.h"
 #include "core/PeriphExecManager.h"
+#include "core/MotorControlService.h"
 #include "utils/PsramJsonDocument.h"
 #include <ArduinoJson.h>
 
@@ -1676,198 +1677,30 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
 
 void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    String action = ctx->getParamValue(request, "action", "");
-    int value = ctx->getParamInt(request, "value", 0);
-    
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
-    }
-    
-    if (action.isEmpty()) {
-        ctx->sendBadRequest(request, "Missing 'action' parameter");
-        return;
-    }
-
-    if (action == "readStatus") {
-        if (rejectModbusHeavyRequest(request, "Modbus motor status", 8192)) return;
+    auto& motors = MotorControlService::instance();
+    const String action = ctx->getParamValue(request, "action", "");
+    JsonDocument response;
+    JsonObject data = response["data"].to<JsonObject>();
+    if (action == "operation") {
+        const int id = ctx->getParamInt(request, "operationId", 0);
+        if (id <= 0 || !motors.operation(static_cast<uint32_t>(id), data)) {
+            ctx->sendError(request, 404, "Motor operation not found"); return;
+        }
     } else {
         if (rejectModbusCriticalControl(request, "Modbus motor control", 6144)) return;
-    }
-    
-    // 浠庤澶囬厤缃腑鏌ユ壘鐢垫満瀵勫瓨鍣ㄦ槧灏?
-    uint16_t motorRegs[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007}; // 榛樿鍊?YF-53鍏煎)
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    const ModbusSubDevice* motorDevPtr = nullptr;
-    if (devIdx >= 0) {
-        const ModbusSubDevice& motorDev = modbus->getSubDevice((uint8_t)devIdx);
-        motorDevPtr = &motorDev;
-        memcpy(motorRegs, motorDev.motorRegs, sizeof(motorRegs));
-        bool allZero = true;
-        for (int i = 0; i < 5; i++) { if (motorRegs[i] != 0) { allZero = false; break; } }
-        if (allZero) {
-            uint16_t defaults[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007};
-            memcpy(motorRegs, defaults, sizeof(defaults));
+        const int slave = ctx->getParamInt(request, "slaveAddress", 0);
+        String ref = ctx->getParamValue(request, "motorRef", "");
+        if (ref.isEmpty() && slave >= 1 && slave <= 247) ref = motors.referenceForSlave(static_cast<uint8_t>(slave));
+        const String requestId = ctx->getParamValue(request, "requestId", "");
+        uint32_t operationId = 0; String error;
+        if (!motors.submit(ref, action, ctx->getParamInt(request, "value", 0), requestId, operationId, error)) {
+            ctx->sendBadRequest(request, error); return;
         }
+        motors.operation(operationId, data);
+        data["accepted"] = true;
     }
-    
-    // 鍏佽鍓嶇閫氳繃 registers 鍙傛暟瑕嗙洊瀵勫瓨鍣ㄦ槧灏?
-    String regsStr = ctx->getParamValue(request, "registers", "");
-    if (!regsStr.isEmpty()) {
-        JsonDocument regsDoc;
-        DeserializationError err = deserializeJson(regsDoc, regsStr);
-        if (!err && regsDoc.is<JsonArray>()) {
-            JsonArray arr = regsDoc.as<JsonArray>();
-            for (int i = 0; i < 5 && i < (int)arr.size(); i++)
-                motorRegs[i] = (uint16_t)arr[i].as<int>();
-        }
-    }
-    
-    // motorRegs: [0]=姝ｈ浆, [1]=鍙嶈浆, [2]=鍋滄, [3]=閫熷害, [4]=鑴夊啿鏁?
-    uint16_t targetReg = 0;
-    uint16_t writeValue = (uint16_t)value;
-    
-    if (action == "forward") {
-        targetReg = motorRegs[0];
-        writeValue = 1;
-    } else if (action == "reverse") {
-        targetReg = motorRegs[1];
-        writeValue = 1;
-    } else if (action == "stop") {
-        targetReg = motorRegs[2];
-        writeValue = 1;
-    } else if (action == "setSpeed") {
-        targetReg = motorRegs[3];
-    } else if (action == "setPulse") {
-        targetReg = motorRegs[4];
-    } else if (action == "readStatus") {
-        // 璇诲彇鐢垫満鐘舵€侊細璇诲彇閫熷害鍜岃剦鍐叉暟瀵勫瓨鍣ㄨ寖鍥?
-        uint16_t minAddr = motorRegs[3];
-        uint16_t maxAddr = motorRegs[4];
-        if (motorRegs[2] < minAddr && motorRegs[2] > 0) minAddr = motorRegs[2];
-        if (minAddr == 0 && maxAddr == 0) { minAddr = 0; maxAddr = 10; }
-        uint16_t quantity = maxAddr - minAddr + 1;
-        if (quantity == 0 || quantity > 125) quantity = 11;
-        
-        OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x03, minAddr, quantity, true);
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
-        }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["action"] = "readStatus";
-        if (motorRegs[3] >= minAddr)
-            data["speed"] = result.data[motorRegs[3] - minAddr];
-        if (motorRegs[4] >= minAddr)
-            data["pulse"] = result.data[motorRegs[4] - minAddr];
-        data["startAddress"] = minAddr;
-        JsonArray values = data["values"].to<JsonArray>();
-        for (uint16_t i = 0; i < quantity; i++)
-            values.add(result.data[i]);
-        addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
-    } else {
-        ctx->sendBadRequest(request, "Invalid action (forward/reverse/stop/setSpeed/setPulse/readStatus)");
-        return;
-    }
-    
-    // FC06 鍐欏崟涓瘎瀛樺櫒
-    MotorSoftLimitDecision limitDecision;
-    if (motorDevPtr) {
-        limitDecision = evaluateMotorSoftLimit(*motorDevPtr, action, value);
-        if (!limitDecision.allowed) {
-            JsonDocument doc;
-            doc["success"] = false;
-            doc["errorCode"] = "MOTOR_SOFT_LIMIT";
-            doc["error"] = limitDecision.reason;
-            JsonObject data = doc["data"].to<JsonObject>();
-            data["currentPosition"] = motorDevPtr->motorCurrentPosition;
-            data["minPosition"] = motorDevPtr->motorMinPosition;
-            data["maxPosition"] = motorDevPtr->motorMaxPosition;
-            HandlerUtils::sendJsonStream(request, doc);
-            return;
-        }
-
-        if (limitDecision.enabled && motorRegs[4] != 0) {
-            OneShotResult pulseResult = modbus->writeRegisterOnce(slaveAddr, motorRegs[4], limitDecision.pulse, true);
-            if (pulseResult.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, pulseResult);
-                return;
-            }
-            writeValue = 1;
-        }
-    }
-
-    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, targetReg, writeValue, true);
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-
-    if (devIdx >= 0 && motorDevPtr) {
-        int32_t nextPosition = motorDevPtr->motorCurrentPosition;
-        uint16_t nextPulse = motorDevPtr->motorLastPulse;
-        if (action == "setPulse") {
-            nextPulse = static_cast<uint16_t>(writeValue);
-        } else if (limitDecision.enabled && (action == "forward" || action == "reverse")) {
-            nextPosition = limitDecision.nextPosition;
-            nextPulse = limitDecision.pulse;
-        }
-        modbus->updateMotorRuntime((uint8_t)devIdx, nextPosition, nextPulse);
-    }
-    
-    // MQTT 涓婃姤
-    if (devIdx >= 0) {
-        String actionKey;
-        if (action == "forward") actionKey = "fwd";
-        else if (action == "reverse") actionKey = "rev";
-        else if (action == "stop") actionKey = "stop";
-        else if (action == "setSpeed") actionKey = "spd";
-        else if (action == "setPulse") actionKey = "pls";
-        else actionKey = action;
-        publishControlReport(ctx, modbus, devIdx, 0, actionKey + ":" + String(writeValue));
-    }
-    
-    // 瑙﹀彂 mc: 浜嬩欢锛堜緵浜嬩欢瑙﹀彂瑙勫垯鍖归厤锛?
-    if (devIdx >= 0) {
-        char mcIdBuf[16];
-        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
-        const char* evAct = "stop";
-        if (action == "forward") evAct = "forward";
-        else if (action == "reverse") evAct = "reverse";
-        char mcDataBuf[96];
-        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"%s\"}",
-            devIdx, evAct);
-        PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["action"] = action;
-    data["register"] = targetReg;
-    data["value"] = writeValue;
-    if (motorDevPtr) {
-        data["softLimitEnabled"] = motorDevPtr->hasMotorSoftLimit();
-        data["currentPosition"] = motorDevPtr->motorCurrentPosition;
-        data["minPosition"] = motorDevPtr->motorMinPosition;
-        data["maxPosition"] = motorDevPtr->motorMaxPosition;
-        data["pulse"] = (limitDecision.enabled ? limitDecision.pulse : motorDevPtr->motorLastPulse);
-    }
-    addModbusDebug(doc, modbus);
-    
-    HandlerUtils::sendJsonStream(request, doc);
+    response["success"] = true;
+    HandlerUtils::sendJsonStream(request, response);
 }
 
 #endif // FASTBEE_ENABLE_MODBUS

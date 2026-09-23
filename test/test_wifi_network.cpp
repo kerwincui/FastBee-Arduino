@@ -967,40 +967,29 @@ void test_source_sta_lost_reboot_constants_defined() {
 }
 
 /**
- * @brief 网关 ICMP 失败最终只触发 STA 重连，不切 AP/不重启。
+ * @brief 网关 ICMP 失败只告警，不主动断开仍可用的 STA。
  */
 void test_source_gateway_ping_failure_is_advisory() {
-    TestLog::testStart("Source: gateway ping recovery is STA-only with bounded unknown baseline");
+    TestLog::testStart("Source: gateway ping failures remain advisory");
 
     std::string content = readSrcFile("src/network/NetworkManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
 
-    size_t probeBlockStart = content.find("// 网关 ICMP 使用会话内成功基线");
+    size_t probeBlockStart = content.find("// 网关 ICMP 只提供诊断");
     size_t probeBlockEnd = content.find("// 处理连接超时", probeBlockStart);
     TEST_ASSERT_TRUE_MESSAGE(probeBlockStart != std::string::npos &&
                              probeBlockEnd != std::string::npos,
         "Gateway observation block not found");
     std::string probeBlock = content.substr(probeBlockStart, probeBlockEnd - probeBlockStart);
     TEST_ASSERT_TRUE_MESSAGE(
-        probeBlock.find("const uint8_t recoveryThreshold = _gwProbeEverSucceeded") != std::string::npos &&
-        probeBlock.find("GW_PROBE_RECOVERY_THRESHOLD") != std::string::npos,
-        "Gateway recovery must retain a stricter threshold for confirmed sessions");
-    TEST_ASSERT_TRUE_MESSAGE(
-        probeBlock.find("GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD") != std::string::npos &&
-        probeBlock.find("reconnecting STA without reboot or AP fallback") != std::string::npos,
-        "Unknown-baseline data-plane loss must recover with STA only, never AP fallback");
-    TEST_ASSERT_TRUE_MESSAGE(
         probeBlock.find("probeResultReady") != std::string::npos &&
         probeBlock.find("if (!probeResultReady)") != std::string::npos,
         "Starting or waiting for an async ping must not clear the consecutive failure count");
     TEST_ASSERT_TRUE_MESSAGE(
-        probeBlock.find("WiFi.disconnect(false)") != std::string::npos &&
+        probeBlock.find("advisory only") != std::string::npos &&
+        probeBlock.find("WiFi.disconnect(false)") == std::string::npos &&
         probeBlock.find("ESP.restart()") == std::string::npos,
-        "A confirmed gateway path loss must reconnect STA without rebooting the device");
-    TEST_ASSERT_TRUE_MESSAGE(
-        probeBlock.find("_gwProbeEverSucceeded ? \"confirmed\" : \"unknown\"") != std::string::npos &&
-        probeBlock.find("pending STA-only recovery") != std::string::npos,
-        "Unanswered gateway probes must remain observable while bounded STA recovery is pending");
+        "ICMP failure must stay observable without disconnecting or rebooting");
     TEST_ASSERT_TRUE_MESSAGE(
         probeBlock.find("isForegroundRequestActive()") != std::string::npos &&
         probeBlock.find("deferGatewayProbeForWeb") != std::string::npos &&
@@ -1024,9 +1013,9 @@ void test_source_gateway_ping_failure_is_advisory() {
     const std::string header = readSrcFile("include/network/NetworkManager.h");
     TEST_ASSERT_TRUE_MESSAGE(
         header.find("GW_PROBE_INTERVAL_MS = 60000") != std::string::npos &&
-        header.find("GW_PROBE_RECOVERY_THRESHOLD = 5") != std::string::npos &&
-        header.find("GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD = 5") != std::string::npos,
-        "Gateway ICMP recovery must tolerate transient/router-filtered probes (60s x 5)");
+        header.find("GW_PROBE_RECOVERY_THRESHOLD") == std::string::npos &&
+        header.find("GW_PROBE_UNKNOWN_RECOVERY_THRESHOLD") == std::string::npos,
+        "Gateway ICMP must stay low-frequency and must not define reconnect thresholds");
 }
 
 /**

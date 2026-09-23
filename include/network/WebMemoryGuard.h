@@ -16,8 +16,9 @@
  *     新 API/动态请求（/api/ 前缀）直接返回 503 + JSON（Retry-After: 5），
  *     不进入 handler 与响应构建分配；已连接的 SSE 客户端主动优雅断开，
  *     释放 lwIP/TCP 缓冲，给系统恢复窗口；
- *   - 放行：静态文件/SPA 页面（Flash/LittleFS 直读流式服务，几乎不占
- *     DRAM）不受护栏影响，保证登录页等基础资源始终可访问；
+ *   - 放行：静态文件/SPA 页面使用 Flash/LittleFS 流式服务，不被此 API
+ *     护栏拒绝。文件、响应对象及 TCP 队列仍消耗 DRAM，且连接准入与
+ *     分配可能失败；不能据此保证低内存下登录页始终可访问；
  *   - 恢复：free8 回到 WEB_GUARD_RECOVERY_DRAM_FREE(20KB+1KB 迟滞)
  *     且 blk8 >= WEB_GUARD_RECOVERY_DRAM_BLK8(4KB+5KB 迟滞)
  *     后自动解除；限长流式响应模式下，21KB free / 6KB 最大块稳定
@@ -36,7 +37,7 @@
 #include "core/MemoryBudget.h"
 
 #ifndef FASTBEE_WEB_MEM_GUARD
-// 2026-08-14：护栏覆盖扩大到 C3/C6 无 PSRAM 机型——full 档 Web 镜像
+// 2026-08-14：护栏覆盖扩大到 C3/C6 无 PSRAM 机型——统一 Web 资源
 // 统一化后实测 C3 heap 占用 84%、blk8 碎片化至 9.7KB 引发接口间歇挂起，
 // 与 classic ESP32 同属"无 PSRAM + 重 Web 负载"风险面
 #if (defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32C3) || \

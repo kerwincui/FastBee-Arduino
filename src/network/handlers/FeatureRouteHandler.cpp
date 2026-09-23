@@ -40,6 +40,24 @@ void releaseBody(AsyncWebServerRequest* request) {
     delete bodyOf(request);
     request->_tempObject = nullptr;
 }
+
+void appendFileLoggingApplyState(JsonObject data) {
+    auto& manager = FastBee::RuntimeFeatureManager::instance();
+    const bool requested = manager.isUserEnabled("fileLogging");
+    const bool enabled = LOGGER.isFileLoggingEnabled();
+    JsonObject state = data["fileLogging"].to<JsonObject>();
+    state["requested"] = requested;
+    state["enabled"] = enabled;
+    state["applied"] = requested == enabled;
+    if (requested != enabled) {
+        // Saving intent can succeed while the driver is unavailable (for
+        // example, memory protection, an unmounted filesystem, or a busy
+        // logger lock). Report the actual driver state instead of claiming
+        // that persistence also proves successful runtime application.
+        state["warning"] = requested && !manager.shouldEnable("fileLogging")
+            ? "POLICY_DISABLED" : "NOT_APPLIED";
+    }
+}
 }  // namespace
 
 FeatureRouteHandler::FeatureRouteHandler(WebHandlerContext* ctx) : ctx(ctx) {}
@@ -123,6 +141,10 @@ FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
     }
 
     auto applyRuntimeSideEffects = [&]() {
+        // Apply only after both persistent configuration writes succeed.
+        // The registry changes immediately, so the logger must follow it even
+        // when screenPanel did not change. shouldEnable retains memory guards.
+        LOGGER.enableFileLogging(mgr.shouldEnable("fileLogging"));
 #if FASTBEE_ENABLE_SCREEN_UI
         const bool screenPanelEnabled = mgr.isUserEnabled("screenPanel");
         if (screenPanelEnabled == previousScreenPanel) return;
@@ -242,59 +264,54 @@ void FeatureRouteHandler::handleStatus(AsyncWebServerRequest* request) {
 }
 
 void FeatureRouteHandler::handleConfig(AsyncWebServerRequest* request) {
-    if (!ctx->requireAuth(request)) return;
-
-    JsonDocument doc;
-    if (!parseBody(request, doc)) return;
-
-    const PersistResult result = persistFeatureUpdate(doc);
-    if (result == PersistResult::NO_VALID_ENTRIES) {
-        ctx->sendBadRequest(request, "No valid feature entries");
-        return;
-    }
-    if (result == PersistResult::FEATURE_SAVE_FAILED) {
-        ctx->sendError(request, 500, "Failed to save feature config");
-        return;
-    }
-    if (result == PersistResult::MDNS_MIRROR_FAILED) {
-        ctx->sendError(request, 500, "Failed to synchronize mDNS compatibility config");
-        return;
-    }
-    JsonDocument response;
-    response["success"] = true;
-    response["message"] = "Feature config saved (reboot required to apply)";
-    response["data"]["requiresRestart"] = true;
-    HandlerUtils::sendJsonStream(request, response);
+    handleUpdate(request, false);
 }
 
 void FeatureRouteHandler::handleApply(AsyncWebServerRequest* request) {
+    handleUpdate(request, true);
+}
+
+void FeatureRouteHandler::handleUpdate(AsyncWebServerRequest* request, bool reboot) {
     if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
     if (!parseBody(request, doc)) return;
 
     const PersistResult result = persistFeatureUpdate(doc);
+    const char* errorMessage = nullptr;
     if (result == PersistResult::NO_VALID_ENTRIES) {
-        ctx->sendBadRequest(request, "No valid feature entries");
-        return;
+        errorMessage = "No valid feature entries";
+    } else if (result == PersistResult::FEATURE_SAVE_FAILED) {
+        errorMessage = "Failed to save feature config";
+    } else if (result == PersistResult::MDNS_MIRROR_FAILED) {
+        errorMessage = "Failed to synchronize mDNS compatibility config";
     }
-    if (result == PersistResult::FEATURE_SAVE_FAILED) {
-        ctx->sendError(request, 500, "Failed to save feature config");
-        return;
-    }
-    if (result == PersistResult::MDNS_MIRROR_FAILED) {
-        ctx->sendError(request, 500, "Failed to synchronize mDNS compatibility config");
+    if (errorMessage) {
+        ctx->sendError(request, result == PersistResult::NO_VALID_ENTRIES ? 400 : 500,
+                       errorMessage);
         return;
     }
 
-    auto respDoc = FastBee::makeJsonDocument();
-    respDoc["success"] = true;
-    respDoc["data"]["rebootIn"] = 3;
-    HandlerUtils::sendJsonStream(request, respDoc);
+    // Both endpoints use the same persistence and response path. Reuse the
+    // parsed document after committing, without retaining request fields or
+    // allocating a second JSON document on memory-constrained targets.
+    doc.clear();
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    if (reboot) {
+        data["rebootIn"] = 3;
+    } else {
+        doc["message"] = "Feature config saved (reboot required to apply)";
+        data["requiresRestart"] = true;
+    }
+    appendFileLoggingApplyState(data);
+    HandlerUtils::sendJsonStream(request, doc);
 
     // HTTP 响应已发送，调度 3 秒后重启使配置生效
-    SystemRebooter::scheduleReboot("Feature config applied", 3000,
-                                   RestartReason::USER_COMMAND);
+    if (reboot) {
+        SystemRebooter::scheduleReboot("Feature config applied", 3000,
+                                       RestartReason::USER_COMMAND);
+    }
 }
 
 void FeatureRouteHandler::handleEstimate(AsyncWebServerRequest* request) {

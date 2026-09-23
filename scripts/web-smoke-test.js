@@ -20,6 +20,15 @@ function read(relPath) {
     return fs.readFileSync(path.join(ROOT_DIR, relPath), 'utf8');
 }
 
+function hasPageNavigationStaleGuard(source) {
+    const execute = source.match(/_execute\s*:\s*function[\s\S]*?(?=_isCooldownError\s*:)/);
+    if (!execute) return false;
+    // Verify rejection of an old page's response, independently of the text
+    // returned by the shared page-abort error helper or local variable names.
+    return /if\s*\([^{}]*\.pageGen\s*<\s*[\w$]+\._pageGen[^{}]*\)\s*\{\s*[\w$]+\.reject\s*\(/.test(execute[0]) &&
+        /\._pageAborted\s*=\s*true/.test(source);
+}
+
 const REQUIRED_GZIP_ASSETS = [
     'index.html.gz',
     'css/main.css.gz',
@@ -215,11 +224,12 @@ function checkUiRegressionGuards(files, manifest) {
     }
 
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
-    assert(allJs.includes('Request result ignored after page navigation'), 'page-navigation stale response guard missing');
+    assert(hasPageNavigationStaleGuard(allJs), 'page-navigation stale response guard missing');
     assert(protocolEntry.includes('_setProtocolFragmentLoading'), 'protocol loading placeholder helper missing');
     assert(!/正在加载\s*Modbus RTU/.test(protocolEntry + protocolFull + modbusRtu), 'old Modbus RTU loading detail text leaked into build');
     assert(!/fb-loading-placeholder-detail/.test(protocolEntry + protocolFull + modbusRtu), 'old loading detail DOM leaked into build');
-    assert(allJs.includes('d.connecting'), 'MQTT status UI connecting-state guard missing');
+    assert(/!![A-Za-z_$][\w$]*\.connecting\b/.test(protocolEntry),
+        'MQTT status UI connecting-state guard missing');
     assert(allJs.includes('autoStartStarted'), 'MQTT status UI auto-start guard missing');
     assert(allJs.includes('mqtt-status-connecting'), 'MQTT status connecting badge class missing');
 

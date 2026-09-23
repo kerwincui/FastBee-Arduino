@@ -20,7 +20,7 @@ const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
 const PUBLISH_MODULE_DIR = path.join(ROOT_DIR, 'data', 'www', 'js', 'modules');
 const OUTPUT_FILE = path.join(PUBLISH_MODULE_DIR, 'admin-bundle.js');
-// Unified full profile: keep only existing source files
+// Unified firmware assets: keep only existing source files
 const UNIFIED_SOURCE_FILES = [
     'logs.js',
     'users.js',

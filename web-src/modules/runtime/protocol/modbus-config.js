@@ -2,6 +2,8 @@
  * protocol/modbus-config.js — Modbus Master 任务、设备管理、编辑弹窗、寄存器映射
  */
 (function() {
+    // This lazy module must also work when protocol is the first page opened.
+    const t = typeof window.t === 'function' ? window.t : (key, fallback) => fallback;
     Object.assign(AppState, {
 
         // Modbus-only table rendering is loaded with the RTU editor.
@@ -144,8 +146,8 @@
             this.applyDeveloperModeState();
             var tasks = this._masterTasks || [];
             var devices = this._modbusDevices || [];
-            var visibleDevices = devices;
-            if (tasks.length === 0 && visibleDevices.length === 0) {
+            var hasControlDevices = devices.some(device => this._isModbusControlDevice(device));
+            if (tasks.length === 0 && !hasControlDevices) {
                 tbody.innerHTML = this._renderProtocolEmptyRow(6, '暂无子设备');
                 return;
             }
@@ -161,8 +163,10 @@
             for (var i = 0; i < tasks.length; i++) {
                 rows += this._renderAllDeviceSensorRow(tasks[i], i, fcNames, typeLabels);
             }
-            for (var j = 0; j < visibleDevices.length; j++) {
-                rows += this._renderAllDeviceControlRow(visibleDevices[j], j, typeLabels);
+            // Keep persisted indices: execution rules address devices as modbus:N.
+            for (var j = 0; j < devices.length; j++) {
+                if (!this._isModbusControlDevice(devices[j])) continue;
+                rows += this._renderAllDeviceControlRow(devices[j], j, typeLabels);
             }
             tbody.innerHTML = rows;
             this.applyDeveloperModeState(tbody);
@@ -177,27 +181,44 @@
             }
         },
 
-        _deleteDevice(source, idx) {
-            if (!this.guardDeveloperModeAction()) return;
-            var msg = '确定要删除此设备？';
-            if (!confirm(msg)) return;
-            if (source === 'sensor') {
-                if (this._masterTasks) this._masterTasks.splice(idx, 1);
-            } else {
-                if (this._modbusDevices) {
-                    var devKey = 'dev_' + idx;
-                    delete this._deviceCoilCache[devKey];
-                    delete this._devicePwmCache[devKey];
-                    delete this._devicePidCache[devKey];
-                    this._modbusDevices.splice(idx, 1);
-                    if (this._activeDeviceIdx === idx) {
-                        this._activeDeviceIdx = -1;
-                    } else if (this._activeDeviceIdx > idx) {
-                        this._activeDeviceIdx--;
-                    }
+        _isModbusControlDevice(device) {
+            return !!device && ['relay', 'pwm', 'pid', 'motor'].includes(device.deviceType || device.type || 'relay');
+        },
+
+        async _deleteDevice(source, idx) {
+            if (!this.guardDeveloperModeAction() || this._modbusDeletePending) return false;
+            var key = source === 'sensor' ? '_masterTasks' : '_modbusDevices';
+            var original = this[key];
+            if (!Array.isArray(original) || !Number.isInteger(idx) || idx < 0 || idx >= original.length) return false;
+            if (!confirm('确定要删除此设备并保存配置？')) return false;
+            var form = document.getElementById('modbus-rtu-form');
+            var wasInert = form && form.inert;
+            this._modbusDeletePending = true;
+            if (form) form.inert = true;
+            this[key] = original.slice();
+            this[key].splice(idx, 1);
+            try {
+                var saved = await this.saveProtocolConfig('modbus-rtu-form');
+                if (!saved) {
+                    this[key] = original;
+                    return false;
                 }
+                // All caches are indexed; a splice invalidates every following slot.
+                this._deviceCoilCache = {};
+                this._devicePwmCache = {};
+                this._devicePidCache = {};
+                this._activeDeviceIdx = -1;
+                this._currentMappingTaskIdx = -1;
+                return true;
+            } catch (err) {
+                this[key] = original;
+                Notification.error(err.message || '删除保存失败，已恢复列表', 'Modbus 子设备');
+                return false;
+            } finally {
+                this._modbusDeletePending = false;
+                if (form) form.inert = wasInert;
+                this._renderAllDevices();
             }
-            this._renderAllDevices();
         },
 
         _showAddDeviceMenu() {
@@ -313,11 +334,7 @@
         },
 
         removeMasterPollTask(idx) {
-            if (!this.guardDeveloperModeAction()) return;
-            if (this._masterTasks) {
-                this._masterTasks.splice(idx, 1);
-                this._renderAllDevices();
-            }
+            return this._deleteDevice('sensor', idx);
         },
 
         // ============ 寄存器映射管理 ============
@@ -414,54 +431,16 @@
         // ============ 设备加载与管理 ============
 
         _loadModbusDevices() {
-            // 如果 _fillProtocolForm 已从配置参数设置 _modbusDevices，则仅做规范化处理
-            var serverDevices = this._modbusDevices || [];
-
-            // 尝试从 _protocolConfig 补充加载（仅在 _modbusDevices 为空时）
-            if (serverDevices.length === 0) {
-                try {
-                    var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
-                    if (rtu && rtu.master && rtu.master.devices && rtu.master.devices.length > 0) {
-                        serverDevices = Array.isArray(rtu.master.devices)
-                            ? rtu.master.devices.slice()
-                            : Object.keys(rtu.master.devices).map(function(k) { return rtu.master.devices[k]; });
-                    }
-                } catch(e) {}
+            // The server owns this list, including an explicit empty array. Legacy
+            // browser storage must never resurrect removed devices on this board
+            // (or leak devices saved for another board on the same origin).
+            var serverDevices = this._modbusDevices;
+            if (!Array.isArray(serverDevices)) {
+                var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
+                serverDevices = rtu && rtu.master && rtu.master.devices;
             }
-
-            if (serverDevices.length === 0) {
-                try {
-                    var raw = localStorage.getItem('modbus_devices');
-                    if (raw) {
-                        var localDevices = JSON.parse(raw);
-                        if (localDevices && localDevices.length > 0) {
-                            serverDevices = localDevices.map(function(d) {
-                                return {
-                                    name: d.name || 'Device',
-                                    sensorId: d.sensorId || '',
-                                    deviceType: d.deviceType || d.type || 'relay',
-                                    slaveAddress: d.slaveAddress || 1,
-                                    channelCount: d.channelCount || 2,
-                                    coilBase: d.coilBase || 0,
-                                    ncMode: !!d.ncMode,
-                                    controlProtocol: d.relayMode === 'register' ? 1 : 0,
-                                    batchRegister: d.batchRegister || 0,
-                                    pwmRegBase: d.pwmRegBase || 0,
-                                    pwmResolution: d.pwmResolution || 8,
-                                    pidAddrs: [
-                                        d.pidPvAddr || 0, d.pidSvAddr || 1, d.pidOutAddr || 2,
-                                        d.pidPAddr || 3, d.pidIAddr || 4, d.pidDAddr || 5
-                                    ],
-                                    pidDecimals: d.pidDecimals || 1,
-                                    enabled: d.enabled !== false
-                                };
-                            });
-                        }
-                    }
-                } catch(e) {}
-            }
-
-            this._modbusDevices = serverDevices;
+            this._modbusDevices = Array.isArray(serverDevices)
+                ? JSON.parse(JSON.stringify(serverDevices)) : [];
             for (var i = 0; i < this._modbusDevices.length; i++) {
                 if (!this._modbusDevices[i].deviceType) {
                     this._modbusDevices[i].deviceType = this._modbusDevices[i].type || 'relay';
@@ -472,6 +451,7 @@
         },
 
         _refreshModbusDeviceList() {
+            if (this._modbusDeletePending) return;
             var btn = document.getElementById('modbus-refresh-devices-btn');
             if (btn && btn.disabled) return;
             if (btn) {
@@ -516,7 +496,8 @@
             var protLabels = ['Coil', 'Register'];
             var self = this;
             tbody.innerHTML = this._modbusDevices.map(function(dev, idx) {
-                return self._renderModbusDeviceRow(dev, idx, typeLabels, protLabels);
+                return self._isModbusControlDevice(dev)
+                    ? self._renderModbusDeviceRow(dev, idx, typeLabels, protLabels) : '';
             }).join('');
             this.applyDeveloperModeState(tbody);
         },
@@ -558,21 +539,7 @@
         },
 
         _removeDevice(idx) {
-            if (!this.guardDeveloperModeAction()) return;
-            if (!this._modbusDevices) return;
-            var msg = '确定要删除此设备？';
-            if (!confirm(msg)) return;
-            var devKey = 'dev_' + idx;
-            delete this._deviceCoilCache[devKey];
-            delete this._devicePwmCache[devKey];
-            delete this._devicePidCache[devKey];
-            this._modbusDevices.splice(idx, 1);
-            if (this._activeDeviceIdx === idx) {
-                this._activeDeviceIdx = -1;
-            } else if (this._activeDeviceIdx > idx) {
-                this._activeDeviceIdx--;
-            }
-            this._renderAllDevices();
+            return this._deleteDevice('control', idx);
         },
 
         // ========== 编辑弹窗 ==========

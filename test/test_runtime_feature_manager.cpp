@@ -59,7 +59,7 @@ public:
 // ── LoggerSystem 原生桩（native 不编译 src/systems/LoggerSystem.cpp）─────
 LoggerSystem::LoggerSystem()
     : currentLevel(LOG_INFO), outputStream(nullptr), serialEnabled(false),
-      fileLoggingEnabled(false), initialized(false), espLogCaptureEnabled(false),
+      fileLoggingState(static_cast<uint32_t>(FileLoggingState::Disabled)), initialized(false), espLogCaptureEnabled(false),
       logFileSizeLimit(0) {}
 LoggerSystem::~LoggerSystem() {}
 bool LoggerSystem::initialize() { initialized = true; return true; }

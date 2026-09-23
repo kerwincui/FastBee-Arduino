@@ -17,7 +17,7 @@
       - ESP32-S3 16MB/8      -> esp32s3-F16R8
     All environments ship every supported feature compiled in; features are
     enabled/disabled at runtime from the web "Feature Config" page.
-    Web images are unified: every environment uses the full profile (2026-08).
+    Web images are unified: assets follow each target's compiled capabilities.
 
     The -Chip value can also be auto-detected from a connected device with
     -DetectPort COMx (reads chip model via esptool).
@@ -44,17 +44,17 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Recommendation table: chip + flash + PSRAM -> env, module, partition, notes
-# 2026-08 Web 镜像统一化：所有环境一律 full 档（运行时功能门控）
+# 2026-08 Web 资源统一化：所有环境使用统一入口，运行时按能力门控。
 $Recommendations = @(
-    [pscustomobject]@{ Chip="esp32";   FlashMB=4;  PsramMB=0; Env="esp32-F4R0";   Module="ESP32-WROOM-32E-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Minimum compatibility target; single app slot, OTA unavailable." }
-    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=0; Env="esp32-F8R0";   Module="ESP32-WROOM-32E-N8";   Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="Classic ESP32 no-PSRAM OTA target." }
-    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=8; Env="esp32-F8R8";   Module="ESP32-WROVER-B-N8R8";  Partition="partitions/8MB.csv";  Web="full"; Tier="P1"; Notes="Classic ESP32 PSRAM compatibility target." }
-    [pscustomobject]@{ Chip="esp32c3"; FlashMB=4;  PsramMB=0; Env="esp32c3-F4R0"; Module="ESP32-C3-WROOM-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Low-resource target; single app slot, OTA unavailable." }
-    [pscustomobject]@{ Chip="esp32c6"; FlashMB=4;  PsramMB=0; Env="esp32c6-F4R0"; Module="ESP32-C6-WROOM-N4";   Partition="partitions/4MB.csv";  Web="full"; Tier="P0"; Notes="Constrained C6 target; single app slot, OTA unavailable." }
-    [pscustomobject]@{ Chip="esp32c6"; FlashMB=8;  PsramMB=0; Env="esp32c6-F8R0"; Module="ESP32-C6-WROOM-N8";   Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="Official C6 DevKitC-1 class target with A/B OTA." }
-    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=0; Env="esp32s3-F8R0"; Module="ESP32-S3-WROOM-1-N8";  Partition="partitions/8MB.csv";  Web="full"; Tier="P0"; Notes="S3 no-PSRAM OTA and memory-constraint target." }
-    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=8; Env="esp32s3-F8R8"; Module="ESP32-S3-WROOM-1-N8R8"; Partition="partitions/8MB.csv"; Web="full"; Tier="P0"; Notes="Recommended S3 daily development target." }
-    [pscustomobject]@{ Chip="esp32s3"; FlashMB=16; PsramMB=8; Env="esp32s3-F16R8";Module="ESP32-S3-WROOM-1-N16R8";Partition="partitions/16MB.csv"; Web="full"; Tier="P0"; Notes="High-end full-feature and release target." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=4;  PsramMB=0; Env="esp32-F4R0";   Module="ESP32-WROOM-32E-N4";   Partition="partitions/4MB.csv";  Web="capability-driven"; Tier="P0"; Notes="Minimum compatibility target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=0; Env="esp32-F8R0";   Module="ESP32-WROOM-32E-N8";   Partition="partitions/8MB.csv";  Web="capability-driven"; Tier="P0"; Notes="Classic ESP32 no-PSRAM OTA target." }
+    [pscustomobject]@{ Chip="esp32";   FlashMB=8;  PsramMB=8; Env="esp32-F8R8";   Module="ESP32-WROVER-B-N8R8";  Partition="partitions/8MB.csv";  Web="capability-driven"; Tier="P1"; Notes="Classic ESP32 PSRAM compatibility target." }
+    [pscustomobject]@{ Chip="esp32c3"; FlashMB=4;  PsramMB=0; Env="esp32c3-F4R0"; Module="ESP32-C3-WROOM-N4";   Partition="partitions/4MB.csv";  Web="capability-driven"; Tier="P0"; Notes="Low-resource target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32c6"; FlashMB=4;  PsramMB=0; Env="esp32c6-F4R0"; Module="ESP32-C6-WROOM-N4";   Partition="partitions/4MB.csv";  Web="capability-driven"; Tier="P0"; Notes="Constrained C6 target; single app slot, OTA unavailable." }
+    [pscustomobject]@{ Chip="esp32c6"; FlashMB=8;  PsramMB=0; Env="esp32c6-F8R0"; Module="ESP32-C6-WROOM-N8";   Partition="partitions/8MB.csv";  Web="capability-driven"; Tier="P0"; Notes="Official C6 DevKitC-1 class target with A/B OTA." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=0; Env="esp32s3-F8R0"; Module="ESP32-S3-WROOM-1-N8";  Partition="partitions/8MB.csv";  Web="capability-driven"; Tier="P0"; Notes="S3 no-PSRAM OTA and memory-constraint target." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=8;  PsramMB=8; Env="esp32s3-F8R8"; Module="ESP32-S3-WROOM-1-N8R8"; Partition="partitions/8MB.csv"; Web="capability-driven"; Tier="P0"; Notes="Recommended S3 daily development target." }
+    [pscustomobject]@{ Chip="esp32s3"; FlashMB=16; PsramMB=8; Env="esp32s3-F16R8";Module="ESP32-S3-WROOM-1-N16R8";Partition="partitions/16MB.csv"; Web="capability-driven"; Tier="P0"; Notes="S3 PSRAM development and release target." }
 )
 
 function Show-Table([object[]]$rows) {

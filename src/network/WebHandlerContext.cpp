@@ -2,6 +2,7 @@
 #include "./security/AuthManager.h"
 #include "core/MemoryBudget.h"
 #include "./network/handlers/HandlerUtils.h"
+#include "network/JsonFragmentsResponse.h"
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "systems/TaskManager.h"
@@ -212,19 +213,19 @@ bool WebHandlerContext::requireDeveloperMode(AsyncWebServerRequest* request) {
 // ============ 内存保护辅助 ============
 
 static bool canAllocateResponse(size_t requiredSize) {
-    auto* fw = FastBeeFramework::getInstance();
-    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-    if (!monitor) return true;
-    SystemHealth health = monitor->getHealthStatus();
+    // The health report is sampled every five seconds. A stale low value can
+    // reject the next tiny session probe after memory has recovered, while a
+    // stale high value can admit a response after a new allocation burst.
+    const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
     // 预留 512 字节安全余量，防止序列化过程中的临时分配
     size_t safeSize = requiredSize + 512;
-    if (health.largestFreeBlock < safeSize) {
+    if (largestBlock < safeSize) {
         if (FastBee::psramAvailableForJson(safeSize + 4096) &&
-            FastBee::MemoryBudget::dramFree() >= 2048 && FastBee::MemoryBudget::dramLargest() >= 1024) {
+            FastBee::MemoryBudget::dram8Free() >= 2048 && largestBlock >= 1024) {
             return true;
         }
         ets_printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
-                   (unsigned)safeSize, (unsigned long)health.largestFreeBlock);
+                   (unsigned)safeSize, (unsigned long)largestBlock);
         return false;
     }
     return true;
@@ -557,26 +558,21 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
         return;
     }
 
-    // 先序列化 data 为字符串（避免深拷贝到 outDoc 造成 2x 内存峰值）
-    String dataStr;
-    dataStr.reserve(estimatedSize + 1);
-    if (!data.isNull()) {
-        serializeJson(data, dataStr);
-    } else {
-        dataStr = "null";
+    // Reuse the owned fragment response: one serialized envelope instead of
+    // dataStr + envelope + AsyncBasicResponse's copy. No caller document or
+    // mutable cache is borrowed after this function returns.
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "{\"success\":true,\"timestamp\":%lu,\"data\":",
+             static_cast<unsigned long>(millis()));
+    std::unique_ptr<FastBee::JsonFragmentsResponse> response(
+        new (std::nothrow) FastBee::JsonFragmentsResponse(1));
+    if (!response || !response->set(0, data, prefix, "}")) {
+        response.reset();
+        sendServiceUnavailable(request);
+        return;
     }
-    // 文本拼接构建响应，不产生第二个 JsonDocument
-    String response;
-    response.reserve(dataStr.length() + 64);
-    response = "{\"success\":true,\"timestamp\":";
-    response += String(millis());
-    response += ",\"data\":";
-    response += dataStr;
-    response += "}";
-
-    AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", response);
-    resp->addHeader("Connection", "close");
-    request->send(resp);
+    response->addHeader("Connection", "close");
+    request->send(response.release());
 }
 
 // JSON 安全转义：就地处理到栈缓冲，避免 String 堆分配
@@ -762,8 +758,14 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     bool hasStaticEtag = false;
     if (sentGzippedContent) {
         hasStaticEtag = getStaticGzipEtag(openFile, staticEtag);
-        if (hasStaticEtag && !openFile.seek(0)) {
-            hasStaticEtag = false;
+        // Reading the optional CRC can fail after moving to the trailer.
+        // AsyncFileResponse advertises the full file size, so even without
+        // an ETag it must start at byte zero. Never send a truncated 200 (or
+        // a cache hit) when rewinding the selected representation fails.
+        if (!openFile.seek(0) || openFile.position() != 0) {
+            openFile.close();
+            sendStaticBusyResponse(request, contentType);
+            return true;
         }
     }
 
@@ -959,12 +961,30 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
     }
 
     TaskManager* taskManager = framework ? framework->getTaskManager() : nullptr;
-    if (!taskManager || webForegroundModeActive) {
+    if (!taskManager) {
+        return;
+    }
+
+    // Regular state polling can arrive faster than the 3.5 s foreground hold
+    // and otherwise disable acquisition indefinitely. On PSRAM-capable
+    // devices with internal headroom, leave timer admission to the existing
+    // scheduler/worker memory guards. Re-evaluate during an active hold too,
+    // so transient pressure can recover without closing the preview page.
+    HealthMonitor* monitor = framework ? framework->getHealthMonitor() : nullptr;
+    const bool allowBackgroundSampling = FastBee::psramAvailableForJson() &&
+        FastBee::MemoryBudget::dram8Free() >= FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE &&
+        FastBee::MemoryBudget::dram8Largest() >= FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK &&
+        (!monitor || !monitor->isMemorySevere());
+    if (webForegroundModeActive) {
+        if (allowBackgroundSampling) taskManager->enableTask("periph_exec_timer");
+        else taskManager->disableTask("periph_exec_timer");
         return;
     }
 
     bool changed = false;
-    changed = taskManager->disableTask("periph_exec_timer") || changed;
+    if (!allowBackgroundSampling) {
+        changed = taskManager->disableTask("periph_exec_timer") || changed;
+    }
     // 注意：protocol_handle 不再禁用——MQTT 前台让位逻辑在 MQTTClient::handle()
     // 内，禁用它会让让位永远无法触发（实测死锁：前台时 MQTT 保持连接
     // 挤压 Web，free8=21KB 仍发生响应截断）。

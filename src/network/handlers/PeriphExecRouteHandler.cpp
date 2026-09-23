@@ -18,6 +18,7 @@
 #include "protocols/ProtocolManager.h"
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
+#include <LittleFS.h>
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -25,6 +26,10 @@
 #include <memory>
 #include <utility>
 #include <vector>
+
+bool validateRemoteChannelRuleAction(const ExecAction& action,
+                                     String& errorCode,
+                                     String& errorMessage);
 
 namespace {
 constexpr uint8_t CONTROL_GROUP_COUNT = 6;
@@ -559,35 +564,39 @@ PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
 }
 
 void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
-    // 注意：更具体的路由必须先注册，否则会被 /api/periph-exec 拦截
+    // Fixed endpoints must not consume unknown or compiled-out child routes.
+    // DELETE retains its historical trailing slash; the rule ID is a query parameter.
+#if FASTBEE_ENABLE_CONFIG_TRANSFER
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/import-chunk"), HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleImportChunk(request); });
+#endif
 
     // 设备控制API（按动作类型分组）
-    server->on("/api/periph-exec/controls", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/controls"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetControls(request); });
 
     // 触发事件相关API
-    server->on("/api/periph-exec/events/static", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/events/static"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
     
-    server->on("/api/periph-exec/events/dynamic", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/events/dynamic"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetDynamicEvents(request); });
     
-    server->on("/api/periph-exec/events/categories", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/events/categories"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetEventCategories(request); });
     
-    server->on("/api/periph-exec/trigger-types", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/trigger-types"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetTriggerTypes(request); });
 
-    server->on("/api/periph-exec/results", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/results"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetRecentResults(request); });
 
     // 向后兼容：旧版系统事件API重定向到静态事件
-    server->on("/api/periph-exec/system-events", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/system-events"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
 
     // JSON body handlers for add/update（支持 triggers[]/actions[] 数组）
-    // 注意: update 必须先于 add 注册，因为 AsyncCallbackJsonWebHandler 使用前缀匹配
-    auto* preflightJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec/preflight",
+    auto* preflightJsonHandler = new AsyncCallbackJsonWebHandler(AsyncURIMatcher::exact("/api/periph-exec/preflight"),
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handlePreflightRuleJson(request, json);
         });
@@ -595,14 +604,14 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     preflightJsonHandler->setMaxContentLength(12288);
     server->addHandler(preflightJsonHandler);
 
-    auto* updateJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec/update",
+    auto* updateJsonHandler = new AsyncCallbackJsonWebHandler(AsyncURIMatcher::exact("/api/periph-exec/update"),
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handleUpdateRuleJson(request, json);
         });
     updateJsonHandler->setMethod(HTTP_POST);
     server->addHandler(updateJsonHandler);
 
-    auto* addJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec",
+    auto* addJsonHandler = new AsyncCallbackJsonWebHandler(AsyncURIMatcher::exact("/api/periph-exec"),
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handleAddRuleJson(request, json);
         });
@@ -610,27 +619,135 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->addHandler(addJsonHandler);
 
     // 旧版 form-encoded fallback（向后兼容）
-    server->on("/api/periph-exec/update", HTTP_POST,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/update"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleUpdateRule(request); });
 
-    server->on("/api/periph-exec/enable", HTTP_POST,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/enable"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleEnableRule(request); });
 
-    server->on("/api/periph-exec/disable", HTTP_POST,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/disable"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleDisableRule(request); });
 
-    server->on("/api/periph-exec/run", HTTP_POST,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/run"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleRunOnce(request); });
 
-    server->on("/api/periph-exec/", HTTP_DELETE,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec/"), HTTP_DELETE,
               [this](AsyncWebServerRequest* request) { handleDeleteRule(request); });
 
-    server->on("/api/periph-exec", HTTP_GET,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetRules(request); });
 
     // 旧版 form-encoded add fallback
-    server->on("/api/periph-exec", HTTP_POST,
+    server->on(AsyncURIMatcher::exact("/api/periph-exec"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleAddRule(request); });
+}
+
+// Dedicated, bounded upload. No action is dispatched and runtime rules remain
+// unchanged until the user reboots after a successful atomic file commit.
+void PeriphExecRouteHandler::handleImportChunk(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request) || !ctx->requireDeveloperMode(request)) return;
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Rule import", MemoryGuardLevel::SEVERE, 8)) return;
+    if (HandlerUtils::checkLowMemory(request, 24576)) return;
+    for (const char* name : {"session", "offset", "size", "chunk"}) {
+        if (!request->hasParam(name, true)) {
+            ctx->sendError(request, 400, "Missing import parameters");
+            return;
+        }
+    }
+    const String& session = request->getParam("session", true)->value();
+    const String& chunk = request->getParam("chunk", true)->value();
+    auto unsignedParam = [request](const char* name, size_t& value) {
+        const String& text = request->getParam(name, true)->value();
+        if (text.isEmpty() || text.length() > 6) return false;
+        value = 0;
+        for (size_t i = 0; i < text.length(); ++i) {
+            if (text[i] < '0' || text[i] > '9') return false;
+            value = value * 10 + (text[i] - '0');
+        }
+        return true;
+    };
+    size_t offset = 0, total = 0;
+    bool validSession = session.length() == 32;
+    for (size_t i = 0; validSession && i < session.length(); ++i) {
+        const char c = session[i];
+        validSession = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    }
+    if (!validSession || !unsignedParam("offset", offset) || !unsignedParam("size", total) ||
+        total == 0 || total > 96U * 1024U || chunk.isEmpty() || chunk.length() > 1536 ||
+        offset > total || chunk.length() > total - offset) {
+        ctx->sendError(request, 400, "Invalid import range or session");
+        return;
+    }
+    PeriphExecManager& mgr = PeriphExecManager::getInstance();
+    constexpr const char* stagedPath = "/config/periph_exec.upload.tmp";
+    const unsigned long now = millis();
+    if (importSession != session) {
+        if (mgr.isConfigurationRestartPending() || offset != 0 ||
+            (!importSession.isEmpty() && now - importUpdatedAt < 60000UL)) {
+            ctx->sendError(request, 409, "Import busy or restart required");
+            return;
+        }
+        File staged = LittleFS.open(stagedPath, "w");
+        if (!staged) { ctx->sendError(request, 500, "Cannot stage import"); return; }
+        staged.close();
+        importSession = session;
+        importSize = total;
+        importReceived = 0;
+        importCommitted = false;
+    }
+    if (total != importSize || offset > importReceived) {
+        ctx->sendError(request, 409, "Import offset mismatch");
+        return;
+    }
+    importUpdatedAt = now;
+    if (importCommitted) {
+        File saved = LittleFS.open("/config/periph_exec.json", "r");
+        bool same = saved && saved.size() == importSize && saved.seek(offset);
+        for (size_t i = 0; same && i < chunk.length(); ++i) same = saved.read() == static_cast<uint8_t>(chunk[i]);
+        if (saved) saved.close();
+        if (!same) { ctx->sendError(request, 409, "Committed retry differs"); return; }
+    } else {
+        if (offset < importReceived) {
+            // A response may have been lost. Compare the already stored range
+            // instead of appending duplicate bytes on a safe retry.
+            File staged = LittleFS.open(stagedPath, "r");
+            bool same = staged && offset + chunk.length() <= importReceived && staged.seek(offset);
+            for (size_t i = 0; same && i < chunk.length(); ++i) same = staged.read() == static_cast<uint8_t>(chunk[i]);
+            if (staged) staged.close();
+            if (!same) { ctx->sendError(request, 409, "Import retry differs"); return; }
+        } else {
+            File staged = LittleFS.open(stagedPath, "a");
+            const size_t written = staged && staged.size() == importReceived ? staged.print(chunk) : 0;
+            if (staged) { staged.flush(); staged.close(); }
+            if (written != chunk.length()) {
+                LittleFS.remove(stagedPath);
+                importSession = "";
+                ctx->sendError(request, 500, "Import short write; original preserved");
+                return;
+            }
+            importReceived += written;
+        }
+        if (importReceived == importSize) {
+            String error;
+            if (!mgr.importConfigurationFile(stagedPath, error)) {
+                if (error == "CONFIG_MEMORY_PRESSURE" || error == "RULE_SERVICE_BUSY") {
+                    HandlerUtils::sendJsonError(request, 503, error.c_str(), 5);
+                    return; // Keep the complete staging file for the same-range retry.
+                }
+                LittleFS.remove(stagedPath);
+                importSession = "";
+                ctx->sendError(request, 422, error.c_str());
+                return;
+            }
+            importCommitted = true;
+        }
+    }
+    JsonDocument result;
+    result["received"] = importReceived;
+    result["saved"] = importCommitted;
+    result["applied"] = false;
+    result["restartRequired"] = importCommitted;
+    ctx->sendSuccess(request, result);
 }
 
 // ========== 获取所有规则 ==========
@@ -643,6 +760,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
+    if (mgr.hasConfigurationLoadError()) {
+        ctx->sendError(request, 409, "CONFIG_LOAD_FAILED: 原配置已保留，请检查配置文件或重新导入后重启");
+        return;
+    }
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     // ============ 单条查询：在单一锁持有期内复制规则 ============
@@ -688,6 +809,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         if (pageSize < 1) pageSize = 1;
         if (pageSize > 50) pageSize = 50;
     }
+
+    const String listFilter = ctx->getParamValue(request, "filter", "");
 
     // 检查堆内存是否充足（chunked流式发送内存占用很小，只需保证最低运行空间）
     if (HandlerUtils::checkLowMemory(request, 3072)) return;
@@ -773,6 +896,21 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             }
         }
 
+        // Filter the entire collection before counting/paging, not just the
+        // selected page. Match the summaries used by the list selector.
+        if (!listFilter.isEmpty()) {
+            ptrs.erase(std::remove_if(ptrs.begin(), ptrs.end(), [&](const PeriphExecRule* rule) {
+                if (listFilter.startsWith("trigger:")) {
+                    return rule->triggers.empty() ||
+                        rule->triggers[0].triggerType != listFilter.substring(8).toInt();
+                }
+                PeripheralConfig target;
+                return rule->actions.empty() ||
+                    !pm.getPeripheralSnapshot(rule->actions[0].targetPeriphId, target) ||
+                    target.name != listFilter;
+            }), ptrs.end());
+        }
+
         // 排序：启用的排前面，然后按名称排序
         std::sort(ptrs.begin(), ptrs.end(), [](const PeriphExecRule* a, const PeriphExecRule* b) {
             if (a->enabled != b->enabled) return a->enabled > b->enabled;
@@ -780,6 +918,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         });
 
         total = static_cast<int>(ptrs.size());
+        page = std::min(page, std::max(1, (total + effectivePageSize - 1) / effectivePageSize));
         startIdx = (page - 1) * effectivePageSize;
         endIdx = (startIdx < total) ? min(startIdx + effectivePageSize, total) : startIdx;
 
@@ -1483,7 +1622,8 @@ bool actionNeedsPeripheral(uint8_t actionType) {
     return !(actionType == 6 || actionType == 7 || actionType == 8 ||
              actionType == 9 || actionType == 15 || actionType == 18 ||
              actionType == 21 || actionType == 22 || actionType == 23 ||
-             actionType == 31 || actionType == 32);
+             actionType == 31 || actionType == 32 || actionType == 33 ||
+             actionType == 34);
 }
 
 bool actionTargetMatches(uint8_t actionType, const PeripheralConfig& config) {
@@ -1771,21 +1911,21 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
                      "Modbus feature is disabled");
         }
 #if !FASTBEE_ENABLE_REMOTE_RESOURCES
-        if (action.actionType == 33 || action.actionType == 34) {
+        if (action.actionType == 34) {
             addIssue("REMOTE_RESOURCES_NOT_COMPILED", "error", path + ".actionType",
                      "Remote resources are not compiled into this firmware");
         }
 #endif
         if (action.actionType == 33) {
-            if (action.targetPeriphId.isEmpty()) {
-                addIssue("REMOTE_TARGET_REQUIRED", "error", path + ".targetPeriphId",
-                         "Remote channel ID is required");
-            }
-            if ((!action.useReceivedValue && action.actionValue != "on" &&
-                 action.actionValue != "off" && action.actionValue != "trigger") ||
-                (action.useReceivedValue && !action.actionValue.isEmpty())) {
-                addIssue("INVALID_REMOTE_VALUE", "error", path + ".actionValue",
-                         "Remote channel value must be on, off or trigger");
+            String remoteErrorCode;
+            String remoteErrorMessage;
+            if (!validateRemoteChannelRuleAction(action, remoteErrorCode,
+                                                 remoteErrorMessage)) {
+                const bool targetIssue = remoteErrorCode.startsWith("REMOTE_TARGET") ||
+                                         remoteErrorCode == "REMOTE_CHANNEL_TYPE_UNSUPPORTED";
+                addIssue(remoteErrorCode.c_str(), "error",
+                         path + (targetIssue ? ".targetPeriphId" : ".actionValue"),
+                         remoteErrorMessage);
             }
         }
         if (action.actionType == 34 &&

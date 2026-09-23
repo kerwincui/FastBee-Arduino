@@ -176,6 +176,9 @@
             if (content && options.preserveContent !== true) content.innerHTML = '';
             this._setDeviceControlRefreshLoading(false);
             this._dcPageLoadPromise = null;
+            if (this._dcEventAbort) this._dcEventAbort.abort();
+            this._dcEventAbort = null;
+            this._dcEventsTarget = null;
             this._eventsBound = false;
             this._dcClearRuntimeState();
 
@@ -237,7 +240,11 @@
             }
 
             var content = document.getElementById('dc-content');
-            if (content && !this._eventsBound) {
+            if (content && (!this._eventsBound || this._dcEventsTarget !== content)) {
+                if (this._dcEventAbort) this._dcEventAbort.abort();
+                this._dcEventAbort = new AbortController();
+                this._dcEventsTarget = content;
+                var eventOptions = { signal: this._dcEventAbort.signal };
                 // 滚轮缩放（Ctrl+滚轮）
                 content.addEventListener('wheel', function(e) {
                     if (e.ctrlKey) {
@@ -245,7 +252,7 @@
                         if (e.deltaY < 0) self._dcZoomIn();
                         else self._dcZoomOut();
                     }
-                }, { passive: false });
+                }, { passive: false, signal: this._dcEventAbort.signal });
 
                 content.addEventListener('click', function(e) {
                     if (e.target.closest('.dc-layout-reset')) { self._dcResetLayout(); return; }
@@ -266,7 +273,7 @@
                     } else {
                         self._executeRule(ruleId, btn);
                     }
-                });
+                }, eventOptions);
 
                 content.addEventListener('click', function(e) {
                     var coilCard = e.target.closest('.dc-coil-card');
@@ -326,13 +333,14 @@
                     if (motorSetBtn) { self._dcMotorSet(parseInt(motorSetBtn.getAttribute('data-dev')), motorSetBtn.getAttribute('data-param')); return; }
                     var refreshMotorBtn = e.target.closest('.dc-motor-refresh');
                     if (refreshMotorBtn) { self._dcRefreshMotorStatus(parseInt(refreshMotorBtn.getAttribute('data-dev'))); return; }
-                });
+                }, eventOptions);
 
                 content.addEventListener('input', function(e) {
+                    if (e.target.classList.contains('motor-param-input')) e.target.dataset.dirty = 'true';
                     if (e.target.classList.contains('dc-pwm-slider')) {
                         self._dcOnPwmSliderInput(parseInt(e.target.getAttribute('data-dev')), parseInt(e.target.getAttribute('data-ch')), parseInt(e.target.value));
                     }
-                });
+                }, eventOptions);
                 content.addEventListener('change', function(e) {
                     if (e.target.classList.contains('dc-pwm-slider')) {
                         self._dcSetPwmChannel(parseInt(e.target.getAttribute('data-dev')), parseInt(e.target.getAttribute('data-ch')), parseInt(e.target.value));
@@ -346,7 +354,7 @@
                         var tags = document.querySelectorAll('.dc-sid-tag');
                         for (var t = 0; t < tags.length; t++) tags[t].classList.toggle('fb-hidden', !show);
                     }
-                });
+                }, eventOptions);
             }
 
             this._eventsBound = true;
@@ -683,7 +691,9 @@
                     if (dt === 'relay') await this._dcRefreshCoilStatus(i);
                     else if (dt === 'pwm') await this._dcRefreshPwmStatus(i);
                     else if (dt === 'pid') await this._dcRefreshPidStatus(i);
-                    else if (dt === 'motor') await this._dcRefreshMotorStatus(i);
+                    // Motor status shares the command endpoint with movement
+                    // actions. Keep initial page navigation side-effect free;
+                    // the explicit refresh button remains available.
                     if (!this._dcIsLifecycleActive(lifecycleGeneration) ||
                         this._dcInitCancelled || initGeneration !== this._dcModbusInitGeneration) break;
                     // 每次请求间留足够间隔，避免触发 Request Governor overload

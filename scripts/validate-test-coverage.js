@@ -35,7 +35,7 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'MQTTS recovery must fall back to persisted plain MQTT'
             ],
             'test/unit/test_deploy_config_bundle.py': [
-                'def test_classic_lite_disables_mqtt_before_staging',
+                'def test_classic_no_psram_disables_mqtt_before_staging',
                 'def test_mqtt_degradation_is_reported_separately_from_runtime_features',
                 'def test_memory_profile_prunes_only_profile_disabled_runtime_entries'
             ],

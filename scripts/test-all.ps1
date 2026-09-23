@@ -18,7 +18,7 @@ param(
     [string]$BaseUrl = "",
     [string]$Port = "",
 
-    [ValidateSet("lite", "standard", "full", "unified")]
+    [ValidateSet("unified")]
     [string]$DeviceProfile = "unified",
 
     [string]$Username = "admin",

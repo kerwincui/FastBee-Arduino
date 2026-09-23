@@ -465,108 +465,113 @@
 
         // --- Motor ---
 
-        _dcRefreshMotorStatus: function(devIdx) {
-            var self = this;
+        _dcMotorRequest: function(devIdx, action, value) {
+            var self = this, p = this._dcGetMotorParams(devIdx);
             var generation = this._dcLifecycleGeneration;
-            var p = this._dcGetMotorParams(devIdx);
-            return apiPostSilent('/api/modbus/motor/control', {
-                slaveAddress: p.slaveAddress, action: 'readStatus'
-            }).then(function(res) {
-                if (!self._dcIsLifecycleActive(generation)) return;
-                if (res && res.success && res.data) {
-                    self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
-                    self._dcUpdatePanelOnlineState(devIdx, true);
-                } else {
-                    self._dcUpdatePanelOnlineState(devIdx, false);
+            var key = String(p.slaveAddress), isRead = action === 'readStatus';
+            var pending = this._dcMotorPending || (this._dcMotorPending = {});
+            if (!isRead && action !== 'stop' && pending[key]) return Promise.reject(new Error('电机指令正在发送'));
+            this._dcMotorSequence = (this._dcMotorSequence || 0) + 1;
+            var token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + this._dcMotorSequence;
+            if (!isRead) pending[key] = token;
+            var started = Date.now();
+            function completed(response) {
+                if (!response || !response.success) throw new Error(response && response.error || '指令结果待确认');
+                var data = response.data || {};
+                if (!data.pending) {
+                    // Older firmware returns success only at the envelope.
+                    // Never mistake a failed asynchronous operation for that
+                    // legacy response shape.
+                    if (data.success === false || (data.operationId && data.success !== true)) throw new Error(data.error || '指令未完成');
+                    return { success: true, data: data };
                 }
+                if (Date.now() - started > 20000) throw new Error('指令结果待确认，请查看设备状态');
+                return self._dcDelay(400, generation).then(function(active) {
+                    if (!active) throw new Error('页面已关闭，已提交指令不会重发');
+                    return apiPostSilentPriority('/api/modbus/motor/control', { action: 'operation', operationId: data.operationId });
+                }).then(completed);
+            }
+            return apiPostSilentPriority('/api/modbus/motor/control', {
+                slaveAddress: p.slaveAddress, action: action, value: value || 0, requestId: token
+            }).then(completed).finally(function() {
+                if (pending[key] === token) delete pending[key];
+            });
+        },
+
+        _dcRefreshMotorStatus: function(devIdx) {
+            var self = this, generation = this._dcLifecycleGeneration;
+            var p = this._dcGetMotorParams(devIdx);
+            if (this._dcMotorPending && this._dcMotorPending[String(p.slaveAddress)]) return Promise.resolve();
+            return this._dcMotorRequest(devIdx, 'readStatus').then(function(res) {
+                if (!self._dcIsLifecycleActive(generation)) return;
+                self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
+                self._dcUpdatePanelOnlineState(devIdx, true);
             }).catch(function() {
                 if (!self._dcIsLifecycleActive(generation)) return;
+                self._dcUpdateMotorRunUI(devIdx, {}, p.motorDecimals);
                 self._dcUpdatePanelOnlineState(devIdx, false);
             });
         },
 
         _dcUpdateMotorRunUI: function(devIdx, data, decimals) {
             var sf = Math.pow(10, decimals || 0);
-            var elSpeed = document.getElementById('dc-motor-speed-' + devIdx);
-            var elPulse = document.getElementById('dc-motor-pulse-' + devIdx);
-            var elDir = document.getElementById('dc-motor-dir-' + devIdx);
-            var elCount = document.getElementById('dc-motor-count-' + devIdx);
-            var elRun = document.getElementById('dc-motor-run-' + devIdx);
-            if (data.speed !== undefined && elSpeed) elSpeed.textContent = (data.speed / sf).toFixed(decimals || 0);
-            if (data.pulse !== undefined && elPulse) elPulse.textContent = data.pulse;
-            if (elDir) {
-                if (data.direction === 'forward' || data.direction === 1) {
-                    elDir.textContent = '← 正转';
-                } else if (data.direction === 'reverse' || data.direction === -1) {
-                    elDir.textContent = '→ 反转';
-                } else {
-                    elDir.textContent = '停止';
+            var speed = document.getElementById('dc-motor-speed-' + devIdx);
+            var pulse = document.getElementById('dc-motor-pulse-' + devIdx);
+            var direction = document.getElementById('dc-motor-dir-' + devIdx);
+            var run = document.getElementById('dc-motor-run-' + devIdx);
+            if (speed && data.speed !== undefined) speed.textContent = (data.speed / sf).toFixed(decimals || 0);
+            if (pulse && data.pulse !== undefined) pulse.textContent = data.pulse;
+            ['speed', 'pulse'].forEach(function(param) {
+                var input = document.getElementById('dc-motor-' + param + '-in-' + devIdx);
+                if (input && input.dataset.dirty !== 'true' && data[param] !== undefined && document.activeElement !== input) {
+                    input.value = param === 'speed' ? (data[param] / sf).toFixed(decimals || 0) : String(data[param]);
                 }
-            }
-            if (data.count !== undefined && elCount) elCount.textContent = data.count + ' 次';
-            if (elRun) {
-                var dir = data.direction || '';
-                elRun.className = 'motor-run-badge ' + (dir === 'forward' || dir === 1 ? 'motor-run-forward' : dir === 'reverse' || dir === -1 ? 'motor-run-reverse' : 'motor-run-stopped');
-                elRun.textContent = (dir === 'forward' || dir === 1) ? '正转中' : (dir === 'reverse' || dir === -1) ? '反转中' : '停止';
-            }
+            });
+            var dir = data.motionKnown === true ? data.direction : undefined;
+            var label = dir === 'forward' || dir === 1 ? '正转中' : dir === 'reverse' || dir === -1 ? '反转中' : dir === 'stop' || dir === 0 ? '已停止' : '运行状态未确认';
+            if (direction) direction.textContent = label;
+            if (run) { run.className = 'motor-run-badge motor-run-idle'; run.textContent = label; }
         },
 
         _dcMotorAction: function(devIdx, action) {
-            this._dcCancelInit();
-            var self = this;
-            var generation = this._dcLifecycleGeneration;
-            var p = this._dcGetMotorParams(devIdx);
-            apiPostSilentPriority('/api/modbus/motor/control', {
-                slaveAddress: p.slaveAddress, action: action
-            }).then(function(res) {
+            this._dcCancelInit(false);
+            var self = this, generation = this._dcLifecycleGeneration;
+            if (action !== 'stop' && ['speed', 'pulse'].some(function(param) {
+                var input = document.getElementById('dc-motor-' + param + '-in-' + devIdx);
+                return input && input.dataset.dirty === 'true';
+            })) { Notification.warning('请先设置修改后的速度和脉冲'); return Promise.resolve(false); }
+            return this._dcMotorRequest(devIdx, action).then(function() {
                 if (!self._dcIsLifecycleActive(generation)) return;
-                if (res && res.success) {
-                    Notification.success(action === 'forward' ? '正转指令已发送' : action === 'reverse' ? '反转指令已发送' : '停止指令已发送');
-                    var elDir = document.getElementById('dc-motor-dir-' + devIdx);
-                    var elRun = document.getElementById('dc-motor-run-' + devIdx);
-                    if (elDir) {
-                        if (action === 'forward') {
-                            elDir.textContent = '← 正转';
-                        } else if (action === 'reverse') {
-                            elDir.textContent = '→ 反转';
-                        } else {
-                            elDir.textContent = '停止';
-                        }
-                    }
-                    if (elRun) {
-                        elRun.className = 'motor-run-badge ' + (action === 'forward' ? 'motor-run-forward' : action === 'reverse' ? 'motor-run-reverse' : 'motor-run-stopped');
-                        elRun.textContent = (action === 'forward' ? '正转中' : action === 'reverse' ? '反转中' : '停止');
-                    }
-                } else {
-                    Notification.error((res && res.error) || '操作失败');
-                }
-            }).catch(function() {
-                if (!self._dcIsLifecycleActive(generation)) return;
-                Notification.error('操作失败');
+                var label = action === 'forward' ? '正转' : action === 'reverse' ? '反转' : '停止';
+                Notification.success(label + '指令已发送，运行状态待确认');
+                self._dcUpdateMotorRunUI(devIdx, {}, 0);
+            }).catch(function(error) {
+                if (self._dcIsLifecycleActive(generation)) Notification.error(error.message || '指令结果待确认');
             });
         },
 
         _dcMotorSet: function(devIdx, param) {
-            this._dcCancelInit();
-            var self = this;
-            var generation = this._dcLifecycleGeneration;
-            var p = this._dcGetMotorParams(devIdx);
-            var inputId = 'dc-motor-' + param + '-in-' + devIdx;
-            var input = document.getElementById(inputId);
-            var value = parseInt(input ? input.value : 0) || 0;
-            var action = param === 'speed' ? 'setSpeed' : 'setPulse';
-            apiPostSilentPriority('/api/modbus/motor/control', {
-                slaveAddress: p.slaveAddress, action: action, value: value
-            }).then(function(res) {
-                if (!self._dcIsLifecycleActive(generation)) return;
-                if (res && res.success) {
-                    Notification.success(param === 'speed' ? '速度设置成功' : '脉冲数设置成功');
-                } else {
-                    Notification.error((res && res.error) || '操作失败');
+            this._dcCancelInit(false);
+            var self = this, generation = this._dcLifecycleGeneration;
+            var input = document.getElementById('dc-motor-' + param + '-in-' + devIdx);
+            if (!input || (param !== 'speed' && param !== 'pulse')) return Promise.resolve(false);
+            var submittedText = input.value;
+            var decimals = param === 'speed' ? this._dcGetMotorParams(devIdx).motorDecimals || 0 : 0;
+            var scale = Math.pow(10, decimals), rawValue = Number(submittedText) * scale;
+            var value = Math.round(rawValue);
+            if (!submittedText.trim() || !Number.isFinite(rawValue) || Math.abs(value - rawValue) > 0.000001 || value < 0 || value > 65535) {
+                Notification.error('请输入0到' + (65535 / scale) + '之间、步长为' + (1 / scale) + '的数值'); return Promise.resolve(false);
+            }
+            return this._dcMotorRequest(devIdx, param === 'speed' ? 'setSpeed' : 'setPulse', value).then(function() {
+                if (self._dcIsLifecycleActive(generation)) {
+                    // Editing during a request creates a new unsent draft.
+                    input.dataset.dirty = input.value === submittedText ? 'false' : 'true';
+                    var data = {}; data[param] = value;
+                    self._dcUpdateMotorRunUI(devIdx, data, self._dcGetMotorParams(devIdx).motorDecimals);
+                    Notification.success(param === 'speed' ? '设定速度已更新' : '单次脉冲已更新');
                 }
-            }).catch(function() {
-                if (!self._dcIsLifecycleActive(generation)) return;
-                Notification.error('操作失败');
+            }).catch(function(error) {
+                if (self._dcIsLifecycleActive(generation)) Notification.error(error.message || '参数设置失败');
             });
         }
     });

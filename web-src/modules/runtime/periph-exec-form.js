@@ -225,10 +225,28 @@
             selectEl.value = normalized;
         },
 
+        _findPeriphExecRemoteChannel(channelId) {
+            return (this._peRemoteChannels || []).find(function(item) {
+                return item.id === channelId;
+            });
+        },
+
         _syncRemoteActionValueState(block) {
             if (!block) return;
+            var isRemoteChannel = Number(block.querySelector('.pe-action-type')?.value) === 33;
+            var channelId = block.querySelector('.pe-target-periph')?.value || '';
+            var channel = this._findPeriphExecRemoteChannel(channelId);
+            var isNumber = isRemoteChannel && channel?.type === 'number';
+            var useReceivedValue = block.querySelector('.pe-use-received-value')?.checked === true;
+            this._setSectionVisible(block.querySelector('.pe-remote-value-group'), isRemoteChannel && !isNumber);
+            var valueGroup = block.querySelector('.pe-action-value-group');
+            this._setSectionVisible(valueGroup, isNumber);
             var remoteValue = block.querySelector('.pe-remote-action-value');
-            if (remoteValue) remoteValue.disabled = block.querySelector('.pe-use-received-value')?.checked === true;
+            if (remoteValue) remoteValue.disabled = !isRemoteChannel || isNumber || useReceivedValue;
+            if (isNumber && valueGroup) {
+                var input = valueGroup.querySelector('.pe-action-value');
+                input.readOnly = useReceivedValue;
+            }
         },
 
         _createPeriphExecActionElement(data, index) {
@@ -271,9 +289,9 @@
             const scalarActionValue = (isScriptAction || isOledDisplay || isTriggerEvent || isSensorRead || isModbusPoll) ? '' : (data.actionValue || '');
             const remoteValue = ['on', 'off', 'trigger'].indexOf(data.actionValue) >= 0 ? data.actionValue : 'on';
             const remoteOptions = (this._peRemoteResourcesAvailable || isRemoteAction) ?
-                '<optgroup label="' + t('pef-action-remote', '远程资源') + '">' +
-                '<option value="33" ' + sel(33) + '>' + t('pef-action-remote-channel', '远程通道控制') + '</option>' +
-                '<option value="34" ' + sel(34) + '>' + t('pef-action-remote-read', '远程天气读取') + '</option></optgroup>' : '';
+                '<optgroup label="心知天气">' +
+                (isRemoteChannel ? '<option value="33" selected disabled>远程通道已停用，请删除或替换此动作</option>' : '') +
+                '<option value="34" ' + sel(34) + '>更新心知天气</option></optgroup>' : '';
             const targetLabel = isRuleCtrlAction ? t('pef-target-rule', '目标执行规则') :
                 (isRemoteChannel ? t('pef-target-remote-channel', '远程通道') :
                     (isRemoteRead ? t('pef-target-weather-source', '天气来源') : t('pef-target-periph', '执行外设')));
@@ -348,8 +366,8 @@
                     '</select></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(showScalarValue) + '">' +
                     '<label>' + '动作参数' + '</label>' +
-                    '<input type="text" class="pe-action-value" value="' + escapeHtml(scalarActionValue) + '" placeholder="' + escapeHtml(isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (receiveChecked ? ' readonly' : '') + '>' +
-                    '<small class="pe-help-text">' + (actionTypeInt === 10 ? t('pef-help-send-cmd', '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值') : actionTypeInt === 11 ? t('pef-help-led', '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值') : actionTypeInt === 12 ? t('pef-help-motor', '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)') : actionTypeInt === 28 ? t('pef-help-rf', '输入射频编码，如十六进制编码字符串') : actionTypeInt === 29 ? t('pef-help-uart', '输入要发送的文本，支持 $value 占位符') : (isScriptAction ? t('pef-help-script', '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作') : (isOledDisplay ? t('pef-help-oled', '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值') : (isDisplayAction ? t('pef-help-template', '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值') : t('pef-help-default', '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255'))))) + '</small>' +
+                    '<input type="text" class="pe-action-value" value="' + escapeHtml(scalarActionValue) + '" placeholder="' + escapeHtml(actionTypeInt === 17 && receiveChecked ? '可选：地址:$value' : isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (receiveChecked && actionTypeInt !== 17 ? ' readonly' : '') + '>' +
+                    '<small class="pe-help-text">' + (actionTypeInt === 17 && receiveChecked ? 'FC06 可留空、填 $value 或固定寄存器地址:$value' : actionTypeInt === 10 ? t('pef-help-send-cmd', '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值') : actionTypeInt === 11 ? t('pef-help-led', '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值') : actionTypeInt === 12 ? t('pef-help-motor', '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)') : actionTypeInt === 28 ? t('pef-help-rf', '输入射频编码，如十六进制编码字符串') : actionTypeInt === 29 ? t('pef-help-uart', '输入要发送的文本，支持 $value 占位符') : (isScriptAction ? t('pef-help-script', '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作') : (isOledDisplay ? t('pef-help-oled', '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值') : (isDisplayAction ? t('pef-help-template', '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值') : t('pef-help-default', '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255'))))) + '</small>' +
                     '</div>' +
                     '<div class="pe-action-lazy-host pe-span-all"></div>' +
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
@@ -559,8 +577,9 @@
             const block = checkbox.closest('.periph-exec-config-item');
             if (!block) return;
             const valueInput = block.querySelector('.pe-action-value');
+            const actionType = Number(block.querySelector('.pe-action-type')?.value);
             if (valueInput) {
-                if (checkbox.checked) {
+                if (checkbox.checked && actionType !== 17) {
                     valueInput.setAttribute('readonly', '');
                 } else {
                     valueInput.removeAttribute('readonly');
@@ -591,12 +610,13 @@
         _syncSetModeToActions(isSetMode) {
             const container = document.getElementById('periph-exec-actions');
             if (!container) return;
+            var self = this;
             container.querySelectorAll('.periph-exec-config-item').forEach(function (item) {
                 const checkbox = item.querySelector('.pe-use-received-value');
                 const valueInput = item.querySelector('.pe-action-value');
                 const recvGroup = item.querySelector('.pe-use-received-value-group');
                 const actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
-                const needsValue = (actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 24 || actionType === 25 || actionType === 28 || actionType === 29 || actionType === 33;
+                const needsValue = (actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 16 || actionType === 17 || actionType === 24 || actionType === 25 || actionType === 28 || actionType === 29 || actionType === 33;
                 const showRecv = isSetMode && needsValue;
                 if (recvGroup) {
                     if (showRecv) recvGroup.classList.remove('is-hidden');
@@ -604,11 +624,10 @@
                 }
                 if (checkbox) checkbox.checked = showRecv;
                 if (valueInput) {
-                    if (showRecv) valueInput.setAttribute('readonly', '');
+                    if (showRecv && actionType !== 17) valueInput.setAttribute('readonly', '');
                     else valueInput.removeAttribute('readonly');
                 }
-                var remoteValue = item.querySelector('.pe-remote-action-value');
-                if (remoteValue) remoteValue.disabled = showRecv;
+                self._syncRemoteActionValueState(item);
             });
         },
 
@@ -731,6 +750,7 @@
                     else if (actionType === 12) helpEl.textContent = t('pef-help-motor', '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)');
                     else if (actionType === 28) helpEl.textContent = t('pef-help-rf', '输入射频编码，如十六进制编码字符串');
                     else if (actionType === 29) helpEl.textContent = t('pef-help-uart', '输入要发送的文本，支持 $value 占位符');
+                    else if (actionType === 17 && block.querySelector('.pe-use-received-value')?.checked) helpEl.textContent = 'FC06 可留空、填 $value 或固定寄存器地址:$value';
                     else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = t('pef-help-template', '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值');
                     else helpEl.textContent = t('pef-help-default', '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255');
                 }
@@ -771,7 +791,7 @@
             if (checkbox) checkbox.checked = showRecv && !isModbusWrite;
             const valueInput = block.querySelector('.pe-action-value');
             if (valueInput) {
-                if (showRecv && !isModbusWrite) valueInput.setAttribute('readonly', '');
+                if (checkbox?.checked && actionType !== 17) valueInput.setAttribute('readonly', '');
                 else valueInput.removeAttribute('readonly');
             }
             this._syncRemoteActionValueState(block);
@@ -1362,7 +1382,11 @@
                     var eventSelect = item.querySelector('.pe-trigger-event-select');
                     action.actionValue = eventSelect ? (eventSelect.value || '') : '';
                 } else if (action.actionType === 33) {
-                    action.actionValue = useReceivedValue ? '' : (item.querySelector('.pe-remote-action-value')?.value || '');
+                    var remoteChannel = this._findPeriphExecRemoteChannel(targetPeriphId);
+                    action.actionValue = useReceivedValue ? '' :
+                        (remoteChannel?.type === 'number'
+                            ? (item.querySelector('.pe-action-value')?.value || '')
+                            : (item.querySelector('.pe-remote-action-value')?.value || ''));
                 } else if (action.actionType === 34) {
                     action.actionValue = '';
                 } else {
@@ -1523,7 +1547,14 @@
                         this._highlightFieldError(blk?.querySelector('.pe-target-periph'), '请选择 Modbus 子设备', errEl);
                         return;
                     }
-                    if (!actions[i].useReceivedValue) {
+                    if (actions[i].useReceivedValue) {
+                        var template = String(actions[i].actionValue || '');
+                        var validTemplate = at === 17 && (template === '' || template === '$value' || /^(?:0|[1-9]\d{0,4}):\$value$/.test(template) && Number(template.split(':')[0]) <= 65535);
+                        if (!validTemplate) {
+                            this._highlightFieldError(blk?.querySelector('.pe-action-value'), at === 17 ? 'FC06 接收值模板仅支持空、$value 或 地址:$value' : 'FC05 不支持面板数值输入', errEl);
+                            return;
+                        }
+                    } else {
                         var writeParts = String(actions[i].actionValue || '').split(':');
                         var validWrite = writeParts.length <= 2 && writeParts.every(function(part) {
                             return /^\d+$/.test(part) && Number(part) <= 65535;
@@ -1543,17 +1574,8 @@
                         return;
                     }
                 } else if (at === 33) {
-                    var remoteChannel = (this._peRemoteChannels || []).find(function(item) {
-                        return String(item.id) === String(actions[i].targetPeriphId);
-                    });
-                    if (!remoteChannel) {
-                        this._highlightFieldError(blk?.querySelector('.pe-target-periph'), t('pef-err-remote-channel', '请选择已启用的远程开关或动作通道'), errEl);
-                        return;
-                    }
-                    if (!actions[i].useReceivedValue && ['on', 'off', 'trigger'].indexOf(actions[i].actionValue) < 0) {
-                        this._highlightFieldError(blk?.querySelector('.pe-remote-action-value'), t('pef-err-remote-command', '请选择 on、off 或 trigger'), errEl);
-                        return;
-                    }
+                    this._highlightFieldError(blk?.querySelector('.pe-action-type'), '远程通道已停用，请删除或替换此动作后保存', errEl);
+                    return;
                 } else if (at === 34) {
                     var weatherSource = (this._peWeatherSources || []).find(function(item) {
                         return String(item.id) === String(actions[i].targetPeriphId);

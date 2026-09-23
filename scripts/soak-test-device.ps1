@@ -2,8 +2,8 @@
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
-    [ValidateSet("lite", "standard", "full", "unified")]
-    [string]$Profile = "full",
+    [ValidateSet("unified")]
+    [string]$Profile = "unified",
 
     [string]$Username = "admin",
     [string]$Password = "admin123",
@@ -32,10 +32,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "device-capability-checks.ps1")
+$script:DeviceCapabilities = $null
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $script:RootBoundParameters = @{} + $PSBoundParameters
 $script:SessionId = ""
+$script:HasPsram = $false
 $script:Rows = @()
 $script:AppliedStabilityThresholds = [ordered]@{}
 $script:StabilityThresholdSources = [ordered]@{}
@@ -58,10 +61,9 @@ function Get-MatrixChecks {
         $matrix = $dict | ConvertTo-Json -Depth 10 -Compress | ConvertFrom-Json
     }
     return @($matrix.checks | Where-Object {
-        $profiles = @($_.profiles)
         $skipSoak = $false
         if ($_.PSObject.Properties.Name -contains "skipSoak") { $skipSoak = [bool]$_.skipSoak }
-        ($profiles.Count -eq 0 -or ($profiles -contains $Profile)) -and (-not $skipSoak)
+        -not $skipSoak
     })
 }
 
@@ -163,9 +165,12 @@ function Apply-StabilityPreset {
     if ($null -eq $preset) {
         throw "Unknown stability preset: $StabilityPreset"
     }
-    $thresholds = $preset.profiles.$Profile
+    $thresholds = $preset.thresholds
+    if ($script:HasPsram -and $null -ne $preset.psramThresholds) {
+        $thresholds = $preset.psramThresholds
+    }
     if ($null -eq $thresholds) {
-        throw "Stability preset '$StabilityPreset' has no thresholds for profile '$Profile'"
+        throw "Stability preset '$StabilityPreset' has no thresholds"
     }
 
     Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxFailureRatePercent" -ParameterName "MaxFailureRatePercent"
@@ -196,73 +201,6 @@ function Test-CapabilityValue {
     }
     if ([bool]$actual -ne $Expected) {
         return "capability $Name expected $Expected but got $actual"
-    }
-    return ""
-}
-
-function Test-ProfileCapabilities {
-    param([object]$Data)
-
-    $expected = @{}
-    switch ($Profile) {
-        "lite" {
-            $expected = @{
-                mqtt = $true
-                modbus = $false
-                tcp = $false
-                http = $false
-                coap = $false
-                periphExec = $true
-                ruleScript = $false
-                ota = $false
-                logViewer = $false
-                fileLogging = $false
-            }
-        }
-        "standard" {
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                tcp = $false
-                http = $false
-                coap = $false
-                periphExec = $true
-                ruleScript = $false
-                ota = $false
-                logViewer = $false
-                fileLogging = $false
-            }
-        }
-        "full" {
-            # 固件 capabilities 已移除 tcp/http/coap 字段（路由瘦身），不再断言
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                periphExec = $true
-                ruleScript = $true
-                ota = $true
-                logViewer = $true
-                fileLogging = $true
-            }
-        }
-        "unified" {
-            # 统一镜像：功能由运行时配置启停，基础能力保持与 full 一致。
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                periphExec = $true
-                ruleScript = $true
-                logViewer = $true
-                fileLogging = $true
-            }
-        }
-    }
-
-    foreach ($key in $expected.Keys) {
-        $error = Test-CapabilityValue -Data $Data -Name $key -Expected ([bool]$expected[$key])
-        if (-not [string]::IsNullOrWhiteSpace($error)) {
-            return $error
-        }
     }
     return ""
 }
@@ -364,7 +302,11 @@ function Test-CheckSemantics {
             if ($null -eq $memory) { return "missing data.memory" }
             if ($null -eq (Get-ObjectValue -Object $memory -Name "heapFree")) { return "missing heapFree" }
             if ($null -eq (Get-ObjectValue -Object $memory -Name "heapMaxAlloc")) { return "missing heapMaxAlloc" }
-            # PSRAM 仅在设备实际配备时才要求（esp32-F4R0/c6-F4R0 无 PSRAM）
+            # Apply PSRAM-specific guards only after the hardware reports PSRAM.
+            $psramTotal = Get-ObjectValue -Object $memory -Name "psramTotal"
+            if ($null -eq $psramTotal) { return "missing psramTotal" }
+            $script:HasPsram = ([int64]$psramTotal -gt 0)
+            Apply-StabilityPreset
         }
         "system-metrics" {
             $heap = Get-ObjectValue -Object $Response -Name "heap"
@@ -381,10 +323,11 @@ function Test-CheckSemantics {
         }
         "system-capabilities" {
             if ($null -eq $data) { return "missing data" }
-            $capabilityError = Test-ProfileCapabilities -Data $data
+            $capabilityError = Test-DeviceCapabilities -Data $data
             if (-not [string]::IsNullOrWhiteSpace($capabilityError)) {
                 return $capabilityError
             }
+            $script:DeviceCapabilities = $data
         }
         "device-config" {
             if ($null -eq $data) { return "missing data" }
@@ -444,7 +387,7 @@ function Test-CheckSemantics {
         }
         "protocol-config" {
             if ($null -eq $data) { return "missing data" }
-            if ($Profile -ne "lite" -and $null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
+            if ($null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
                 return "missing modbusRtu config"
             }
         }
@@ -1140,7 +1083,9 @@ Write-Host "  Auth cadence: every $AuthChecksEvery round(s), always round 1"
 Login
 
 for ($round = 1; $round -le $Rounds; $round++) {
+    $script:DeviceCapabilities = $null
     foreach ($endpoint in $endpoints) {
+        if (-not (Test-MatrixCapability -Check $endpoint -Capabilities $script:DeviceCapabilities)) { continue }
         $type = [string](Get-CheckValue -Check $endpoint -Name "type" -DefaultValue "")
         if ($type -eq "multi-session") {
             if (-not (Should-RunAuthStressCheck -Round $round)) { continue }

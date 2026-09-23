@@ -1,19 +1,17 @@
 {
-  "version": 2,
+  "version": 3,
   "description": "Device API smoke/soak checks shared by smoke-test-device.ps1 and soak-test-device.ps1.",
   "checks": [
     {
       "name": "auth-session",
       "method": "GET",
-      "path": "/api/auth/session",
-      "profiles": ["unified"]
+      "path": "/api/auth/session"
     },
     {
       "name": "auth-multi-session",
       "type": "multi-session",
       "method": "POST",
       "path": "/api/auth/login",
-      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "多会话压力测试，不适合常规浸泡测试"
     },
@@ -21,92 +19,77 @@
       "name": "auth-bearer-over-cookie",
       "type": "bearer-over-cookie",
       "method": "GET",
-      "path": "/api/auth/session",
-      "profiles": ["unified"]
+      "path": "/api/auth/session"
     },
     {
       "name": "system-health",
       "method": "GET",
-      "path": "/api/health",
-      "profiles": ["unified"]
+      "path": "/api/health"
     },
     {
       "name": "system-health-alias",
       "method": "GET",
-      "path": "/api/system/health",
-      "profiles": ["unified"]
+      "path": "/api/system/health"
     },
     {
       "name": "system-info",
       "method": "GET",
-      "path": "/api/system/info?probe=1",
-      "profiles": ["unified"]
+      "path": "/api/system/info?probe=1"
     },
     {
       "name": "system-status",
       "method": "GET",
-      "path": "/api/system/status",
-      "profiles": ["unified"]
+      "path": "/api/system/status"
     },
     {
       "name": "system-web-runtime",
       "method": "GET",
-      "path": "/api/system/web-runtime?probe=1",
-      "profiles": ["unified"]
+      "path": "/api/system/web-runtime?probe=1"
     },
     {
       "name": "system-capabilities",
       "method": "GET",
-      "path": "/api/system/capabilities",
-      "profiles": ["unified"]
+      "path": "/api/system/capabilities"
     },
     {
       "name": "system-metrics",
       "method": "GET",
-      "path": "/api/system/metrics",
-      "profiles": ["unified"]
+      "path": "/api/system/metrics"
     },
     {
       "name": "device-config",
       "method": "GET",
-      "path": "/api/device/config",
-      "profiles": ["unified"]
+      "path": "/api/device/config"
     },
     {
       "name": "device-info",
       "method": "GET",
-      "path": "/api/device/info",
-      "profiles": ["unified"]
+      "path": "/api/device/info"
     },
     {
       "name": "device-time",
       "method": "GET",
-      "path": "/api/device/time",
-      "profiles": ["unified"]
+      "path": "/api/device/time"
     },
     {
       "name": "network-status",
       "method": "GET",
-      "path": "/api/network/status",
-      "profiles": ["unified"]
+      "path": "/api/network/status"
     },
     {
       "name": "network-config",
       "method": "GET",
-      "path": "/api/network/config?compact=1",
-      "profiles": ["unified"]
+      "path": "/api/network/config?compact=1"
     },
     {
       "name": "mqtt-status",
       "method": "GET",
-      "path": "/api/mqtt/status",
-      "profiles": ["unified"]
+      "path": "/api/mqtt/status"
     },
     {
       "name": "mqtt-initialization",
       "method": "GET",
       "path": "/api/mqtt/status",
-      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "验证逻辑要求 initialized=true，但 MQTT 未连接时为 false",
       "description": "验证 MQTT 客户端在启动时已初始化（非懒加载）"
@@ -116,7 +99,6 @@
       "type": "mqtt-ntp-sync",
       "method": "POST",
       "path": "/api/mqtt/ntp-sync",
-      "profiles": ["unified"],
       "skipSoak": true,
       "skipReason": "POST 写操作端点，固件未实现 /api/mqtt/ntp-sync 路由",
       "description": "触发 NTP 时间同步（HTTPS 降级为 HTTP，避免 SSL 内存分配失败）"
@@ -127,131 +109,140 @@
       "method": "POST",
       "path": "/api/batch",
       "jsonBody": true,
-      "profiles": ["full"],
       "skipSoak": true,
       "skipReason": "6 路并发压力测试，需要 PSRAM 设备，常规浸泡下固件资源不足",
       "description": "批量压力测试：5 个 API 合并调用，验证 PSRAM 阈值修改后 HTTP 请求不崩溃",
       "body": {
         "requests": [
-          { "url": "/api/system/status" },
-          { "url": "/api/system/info" },
-          { "url": "/api/network/status" },
-          { "url": "/api/device/config" },
-          { "url": "/api/device/time" }
+          {
+            "url": "/api/system/status"
+          },
+          {
+            "url": "/api/system/info"
+          },
+          {
+            "url": "/api/network/status"
+          },
+          {
+            "url": "/api/device/config"
+          },
+          {
+            "url": "/api/device/time"
+          }
         ]
       }
     },
     {
       "name": "protocol-config",
       "method": "GET",
-      "path": "/api/protocol/config?compact=1&section=runtime",
-      "profiles": ["unified"]
+      "path": "/api/protocol/config?compact=1&section=runtime"
     },
     {
       "name": "protocol-mqtt-config",
       "method": "GET",
-      "path": "/api/protocol/config?compact=1&section=mqtt",
-      "profiles": ["unified"]
+      "path": "/api/protocol/config?compact=1&section=mqtt"
     },
     {
       "name": "protocol-periph-exec-config",
       "method": "GET",
-      "path": "/api/protocol/config?compact=1&section=periph-exec",
-      "profiles": ["unified"]
+      "path": "/api/protocol/config?compact=1&section=periph-exec"
     },
     {
       "name": "modbus-status",
       "method": "GET",
       "path": "/api/modbus/status?compact=1",
-      "profiles": ["unified"]
+      "capability": "modbus",
+      "capabilityEnabled": true
     },
     {
       "name": "modbus-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/modbus/status?compact=1",
-      "profiles": ["lite"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "modbus",
+      "capabilityEnabled": false
     },
     {
       "name": "peripherals",
       "method": "GET",
-      "path": "/api/peripherals?page=1&pageSize=5&compact=1",
-      "profiles": ["unified"]
+      "path": "/api/peripherals?page=1&pageSize=5&compact=1"
     },
     {
       "name": "peripheral-types",
       "method": "GET",
-      "path": "/api/peripherals/types",
-      "profiles": ["unified"]
+      "path": "/api/peripherals/types"
     },
     {
       "name": "peripheral-status-missing-id",
       "type": "expect-error",
       "method": "GET",
       "path": "/api/peripherals/status",
-      "profiles": ["unified"],
-      "allowedStatuses": [400, 429]
+      "allowedStatuses": [
+        400,
+        429
+      ]
     },
     {
       "name": "periph-exec-rules",
       "method": "GET",
-      "path": "/api/periph-exec?page=1&pageSize=10",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec?page=1&pageSize=10"
     },
     {
       "name": "periph-exec-controls",
       "method": "GET",
-      "path": "/api/periph-exec/controls",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/controls"
     },
     {
       "name": "periph-exec-results",
       "method": "GET",
-      "path": "/api/periph-exec/results?limit=3",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/results?limit=3"
     },
     {
       "name": "periph-exec-trigger-types",
       "method": "GET",
-      "path": "/api/periph-exec/trigger-types",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/trigger-types"
     },
     {
       "name": "periph-exec-static-events",
       "method": "GET",
-      "path": "/api/periph-exec/events/static",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/events/static"
     },
     {
       "name": "periph-exec-dynamic-events",
       "method": "GET",
-      "path": "/api/periph-exec/events/dynamic",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/events/dynamic"
     },
     {
       "name": "periph-exec-events",
       "method": "GET",
-      "path": "/api/periph-exec/events/categories",
-      "profiles": ["unified"]
+      "path": "/api/periph-exec/events/categories"
     },
     {
       "name": "config-transfer-list",
       "method": "GET",
-      "path": "/api/config/transfer/list",
-      "profiles": ["unified"]
+      "path": "/api/config/transfer/list"
     },
     {
       "name": "batch-basic",
       "method": "POST",
       "path": "/api/batch",
       "jsonBody": true,
-      "profiles": ["unified"],
       "body": {
         "requests": [
-          { "url": "/api/system/status" },
-          { "url": "/api/system/info" },
-          { "url": "/api/network/status" }
+          {
+            "url": "/api/system/status"
+          },
+          {
+            "url": "/api/system/info"
+          },
+          {
+            "url": "/api/network/status"
+          }
         ]
       }
     },
@@ -260,113 +251,183 @@
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/filesystem",
-      "profiles": ["unified"],
-      "allowedStatuses": [404, 405, 501, 503]
+      "allowedStatuses": [
+        404,
+        405,
+        501,
+        503
+      ],
+      "capability": "webServer",
+      "capabilityEnabled": true
     },
     {
       "name": "filesystem-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/filesystem",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "webServer",
+      "capabilityEnabled": false
     },
     {
       "name": "files-root",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/files?path=%2F",
-      "profiles": ["unified"],
-      "allowedStatuses": [404, 405, 501, 503]
+      "allowedStatuses": [
+        404,
+        405,
+        501,
+        503
+      ],
+      "capability": "webServer",
+      "capabilityEnabled": true
     },
     {
       "name": "files-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/files?path=%2F",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "webServer",
+      "capabilityEnabled": false
     },
     {
       "name": "logs-list",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs/list",
-      "profiles": ["unified"],
-      "allowedStatuses": [503],
-      "allowedMessages": ["Device logs disabled by runtime feature config"]
+      "allowedStatuses": [
+        503
+      ],
+      "allowedMessages": [
+        "Device logs disabled by runtime feature config"
+      ],
+      "capability": "logViewer",
+      "capabilityEnabled": true
     },
     {
       "name": "logs-tail",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs?file=system.log&tail=80&limit=4096",
-      "profiles": ["unified"],
-      "allowedStatuses": [503],
-      "allowedMessages": ["Device logs disabled by runtime feature config"]
+      "allowedStatuses": [
+        503
+      ],
+      "allowedMessages": [
+        "Device logs disabled by runtime feature config"
+      ],
+      "capability": "logViewer",
+      "capabilityEnabled": true
     },
     {
       "name": "logs-info",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/logs/info",
-      "profiles": ["unified"],
-      "allowedStatuses": [503],
-      "allowedMessages": ["Device logs disabled by runtime feature config"]
+      "allowedStatuses": [
+        503
+      ],
+      "allowedMessages": [
+        "Device logs disabled by runtime feature config"
+      ],
+      "capability": "logViewer",
+      "capabilityEnabled": true
     },
     {
       "name": "logs-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/logs/info",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "logViewer",
+      "capabilityEnabled": false
     },
     {
       "name": "ota-status",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/ota/status",
-      "profiles": ["unified"],
-      "allowedStatuses": [404, 405, 501, 503]
+      "allowedStatuses": [
+        404,
+        405,
+        501,
+        503
+      ],
+      "capability": "ota",
+      "capabilityEnabled": true
     },
     {
       "name": "ota-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/ota/status",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "ota",
+      "capabilityEnabled": false
     },
     {
       "name": "rule-scripts",
       "type": "capability-optional",
       "method": "GET",
       "path": "/api/rule-script",
-      "profiles": ["unified"],
-      "allowedStatuses": [404, 405, 501, 503]
+      "allowedStatuses": [
+        404,
+        405,
+        501,
+        503
+      ],
+      "capability": "ruleScript",
+      "capabilityEnabled": true
     },
     {
       "name": "rule-scripts-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/rule-script",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "ruleScript",
+      "capabilityEnabled": false
     },
     {
       "name": "users",
       "method": "GET",
       "path": "/api/users?page=1&limit=20",
-      "profiles": ["unified"]
+      "capability": "auth",
+      "capabilityEnabled": true
     },
     {
       "name": "users-unavailable",
       "type": "expect-unavailable",
       "method": "GET",
       "path": "/api/users?page=1&limit=20",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
+      "allowedStatuses": [
+        404,
+        405,
+        501
+      ],
+      "capability": "auth",
+      "capabilityEnabled": false
     }
   ]
 }

@@ -2,24 +2,28 @@
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
-    [ValidateSet("lite", "standard", "full", "unified")]
-    [string]$Profile = "full",
+    [ValidateSet("unified")]
+    [string]$Profile = "unified",
 
     [string]$Username = "admin",
     [string]$Password = "admin123",
     [int]$TimeoutSec = 10,
     [int]$RetryCount = 2,
     [int]$DelayMs = 400,
+    [switch]$ReadOnly,
     [switch]$RequireNetworkConnected,
     [switch]$RequireMqttConnected
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "device-capability-checks.ps1")
+$script:DeviceCapabilities = $null
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $script:SessionId = ""
 $script:HasPsram = $false
 $script:Results = @()
+$acceptanceMode = if ($ReadOnly) { "ReadOnly" } else { "Full" }
 
 function Get-MatrixChecks {
     $matrixPath = Join-Path $PSScriptRoot "device-api-test-matrix.json"
@@ -41,10 +45,7 @@ function Get-MatrixChecks {
         # Convert dictionary back to PSObject via JSON roundtrip
         $matrix = $dict | ConvertTo-Json -Depth 10 -Compress | ConvertFrom-Json
     }
-    return @($matrix.checks | Where-Object {
-        $profiles = @($_.profiles)
-        $profiles.Count -eq 0 -or ($profiles -contains $Profile)
-    })
+    return @($matrix.checks)
 }
 
 function Get-CheckValue {
@@ -75,6 +76,40 @@ function Get-ObjectValue {
     return $null
 }
 
+function Test-ReadOnlySafeMatrixCheck {
+    param([object]$Check)
+
+    $type = [string](Get-CheckValue -Check $Check -Name "type" -DefaultValue "")
+    $method = [string](Get-CheckValue -Check $Check -Name "method" -DefaultValue "GET")
+    $path = [string](Get-CheckValue -Check $Check -Name "path" -DefaultValue "")
+
+    if ($type -in @("multi-session", "bearer-over-cookie")) {
+        return $true
+    }
+    if ($method.ToUpperInvariant() -eq "GET") {
+        return $true
+    }
+    if ($method.ToUpperInvariant() -ne "POST" -or $path -ne "/api/batch") {
+        return $false
+    }
+
+    $body = Get-CheckValue -Check $Check -Name "body"
+    $requests = @(Get-ObjectValue -Object $body -Name "requests")
+    if ($requests.Count -eq 0) {
+        return $false
+    }
+    foreach ($request in $requests) {
+        $subMethod = [string](Get-ObjectValue -Object $request -Name "method")
+        if ([string]::IsNullOrWhiteSpace($subMethod)) {
+            $subMethod = "GET"
+        }
+        if ($subMethod.ToUpperInvariant() -ne "GET") {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Test-ObjectHasProperty {
     param(
         [object]$Object,
@@ -97,83 +132,6 @@ function Test-CapabilityValue {
     }
     if ([bool]$actual -ne $Expected) {
         return "capability $Name expected $Expected but got $actual"
-    }
-    return ""
-}
-
-function Test-ProfileCapabilities {
-    param([object]$Data)
-
-    $expected = @{}
-    switch ($Profile) {
-        "lite" {
-            $expected = @{
-                mqtt = $true
-                modbus = $false
-                tcp = $false
-                http = $false
-                coap = $false
-                periphExec = $true
-                ruleScript = $false
-                ota = $false
-                logViewer = $false
-                fileLogging = $false
-            }
-        }
-        "standard" {
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                tcp = $false
-                http = $false
-                coap = $false
-                periphExec = $true
-                ruleScript = $false
-                ota = $false
-                logViewer = $false
-                fileLogging = $false
-            }
-        }
-        "full" {
-            # 2026-08 Web 镜像统一化：full 档即统一镜像，capabilities 不再暴露 tcp/http/coap 字段
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                periphExec = $true
-                ruleScript = $true
-                ota = $true
-                logViewer = $true
-                fileLogging = $true
-            }
-        }
-        "unified" {
-            $expected = @{
-                mqtt = $true
-                modbus = $true
-                periphExec = $true
-                ruleScript = $true
-                logViewer = $true
-                fileLogging = $true
-            }
-        }
-    }
-
-    # 统一镜像（unified）：全部功能已编入固件，capabilities 不再暴露 tcp/http/coap 字段
-    if ($Profile -eq "unified") {
-        foreach ($key in $expected.Keys) {
-            $error = Test-CapabilityValue -Data $Data -Name $key -Expected ([bool]$expected[$key])
-            if (-not [string]::IsNullOrWhiteSpace($error)) {
-                return $error
-            }
-        }
-        return ""
-    }
-
-    foreach ($key in $expected.Keys) {
-        $error = Test-CapabilityValue -Data $Data -Name $key -Expected ([bool]$expected[$key])
-        if (-not [string]::IsNullOrWhiteSpace($error)) {
-            return $error
-        }
     }
     return ""
 }
@@ -207,8 +165,8 @@ function Test-CheckSemantics {
             if ($null -eq $heapFree -or $null -eq $heapMaxAlloc) {
                 return "missing heapFree/heapMaxAlloc"
             }
-            # 2026-08 统一镜像后 full 档在无 PSRAM 芯片（classic/C3/C6）同样适用，
-            # PSRAM 不再是 full 的硬性要求；记录 PSRAM 有无供 batch-stress 等压力项判断
+            # 2026-08 统一资源后，无 PSRAM 芯片（classic/C3/C6）同样使用能力门控，
+            # 记录实际 PSRAM 有无供 batch-stress 等压力项判断。
             $psramTotal = Get-ObjectValue -Object $memory -Name "psramTotal"
             $script:HasPsram = ($null -ne $psramTotal -and [int64]$psramTotal -gt 0)
         }
@@ -227,10 +185,11 @@ function Test-CheckSemantics {
         }
         "system-capabilities" {
             if ($null -eq $data) { return "missing data" }
-            $capabilityError = Test-ProfileCapabilities -Data $data
+            $capabilityError = Test-DeviceCapabilities -Data $data
             if (-not [string]::IsNullOrWhiteSpace($capabilityError)) {
                 return $capabilityError
             }
+            $script:DeviceCapabilities = $data
         }
         "device-config" {
             if ($null -eq $data) { return "missing data" }
@@ -299,7 +258,7 @@ function Test-CheckSemantics {
         }
         "protocol-config" {
             if ($null -eq $data) { return "missing data" }
-            if ($Profile -ne "lite" -and $null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
+            if ($null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
                 return "missing modbusRtu config"
             }
         }
@@ -938,6 +897,23 @@ function Add-MqttNtpSyncCheck {
     }
 }
 
+function Add-ReadOnlySkippedCheck {
+    param(
+        [string]$Name,
+        [string]$Method,
+        [string]$Path
+    )
+
+    $script:Results += [pscustomobject]@{
+        Name = $Name
+        Method = $Method
+        Path = $Path
+        Passed = $true
+        Attempts = 0
+        Message = "skipped (read-only acceptance mode)"
+    }
+}
+
 function Add-HeapAfterStressCheck {
     # 压力测试后堆内存检查：验证并发请求后堆未耗尽（带重试，瞬态连接失败/限流不直接判负）
     $response = $null
@@ -1072,6 +1048,7 @@ function Add-MultiSessionCheck {
 Write-Host "FastBee device smoke test" -ForegroundColor Green
 Write-Host "  Base URL : $BaseUrl"
 Write-Host "  Profile  : $Profile"
+Write-Host "  Mode     : $acceptanceMode"
 Write-Host "  Retry    : $RetryCount"
 Write-Host "  Delay    : ${DelayMs}ms"
 
@@ -1093,17 +1070,17 @@ if ($null -eq $login -or $login.success -ne $true -or -not $login.sessionId) {
 }
 $script:SessionId = [string]$login.sessionId
 
-# The full profile only contains the PSRAM-only batch stress check in the
-# matrix, so probe system info explicitly before deciding whether to skip it.
-if ($Profile -eq "full") {
-    Add-Check `
-        -Name "system-info" `
-        -Method "GET" `
-        -Path "/api/system/info?probe=1"
-}
-
 foreach ($check in Get-MatrixChecks) {
+    if (-not (Test-MatrixCapability -Check $check -Capabilities $script:DeviceCapabilities)) { continue }
     $type = [string](Get-CheckValue -Check $check -Name "type" -DefaultValue "")
+    if ($ReadOnly -and $type -ne "mqtt-ntp-sync" -and
+        -not (Test-ReadOnlySafeMatrixCheck -Check $check)) {
+        Add-ReadOnlySkippedCheck `
+            -Name ([string]$check.name) `
+            -Method ([string]$check.method) `
+            -Path ([string]$check.path)
+        continue
+    }
     if ($type -eq "multi-session") {
         Add-MultiSessionCheck
         continue
@@ -1113,14 +1090,18 @@ foreach ($check in Get-MatrixChecks) {
         continue
     }
     if ($type -eq "mqtt-ntp-sync") {
-        Add-MqttNtpSyncCheck
+        if ($ReadOnly) {
+            Add-ReadOnlySkippedCheck `
+                -Name "mqtt-ntp-sync" `
+                -Method "POST" `
+                -Path "/api/mqtt/ntp-sync"
+        }
+        else {
+            Add-MqttNtpSyncCheck
+        }
         continue
     }
     if ($type -eq "expect-unavailable" -or $type -eq "expect-error") {
-        # 统一镜像保留全部路由，"应不可用"断言不适用，跳过
-        if ($Profile -eq "unified" -and $type -eq "expect-unavailable") {
-            continue
-        }
         Add-ExpectedStatusCheck `
             -Name ([string]$check.name) `
             -Method ([string]$check.method) `
@@ -1154,8 +1135,8 @@ foreach ($check in Get-MatrixChecks) {
         -AllowedMessages @(Get-CheckValue -Check $check -Name "allowedMessages" -DefaultValue @())
 }
 
-# 压力测试后堆内存检查（仅 full profile，验证 PSRAM 阈值生效后并发 HTTP 不会耗尽内部 DRAM）
-if ($Profile -eq "full") {
+# PSRAM 设备执行压力测试后检查内部 DRAM。
+if ($script:HasPsram) {
     Write-Host "" -NoNewline
     Write-Host "Running heap-after-stress check..." -ForegroundColor Cyan
     Add-HeapAfterStressCheck
@@ -1223,8 +1204,15 @@ $script:Results += [pscustomobject]@{
     Message = if ($sensitiveExportOk) { "OK" } else { $sensitiveExportMessages -join "; " }
 }
 
-# Test 3: Import config (using exported bundle)
-if ($exportSingleOk) {
+# Test 3: Import config (using exported bundle). The read-only acceptance mode
+# deliberately stops after export and sensitive-file denial checks.
+if ($ReadOnly) {
+    Add-ReadOnlySkippedCheck `
+        -Name "config-transfer-import-roundtrip" `
+        -Method "POST" `
+        -Path "/api/config/transfer/import-chunk"
+}
+elseif ($exportSingleOk) {
     $importChunk = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-chunk" -Body @{
         name = "device.json"
         chunk = $exportSingleContent

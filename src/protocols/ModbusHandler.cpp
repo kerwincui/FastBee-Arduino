@@ -2527,6 +2527,17 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
     LOG_INFOF("[Modbus] writeRegisterOnce: slave=%d reg=%d value=%d isControl=%d", 
               slaveAddr, regAddr, value, isControl ? 1 : 0);
 
+    // Motor start registers can trigger another finite movement on retransmit.
+    // Apply this also to rule/raw-register callers, not just the dashboard.
+    for (uint8_t i = 0; i < getSubDeviceCount(); ++i) {
+        const auto& device = getSubDevice(i);
+        if (device.enabled && device.slaveAddress == slaveAddr &&
+            strcmp(device.deviceType, "motor") == 0 &&
+            (regAddr == device.motorRegs[0] || regAddr == device.motorRegs[1])) {
+            retriesOverride = 0;
+            break;
+        }
+    }
     uint8_t request[8];
     request[0] = slaveAddr;
     request[1] = 0x06;
