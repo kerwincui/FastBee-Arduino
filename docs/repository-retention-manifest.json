@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "policy": {
+    "quarantinePeriod": "one-release-cycle",
+    "deleteRequires": [
+      "named-owner",
+      "replacement-command",
+      "consumer-migration",
+      "host-and-package-regression",
+      "release-cycle-observation"
+    ],
+    "generatedCleanupDefault": "dry-run"
+  },
+  "entries": [
+    {
+      "path": ".pio",
+      "classification": "generated-cache",
+      "status": "retain-generated",
+      "owner": "firmware-build",
+      "tracked": false,
+      "retention": "profile-scoped-clean-only"
+    },
+    {
+      "path": "dist",
+      "classification": "generated-release",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "commit-and-profile-scoped"
+    },
+    {
+      "path": "artifacts",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "manifest-controlled-never-generic-clean"
+    },
+    {
+      "path": "tmp",
+      "classification": "mixed-run-output",
+      "status": "needs-owner",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "retention": "classify-per-run-before-clean"
+    },
+    {
+      "path": "scripts/web-test-lightweight.js",
+      "classification": "legacy-invalid-script",
+      "status": "quarantine-pending",
+      "owner": "web-quality",
+      "tracked": true,
+      "replacement": ["npm run test:web-assets", "npm run test:e2e:offline"],
+      "syntaxExemption": true,
+      "reviewAfter": "one-release-cycle"
+    },
+    {
+      "path": "scripts/web-browser-test.ps1",
+      "classification": "legacy-wrapper",
+      "status": "quarantine-pending",
+      "owner": "web-quality",
+      "tracked": true,
+      "replacement": ["scripts/run-browser-tests.ps1", "npm run test:e2e:device"],
+      "reviewAfter": "long-task-metrics-migrated-plus-one-release-cycle"
+    },
+    {
+      "path": "scripts/web-browser-test.js",
+      "classification": "legacy-runner",
+      "status": "quarantine-pending",
+      "owner": "web-quality",
+      "tracked": true,
+      "replacement": ["scripts/run-browser-tests.ps1", "npm run test:e2e:device"],
+      "reviewAfter": "long-task-metrics-migrated-plus-one-release-cycle"
+    },
+    {
+      "path": "scripts/web-access-check.js",
+      "classification": "legacy-device-check",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/device-web-smoke.ps1", "scripts/smoke-test-device.ps1"]
+    },
+    {
+      "path": "scripts/check-api-health.ps1",
+      "classification": "legacy-device-check",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/smoke-test-device.ps1"]
+    },
+    {
+      "path": "scripts/net-check.ps1",
+      "classification": "legacy-network-tool",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/test-device-discovery.js"]
+    },
+    {
+      "path": "scripts/net-discovery.ps1",
+      "classification": "legacy-network-tool",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/test-device-discovery.js"]
+    },
+    {
+      "path": "scripts/serial_capture.py",
+      "classification": "legacy-serial-tool",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/serial-diagnostics.py", "scripts/smoke-test-device.ps1"]
+    },
+    {
+      "path": "scripts/serial_monitor.py",
+      "classification": "legacy-serial-tool",
+      "status": "needs-owner",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["scripts/serial-diagnostics.py", "scripts/smoke-test-device.ps1"]
+    },
+    {
+      "path": "scripts/test-esp32c3.ps1",
+      "classification": "legacy-board-runner",
+      "status": "needs-owner",
+      "owner": "firmware-build",
+      "tracked": true,
+      "replacement": ["npm run test:firmware -- esp32c3-F4R0", "scripts/deploy.ps1"]
+    },
+    {
+      "path": "scripts/diagnose-and-recover-c6.ps1",
+      "classification": "board-recovery-tool",
+      "status": "retain",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "replacement": ["none-until-recovery-flow-is-integrated"]
+    },
+    {
+      "path": "scripts/run-stability-tests.ps1",
+      "classification": "active-fleet-contract",
+      "status": "retain",
+      "owner": "device-acceptance",
+      "tracked": true,
+      "consumers": ["test/unit/test_fleet_acceptance_contract.py"]
+    },
+    {
+      "path": "images/case-device-modbus.png",
+      "classification": "duplicate",
+      "status": "quarantine-pending",
+      "owner": "documentation",
+      "tracked": true,
+      "canonical": "images/device.png",
+      "reviewAfter": "one-release-cycle"
+    },
+    {
+      "path": "images/device.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/device_01.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/device_07.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/device_11.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/device_12.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/case-esp32c3.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/case-esp32c6.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/case-ecm50a.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/case-puzhong.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/case-weixue.png",
+      "classification": "documentation-asset",
+      "status": "retain",
+      "owner": "documentation",
+      "tracked": true,
+      "consumers": ["README.md"]
+    },
+    {
+      "path": "images/device_02.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_03.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_04.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_05.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_06.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_08.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_09.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/device_10.png",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    },
+    {
+      "path": "images/qq.jpg",
+      "classification": "unreferenced-asset",
+      "status": "needs-owner",
+      "owner": "documentation",
+      "tracked": true
+    }
+  ]
+}

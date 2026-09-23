@@ -1,0 +1,16 @@
+{
+  "deviceId": "",
+  "productNumber": 0,
+  "userId": "",
+  "deviceName": "waveshare-esp32s3-relay6ch",
+  "location": "",
+  "description": "Waveshare ESP32-S3-Relay-6CH (F8R0)",
+  "enableNTP": true,
+  "ntpServer1": "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
+  "ntpServer2": "cn.pool.ntp.org",
+  "timezone": "CST-8",
+  "syncInterval": 3600,
+  "logLevel": "INFO",
+  "developerModeEnabled": true,
+  "cacheDuration": 60
+}

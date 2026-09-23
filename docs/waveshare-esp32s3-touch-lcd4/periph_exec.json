@@ -1,0 +1,89 @@
+{
+  "rules": [
+    {
+      "id": "collect_sht30",
+      "name": "SHT30 temperature humidity every 8 seconds",
+      "enabled": true,
+      "execMode": 0,
+      "recordHistory": true,
+      "allowPanelControl": true,
+      "triggers": [
+        { "triggerType": 1, "triggerPeriphId": "", "operatorType": 0,
+          "compareValue": "", "timerMode": 0, "intervalSec": 8,
+          "timePoint": "", "eventId": "" }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "sht30",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"sht30\",\"sensorCategory\":\"configured\",\"channelField\":\"temperature\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":1,\"sensorLabel\":\"Air temperature\",\"unit\":\"C\",\"dataField\":\"air_temperature\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "sht30",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"sht30\",\"sensorCategory\":\"configured\",\"channelField\":\"humidity\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":1,\"sensorLabel\":\"Air humidity\",\"unit\":\"%RH\",\"dataField\":\"air_humidity\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": false
+    },
+    {
+      "id": "collect_motor", "name": "Motor slave 8 read four single registers",
+      "enabled": false, "execMode": 0, "recordHistory": true,
+      "allowPanelControl": false,
+      "triggers": [{ "triggerType": 5, "triggerPeriphId": "", "operatorType": 0,
+        "compareValue": "", "timerMode": 0, "intervalSec": 10,
+        "timePoint": "", "eventId": "", "pollResponseTimeout": 1000,
+        "pollMaxRetries": 2, "pollInterPollDelay": 100 }],
+      "actions": [{ "targetPeriphId": "", "actionType": 18,
+        "actionValue": "{\"poll\":[0],\"ctrl\":[]}",
+        "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 },
+        { "targetPeriphId": "", "actionType": 18,
+        "actionValue": "{\"poll\":[1],\"ctrl\":[]}",
+        "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 },
+        { "targetPeriphId": "", "actionType": 18,
+        "actionValue": "{\"poll\":[2],\"ctrl\":[]}",
+        "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 },
+        { "targetPeriphId": "", "actionType": 18,
+        "actionValue": "{\"poll\":[3],\"ctrl\":[]}",
+        "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 }],
+      "protocolType": 0, "reportAfterExec": false
+    },
+    {
+      "id": "motor_forward", "name": "Motor forward FC06 register 0 value 1",
+      "enabled": false, "execMode": 0, "recordHistory": false,
+      "allowPanelControl": false,
+      "triggers": [{ "triggerType": 0, "triggerPeriphId": "motor_forward_request", "operatorType": 0,
+        "compareValue": "1", "timerMode": 0, "intervalSec": 0, "timePoint": "", "eventId": "" }],
+      "actions": [{ "targetPeriphId": "modbus:0", "actionType": 17,
+        "actionValue": "0:1", "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 }],
+      "protocolType": 0, "reportAfterExec": false
+    },
+    {
+      "id": "motor_reverse", "name": "Motor reverse FC06 register 1 value 1",
+      "enabled": false, "execMode": 0, "recordHistory": false,
+      "allowPanelControl": false,
+      "triggers": [{ "triggerType": 0, "triggerPeriphId": "motor_reverse_request", "operatorType": 0,
+        "compareValue": "1", "timerMode": 0, "intervalSec": 0, "timePoint": "", "eventId": "" }],
+      "actions": [{ "targetPeriphId": "modbus:0", "actionType": 17,
+        "actionValue": "1:1", "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 }],
+      "protocolType": 0, "reportAfterExec": false
+    },
+    {
+      "id": "motor_stop", "name": "Motor stop FC06 register 2 value 1",
+      "enabled": false, "execMode": 0, "recordHistory": false,
+      "allowPanelControl": false,
+      "triggers": [{ "triggerType": 0, "triggerPeriphId": "motor_stop_request", "operatorType": 0,
+        "compareValue": "1", "timerMode": 0, "intervalSec": 0, "timePoint": "", "eventId": "" }],
+      "actions": [{ "targetPeriphId": "modbus:0", "actionType": 17,
+        "actionValue": "2:1", "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0 }],
+      "protocolType": 0, "reportAfterExec": false
+    }
+  ]
+}

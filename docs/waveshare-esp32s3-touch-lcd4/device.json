@@ -1,0 +1,16 @@
+{
+  "deviceId": "",
+  "productNumber": 0,
+  "userId": "",
+  "deviceName": "waveshare-touch-lcd4",
+  "location": "",
+  "description": "Waveshare ESP32-S3-Touch-LCD-4 commissioning template",
+  "enableNTP": true,
+  "ntpServer1": "cn.pool.ntp.org",
+  "ntpServer2": "pool.ntp.org",
+  "timezone": "CST-8",
+  "syncInterval": 3600,
+  "logLevel": "INFO",
+  "developerModeEnabled": true,
+  "cacheDuration": 60
+}

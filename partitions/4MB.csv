@@ -1,0 +1,16 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# 4MB Flash Partition Table (FastBee IoT Platform)
+# Supports: ESP32 devices with 4MB Flash (limited capacity)
+# Layout reserves enough LittleFS space for the complete compressed Web UI and
+# per-device JSON bundle. OTA is disabled on 4MB targets because two
+# application slots leave no usable filesystem space.
+#   Bootloader  0x000000    36KB   (reserved)
+#   NVS         0x009000    20KB   (non-volatile storage)
+#   OTA Data    0x00E000     8KB   (reserved for Arduino partition tooling)
+#   App0        0x010000  3.1875MB (single active firmware image)
+#   LittleFS    0x340000  768KB    (web/config filesystem)
+# NOTE: partition label MUST be "spiffs" because Arduino-ESP32 LittleFS.begin() looks up the "spiffs" label by default
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x330000,
+spiffs,   data, spiffs,  0x340000, 0x0C0000,

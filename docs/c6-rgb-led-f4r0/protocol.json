@@ -1,0 +1,133 @@
+{
+  "version": 2,
+  "mqtt": {
+    "enabled": false,
+    "scheme": "mqtt",
+    "server": "iot.fastbee.cn",
+    "port": 1883,
+    "clientId": "",
+    "username": "",
+    "password": "",
+    "keepAlive": 60,
+    "autoReconnect": true,
+    "authType": 0,
+    "deviceNum": "",
+    "userId": "",
+    "mqttSecret": "",
+    "authCode": "",
+    "willTopic": "",
+    "willPayload": "",
+    "willQos": 0,
+    "willRetain": false,
+    "publishTopics": [
+      {
+        "topic": "/property/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 0
+      },
+      {
+        "topic": "/info/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 2
+      },
+      {
+        "topic": "/event/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 4
+      },
+      {
+        "topic": "/monitor/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 7
+      },
+      {
+        "topic": "/http/upgrade/reply",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 5
+      },
+      {
+        "topic": "/fetch/upgrade/reply",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 6
+      }
+    ],
+    "subscribeTopics": [
+      {
+        "topic": "/function/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 1
+      },
+      {
+        "topic": "/info/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 2
+      },
+      {
+        "topic": "/monitor/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 7
+      },
+      {
+        "topic": "/http/upgrade/set",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 5
+      },
+      {
+        "topic": "/fetch/upgrade/set",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 6
+      }
+    ]
+  },
+  "modbusRtu": {
+    "enabled": false,
+    "mode": "master",
+    "master": {
+      "tasks": [],
+      "devices": []
+    }
+  }
+}

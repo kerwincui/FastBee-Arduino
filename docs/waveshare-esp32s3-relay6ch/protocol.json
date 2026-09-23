@@ -1,0 +1,73 @@
+{
+  "version": 2,
+  "modbusRtu": {
+    "enabled": true,
+    "peripheralId": "rs485",
+    "mode": "master",
+    "slaveAddress": 1,
+    "baudRate": 9600,
+    "dePin": 255,
+    "transferType": 0,
+    "master": {
+      "responseTimeout": 1000,
+      "maxRetries": 2,
+      "interPollDelay": 100,
+      "tasks": [
+        {
+          "name": "温湿度传感器轮询模板（接入后启用）",
+          "enabled": false,
+          "slaveAddress": 1,
+          "functionCode": 3,
+          "startAddress": 0,
+          "quantity": 2,
+          "pollInterval": 10,
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "modbus_temperature",
+              "unit": "C"
+            },
+            {
+              "regOffset": 1,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "modbus_humidity",
+              "unit": "%RH"
+            }
+          ]
+        }
+      ],
+      "devices": [
+        {
+          "name": "Modbus 温湿度传感器（模板）",
+          "sensorId": "modbus_th",
+          "deviceType": "sensor",
+          "slaveAddress": 1,
+          "channelCount": 2,
+          "coilBase": 0,
+          "ncMode": false,
+          "controlProtocol": 0,
+          "batchRegister": 0,
+          "enabled": false
+        }
+      ]
+    }
+  },
+  "mqtt": {
+    "enabled": false,
+    "scheme": "mqtt",
+    "server": "iot.fastbee.cn",
+    "port": 1883,
+    "clientId": "",
+    "username": "",
+    "password": "",
+    "keepAlive": 60,
+    "autoReconnect": true,
+    "mqttSecret": "",
+    "authCode": ""
+  }
+}

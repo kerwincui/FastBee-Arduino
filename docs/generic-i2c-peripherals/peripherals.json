@@ -1,0 +1,85 @@
+{
+  "peripherals": [
+    {
+      "id": "i2c_shared",
+      "name": "Shared I2C - replace example pins",
+      "type": 2,
+      "enabled": false,
+      "pins": [4, 5],
+      "params": {
+        "frequency": 100000,
+        "address": 0,
+        "isMaster": true
+      }
+    },
+    {
+      "id": "io_bank",
+      "name": "PCF8574 IO bank",
+      "type": 55,
+      "enabled": false,
+      "pins": [],
+      "params": {
+        "driver": "PCF8574",
+        "busPeripheralId": "i2c_shared",
+        "address": 32,
+        "sampleInterval": 20
+      }
+    },
+    {
+      "id": "io_input",
+      "name": "PCF8574 P0 button input",
+      "type": 11,
+      "enabled": false,
+      "pins": [],
+      "params": {
+        "ioSource": 1,
+        "providerId": "io_bank",
+        "channel": 0,
+        "initialState": 0,
+        "inputMode": 0,
+        "invertLogic": false,
+        "debounceMs": 50,
+        "reportMode": 0,
+        "passive": false
+      }
+    },
+    {
+      "id": "io_output",
+      "name": "PCF8574 P1 digital output",
+      "type": 12,
+      "enabled": false,
+      "pins": [],
+      "params": {
+        "ioSource": 1,
+        "providerId": "io_bank",
+        "channel": 1,
+        "initialState": 0,
+        "inputMode": 0,
+        "invertLogic": false,
+        "debounceMs": 50,
+        "reportMode": 0,
+        "passive": false
+      }
+    },
+    {
+      "id": "power_meter",
+      "name": "INA226 - replace example shunt and range",
+      "type": 38,
+      "enabled": false,
+      "pins": [],
+      "params": {
+        "sensorType": 0,
+        "sampleInterval": 1000,
+        "driver": "INA226",
+        "address": 64,
+        "mode": 0,
+        "frequency": 100000,
+        "busPeripheralId": "i2c_shared",
+        "shuntResistance": 0.002,
+        "maxCurrent": 15,
+        "conversionTimeUs": 1100,
+        "averaging": 16
+      }
+    }
+  ]
+}

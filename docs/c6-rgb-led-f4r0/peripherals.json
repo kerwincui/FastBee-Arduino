@@ -1,0 +1,18 @@
+{
+  "peripherals": [
+    {
+      "id": "rgb_led",
+      "name": "板载全彩LED",
+      "type": 45,
+      "enabled": true,
+      "pins": [
+        8
+      ],
+      "pinCount": 1,
+      "params": {
+        "count": 1,
+        "brightness": 128
+      }
+    }
+  ]
+}

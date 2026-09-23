@@ -1,0 +1,186 @@
+{
+  "rules": [
+    {
+      "id": "platform_relay1",
+      "name": "平台控制 CH1",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay1",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay1",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_relay2",
+      "name": "平台控制 CH2",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay2",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay2",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_relay3",
+      "name": "平台控制 CH3",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay3",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay3",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_relay4",
+      "name": "平台控制 CH4",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay4",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay4",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_relay5",
+      "name": "平台控制 CH5",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay5",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay5",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_relay6",
+      "name": "平台控制 CH6",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay6",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay6",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": true
+    },
+    {
+      "id": "platform_rgb",
+      "name": "平台控制 RGB",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "rgb",
+          "operatorType": 1,
+          "compareValue": ""
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "rgb",
+          "actionType": 11,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "reportAfterExec": false
+    }
+  ]
+}

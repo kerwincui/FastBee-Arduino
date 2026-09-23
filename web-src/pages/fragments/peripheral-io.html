@@ -1,0 +1,221 @@
+<!-- 外设专项诊断与操作模态窗 -->
+<div id="peripheral-io-modal" class="modal">
+    <div class="modal-content modal-content-wide">
+        <div class="modal-header">
+            <h2 class="modal-title" id="peripheral-io-title">外设诊断</h2>
+            <button id="close-peripheral-io-modal" class="modal-close-btn" type="button">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="peripheral-io-error" class="message message-error fb-hidden" role="alert"></div>
+
+            <div class="peripheral-io-heading">
+                <div>
+                    <strong id="peripheral-io-name">--</strong>
+                    <span id="peripheral-io-id" class="u-text-muted"></span>
+                </div>
+                <button id="peripheral-io-refresh-btn" class="fb-btn fb-btn-refresh" type="button" title="刷新">
+                    <span>刷新</span>
+                </button>
+            </div>
+
+            <section id="peripheral-uart-panel" class="peripheral-io-section fb-hidden">
+                <p class="field-hint">用于独立串口的文本 / HEX 收发与接线调试。Modbus 专用串口请在通信协议页面调试。</p>
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">连接</span><span id="peripheral-uart-connected" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">端口</span><span id="peripheral-uart-port" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">帧格式</span><span id="peripheral-uart-framing" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">待接收</span><span id="peripheral-uart-rx-available" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">已发送</span><span id="peripheral-uart-bytes-sent" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">已接收</span><span id="peripheral-uart-bytes-received" class="status-value">--</span></div>
+                </div>
+
+                <div class="peripheral-io-terminal-grid">
+                    <div class="fb-form-group">
+                        <label for="peripheral-uart-mode">发送格式</label>
+                        <select id="peripheral-uart-mode">
+                            <option value="text" selected>文本</option>
+                            <option value="hex">HEX</option>
+                        </select>
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="peripheral-uart-poll-interval">接收轮询</label>
+                        <select id="peripheral-uart-poll-interval">
+                            <option value="0" selected>手动读取</option>
+                            <option value="500">每 0.5 秒</option>
+                            <option value="1000">每 1 秒</option>
+                            <option value="2000">每 2 秒</option>
+                        </select>
+                    </div>
+                    <div class="fb-form-group peripheral-io-payload-group">
+                        <label for="peripheral-uart-payload">发送内容</label>
+                        <textarea id="peripheral-uart-payload" class="peripheral-io-payload" rows="4" maxlength="384"></textarea>
+                        <small id="peripheral-uart-payload-count" class="field-hint">0 / 128 bytes</small>
+                    </div>
+                    <div class="peripheral-io-actions">
+                        <button id="peripheral-uart-send-btn" class="fb-btn fb-btn-primary" type="button">发送</button>
+                        <button id="peripheral-uart-read-btn" class="fb-btn fb-btn-secondary" type="button">读取 RX</button>
+                        <button id="peripheral-uart-clear-btn" class="fb-btn" type="button">清空输出</button>
+                    </div>
+                </div>
+
+                <div class="peripheral-io-output-grid">
+                    <div>
+                        <span class="status-label">文本</span>
+                        <pre id="peripheral-uart-text-output" class="peripheral-io-output">--</pre>
+                    </div>
+                    <div>
+                        <span class="status-label">HEX</span>
+                        <pre id="peripheral-uart-hex-output" class="peripheral-io-output">--</pre>
+                    </div>
+                </div>
+            </section>
+
+            <section id="peripheral-encoder-panel" class="peripheral-io-section fb-hidden">
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">累计计数</span><span id="peripheral-encoder-count" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">本次增量</span><span id="peripheral-encoder-delta" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">方向</span><span id="peripheral-encoder-direction" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">频率</span><span id="peripheral-encoder-frequency" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">转速</span><span id="peripheral-encoder-rpm" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">每转脉冲</span><span id="peripheral-encoder-resolution-display" class="status-value">--</span></div>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-encoder-reset-btn" class="fb-btn fb-btn-warning" type="button">计数清零</button>
+                </div>
+            </section>
+
+            <section id="peripheral-sd-panel" class="peripheral-io-section fb-hidden">
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">挂载</span><span id="peripheral-sd-mounted" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">卡类型</span><span id="peripheral-sd-card-type" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">总容量</span><span id="peripheral-sd-total" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">已使用</span><span id="peripheral-sd-used" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">可用</span><span id="peripheral-sd-free" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">文件系统</span><span id="peripheral-sd-filesystem" class="status-value">--</span></div>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-sd-mount-btn" class="fb-btn fb-btn-primary" type="button">挂载</button>
+                    <button id="peripheral-sd-unmount-btn" class="fb-btn" type="button">卸载</button>
+                </div>
+                <div class="fb-grid-2">
+                    <div class="fb-form-group">
+                        <label for="peripheral-sd-path">沙箱路径</label>
+                        <input id="peripheral-sd-path" type="text" value="/" placeholder="/ 或 /notes.txt">
+                        <small>仅访问设备限定的 SD 沙箱目录。</small>
+                    </div>
+                    <div class="peripheral-io-actions">
+                        <button id="peripheral-sd-list-btn" class="fb-btn" type="button">列出</button>
+                        <button id="peripheral-sd-read-btn" class="fb-btn" type="button">读取</button>
+                        <button id="peripheral-sd-delete-btn" class="fb-btn fb-btn-danger" type="button">删除</button>
+                    </div>
+                </div>
+                <div class="fb-form-group">
+                    <label for="peripheral-sd-content">文件内容</label>
+                    <textarea id="peripheral-sd-content" class="peripheral-io-payload" rows="5" maxlength="4096"></textarea>
+                    <small id="peripheral-sd-content-count" class="field-hint">0 / 4096 bytes</small>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-sd-write-btn" class="fb-btn fb-btn-primary" type="button">写入文件</button>
+                </div>
+                <pre id="peripheral-sd-output" class="peripheral-io-output">--</pre>
+            </section>
+
+            <section id="peripheral-rfid-panel" class="peripheral-io-section fb-hidden">
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">读卡器</span><span id="peripheral-rfid-ready" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">UID</span><span id="peripheral-rfid-uid" class="status-value u-text-mono">--</span></div>
+                    <div class="status-item"><span class="status-label">卡类型</span><span id="peripheral-rfid-card-type" class="status-value">--</span></div>
+                </div>
+                <div class="fb-grid-2">
+                    <div class="fb-form-group">
+                        <label for="peripheral-rfid-block">数据块</label>
+                        <input id="peripheral-rfid-block" type="number" value="1" min="1" max="62">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="peripheral-rfid-key">Key A（12 位 HEX）</label>
+                        <input id="peripheral-rfid-key" type="password" maxlength="17" autocomplete="new-password" placeholder="FFFFFFFFFFFF">
+                    </div>
+                </div>
+                <div class="fb-form-group">
+                    <label for="peripheral-rfid-data">块数据（16 bytes HEX）</label>
+                    <textarea id="peripheral-rfid-data" class="peripheral-io-payload" rows="3" maxlength="64" placeholder="00 01 02 ... 0F"></textarea>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-rfid-scan-btn" class="fb-btn" type="button">寻卡</button>
+                    <button id="peripheral-rfid-read-btn" class="fb-btn" type="button">读块</button>
+                    <button id="peripheral-rfid-write-btn" class="fb-btn fb-btn-warning" type="button">校验后写块</button>
+                </div>
+                <pre id="peripheral-rfid-output" class="peripheral-io-output">--</pre>
+            </section>
+
+            <section id="peripheral-i2c-sensor-panel" class="peripheral-io-section fb-hidden">
+                <p class="field-hint">用于检查 I2C 地址、接线和传感器读数；总线外设可扫描地址，传感器外设可选择通道读取。</p>
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">驱动</span><span id="peripheral-i2c-driver" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">地址</span><span id="peripheral-i2c-address" class="status-value u-text-mono">--</span></div>
+                    <div class="status-item"><span class="status-label">最近值</span><span id="peripheral-i2c-value" class="status-value">--</span></div>
+                </div>
+                <div class="fb-form-group">
+                    <label for="peripheral-i2c-channel">读取通道</label>
+                    <select id="peripheral-i2c-channel">
+                        <option value="">默认通道</option>
+                    </select>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-i2c-scan-btn" class="fb-btn" type="button">扫描总线</button>
+                    <button id="peripheral-i2c-probe-btn" class="fb-btn" type="button">探测驱动</button>
+                    <button id="peripheral-i2c-read-btn" class="fb-btn fb-btn-primary" type="button">读取</button>
+                    <button id="peripheral-i2c-release-btn" class="fb-btn" type="button">释放驱动</button>
+                </div>
+                <pre id="peripheral-i2c-output" class="peripheral-io-output">--</pre>
+            </section>
+
+            <section id="peripheral-ds1302-panel" class="peripheral-io-section fb-hidden">
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">初始化</span><span id="peripheral-ds1302-ready" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">运行</span><span id="peripheral-ds1302-running" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">当前时间</span><span id="peripheral-ds1302-current" class="status-value u-text-mono">--</span></div>
+                </div>
+                <div class="fb-form-group">
+                    <label for="peripheral-ds1302-datetime">设置日期时间</label>
+                    <input id="peripheral-ds1302-datetime" type="datetime-local" step="1">
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-ds1302-now-btn" class="fb-btn" type="button">使用浏览器时间</button>
+                    <button id="peripheral-ds1302-set-btn" class="fb-btn fb-btn-primary" type="button">写入时间</button>
+                    <button id="peripheral-ds1302-start-btn" class="fb-btn" type="button">启动时钟</button>
+                    <button id="peripheral-ds1302-stop-btn" class="fb-btn fb-btn-warning" type="button">暂停时钟</button>
+                </div>
+                <pre id="peripheral-ds1302-output" class="peripheral-io-output">--</pre>
+            </section>
+
+            <section id="peripheral-lcd1602-panel" class="peripheral-io-section fb-hidden">
+                <div class="status-grid peripheral-io-status-grid">
+                    <div class="status-item"><span class="status-label">初始化</span><span id="peripheral-lcd1602-ready" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">尺寸</span><span id="peripheral-lcd1602-size" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">背光</span><span id="peripheral-lcd1602-backlight-state" class="status-value">--</span></div>
+                </div>
+                <div class="fb-grid-2">
+                    <div class="fb-form-group">
+                        <label for="peripheral-lcd1602-line1">第 1 行</label>
+                        <input id="peripheral-lcd1602-line1" type="text" maxlength="20" placeholder="FastBee">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="peripheral-lcd1602-line2">第 2 行</label>
+                        <input id="peripheral-lcd1602-line2" type="text" maxlength="20" placeholder="ESP32 ready">
+                    </div>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-lcd1602-write-btn" class="fb-btn fb-btn-primary" type="button">显示文本</button>
+                    <button id="peripheral-lcd1602-clear-btn" class="fb-btn" type="button">清屏</button>
+                    <button id="peripheral-lcd1602-backlight-on-btn" class="fb-btn" type="button">开启背光</button>
+                    <button id="peripheral-lcd1602-backlight-off-btn" class="fb-btn" type="button">关闭背光</button>
+                </div>
+                <pre id="peripheral-lcd1602-output" class="peripheral-io-output">--</pre>
+            </section>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-peripheral-io-btn" type="button">关闭</button>
+        </div>
+    </div>
+</div>

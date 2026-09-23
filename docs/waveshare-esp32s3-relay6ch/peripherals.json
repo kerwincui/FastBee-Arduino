@@ -1,0 +1,105 @@
+{
+  "peripherals": [
+    {
+      "id": "relay1",
+      "name": "继电器 CH1",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        1
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "relay2",
+      "name": "继电器 CH2",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        2
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "relay3",
+      "name": "继电器 CH3",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        41
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "relay4",
+      "name": "继电器 CH4",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        42
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "relay5",
+      "name": "继电器 CH5",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        45
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "relay6",
+      "name": "继电器 CH6",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        46
+      ],
+      "params": {
+        "initialState": 0
+      }
+    },
+    {
+      "id": "rgb",
+      "name": "WS2812 RGB 彩灯",
+      "type": 45,
+      "enabled": true,
+      "pins": [
+        38
+      ],
+      "params": {
+        "count": 1,
+        "brightness": 64
+      }
+    },
+    {
+      "id": "rs485",
+      "name": "RS485 UART",
+      "type": 1,
+      "enabled": true,
+      "pins": [
+        18,
+        17
+      ],
+      "params": {
+        "baudRate": 9600,
+        "dataBits": 8,
+        "stopBits": 1,
+        "parity": 0
+      }
+    }
+  ]
+}

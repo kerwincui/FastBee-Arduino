@@ -1,0 +1,261 @@
+{
+  "storageVersion": 1,
+  "revision": 1,
+  "config": {
+    "schemaVersion": 1,
+    "displayRef": "panel_display",
+    "settings": {
+      "brightnessPercent": 70,
+      "idleSleepSeconds": 0,
+      "homePageId": "environment",
+      "themeId": "dark",
+      "background": {
+        "presetId": "soft-gradient"
+      },
+      "allowSystemRestart": true
+    },
+    "pages": [
+      {
+        "id": "environment",
+        "title": "首页",
+        "layoutId": "mixed-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "clock",
+            "kind": "clock",
+            "visualType": "clock",
+            "title": "系统时间",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 152
+            }
+          },
+          {
+            "id": "temperature",
+            "kind": "data",
+            "visualType": "value",
+            "title": "温度",
+            "sourceRef": "sht30_temperature",
+            "precision": 1,
+            "unit": "°C",
+            "rect": {
+              "x": 16,
+              "y": 184,
+              "w": 216,
+              "h": 144
+            }
+          },
+          {
+            "id": "humidity",
+            "kind": "data",
+            "visualType": "value",
+            "title": "湿度",
+            "sourceRef": "sht30_humidity",
+            "precision": 1,
+            "unit": "%RH",
+            "rect": {
+              "x": 248,
+              "y": 184,
+              "w": 216,
+              "h": 144
+            }
+          },
+          {
+            "id": "weather_summary",
+            "kind": "weather",
+            "visualType": "weather",
+            "title": "天气",
+            "sourceRef": "weather.local",
+            "precision": 1,
+            "unit": "°C",
+            "rect": {
+              "x": 16,
+              "y": 344,
+              "w": 448,
+              "h": 56
+            }
+          }
+        ]
+      },
+      {
+        "id": "trends",
+        "title": "温湿度趋势",
+        "layoutId": "detail",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "temperature_trend",
+            "kind": "chart",
+            "visualType": "line",
+            "title": "温度趋势",
+            "sourceRef": "sht30_temperature",
+            "precision": 1,
+            "unit": "°C",
+            "historyMode": "recent10",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 180
+            }
+          },
+          {
+            "id": "humidity_trend",
+            "kind": "chart",
+            "visualType": "line",
+            "title": "湿度趋势",
+            "sourceRef": "sht30_humidity",
+            "precision": 1,
+            "unit": "%RH",
+            "historyMode": "recent10",
+            "rect": {
+              "x": 16,
+              "y": 208,
+              "w": 448,
+              "h": 180
+            }
+          }
+        ]
+      },
+      {
+        "id": "controls",
+        "title": "外设执行",
+        "layoutId": "tile-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "execute_once",
+            "kind": "control",
+            "visualType": "action",
+            "title": "采集一次",
+            "controlRef": "rule.collect_sht30",
+            "bindingFingerprint": "5275bb90",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 180
+            }
+          }
+        ]
+      },
+      {
+        "id": "weather",
+        "title": "天气",
+        "layoutId": "detail",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "weather_main",
+            "kind": "weather",
+            "visualType": "weather",
+            "title": "心知天气",
+            "sourceRef": "weather.local",
+            "precision": 1,
+            "unit": "°C",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 180
+            }
+          }
+        ]
+      },
+      {
+        "id": "system",
+        "title": "系统设置",
+        "layoutId": "tile-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "brightness",
+            "kind": "system",
+            "visualType": "slider",
+            "title": "亮度",
+            "systemActionId": "brightness",
+            "actionValue": 70,
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 88
+            }
+          },
+          {
+            "id": "sleep_time",
+            "kind": "system",
+            "visualType": "select",
+            "title": "自动息屏",
+            "systemActionId": "sleep-time",
+            "rect": {
+              "x": 16,
+              "y": 112,
+              "w": 448,
+              "h": 88
+            }
+          },
+          {
+            "id": "touch_beep",
+            "kind": "system",
+            "visualType": "switch",
+            "title": "触控提示音",
+            "systemActionId": "touch-beep",
+            "rect": {
+              "x": 16,
+              "y": 208,
+              "w": 448,
+              "h": 88
+            }
+          },
+          {
+            "id": "screen_sleep",
+            "kind": "system",
+            "visualType": "action",
+            "title": "立即息屏",
+            "systemActionId": "sleep",
+            "rect": {
+              "x": 16,
+              "y": 304,
+              "w": 216,
+              "h": 88
+            }
+          },
+          {
+            "id": "system_restart",
+            "kind": "system",
+            "visualType": "action",
+            "title": "重启设备",
+            "systemActionId": "restart",
+            "requireConfirmation": true,
+            "rect": {
+              "x": 248,
+              "y": 304,
+              "w": 216,
+              "h": 88
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "touchUiMigration": 1
+}

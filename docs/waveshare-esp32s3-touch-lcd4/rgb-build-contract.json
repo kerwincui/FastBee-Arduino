@@ -1,0 +1,23 @@
+{
+  "environment": "esp32s3-F16R8-rgb-xip40-v12",
+  "buildFlags": [
+    "-DFASTBEE_RGB_BOUNCE_LINES=16",
+    "-DFASTBEE_RGB_REQUIRE_BOUNCE=1"
+  ],
+  "sdkConfig": [
+    "CONFIG_SPIRAM_XIP_FROM_PSRAM=y",
+    "CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y",
+    "CONFIG_SPIRAM_RODATA=y",
+    "CONFIG_LCD_RGB_ISR_IRAM_SAFE=y",
+    "CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y"
+  ],
+  "disabledSdkConfig": [
+    "CONFIG_LCD_RGB_RESTART_IN_VSYNC"
+  ],
+  "requestedBounceLines": 16,
+  "requestedBounceBytes": 30720,
+  "bounceRequired": true,
+  "lcdRgbRestartInVsync": false,
+  "sourceStable": true,
+  "sdkRecompiled": false
+}

@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "sourceAllowlist": ["sht30_temperature", "sht30_humidity", "modbus.motor_speed", "modbus.motor_count"]
+}
