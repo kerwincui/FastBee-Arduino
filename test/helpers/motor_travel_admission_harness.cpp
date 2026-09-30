@@ -1,4 +1,5 @@
 #include "core/MotorTravelAdmission.h"
+#include "core/MotorTravelInterlock.h"
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -138,4 +139,29 @@ int main() {
     changed = mapping(); changed.finite = false;
     a.configure(changed); assert(!a.confirmPosition(500, true));
     assert(send(a, stop, writes));
+    FastBee::MotorTravelInterlock<3> bank;
+    bank.configure(0, mapping());
+    auto generation = bank.generation;
+    assert(bank.confirm(0, generation, true, 500, true) == nullptr);
+    assert(bank.confirm(0, generation, true, 500, true)); // Replayed confirmation is rejected.
+    assert(!bank.axes[0].pulseKnown);
+    readPulse(bank.axes[0]);
+    generation = bank.generation;
+    assert(!bank.before(fwd.data(), fwd.size(), 100));
+    assert(bank.confirm(0, generation, false, 0, true)); // A write invalidates an old UI snapshot.
+    assert(!bank.confirm(0, bank.generation, false, 0, true));
+    assert(bank.axes[0].position.lower == 500 && bank.axes[0].position.upper == 600);
+    bank.reset();
+    assert(!bank.axes[0].position.referenced);
+    assert(bank.before(fwd.data(), fwd.size(), 100));
+    bank.configure(1, mapping());
+    assert(!strcmp(bank.before(fwd.data(), fwd.size(), 100), "TRAVEL_DUPLICATE_SLAVE"));
+    assert(bank.confirm(2, bank.generation, true, 0, true));
+    assert(bank.protects(8) && bank.protects(0) && !bank.protects(6));
+    bank.configure(1, FastBee::MotorTravelMapping{});
+    bank.axes[0] = referenced(); generation = bank.generation;
+    const auto failedSpeed = frame(8, 3, 5, 1);
+    bank.after(failedSpeed.data(), failedSpeed.size(), nullptr, 0, false, 100);
+    assert(!bank.axes[0].position.referenced && bank.generation != generation);
+    assert(bank.confirm(0, generation, true, 500, true));
 }

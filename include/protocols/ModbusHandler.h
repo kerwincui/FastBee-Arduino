@@ -12,6 +12,7 @@
 #include "core/FeatureFlags.h"
 #include "protocols/MotorProtocol.h"
 #include "protocols/ModbusReadDiagnostics.h"
+#include "core/MotorTravelInterlock.h"
 
 // Modbus异常码
 enum ModbusException : uint8_t {
@@ -28,7 +29,8 @@ enum OneShotError : uint8_t {
     ONESHOT_CRC_ERROR        = 2,   // CRC校验失败
     ONESHOT_EXCEPTION        = 3,   // 从站返回异常响应
     ONESHOT_NOT_INITIALIZED  = 4,   // Modbus未初始化
-    ONESHOT_BUSY             = 5    // 正在执行另一次读取
+    ONESHOT_BUSY             = 5,   // 正在执行另一次读取
+    ONESHOT_TRAVEL_BLOCKED   = 6
 };
 
 // 一次性读取结果
@@ -37,6 +39,7 @@ struct OneShotResult {
     uint16_t data[Protocols::MODBUS_ONESHOT_BUFFER_SIZE]; // 原始寄存器数据
     uint16_t count;          // 实际读取的寄存器数量
     uint8_t exceptionCode;   // error==ONESHOT_EXCEPTION时有效
+    const char* travelError = nullptr;
 
     OneShotResult() : error(ONESHOT_NOT_INITIALIZED), count(0), exceptionCode(0) {
         memset(data, 0, sizeof(data));
@@ -294,6 +297,9 @@ public:
     uint8_t getSubDeviceCount() const { return config.master.deviceCount; }
     const ModbusSubDevice& getSubDevice(uint8_t index) const;
     bool updateMotorRuntime(uint8_t index, int32_t currentPosition, uint16_t lastPulse);
+    bool getMotorTravel(uint8_t index, FastBee::MotorTravelAdmission& out, String& token);
+    bool confirmMotorTravel(uint8_t index, const String& token, bool reference,
+                           int32_t position, bool stationary, String& error);
 
     // sensorId 查找辅助（单通道返回 sensorId，多通道返回 sensorId_chN）
     String buildSensorId(uint8_t deviceIndex, uint16_t channel = 0) const;
@@ -559,6 +565,11 @@ private:
     // 一次性操作互斥标志和信号量
     volatile bool isOneShotReading;
     SemaphoreHandle_t _oneShotSemaphore;
+    FastBee::MotorTravelInterlock<Protocols::MODBUS_MAX_SUB_DEVICES> _motorTravel;
+    uint32_t _motorTravelBoot = 0;
+    const char* _lastTravelError = nullptr;
+    void _syncMotorTravel();
+    String _motorTravelToken() const;
     SemaphoreHandle_t _pollStateMutex;    // 串行化批次及轮询缓存/统计更新
     volatile bool _controlPending;        // 控制操作挂起标志（高优先级通道）
     

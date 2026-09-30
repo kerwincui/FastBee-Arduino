@@ -7,6 +7,12 @@ from pathlib import Path
 
 
 class MotorControlBehaviorTests(unittest.TestCase):
+    def test_reference_confirmation_ui(self):
+        result = subprocess.run(['node', 'scripts/test-motor-travel-ui.cjs'],
+                                cwd=Path(__file__).resolve().parents[2], capture_output=True,
+                                text=True, encoding='utf-8', timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_read_only_state_sync_lifecycle(self):
         result = subprocess.run(['node', 'scripts/test-motor-state-sync.cjs'],
                                 cwd=Path(__file__).resolve().parents[2], capture_output=True,

@@ -1391,7 +1391,11 @@ private:
         canvas.text(stop.x + (stop.w - 48) / 2, stop.y + (stop.h - 24) / 2, "停止", rgb565(255, 255, 255), stop.w - 12, 2);
         const char* safety = card.error[0] ? card.error : !card.motorKnown ? "参数未读回，禁止启动；停止仍可请求" :
             !card.motorPulse ? "脉冲必须大于零；请设置后读取确认" :
-            card.motorSoftLimitEnabled ? "软限位仅按指令估算，仍需实体限位" : "软限位未启用，请先确认安全行程";
+            !card.motorSoftLimitEnabled ? "软限位未启用，请先完成行程标定" :
+            !card.motorReferenceKnown ? "软限位已配置，参考位置未确认" :
+            !card.motorStationaryConfirmed ? "运动结束未确认；停止仍可请求" :
+            !card.motorForwardReady && !card.motorReverseReady ? "行程或脉冲读回不满足启动条件" :
+            "软限位按可能位置范围保护，仍需实体限位";
         canvas.text(rect.x + 12, rect.y + rect.h - 15, safety, palette.warning, rect.w - 24, 1);
     }
 
@@ -1880,6 +1884,7 @@ bool dispatchCardAction(ScreenPanelCardSnapshot& card,
         card.motorConfirmAction = 0;
         if (!selected || selected > 4 || card.pending) return false;
         if (selected <= 2 && (!card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty)) return false;
+        if (selected <= 2 && !(selected == 1 ? card.motorForwardReady : card.motorReverseReady)) return false;
         String action(actions[selected]);
         if (selected > 2) action += ":" + String(card.motorConfirmValue);
         uint32_t operation = 0; String error;
@@ -1953,6 +1958,12 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
                 if (card.pending || !card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty) {
                     strlcpy(card.error, card.pending ? "请等待指令完成" : !card.motorKnown ? "请先读取并确认速度和脉冲" :
                         !card.motorPulse ? "单次脉冲必须大于零" : "请先应用修改后的参数", sizeof(card.error)); return true;
+                }
+                if (!(col ? card.motorReverseReady : card.motorForwardReady)) {
+                    strlcpy(card.error, !card.motorSoftLimitEnabled ? "请先完成行程标定" :
+                        !card.motorReferenceKnown ? "请在Web确认实测参考位置" :
+                        !card.motorStationaryConfirmed ? "请现场确认运动已结束" : "行程或读回不满足启动条件", sizeof(card.error));
+                    return true;
                 }
                 action = col ? "reverse" : "forward";
             }

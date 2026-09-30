@@ -42,6 +42,7 @@ class ModbusReadDiagnosticsTests(unittest.TestCase):
         for signature in ('bool ModbusHandler::initializeSerial(',
                           'uint16_t ModbusHandler::calculateCRC(',
                           'bool ModbusHandler::validateFrame(',
+                          'void ModbusHandler::_syncMotorTravel(',
                           'OneShotError ModbusHandler::_executeModbusTransactionRaw('):
             start = source.index(signature)
             methods.append(source[start:source.index('\n}', start) + 2])

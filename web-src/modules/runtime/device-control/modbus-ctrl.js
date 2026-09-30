@@ -628,6 +628,11 @@
             var label = acknowledged === 'forward' ? '正转应答' : acknowledged === 'reverse' ? '反转应答' : acknowledged === 'stop' ? '停止应答' : '--';
             if (direction) { direction.textContent = label; direction.title = '最近已应答指令，不代表当前实际运动'; }
             if (run) { run.className = 'motor-run-badge motor-run-idle'; run.textContent = data.pending ? '指令处理中' : '运动未确认'; }
+            if (run && !data.pending && data.referenceKnown !== undefined) {
+                run.textContent = !data.softLimitEnabled ? '行程未标定' : !data.referenceKnown ? '参考位置未确认' :
+                    !data.stationaryConfirmed ? '运动结束未确认' : '位置范围保护';
+                run.title = '无实际位置反馈；现场确认入口位于通信协议的电机控制面板';
+            }
         },
 
         _dcMotorAction: function(devIdx, action) {

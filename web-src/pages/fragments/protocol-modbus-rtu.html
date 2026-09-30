@@ -276,7 +276,7 @@
                         <div class="fb-grid-3 fb-mt-1">
                             <div class="fb-form-group"><label>最小位置（脉冲）</label><input type="number" id="mdev-edit-motor-min-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
                             <div class="fb-form-group"><label>最大位置（脉冲）</label><input type="number" id="mdev-edit-motor-max-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
-                            <div class="fb-form-group"><label>估算位置（脉冲）</label><input type="number" id="mdev-edit-motor-cur-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label>历史位置（不作为原点）</label><input type="number" id="mdev-edit-motor-cur-pos" class="" min="-2147483648" max="2147483647" value="0" readonly></div>
                             <div class="fb-form-group"><label>移动步长</label><input type="number" id="mdev-edit-motor-move-step" class="" min="0" max="2147483647" value="0"></div>
                             <div class="fb-form-group"><label>上次脉冲数</label><input type="number" id="mdev-edit-motor-last-pulse" class="" min="0" max="65535" value="0"></div>
                         </div>
@@ -381,6 +381,19 @@
                         </div>
                     </div>
                     <!-- 参数设置区 -->
+                    <details class="motor-params-section">
+                        <summary>行程保护与现场确认</summary>
+                        <p id="motor-travel-status" role="status">行程保护状态未读取</p>
+                        <div class="motor-param-row">
+                            <label for="motor-travel-reference">实测参考位置（控制器计数）</label>
+                            <input id="motor-travel-reference" type="number" class="motor-param-input" min="-2147483648" max="2147483647" step="1" placeholder="尚未标定">
+                        </div>
+                        <label><input id="motor-travel-stationary" type="checkbox">已在现场确认滑台静止、负载安全</label>
+                        <div class="motor-param-row">
+                            <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary" data-action="confirmMotorReference">确认实测参考位置</button>
+                            <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary" data-action="confirmMotorStationary">仅确认运动已结束</button>
+                        </div>
+                    </details>
                     <div class="motor-params-section">
                         <div class="motor-param-row">
                             <label>速度</label>

@@ -1,5 +1,6 @@
 #include "protocols/ModbusReadDiagnostics.h"
 #include "protocols/ModbusUartRxMode.h"
+#include "core/MotorTravelInterlock.h"
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -9,9 +10,9 @@
 #define LOG_WARNINGF(...) ((void)0)
 #define LOG_WARNING(...) ((void)0)
 #define LOG_ERROR(...) ((void)0)
-namespace Protocols { constexpr size_t MODBUS_BUFFER_SIZE = 256; }
+namespace Protocols { constexpr size_t MODBUS_BUFFER_SIZE = 256, MODBUS_MAX_SUB_DEVICES = 4; }
 namespace FastBee { namespace MemoryBudget { unsigned dramFree() { return 0; } } }
-enum OneShotError { ONESHOT_SUCCESS, ONESHOT_TIMEOUT, ONESHOT_CRC_ERROR, ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED };
+enum OneShotError { ONESHOT_SUCCESS, ONESHOT_TIMEOUT, ONESHOT_CRC_ERROR, ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED, ONESHOT_BUSY, ONESHOT_TRAVEL_BLOCKED };
 constexpr unsigned SERIAL_8N1 = 0;
 constexpr uint8_t MODBUS_EX_ILLEGAL_DATA_VALUE = 3;
 static unsigned long now;
@@ -56,6 +57,10 @@ struct Serial {
 };
 
 struct ModbusHandler {
+    FastBee::MotorTravelInterlock<Protocols::MODBUS_MAX_SUB_DEVICES> _motorTravel;
+    bool _oneShotSemaphore = true;
+    const char* _lastTravelError = nullptr;
+    void _syncMotorTravel();
     Serial serial;
     Serial* modbusSerial = &serial;
     bool _controlPending = false, defer = false;
@@ -64,7 +69,22 @@ struct ModbusHandler {
         uint32_t baudRate = 9600;
         int rxPin = 43, txPin = 44;
         unsigned responseTimeout = 1000;
-        struct Master { uint16_t responseTimeout = 12; uint8_t maxRetries = 0; } master;
+        struct Master {
+            uint16_t responseTimeout = 12; uint8_t maxRetries = 0, deviceCount = 0;
+            struct Device {
+                char deviceType[16] = "motor";
+                bool enabled = true;
+                uint8_t slaveAddress = 8;
+                uint16_t motorRegs[5] = {0,1,2,5,7};
+                int32_t motorMinPosition = 0, motorMaxPosition = 1000;
+                struct Profile {
+                    bool valid = true, finitePulseMove = true;
+                    uint8_t readFunction = 3, writeFunction = 6;
+                    uint16_t forwardValue = 1, reverseValue = 1, stopValue = 1;
+                    uint16_t readRegister(const uint16_t* regs, bool pulse) const { return regs[pulse ? 4 : 3]; }
+                } motorProtocol;
+            } devices[Protocols::MODBUS_MAX_SUB_DEVICES];
+        } master;
     } config;
     bool _shouldDeferSlaveRequest(uint8_t, uint32_t) { return defer; }
     void _recordSlaveOutcome(uint8_t, OneShotError, uint32_t) {}
@@ -183,5 +203,43 @@ int main() {
     assert(std::string(trace.reason)=="RESPONSE_CAPACITY_EXCEEDED");
     assert(small._executeModbusTransactionRaw(nullptr,8,8,raw,256,length,exception,12,0,false,&trace)==ONESHOT_EXCEPTION);
     assert(trace.attempts==0 && std::string(trace.reason)=="INVALID_REQUEST");
-    std::puts("UART initialization, transport diagnostics, and 3 receive-timing regressions passed; no device access");
+    // Exercise the real transport and configuration adapter, not only the pure guard.
+    ModbusHandler guarded; guarded.config.master.deviceCount = 1;
+    auto transact = [&](std::initializer_list<uint8_t> bytes) {
+        auto adu = frame(guarded, bytes);
+        return guarded._executeModbusTransactionRaw(adu.data(), adu.size(), adu[0],
+            raw, sizeof(raw), length, exception, 12, 3, true, &trace);
+    };
+    assert(transact({8,6,0,0,0,1}) == ONESHOT_TRAVEL_BLOCKED);
+    assert(guarded.serial.sent == 0 && trace.attempts == 0);
+    assert(std::string(trace.reason) == "TRAVEL_REFERENCE_REQUIRED");
+    assert(transact({0,6,0,0,0,1}) == ONESHOT_TRAVEL_BLOCKED);
+    assert(transact({8,5,0,0,255,0}) == ONESHOT_TRAVEL_BLOCKED);
+    assert(transact({8,16,0,0,0,2,4,0,1,0,1}) == ONESHOT_TRAVEL_BLOCKED);
+    assert(guarded.serial.sent == 0);
+    assert(transact({8,6,0,2,0,1}) == ONESHOT_TIMEOUT); // STOP still sends, exactly once.
+    assert(guarded.serial.sent == 1 && trace.attempts == 1);
+    assert(transact({6,5,0,0,255,0}) == ONESHOT_TIMEOUT); // Unrelated relay retains retry policy.
+    assert(guarded.serial.sent == 5 && trace.attempts == 4);
+    auto& axis = guarded._motorTravel.axes[0];
+    assert(axis.confirmPosition(500, true));
+    guarded.serial.replies.resize(6);
+    guarded.serial.replies[5] = frame(guarded, {8,3,2,0,100});
+    assert(transact({8,3,0,7,0,1}) == ONESHOT_SUCCESS);
+    assert(axis.pulseKnown && axis.pulse == 100);
+    assert(transact({8,6,0,0,0,1}) == ONESHOT_TIMEOUT);
+    assert(guarded.serial.sent == 7 && trace.attempts == 1);
+    assert(!axis.position.referenced && axis.position.upper == 600);
+    assert(transact({8,6,0,1,0,1}) == ONESHOT_TRAVEL_BLOCKED && guarded.serial.sent == 7);
+    assert(axis.confirmPosition(950, true)); axis.pulseKnown = true; axis.pulse = 100; axis.pulseAt = now;
+    assert(transact({8,6,0,0,0,1}) == ONESHOT_TRAVEL_BLOCKED && guarded.serial.sent == 7);
+    assert(std::string(trace.reason) == "TRAVEL_RANGE_EXCEEDED");
+    guarded.config.master.devices[0].motorMaxPosition = 900;
+    assert(transact({8,6,0,1,0,1}) == ONESHOT_TRAVEL_BLOCKED && !axis.position.referenced);
+    guarded.config.master.devices[0].enabled = false;
+    assert(transact({8,6,0,1,0,1}) == ONESHOT_TRAVEL_BLOCKED); // Disabling polling is no bypass.
+    guarded.config.master.devices[0].motorMaxPosition = 0;
+    assert(transact({8,6,0,0,0,1}) == ONESHOT_TRAVEL_BLOCKED);
+    assert(transact({8,6,0,2,0,1}) == ONESHOT_TIMEOUT && trace.attempts == 1);
+    std::puts("Production UART, diagnostics, travel admission, zero-write rejection and retry isolation passed; no device access");
 }

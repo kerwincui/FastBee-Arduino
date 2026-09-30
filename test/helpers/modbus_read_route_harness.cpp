@@ -7,8 +7,8 @@
 using String = std::string;
 namespace Protocols { constexpr int MODBUS_ONESHOT_BUFFER_SIZE = 32; }
 enum OneShotError { ONESHOT_SUCCESS, ONESHOT_TIMEOUT, ONESHOT_CRC_ERROR,
-    ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED, ONESHOT_BUSY };
-struct OneShotResult { OneShotError error=ONESHOT_SUCCESS; uint16_t count=1, data[32]{}; uint8_t exceptionCode=2; };
+    ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED, ONESHOT_BUSY, ONESHOT_TRAVEL_BLOCKED };
+struct OneShotResult { OneShotError error=ONESHOT_SUCCESS; uint16_t count=1, data[32]{}; uint8_t exceptionCode=2; const char* travelError=nullptr; };
 struct AsyncWebServerRequest {
     std::map<std::string,int> params;
     int status=0;

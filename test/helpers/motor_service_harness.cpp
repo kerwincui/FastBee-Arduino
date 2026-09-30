@@ -3,6 +3,7 @@
 #include "core/MotorControlService.h"
 #include "core/MotorCommandQueue.h"
 #include "protocols/MotorProtocol.h"
+#include "core/MotorTravelAdmission.h"
 #include <array>
 #include <cassert>
 #include <vector>
@@ -59,8 +60,8 @@ struct ModbusSubDevice {
     bool hasMotorSoftLimit() const { return limited; }
 };
 constexpr int MODBUS_MASTER = 1, ONESHOT_SUCCESS = 0, ONESHOT_TIMEOUT = 1, ONESHOT_CRC_ERROR = 2,
-    ONESHOT_EXCEPTION = 3, ONESHOT_NOT_INITIALIZED = 4, ONESHOT_BUSY = 5;
-struct OneShotResult { int error = 0; uint16_t data[2] = {23, 0}; uint16_t count = 1; uint8_t exceptionCode = 0; };
+    ONESHOT_EXCEPTION = 3, ONESHOT_NOT_INITIALIZED = 4, ONESHOT_BUSY = 5, ONESHOT_TRAVEL_BLOCKED = 6;
+struct OneShotResult { int error = 0; uint16_t data[2] = {23, 0}; uint16_t count = 1; uint8_t exceptionCode = 0; const char* travelError = nullptr; };
 struct Frame { uint16_t reg, value; uint8_t retries; bool write; uint8_t fc = 6; };
 static std::function<void()> onWrite;
 static std::function<void()> onRead;
@@ -72,6 +73,16 @@ struct ModbusHandler {
     uint16_t resultCount = 1;
     uint16_t readSpeed = 23, readPulse = 23;
     uint32_t latency = 0;
+    bool travelBlocked = false;
+    unsigned confirmations = 0;
+    bool getMotorTravel(uint8_t, FastBee::MotorTravelAdmission& out, String& token) {
+        out = {}; token = "test-token"; return true;
+    }
+    bool confirmMotorTravel(uint8_t, const String& token, bool, int32_t, bool stationary, String& error) {
+        ++confirmations;
+        if (token != "test-token" || !stationary) { error = "TRAVEL_STATE_CHANGED"; return false; }
+        return true;
+    }
     int getMode() { return MODBUS_MASTER; }
     uint8_t getSubDeviceCount() { return 1; }
     const ModbusSubDevice& getSubDevice(uint8_t) { return dev; }
@@ -83,6 +94,10 @@ struct ModbusHandler {
         result.data[0] = reg == dev.motorProtocol.readRegister(dev.motorRegs, false) ? readSpeed : readPulse; return result;
     }
     OneShotResult writeRegisterOnce(uint8_t, uint16_t reg, uint16_t value, bool, uint16_t, uint8_t retries) {
+        if (travelBlocked && reg != dev.motorRegs[2]) {
+            OneShotResult blocked; blocked.error = ONESHOT_TRAVEL_BLOCKED;
+            blocked.travelError = "TRAVEL_RANGE_EXCEEDED"; return blocked;
+        }
         frames.push_back({reg, value, retries, true}); nowMs += latency;
         if (onWrite) { auto callback = std::move(onWrite); onWrite = {}; callback(); }
         OneShotResult result; result.error = reg == failRegister ? 1 : 0; return result;
@@ -176,24 +191,27 @@ int main(int argc, char** argv) {
     reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true;
     bus.dev.motorCurrentPosition = 90;
     assert(motors.submit(ref, "forward", 0, "limited", operation, error)); runWorker();
-    assert(bus.frames.size() == 2 && bus.frames[0].reg == 0 && bus.frames[0].value == 10);
-    assert(bus.frames[1].reg == 1 && bus.dev.motorCurrentPosition == 100);
+    assert(bus.frames.size() == 1 && bus.frames[0].reg == 1);
+    assert(bus.dev.motorCurrentPosition == 90); // ACK must never advance coordinates.
+    bus.travelBlocked = true;
     assert(motors.submit(ref, "forward", 0, "at-limit", operation, error)); runWorker();
-    assert(bus.frames.size() == 2);
+    assert(bus.frames.size() == 1);
+    assert(motors.operation(operation, result.to<JsonObject>()) && result["success"] == false);
+    assert(result["error"] == "TRAVEL_RANGE_EXCEEDED");
 
     reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true;
     bus.dev.motorCurrentPosition = -90;
     assert(motors.submit(ref, "reverse", 0, "reverse-limited", operation, error)); runWorker();
-    assert(bus.frames.size() == 2 && bus.frames[0].reg == 0 && bus.frames[0].value == 10);
-    assert(bus.frames[1].reg == 2 && bus.frames[1].value == 1 && bus.dev.motorCurrentPosition == -100);
+    assert(bus.frames.size() == 1 && bus.frames[0].reg == 2 && bus.dev.motorCurrentPosition == -90);
+    bus.travelBlocked = true;
     assert(motors.submit(ref, "reverse", 0, "reverse-at-limit", operation, error)); runWorker();
-    assert(bus.frames.size() == 2);
+    assert(bus.frames.size() == 1);
     assert(motors.submit(ref, "stop", 0, "stop-at-limit", operation, error)); runWorker();
-    assert(bus.frames.size() == 3 && bus.frames[2].reg == 3);
+    assert(bus.frames.size() == 2 && bus.frames[1].reg == 3);
 
-    reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true; bus.failRegister = 0;
+    reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true; bus.travelBlocked = true;
     assert(motors.submit(ref, "forward", 0, "failed-pulse", operation, error)); runWorker();
-    assert(bus.frames.size() == 1 && bus.frames[0].reg == 0);
+    assert(bus.frames.empty());
     assert(mqtt.reports.empty());
 
     reset(); ref = motors.referenceForSlave(3); bus.failRegister = 1;
@@ -285,14 +303,14 @@ int main(int argc, char** argv) {
     assert(motors.submit(ref, "stop", 0, "zero-pulse-stop", operation, error)); runWorker();
     assert(bus.frames.size() == 1 && bus.frames[0].reg == 3);
 
-    // Stop arriving during a pulse prewrite must prevent the later start.
+    // No pulse prewrite remains. STOP follows an already-dispatched start.
     reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true;
     assert(motors.submit(ref, "forward", 0, "preparing-move", operation, error));
     const uint32_t preparing = operation;
     onWrite = [&]() { assert(motors.submit(ref, "stop", 0, "interrupt-prewrite", operation, error)); };
     runWorker();
-    assert(bus.frames.size() == 2 && bus.frames[0].reg == 0 && bus.frames[1].reg == 3);
-    assert(motors.operation(preparing, result.to<JsonObject>()) && result["success"] == false);
+    assert(bus.frames.size() == 2 && bus.frames[0].reg == 1 && bus.frames[1].reg == 3);
+    assert(motors.operation(preparing, result.to<JsonObject>()) && result["success"] == true);
     assert(motors.state(ref, state) && state.commandKnown && state.commandSuccess && state.operationId == operation);
 
     reset(); ref = motors.referenceForSlave(3); nowMs += 15001;
@@ -326,13 +344,13 @@ int main(int argc, char** argv) {
     assert(bus.frames.size() == 1 && bus.frames[0].value == 7);
     reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true;
     assert(motors.submitRule(ref, "forward", 7, "rule-limited", 5000, 1000, operation, error)); runWorker();
-    assert(bus.frames.size() == 2 && bus.frames[0].value == 7 && bus.frames[1].value == 1);
+    assert(bus.frames.size() == 1 && bus.frames[0].value == 7); // Transport validates the action word.
     reset(); ref = motors.referenceForSlave(3);
     assert(motors.submitRule(ref, "forward", 7, "expired-rule", 5000, 1000, operation, error));
     nowMs += 5000; runWorker(); assert(bus.frames.empty());
     reset(); ref = motors.referenceForSlave(3); bus.dev.limited = true; bus.latency = 3000;
     assert(motors.submitRule(ref, "forward", 7, "expired-between-writes", 5000, 1000, operation, error));
-    runWorker(); assert(bus.frames.size() == 1 && bus.frames[0].reg == 0);
+    runWorker(); assert(bus.frames.size() == 1 && bus.frames[0].reg == 1);
     // Generic layout: one action register, distinct words, FC04 feedback at
     // separate addresses and FC16 writes. No device/model name is consulted.
     reset();
@@ -410,5 +428,18 @@ int main(int argc, char** argv) {
     assert(motors.state(ref, state) && !state.commandSuccess && !strcmp(state.lastAcknowledgedAction, "forward"));
     assert(motors.submit(ref, "stop", 0, "shared-stop", operation, error)); runWorker();
     assert(motors.state(ref, state) && !strcmp(state.lastAcknowledgedAction, "stop"));
-    std::puts("Production motor service passed: generic protocol, shared acknowledgements, truthful state, lock contention, stop and guarded dispatch.");
+    reset(); ref = motors.referenceForSlave(3);
+    assert(motors.submit(ref, "forward", 0, "reference-race", operation, error));
+    assert(!motors.confirmTravel(ref, "test-token", true, 50, true, error));
+    assert(error == "TRAVEL_COMMAND_PENDING" && bus.confirmations == 0);
+    onWrite = [&]() {
+        assert(!motors.confirmTravel(ref, "test-token", true, 50, true, error));
+        assert(error == "TRAVEL_COMMAND_PENDING" && bus.confirmations == 0);
+    };
+    runWorker(); bus.frames.clear();
+    assert(!motors.confirmTravel(ref, "old-token", true, 50, true, error));
+    assert(!motors.confirmTravel(ref, "test-token", true, 50, false, error));
+    assert(motors.confirmTravel(ref, "test-token", true, 50, true, error));
+    assert(bus.frames.empty());
+    std::puts("Production motor service passed: generic protocol, truthful state, stop, no ACK position arithmetic and queued/running confirmation exclusion.");
 }

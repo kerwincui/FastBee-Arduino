@@ -180,21 +180,8 @@ void execute(Command& cmd) {
     }
     else reg = dev.motorRegs[!strcmp(cmd.action, "setSpeed") ? 3 : 4];
     uint16_t pulse = dev.motorLastPulse;
-    int32_t nextPosition = dev.motorCurrentPosition;
-    if (move && dev.hasMotorSoftLimit()) {
-        const int64_t room = forward ? static_cast<int64_t>(dev.motorMaxPosition) - dev.motorCurrentPosition
-                                     : static_cast<int64_t>(dev.motorCurrentPosition) - dev.motorMinPosition;
-        int32_t desired = cmd.legacyValue && cmd.value > 1 ? cmd.value : pulse ? pulse : dev.motorMoveStep;
-        if (room <= 0 || desired <= 0) { strlcpy(cmd.error, "Motor soft limit or pulse not configured", sizeof(cmd.error)); return; }
-        pulse = static_cast<uint16_t>(std::min<int64_t>(65535, std::min<int64_t>(desired, room)));
-        auto result = writeMotor(*bus, dev, dev.motorRegs[4], pulse, timeout);
-        if (result.error != ONESHOT_SUCCESS) {
-            describeResult(cmd.error, sizeof(cmd.error), "pulse/start blocked", dev.slaveAddress, protocol.writeFunction, dev.motorRegs[4], result, false);
-            return;
-        }
-        nextPosition += forward ? pulse : -static_cast<int32_t>(pulse);
-        value = forward ? protocol.forwardValue : protocol.reverseValue;
-    }
+    // The bus interlock owns admission and possible-position bounds. Never
+    // prewrite a clipped pulse or convert a start acknowledgement into position.
     // A lost reply is ambiguous for edge-triggered motor registers. Never
     // inherit the master's automatic retry policy for these commands.
     if (move && cancelledByStop(cmd)) return;
@@ -202,13 +189,17 @@ void execute(Command& cmd) {
     auto result = writeMotor(*bus, dev, reg, value, timeout);
     cmd.success = result.error == ONESHOT_SUCCESS;
     if (!cmd.success) {
+        if (result.error == ONESHOT_TRAVEL_BLOCKED) {
+            strlcpy(cmd.error, result.travelError ? result.travelError : "TRAVEL_BLOCKED", sizeof(cmd.error));
+            return;
+        }
         char detail[80];
         describeResult(detail, sizeof(detail), cmd.action, dev.slaveAddress, protocol.writeFunction, reg, result, false);
         snprintf(cmd.error, sizeof(cmd.error), "%s; unconfirmed, no retry", detail);
         return;
     }
     if (!strcmp(cmd.action, "setPulse")) pulse = value;
-    bus->updateMotorRuntime(static_cast<uint8_t>(index), nextPosition, pulse);
+    bus->updateMotorRuntime(static_cast<uint8_t>(index), dev.motorCurrentPosition, pulse);
 #if FASTBEE_ENABLE_MQTT
     auto* framework = FastBeeFramework::getInstance();
     auto* protocols = framework ? framework->getProtocolManager() : nullptr;
@@ -407,7 +398,13 @@ bool MotorControlService::operation(uint32_t id, JsonObject out, bool* busy) {
     return false;
 }
 bool MotorControlService::state(const String& ref, MotorControlState& out) {
+    auto owner = lease(); auto* bus = owner.get();
+    const int index = bus ? findMotor(*bus, ref) : -1;
+    if (index < 0) return false;
+    FastBee::MotorTravelAdmission travel; String token;
+    const bool snapshot = bus->getMotorTravel(static_cast<uint8_t>(index), travel, token);
     Lock lock; if (!lock.held) return false;
+    out = MotorControlState{};
     for (const auto& item : lock.state->states) if (ref == item.ref) {
         out = item.value; out.pending = false;
         if (millis() - out.updatedMs > 15000U) out.known = false;
@@ -416,8 +413,37 @@ bool MotorControlService::state(const String& ref, MotorControlState& out) {
         for (const auto& cmd : lock.state->commands)
             if (ref == cmd.ref && strcmp(cmd.action, "readStatus") &&
                 (cmd.phase == Phase::QUEUED || cmd.phase == Phase::RUNNING)) out.pending = true;
-        return true;
+        break;
     }
-    return false;
+    const auto& dev = bus->getSubDevice(static_cast<uint8_t>(index));
+    out.precision = dev.motorDecimals;
+    out.softLimitEnabled = dev.hasMotorSoftLimit();
+    out.minPosition = dev.motorMinPosition; out.maxPosition = dev.motorMaxPosition;
+    out.referenceKnown = snapshot && travel.position.referenced;
+    out.stationaryConfirmed = snapshot && travel.stationary;
+    out.possiblePositionMin = out.referenceKnown ? travel.position.lower : 0;
+    out.possiblePositionMax = out.referenceKnown ? travel.position.upper : 0;
+    out.estimatedPosition = 0; // Deprecated; never reuse persisted coordinates as feedback.
+    strlcpy(out.travelToken, snapshot ? token.c_str() : "", sizeof(out.travelToken));
+    const char* forwardError = snapshot ? travel.checkStart(true, travel.pulse, millis()) : "TRAVEL_BUS_BUSY";
+    const char* reverseError = snapshot ? travel.checkStart(false, travel.pulse, millis()) : "TRAVEL_BUS_BUSY";
+    out.forwardReady = !forwardError; out.reverseReady = !reverseError;
+    strlcpy(out.travelReason, forwardError && reverseError ? forwardError : "", sizeof(out.travelReason));
+    return true;
+}
+
+bool MotorControlService::confirmTravel(const String& ref, const String& token, bool reference,
+                                       int32_t position, bool stationary, String& error) {
+    auto owner = lease(); auto* bus = owner.get();
+    const int index = bus ? findMotor(*bus, ref) : -1;
+    if (index < 0) { error = "Motor unavailable or configuration changed"; return false; }
+    Lock lock;
+    if (!lock.held) { error = "Motor service busy"; return false; }
+    for (const auto& cmd : lock.state->commands) {
+        if (ref == cmd.ref && (cmd.phase == Phase::QUEUED || cmd.phase == Phase::RUNNING)) {
+            error = "TRAVEL_COMMAND_PENDING"; return false;
+        }
+    }
+    return bus->confirmMotorTravel(static_cast<uint8_t>(index), token, reference, position, stationary, error);
 }
 #endif

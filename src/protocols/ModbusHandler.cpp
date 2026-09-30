@@ -18,11 +18,24 @@
 #include <LittleFS.h>
 #include <cmath>
 #include <algorithm>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_system.h>
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC && (FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY)
 #include "core/PeriphExecManager.h"
 #endif
 
 #if FASTBEE_ENABLE_MODBUS
+
+namespace {
+struct MotorBusGuard {
+    SemaphoreHandle_t semaphore;
+    bool held;
+    explicit MotorBusGuard(SemaphoreHandle_t value) : semaphore(value),
+        held(value && xSemaphoreTake(value, pdMS_TO_TICKS(2000)) == pdTRUE) {}
+    ~MotorBusGuard() { if (held) xSemaphoreGive(semaphore); }
+};
+}
 
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
@@ -159,6 +172,9 @@ ModbusHandler::ModbusHandler()
         xSemaphoreGive(_oneShotSemaphore);
     }
     _pollStateMutex = xSemaphoreCreateRecursiveMutex();
+#if defined(ARDUINO_ARCH_ESP32)
+    _motorTravelBoot = esp_random();
+#endif
 }
 
 // 3.5 characters at 8N1 is 35 bit-times. The UART receive loops compare
@@ -323,6 +339,9 @@ ModbusHandler::~ModbusHandler() {
 }
 
 bool ModbusHandler::begin(const ModbusConfig& cfg) {
+    MotorBusGuard lock(_oneShotSemaphore);
+    if (!lock.held) return false;
+    _motorTravel.reset();
     if (isInitialized) invalidatePollObservations();
     this->config = cfg;
     sanitizeConfig(this->config);
@@ -483,6 +502,9 @@ bool ModbusHandler::begin(const String& configPath) {
 }
 
 void ModbusHandler::end() {
+    MotorBusGuard lock(_oneShotSemaphore);
+    if (!lock.held) return;
+    _motorTravel.reset();
     if (isInitialized) {
         invalidatePollObservations();
         modbusSerial->end();
@@ -494,6 +516,9 @@ void ModbusHandler::end() {
 // ============ 配置加载/保存 ============
 
 bool ModbusHandler::loadConfigFromFile(const String& configPath) {
+    MotorBusGuard lock(_oneShotSemaphore);
+    if (!lock.held) return false;
+    _motorTravel.reset();
     String actualPath = configPath.isEmpty() ? config.configFile : configPath;
     
     LOG_INFOF("Modbus: Loading config from %s", actualPath.c_str());
@@ -1472,10 +1497,71 @@ const ModbusSubDevice& ModbusHandler::getSubDevice(uint8_t index) const {
     return config.master.devices[index];
 }
 
+void ModbusHandler::_syncMotorTravel() {
+    for (size_t i = 0; i < Protocols::MODBUS_MAX_SUB_DEVICES; ++i) {
+        FastBee::MotorTravelMapping mapping;
+        if (i < config.master.deviceCount) {
+            const auto& dev = config.master.devices[i];
+            // Disabling polling must not allow RAW writes to bypass an axis.
+            mapping.required = !strcmp(dev.deviceType, "motor");
+            if (mapping.required) {
+                const auto& protocol = dev.motorProtocol;
+                mapping.valid = protocol.valid;
+                mapping.finite = protocol.finitePulseMove;
+                mapping.slave = dev.slaveAddress;
+                mapping.readFunction = protocol.readFunction;
+                mapping.writeFunction = protocol.writeFunction;
+                mapping.pulseReadRegister = protocol.readRegister(dev.motorRegs, true);
+                std::copy(dev.motorRegs, dev.motorRegs + 5, mapping.regs);
+                mapping.values[0] = protocol.forwardValue;
+                mapping.values[1] = protocol.reverseValue;
+                mapping.values[2] = protocol.stopValue;
+                mapping.minimum = dev.motorMinPosition;
+                mapping.maximum = dev.motorMaxPosition;
+            }
+        }
+        _motorTravel.configure(i, mapping);
+    }
+}
+
+String ModbusHandler::_motorTravelToken() const {
+    char token[24];
+    snprintf(token, sizeof(token), "%08lx-%08lx", static_cast<unsigned long>(_motorTravelBoot),
+             static_cast<unsigned long>(_motorTravel.generation));
+    return String(token);
+}
+
+bool ModbusHandler::getMotorTravel(uint8_t index, FastBee::MotorTravelAdmission& out, String& token) {
+    if (index >= config.master.deviceCount || !_oneShotSemaphore ||
+        xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    _syncMotorTravel();
+    out = _motorTravel.axes[index];
+    token = _motorTravelToken();
+    xSemaphoreGive(_oneShotSemaphore);
+    return out.mapping.required;
+}
+
+bool ModbusHandler::confirmMotorTravel(uint8_t index, const String& token, bool reference,
+                                     int32_t position, bool stationary, String& error) {
+    if (token.length() != 17) { error = "TRAVEL_STATE_CHANGED"; return false; }
+    if (index >= config.master.deviceCount || !_oneShotSemaphore ||
+        xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(100)) != pdTRUE) {
+        error = "TRAVEL_BUS_BUSY"; return false;
+    }
+    _syncMotorTravel();
+    const char* failure = "TRAVEL_STATE_CHANGED";
+    if (token == _motorTravelToken())
+        failure = _motorTravel.confirm(index, _motorTravel.generation, reference, position, stationary);
+    xSemaphoreGive(_oneShotSemaphore);
+    if (failure) error = failure;
+    return failure == nullptr;
+}
+
 bool ModbusHandler::updateMotorRuntime(uint8_t index, int32_t currentPosition, uint16_t lastPulse) {
     if (index >= config.master.deviceCount) return false;
     ModbusSubDevice& dev = config.master.devices[index];
-    dev.motorCurrentPosition = currentPosition;
+    // Kept for configuration compatibility, never a trusted runtime position.
+    (void)currentPosition;
     dev.motorLastPulse = lastPulse;
     return true;
 }
@@ -1931,6 +2017,7 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, s
         request, reqLen, expectedSlaveAddr,
         rawBuf, sizeof(rawBuf), rawLen, result.exceptionCode,
         timeoutOverride, retriesOverride, bypassSlaveBackoff);
+    result.travelError = result.error == ONESHOT_TRAVEL_BLOCKED ? _lastTravelError : nullptr;
     if (result.error == ONESHOT_SUCCESS) {
         // OneShotResult 是常规短响应兼容容器；count 必须与实际复制量一致。
         const size_t copyLen = rawLen < Protocols::MODBUS_ONESHOT_BUFFER_SIZE
@@ -1967,6 +2054,8 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
     exceptionCode = 0;
     if (diagnostics) diagnostics->reset();
 
+    _lastTravelError = nullptr;
+
     if (!request || reqLen < 4 || reqLen > Protocols::MODBUS_BUFFER_SIZE ||
         !rawResp || rawCap == 0) {
         exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
@@ -1987,6 +2076,16 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         if (diagnostics) diagnostics->reason = "UART_DRIVER_NOT_READY";
         return ONESHOT_NOT_INITIALIZED;
     }
+    if (!_oneShotSemaphore) return ONESHOT_BUSY;
+    if (!validateFrame(request, reqLen)) return ONESHOT_CRC_ERROR;
+    _syncMotorTravel();
+    _lastTravelError = _motorTravel.before(request, reqLen, millis());
+    if (_lastTravelError) {
+        _lastTxHex = ""; _lastRxHex = "";
+        if (diagnostics) diagnostics->reason = _lastTravelError;
+        return ONESHOT_TRAVEL_BLOCKED;
+    }
+    const bool protectedWrite = _motorTravel.protects(request[0]) && !isReadFunctionCode(request[1]);
     // Only poll/read traffic participates in the per-slave breaker. Standard
     // writes and explicit control traffic always reach the bus.
     const bool enforceSlaveBackoff =
@@ -2007,6 +2106,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
     uint8_t maxRetries = retriesOverride != 0xFF
         ? retriesOverride
         : config.master.maxRetries;
+    if (protectedWrite) maxRetries = 0;
 
     // 捕获 TX 帧 hex（用于调试面板显示）—— 低堆时跳过以减少分配压力
     bool heapSafe = FastBee::MemoryBudget::dramFree() > 15000;
@@ -2182,6 +2282,8 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
     if (enforceSlaveBackoff) {
         _recordSlaveOutcome(expectedSlaveAddr, error, millis());
     }
+
+    _motorTravel.after(request, reqLen, rawResp, rawLen, error == ONESHOT_SUCCESS, millis());
 
     return error;
 }

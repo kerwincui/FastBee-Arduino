@@ -327,6 +327,17 @@
         _applyProtocolMotorState(data) {
             var p = this._getMotorDevParams();
             if (!p) return;
+            if (data.travelToken !== undefined) {
+                var previous = this._protocolMotorTravel;
+                var checkbox = document.getElementById('motor-travel-stationary');
+                if (checkbox && (!previous || previous.travelToken !== data.travelToken || previous.motorRef !== data.motorRef)) checkbox.checked = false;
+                this._protocolMotorTravel = Object.assign({ index: this._activeDeviceIdx, generation: this._modbusCtrlGeneration || 0 }, data);
+                var safety = document.getElementById('motor-travel-status');
+                if (safety) safety.textContent = !data.softLimitEnabled ? '软限位未启用，行程尚未标定' :
+                    !data.referenceKnown ? '软限位已配置，参考位置未确认' :
+                    !data.stationaryConfirmed ? '运动结束未确认，停止仍可请求' :
+                    '可能位置范围：' + data.possiblePositionMin + ' ~ ' + data.possiblePositionMax + ' 计数；无实际位置反馈';
+            }
             var decimals = p.motorDecimals || 0, sf = Math.pow(10, decimals);
             ['speed', 'pulse'].forEach(function(param) {
                 var value = data.parametersKnown === false ? '' : data[param] === undefined ? undefined :
@@ -340,6 +351,37 @@
             if (data.lastAcknowledgedAction !== undefined) this._protocolMotorAcknowledged = data.lastAcknowledgedAction;
             this._motorUnknownRunState(data.pending);
         },
+
+        async _confirmMotorTravel(reference) {
+            var data = this._protocolMotorTravel;
+            var index = this._activeDeviceIdx, generation = this._modbusCtrlGeneration || 0;
+            var checkbox = document.getElementById('motor-travel-stationary');
+            var input = document.getElementById('motor-travel-reference');
+            if (!data || data.index !== index || data.generation !== generation || !data.travelToken || !data.motorRef || !data.softLimitEnabled || data.pending) {
+                Notification.error('请先完成行程配置，并等待最新保护状态'); return;
+            }
+            if (!checkbox || !checkbox.checked) { Notification.error('需要现场确认滑台静止、负载安全'); return; }
+            var value = input ? input.value.trim() : '';
+            if (reference && (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < -2147483648 || Number(value) > 2147483647)) {
+                Notification.error('请输入实测的整数控制器计数，不是毫米'); return;
+            }
+            checkbox.checked = false;
+            this._protocolMotorTravel = null;
+            try {
+                var res = await apiPostPriority('/api/modbus/motor/control', {
+                    action: reference ? 'confirmReference' : 'confirmStationary', motorRef: data.motorRef,
+                    travelToken: data.travelToken, stationaryConfirmed: 'true', position: reference ? value : undefined
+                });
+                if (!this._protocolMotorViewCurrent(index, generation)) return;
+                if (!res || !res.success) throw new Error(res && res.error || '确认失败');
+                Notification.success('现场确认已记录；启动前仍需重新读取脉冲');
+            } catch (error) {
+                if (this._protocolMotorViewCurrent(index, generation)) Notification.error(error.message || '确认失败，请刷新保护状态');
+            }
+        },
+
+        confirmMotorReference() { return this._confirmMotorTravel(true); },
+        confirmMotorStationary() { return this._confirmMotorTravel(false); },
 
         _getMotorDevParams() {
             var idx = this._activeDeviceIdx;

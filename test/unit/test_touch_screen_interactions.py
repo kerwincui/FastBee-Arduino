@@ -66,6 +66,15 @@ c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
 assert(has("停止已应答，运动状态未知")&&has("参数未读回")&&!has("已停止"));
 s.motorCommandSuccess=false;strcpy(s.value,"reverse");c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
 assert(has("反转未确认")&&!has("反转已应答"));
+s.motorKnown=true;s.motorPulse=1600;s.motorSoftLimitEnabled=false;
+c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(has("软限位未启用")&&!has("软限位仅按指令估算"));
+s.motorSoftLimitEnabled=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(!has("软限位未启用")&&has("参考位置未确认"));
+s.motorReferenceKnown=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(has("运动结束未确认"));
+s.motorStationaryConfirmed=true;s.motorForwardReady=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(has("可能位置范围保护")&&!has("参考位置未确认"));
 }
 '''.replace('TYPES', types).replace('DRAW', draw), [ROOT / 'test/mocks', ROOT / 'include'])
 
@@ -244,6 +253,75 @@ int main(){
  assert(!r.actionHitTest(snapshot,card,forward.x+forward.w+5,forward.y+20));
 }
 '''.replace('__TYPES__', types).replace('__ACTION_METHOD__', action), [ROOT / 'test/mocks', ROOT / 'include'])
+
+    def test_motor_colors_do_not_bypass_start_guards_or_block_stop(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
+        types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
+        content = block(runtime, 'bool handleContentTap(')
+        motor = block(content, 'if (card.visualType == ScreenVisualType::MOTOR_CONTROL)')
+        self.compile_run(r'''
+#include <Arduino.h>
+#include <array>
+#include <cassert>
+#include "screen/ScreenInteraction.h"
+using namespace FastBee::Screen;
+__TYPES__
+size_t strlcpy(char* target,const char* source,size_t size){
+ const size_t length=std::strlen(source);
+ if(size){const auto count=std::min(length,size-1);std::memcpy(target,source,count);target[count]=0;}
+ return length;
+}
+struct ScreenPanelManager {
+ std::vector<std::string> commands;bool ok=true;
+ static ScreenPanelManager& instance(){static ScreenPanelManager manager;return manager;}
+ bool dispatchAction(const char*,ScreenActionKind kind,const String& action,uint32_t& operation,String& error,const char*){
+  assert(kind==ScreenActionKind::MOTOR_COMMAND);commands.emplace_back(action.c_str());
+  if(!ok){error="TEST_REJECTED";return false;}operation=commands.size();return true;
+ }
+};
+bool tap(ScreenPanelCardSnapshot& card,const ScreenPixelRect& bounds,uint16_t x,uint16_t y,
+         char* confirmationCardId,size_t confirmationCapacity,ScreenControlSession* controlSession,uint32_t now)
+__MOTOR__
+int main(){
+ const ScreenPixelRect bounds{16,16,448,400};const ScreenMotorLayout layout{bounds};
+ ScreenPanelCardSnapshot ready;ready.motorKnown=true;ready.motorPulse=1600;
+ ready.motorSoftLimitEnabled=ready.motorReferenceKnown=ready.motorStationaryConfirmed=true;
+ ready.motorForwardReady=ready.motorReverseReady=true;
+ ready.motorPulseInput=1600;ready.motorSpeedInput=50;ready.pending=false;
+ std::strcpy(ready.id,"motor");std::strcpy(ready.controlRef,"motor.8");
+ auto& manager=ScreenPanelManager::instance();ScreenControlSession session;session.approve(ready.controlRef,100);
+ auto invoke=[&](ScreenPanelCardSnapshot& card,ScreenPixelRect button,char* confirmation,ScreenControlSession* active){
+  assert(tap(card,bounds,button.x+button.w/2,button.y+button.h/2,confirmation,41,active,101));
+ };
+ for(unsigned mask=1;mask<64;++mask){
+  auto blocked=ready;blocked.pending=mask&1;blocked.motorKnown=!(mask&2);
+  if(mask&4)blocked.motorPulse=0;
+  blocked.motorSpeedDirty=mask&8;blocked.motorPulseDirty=mask&16;
+  if(mask&32)blocked.motorForwardReady=blocked.motorReverseReady=false;
+  for(unsigned direction=0;direction<2;++direction){
+   auto card=blocked;char confirmation[41]{};manager.commands.clear();
+   invoke(card,layout.direction(direction),confirmation,&session);
+   assert(manager.commands.empty()&&card.error[0]&&!confirmation[0]);
+  }
+  char confirmation[41]{};manager.commands.clear();
+  invoke(blocked,layout.stop(),confirmation,nullptr);
+  assert(manager.commands.size()==1&&manager.commands[0]=="stop"&&blocked.pending&&!confirmation[0]);
+ }
+ for(unsigned direction=0;direction<2;++direction){
+  auto card=ready;char confirmation[41]{};manager.commands.clear();
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  assert(manager.commands.empty()&&card.motorConfirmAction==direction+1&&!std::strcmp(confirmation,"motor"));
+  card=ready;confirmation[0]=0;invoke(card,layout.direction(direction),confirmation,&session);
+  assert(manager.commands.size()==1&&manager.commands[0]==(direction?"reverse":"forward")&&card.pending);
+  invoke(card,layout.direction(1-direction),confirmation,&session);assert(manager.commands.size()==1);
+  invoke(card,layout.stop(),confirmation,&session);assert(manager.commands.size()==2&&manager.commands.back()=="stop");
+ }
+ auto card=ready;char confirmation[41]{};manager.commands.clear();manager.ok=false;
+ invoke(card,layout.direction(0),confirmation,&session);
+ assert(!card.pending&&!std::strcmp(card.error,"TEST_REJECTED"));
+}
+'''.replace('__TYPES__', types).replace('__MOTOR__', motor), [ROOT / 'test/mocks', ROOT / 'include'])
 
     def test_trend_motor_and_timeout_taps(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')

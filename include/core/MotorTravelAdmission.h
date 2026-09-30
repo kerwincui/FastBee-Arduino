@@ -126,9 +126,11 @@ struct MotorTravelAdmission {
         if (!mapping.required || !request || requestLength < 8 || request[0] != mapping.slave) return;
         const uint8_t fc = request[1];
         if (fc >= 1 && fc <= 4) {
+            if (!transportSuccess) { invalidate(); return; }
             if (fc != mapping.readFunction || word(request + 2) != mapping.pulseReadRegister || word(request + 4) != 1) return;
             pulseKnown = transportSuccess && reply && replyLength == 7 && reply[0] == mapping.slave && reply[1] == fc && reply[2] == 2;
             if (pulseKnown) { pulse = word(reply + 3); pulseAt = now; }
+            else invalidate();
             return;
         }
         bool echo = transportSuccess && reply && replyLength == 8;

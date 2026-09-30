@@ -108,6 +108,8 @@ struct ScreenPanelCardSnapshot {
     uint32_t selectedHistorySequence = 0;
     bool motorKnown = false, motorSpeedDirty = false, motorPulseDirty = false;
     bool motorCommandKnown = false, motorCommandSuccess = false, motorSoftLimitEnabled = false;
+    bool motorReferenceKnown = false, motorStationaryConfirmed = false;
+    bool motorForwardReady = false, motorReverseReady = false;
     uint32_t motorCommandUpdatedMs = 0;
     char motorReadError[128]{};
     char error[97]{};

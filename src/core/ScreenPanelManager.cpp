@@ -1960,6 +1960,9 @@ void ScreenPanelManager::appendState(JsonObject out) const {
             item["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
             item["motorReadError"] = JsonString(card.motorReadError);
             item["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
+            item["motorReferenceKnown"] = card.motorReferenceKnown;
+            item["motorStationaryConfirmed"] = card.motorStationaryConfirmed;
+            item["motorForwardReady"] = card.motorForwardReady; item["motorReverseReady"] = card.motorReverseReady;
         }
         item["historyCount"] = card.historyCount;
         item["historyStale"] = card.historyStale;
@@ -1978,6 +1981,9 @@ void ScreenPanelManager::appendState(JsonObject out) const {
             state["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
             state["motorReadError"] = JsonString(card.motorReadError);
             state["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
+            state["motorReferenceKnown"] = card.motorReferenceKnown;
+            state["motorStationaryConfirmed"] = card.motorStationaryConfirmed;
+            state["motorForwardReady"] = card.motorForwardReady; state["motorReverseReady"] = card.motorReverseReady;
         }
         state["value"] = JsonString(card.value);
         state["unit"] = JsonString(card.unit);
@@ -2061,6 +2067,10 @@ void updatePanelDynamicFields(ScreenPanelCardSnapshot& out,
     updatePanelSnapshotField(out.motorCommandUpdatedMs, fresh.motorCommandUpdatedMs);
     updatePanelSnapshotField(out.motorReadError, fresh.motorReadError);
     updatePanelSnapshotField(out.motorSoftLimitEnabled, fresh.motorSoftLimitEnabled);
+    updatePanelSnapshotField(out.motorReferenceKnown, fresh.motorReferenceKnown);
+    updatePanelSnapshotField(out.motorStationaryConfirmed, fresh.motorStationaryConfirmed);
+    updatePanelSnapshotField(out.motorForwardReady, fresh.motorForwardReady);
+    updatePanelSnapshotField(out.motorReverseReady, fresh.motorReverseReady);
     updatePanelSnapshotField(out.unit, fresh.unit);
     updatePanelSnapshotField(out.value, fresh.value);
     updatePanelSnapshotField(out.error, fresh.error);
@@ -2349,6 +2359,9 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                         cardOut.motorCommandKnown = motor.commandKnown; cardOut.motorCommandSuccess = motor.commandSuccess;
                         cardOut.motorCommandUpdatedMs = motor.commandUpdatedMs;
                         cardOut.motorSoftLimitEnabled = motor.softLimitEnabled;
+                        cardOut.motorReferenceKnown = motor.referenceKnown;
+                        cardOut.motorStationaryConfirmed = motor.stationaryConfirmed;
+                        cardOut.motorForwardReady = motor.forwardReady; cardOut.motorReverseReady = motor.reverseReady;
                         copyText(cardOut.motorReadError, String(motor.readError));
                         cardOut.pending = motor.pending; cardOut.updatedMs = motor.updatedMs;
                         cardOut.quality = motor.known ? ScreenValueQuality::GOOD : ScreenValueQuality::UNKNOWN;

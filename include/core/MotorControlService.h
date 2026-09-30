@@ -18,6 +18,10 @@ struct MotorControlState {
     char lastAcknowledgedAction[16]{};
     uint32_t acknowledgedMs = 0;
     bool softLimitEnabled = false;
+    bool referenceKnown = false, stationaryConfirmed = false;
+    bool forwardReady = false, reverseReady = false;
+    int32_t possiblePositionMin = 0, possiblePositionMax = 0;
+    char travelToken[24]{}, travelReason[64]{};
     int32_t minPosition = 0, maxPosition = 0, estimatedPosition = 0;
 };
 
@@ -38,6 +42,8 @@ public:
                     const String& requestId, uint32_t budgetMs, uint16_t timeoutMs,
                     uint32_t& operationId, String& error);
     bool state(const String& ref, MotorControlState& out);
+    bool confirmTravel(const String& ref, const String& token, bool reference,
+                       int32_t position, bool stationary, String& error);
     String referenceForSlave(uint8_t slave);
 private:
     MotorControlService() = default;
@@ -54,5 +60,6 @@ inline bool MotorControlService::submit(const String&, const String&, int, const
 inline bool MotorControlService::operation(uint32_t, JsonObject, bool* busy) { if (busy) *busy = true; return false; }
 inline bool MotorControlService::submitRule(const String&, const String&, int, const String&, uint32_t, uint16_t, uint32_t&, String& error) { error = "Motor control unavailable"; return false; }
 inline bool MotorControlService::state(const String&, MotorControlState&) { return false; }
+inline bool MotorControlService::confirmTravel(const String&, const String&, bool, int32_t, bool, String& error) { error = "Motor control unavailable"; return false; }
 inline String MotorControlService::referenceForSlave(uint8_t) { return String(); }
 #endif

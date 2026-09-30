@@ -60,6 +60,11 @@ static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* requ
     int httpCode = 500;
     
     switch (result.error) {
+        case ONESHOT_TRAVEL_BLOCKED:
+            errorCode = "MOTOR_TRAVEL_BLOCKED";
+            errorMsg = result.travelError ? result.travelError : "TRAVEL_BLOCKED";
+            httpCode = 409;
+            break;
         case ONESHOT_TIMEOUT:
             errorCode = "TIMEOUT";
             errorMsg = "Slave not responding (timeout)";
@@ -111,51 +116,6 @@ static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* requ
 }
 
 // 鑾峰彇 ModbusHandler 鎸囬拡骞舵牎楠?Master 妯″紡锛屽け璐ユ椂鍙戦€侀敊璇搷搴?
-struct MotorSoftLimitDecision {
-    bool enabled = false;
-    bool allowed = true;
-    uint16_t pulse = 0;
-    int32_t nextPosition = 0;
-    const char* reason = "";
-};
-
-static MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
-                                                     const String& action,
-                                                     int requestedValue) {
-    MotorSoftLimitDecision d;
-    d.nextPosition = dev.motorCurrentPosition;
-    if (!dev.hasMotorSoftLimit() || (action != "forward" && action != "reverse")) {
-        return d;
-    }
-
-    d.enabled = true;
-    int32_t desiredPulse = requestedValue > 0 ? requestedValue : 0;
-    if (desiredPulse <= 0 && dev.motorLastPulse > 0) desiredPulse = dev.motorLastPulse;
-    if (desiredPulse <= 0 && dev.motorMoveStep > 0) desiredPulse = dev.motorMoveStep;
-    if (desiredPulse <= 0) {
-        d.allowed = false;
-        d.reason = "motor_soft_limit_requires_pulse";
-        return d;
-    }
-
-    int32_t room = (action == "forward")
-        ? (dev.motorMaxPosition - dev.motorCurrentPosition)
-        : (dev.motorCurrentPosition - dev.motorMinPosition);
-    if (room <= 0) {
-        d.allowed = false;
-        d.reason = (action == "forward") ? "motor_at_right_limit" : "motor_at_left_limit";
-        return d;
-    }
-
-    if (desiredPulse > room) desiredPulse = room;
-    if (desiredPulse > 65535) desiredPulse = 65535;
-    d.pulse = static_cast<uint16_t>(desiredPulse);
-    d.nextPosition = (action == "forward")
-        ? dev.motorCurrentPosition + desiredPulse
-        : dev.motorCurrentPosition - desiredPulse;
-    return d;
-}
-
 static ProtocolManager::ModbusHandlerLease getModbusMaster(
     WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     ProtocolManager* pm = ctx->protocolManager;
@@ -1683,40 +1643,6 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     }
     
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    const ModbusSubDevice* motorDevPtr = nullptr;
-    MotorSoftLimitDecision limitDecision;
-    if (devIdx >= 0) {
-        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
-        if (String(dev.deviceType) == "motor") {
-            motorDevPtr = &dev;
-            String motorAction;
-            if (regAddr == dev.motorRegs[0]) motorAction = "forward";
-            else if (regAddr == dev.motorRegs[1]) motorAction = "reverse";
-            if (!motorAction.isEmpty()) {
-                limitDecision = evaluateMotorSoftLimit(dev, motorAction, value);
-                if (!limitDecision.allowed) {
-                    JsonDocument doc;
-                    doc["success"] = false;
-                    doc["errorCode"] = "MOTOR_SOFT_LIMIT";
-                    doc["error"] = "motor_soft_limit";
-                    JsonObject data = doc["data"].to<JsonObject>();
-                    data["currentPosition"] = dev.motorCurrentPosition;
-                    data["minPosition"] = dev.motorMinPosition;
-                    data["maxPosition"] = dev.motorMaxPosition;
-                    HandlerUtils::sendJsonStream(request, doc);
-                    return;
-                }
-                if (limitDecision.enabled && dev.motorRegs[4] != 0) {
-                    OneShotResult pulseResult = modbus->writeRegisterOnce(slaveAddr, dev.motorRegs[4], limitDecision.pulse, true);
-                    if (pulseResult.error != ONESHOT_SUCCESS) {
-                        sendOneShotError(ctx, request, pulseResult);
-                        return;
-                    }
-                    value = 1;
-                }
-            }
-        }
-    }
 
     OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
@@ -1725,13 +1651,6 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     }
     
     // MQTT 涓婃姤瀵勫瓨鍣ㄥ啓鍏ョ粨鏋?
-    if (devIdx >= 0 && motorDevPtr) {
-        if (regAddr == motorDevPtr->motorRegs[4]) {
-            modbus->updateMotorRuntime((uint8_t)devIdx, motorDevPtr->motorCurrentPosition, value);
-        } else if (limitDecision.enabled) {
-            modbus->updateMotorRuntime((uint8_t)devIdx, limitDecision.nextPosition, limitDecision.pulse);
-        }
-    }
 
     if (devIdx >= 0) {
         const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
@@ -1830,7 +1749,9 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
             ctx->sendError(request, 404, "Motor unavailable or configuration changed"); return;
         }
         MotorControlState state;
-        motors.state(ref, state);
+        if (!motors.state(ref, state)) {
+            ctx->sendError(request, 503, "Motor state temporarily busy"); return;
+        }
         data["motorRef"] = ref; data["motionKnown"] = false;
         data["parametersKnown"] = state.known; data["pending"] = state.pending;
         data["precision"] = state.precision; data["updatedMs"] = state.updatedMs;
@@ -1841,7 +1762,35 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         data["error"] = state.error; data["readError"] = state.readError;
         data["softLimitEnabled"] = state.softLimitEnabled; data["positionFeedback"] = false;
         data["minPosition"] = state.minPosition; data["maxPosition"] = state.maxPosition;
-        data["estimatedPosition"] = state.estimatedPosition;
+        data["referenceKnown"] = state.referenceKnown;
+        data["stationaryConfirmed"] = state.stationaryConfirmed;
+        data["forwardReady"] = state.forwardReady; data["reverseReady"] = state.reverseReady;
+        data["travelToken"] = state.travelToken; data["travelReason"] = state.travelReason;
+        if (state.referenceKnown) {
+            data["possiblePositionMin"] = state.possiblePositionMin;
+            data["possiblePositionMax"] = state.possiblePositionMax;
+        }
+        data["estimatedPosition"] = nullptr;
+    } else if (action == "confirmReference" || action == "confirmStationary") {
+        const String ref = ctx->getParamValue(request, "motorRef", "");
+        const String token = ctx->getParamValue(request, "travelToken", "");
+        const bool stationary = ctx->getParamValue(request, "stationaryConfirmed", "") == "true";
+        const bool reference = action == "confirmReference";
+        int32_t position = 0;
+        if (reference) {
+            const String raw = ctx->getParamValue(request, "position", "");
+            char* end = nullptr;
+            const long long parsed = strtoll(raw.c_str(), &end, 10);
+            if (raw.isEmpty() || !end || end == raw.c_str() || *end || parsed < INT32_MIN || parsed > INT32_MAX) {
+                ctx->sendBadRequest(request, "Measured position must be an int32 controller count"); return;
+            }
+            position = static_cast<int32_t>(parsed);
+        }
+        String error;
+        if (!motors.confirmTravel(ref, token, reference, position, stationary, error)) {
+            ctx->sendError(request, 409, error); return;
+        }
+        data["confirmed"] = true; data["motionKnown"] = false;
     } else if (action == "operation") {
         const int id = ctx->getParamInt(request, "operationId", 0);
         bool busy = false;
