@@ -20,8 +20,16 @@ inline void convertFromJson(JsonVariantConst value, String& output) {
 static uint32_t clockMs = 1000;
 static uint32_t historyMillis() { return clockMs; }
 static SemaphoreHandle_t historyCreateMutex() { return reinterpret_cast<void*>(1); }
+static bool readerContention = false;
+static unsigned blockingPublications = 0;
+static BaseType_t historyTakeMutex(SemaphoreHandle_t, TickType_t timeout) {
+    if (!readerContention) return pdTRUE;
+    if (timeout != portMAX_DELAY) return pdFALSE;
+    readerContention = false; ++blockingPublications; return pdTRUE;
+}
 #define millis historyMillis
 #define xSemaphoreCreateMutex historyCreateMutex
+#define xSemaphoreTake historyTakeMutex
 #define LOGGER_SYSTEM_H
 struct HistoryLogger { void warning(const char*) {} } historyLogger;
 #define LOGGER historyLogger
@@ -31,6 +39,7 @@ struct HistoryLogger { void warning(const char*) {} } historyLogger;
 #include "../../../src/core/PointHistory.cpp"
 #undef millis
 #undef xSemaphoreCreateMutex
+#undef xSemaphoreTake
 
 using FastBee::PointHistory;
 using FastBee::PointHistorySeriesSnapshot;
@@ -38,6 +47,7 @@ static const std::string dataPath = PointHistory::DATA_FILE;
 static const std::string configPath = PointHistory::CONFIG_FILE;
 
 static std::unique_ptr<PointHistory> fresh(bool erase = true) {
+    readerContention = false;
     if (erase) LittleFS = {};
     auto history = std::unique_ptr<PointHistory>(new PointHistory());
     assert(history->initialize());
@@ -243,6 +253,65 @@ static void capacity() {
     assert(history->configure(false, {}, error));
     assert(history->_series.capacity() == 0);
 }
+static void config_transaction() {
+    auto history = fresh(); enable(*history); sample(*history, 1);
+    const uint32_t revision = history->_configRevision;
+    const auto before = parsed(configPath);
+    String error;
+    LittleFS.failOpenWrite = configPath + ".tmp";
+    assert(!history->configure(false, {}, error, true, &revision));
+    assert(history->isEnabled() && snapshot(*history).count == 1);
+    assert(history->_configRevision == revision && !history->_configWriteInProgress);
+    assert(parsed(configPath)["revision"] == before["revision"]);
+    LittleFS.failOpenWrite.clear();
+    bool concurrentRejected = false;
+    LittleFS.duringWrite = [&] {
+        String concurrentError;
+        concurrentRejected = !history->configure(false, {}, concurrentError, false, &revision);
+    };
+    assert(history->configure(true, {"sensor.temp"}, error, true, &revision));
+    assert(concurrentRejected && history->_configRevision == revision + 1);
+    LittleFS.duringWrite = {};
+    assert(!history->configure(false, {}, error, true, &revision));
+    assert(error == "History configuration revision conflict");
+    auto restarted = fresh(false);
+    assert(restarted->_configRevision == revision + 1 && restarted->isEnabled());
+    assert(restarted->_sourceAllowlist.size() == 1);
+    LittleFS.files[configPath + ".bak"] = LittleFS.files[configPath];
+    LittleFS.files.erase(configPath);
+    LittleFS.files[configPath + ".tmp"] = "{\"schemaVersion\":1,\"enabled\":false,\"revision\":99,\"sourceAllowlist\":[]}";
+    restarted = fresh(false);
+    assert(restarted->isEnabled() && restarted->_configRevision == revision + 1);
+    assert(parsed(configPath)["revision"] == revision + 1);
+
+    // Backup is readable but restoring its primary filename fails. A later
+    // failed commit must retain that sole committed generation for reboot.
+    LittleFS.files[configPath + ".bak"] = LittleFS.files[configPath];
+    LittleFS.files.erase(configPath);
+    LittleFS.failRenameFrom = configPath + ".bak";
+    LittleFS.failRenameTo = configPath;
+    restarted = fresh(false);
+    assert(restarted->isEnabled() && !LittleFS.files.count(configPath));
+    const std::string committedBackup = LittleFS.files.at(configPath + ".bak");
+    LittleFS.failRenameFrom = configPath + ".tmp";
+    assert(!restarted->configure(false, {}, error));
+    assert(restarted->isEnabled() && restarted->_configRevision == revision + 1);
+    assert(LittleFS.files.at(configPath + ".bak") == committedBackup);
+    LittleFS.failRenameFrom.clear(); LittleFS.failRenameTo.clear();
+    auto recovered = fresh(false);
+    assert(recovered->isEnabled() && recovered->_configRevision == revision + 1);
+
+    // Storage completed while a reader briefly owns the mutex. Both the data
+    // flush and config publisher must complete ownership release, not wedge
+    // the service permanently behind an in-progress flag after 50 ms.
+    sample(*recovered, 2);
+    LittleFS.duringWrite = [] { readerContention = true; };
+    assert(recovered->flushNow() && !recovered->_flushInProgress);
+    const unsigned published = blockingPublications;
+    LittleFS.duringWrite = [] { readerContention = true; };
+    assert(recovered->configure(true, {"sensor.temp"}, error));
+    assert(!recovered->_configWriteInProgress && blockingPublications == published + 1);
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const std::string name(argv[1]);
@@ -254,6 +323,7 @@ int main(int argc, char** argv) {
     else if (name == "power_interruption") power_interruption();
     else if (name == "revision") revision();
     else if (name == "capacity") capacity();
+    else if (name == "config_transaction") config_transaction();
     else failed_write(name);
     return 0;
 }

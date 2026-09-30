@@ -9,6 +9,8 @@
 #include <array>
 #include <algorithm>
 #include <cstring>
+#include <new>
+#include <esp_heap_caps.h>
 #include <freertos/task.h>
 
 namespace {
@@ -22,11 +24,25 @@ struct Service : MotorCommands::Queue {
     // slots remain available even when that cache is full.
     std::array<MotorState, 8> states{};
 };
-Service& service() { static Service s; return s; }
+Service* service() {
+    // This task-only history cache is neither DMA data nor a task stack.
+    // Prefer PSRAM so panel controls do not consume weather's internal reserve.
+    static Service* s = []() -> Service* {
+        void* storage = nullptr;
+#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
+        if (psramFound()) storage = heap_caps_malloc(sizeof(Service), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+        if (!storage) storage = heap_caps_malloc(sizeof(Service), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        return storage ? new (storage) Service() : nullptr;
+    }();
+    return s;
+}
 struct Lock {
+    Service* state;
     bool held;
-    explicit Lock(TickType_t timeout = pdMS_TO_TICKS(100)) : held(service().mutex && xSemaphoreTake(service().mutex, timeout) == pdTRUE) {}
-    ~Lock() { if (held) xSemaphoreGive(service().mutex); }
+    explicit Lock(TickType_t timeout = pdMS_TO_TICKS(100)) : state(service()),
+        held(state && state->mutex && xSemaphoreTake(state->mutex, timeout) == pdTRUE) {}
+    ~Lock() { if (held) xSemaphoreGive(state->mutex); }
 };
 ProtocolManager::ModbusHandlerLease lease() {
     auto* fw = FastBeeFramework::getInstance();
@@ -39,6 +55,15 @@ String reference(const ModbusSubDevice& dev) {
     add(reinterpret_cast<const uint8_t*>(dev.sensorId), strlen(dev.sensorId));
     add(reinterpret_cast<const uint8_t*>(dev.motorRegs), sizeof(dev.motorRegs));
     add(&dev.motorDecimals, sizeof(dev.motorDecimals));
+    const auto& p = dev.motorProtocol;
+    if (p.configured || !p.legacyMapping(dev.motorRegs)) {
+        // Hash individual words, never struct padding. Explicit profiles also
+        // replace legacy rule-value semantics, so they require a fresh binding.
+        const uint16_t words[] = {static_cast<uint16_t>(p.configured), static_cast<uint16_t>(p.valid), p.readFunction, p.writeFunction,
+            p.readRegister(dev.motorRegs, false), p.readRegister(dev.motorRegs, true),
+            p.forwardValue, p.reverseValue, p.stopValue, static_cast<uint16_t>(p.finitePulseMove)};
+        add(reinterpret_cast<const uint8_t*>(words), sizeof(words));
+    }
     char text[48]; snprintf(text, sizeof(text), "motor.%u.%08lx", dev.slaveAddress, static_cast<unsigned long>(hash));
     return String(text);
 }
@@ -60,29 +85,99 @@ bool transactionTimeout(Command& cmd, uint16_t& timeout) {
     timeout = static_cast<uint16_t>(std::min<int32_t>(timeout ? timeout : 1000, remaining - 2000));
     return true;
 }
+bool cancelledByStop(Command& cmd) {
+    Lock lock;
+    if (!lock.held) {
+        strlcpy(cmd.error, "Motor service busy; command not started", sizeof(cmd.error));
+        return true;
+    }
+    for (const auto& queued : lock.state->commands) {
+        if (queued.phase == Phase::QUEUED && !strcmp(queued.ref, cmd.ref) &&
+            !strcmp(queued.action, "stop")) {
+            strlcpy(cmd.error, "Cancelled by stop", sizeof(cmd.error));
+            return true;
+        }
+    }
+    return false;
+}
+const char* busErrorName(const OneShotResult& result, bool read) {
+    switch (result.error) {
+        case ONESHOT_SUCCESS: return read && result.count != 1 ? "SHORT_REPLY" : "OK";
+        case ONESHOT_TIMEOUT: return "TIMEOUT";
+        case ONESHOT_CRC_ERROR: return "CRC_ERROR";
+        case ONESHOT_EXCEPTION: return "EXCEPTION";
+        case ONESHOT_NOT_INITIALIZED: return "NOT_INITIALIZED";
+        case ONESHOT_BUSY: return "BUSY";
+        default: return "UNKNOWN_ERROR";
+    }
+}
+void describeResult(char* out, size_t size, const char* action, uint8_t slave,
+                    uint8_t fc, uint16_t reg, const OneShotResult& result, bool read) {
+    if (result.error == ONESHOT_EXCEPTION)
+        snprintf(out, size, "%s s%u FC%02X r%u EXCEPTION(0x%02X)", action, slave, fc, reg, result.exceptionCode);
+    else snprintf(out, size, "%s s%u FC%02X r%u %s", action, slave, fc, reg, busErrorName(result, read));
+}
+OneShotResult writeMotor(ModbusHandler& bus, const ModbusSubDevice& dev,
+                          uint16_t reg, uint16_t value, uint16_t timeout) {
+    if (dev.motorProtocol.writeFunction == 16)
+        return bus.writeMultipleRegistersOnce(dev.slaveAddress, reg, 1, &value, true, timeout, 0);
+    return bus.writeRegisterOnce(dev.slaveAddress, reg, value, true, timeout, 0);
+}
 void execute(Command& cmd) {
     auto owner = lease();
     auto* bus = owner.get();
     const int index = bus ? findMotor(*bus, String(cmd.ref)) : -1;
     if (index < 0) { strlcpy(cmd.error, "Motor unavailable or configuration changed", sizeof(cmd.error)); return; }
     const auto dev = bus->getSubDevice(static_cast<uint8_t>(index));
+    const auto& protocol = dev.motorProtocol;
+    if (!protocol.valid) { strlcpy(cmd.error, "Invalid motor protocol; control blocked", sizeof(cmd.error)); return; }
     uint16_t timeout = 0;
     if (!transactionTimeout(cmd, timeout)) return;
     const bool forward = !strcmp(cmd.action, "forward"), reverse = !strcmp(cmd.action, "reverse");
     const bool move = forward || reverse;
     uint16_t reg = 0, value = static_cast<uint16_t>(cmd.value);
     if (!strcmp(cmd.action, "readStatus")) {
-        auto speed = bus->readRegistersOnce(dev.slaveAddress, 3, dev.motorRegs[3], 1, true, timeout, 0);
+        const uint16_t speedReg = protocol.readRegister(dev.motorRegs, false);
+        const uint16_t pulseReg = protocol.readRegister(dev.motorRegs, true);
+        auto speed = bus->readRegistersOnce(dev.slaveAddress, protocol.readFunction, speedReg, 1, true, timeout, 0);
+        if (cancelledByStop(cmd)) return;
         if (!transactionTimeout(cmd, timeout)) return;
-        auto pulse = bus->readRegistersOnce(dev.slaveAddress, 3, dev.motorRegs[4], 1, true, timeout, 0);
-        cmd.success = speed.error == ONESHOT_SUCCESS && pulse.error == ONESHOT_SUCCESS;
+        auto pulse = bus->readRegistersOnce(dev.slaveAddress, protocol.readFunction, pulseReg, 1, true, timeout, 0);
+        cmd.success = speed.error == ONESHOT_SUCCESS && speed.count == 1 &&
+                      pulse.error == ONESHOT_SUCCESS && pulse.count == 1;
         cmd.known = cmd.success;
-        if (cmd.success) { cmd.speed = speed.data[0]; cmd.pulse = pulse.data[0]; }
-        else strlcpy(cmd.error, "Motor status unavailable", sizeof(cmd.error));
+        if (cmd.success) {
+            cmd.speed = speed.data[0]; cmd.pulse = pulse.data[0];
+            bus->updateMotorRuntime(static_cast<uint8_t>(index), dev.motorCurrentPosition, cmd.pulse);
+        }
+        else {
+            char speedError[60], pulseError[60];
+            describeResult(speedError, sizeof(speedError), "speed", dev.slaveAddress, protocol.readFunction, speedReg, speed, true);
+            describeResult(pulseError, sizeof(pulseError), "pulse", dev.slaveAddress, protocol.readFunction, pulseReg, pulse, true);
+            snprintf(cmd.error, sizeof(cmd.error), "%s; %s", speedError, pulseError);
+        }
         return;
     }
-    if (move) { reg = dev.motorRegs[forward ? 0 : 1]; value = cmd.legacyValue ? value : 1; }
-    else if (!strcmp(cmd.action, "stop")) { reg = dev.motorRegs[2]; value = cmd.legacyValue ? value : 1; }
+    if (move) {
+        if (!protocol.finitePulseMove) {
+            strlcpy(cmd.error, "Finite-pulse motion not confirmed; start blocked", sizeof(cmd.error)); return;
+        }
+        MotorControlState feedback;
+        if (!MotorControlService::instance().state(String(cmd.ref), feedback) || !feedback.known) {
+            strlcpy(cmd.error, "Motor parameters unconfirmed; start blocked", sizeof(cmd.error));
+            return;
+        }
+        if (!feedback.pulse) {
+            strlcpy(cmd.error, "Positive finite pulse required; start blocked", sizeof(cmd.error));
+            return;
+        }
+        if (cancelledByStop(cmd)) return;
+        reg = dev.motorRegs[forward ? 0 : 1];
+        value = cmd.legacyValue && !protocol.configured ? value : forward ? protocol.forwardValue : protocol.reverseValue;
+    }
+    else if (!strcmp(cmd.action, "stop")) {
+        reg = dev.motorRegs[2]; value = cmd.legacyValue && !protocol.configured ? value : protocol.stopValue;
+    }
     else reg = dev.motorRegs[!strcmp(cmd.action, "setSpeed") ? 3 : 4];
     uint16_t pulse = dev.motorLastPulse;
     int32_t nextPosition = dev.motorCurrentPosition;
@@ -92,18 +187,24 @@ void execute(Command& cmd) {
         int32_t desired = cmd.legacyValue && cmd.value > 1 ? cmd.value : pulse ? pulse : dev.motorMoveStep;
         if (room <= 0 || desired <= 0) { strlcpy(cmd.error, "Motor soft limit or pulse not configured", sizeof(cmd.error)); return; }
         pulse = static_cast<uint16_t>(std::min<int64_t>(65535, std::min<int64_t>(desired, room)));
-        auto result = bus->writeRegisterOnce(dev.slaveAddress, dev.motorRegs[4], pulse, true, timeout, 0);
-        if (result.error != ONESHOT_SUCCESS) { strlcpy(cmd.error, "Pulse setting not confirmed; motor not started", sizeof(cmd.error)); return; }
+        auto result = writeMotor(*bus, dev, dev.motorRegs[4], pulse, timeout);
+        if (result.error != ONESHOT_SUCCESS) {
+            describeResult(cmd.error, sizeof(cmd.error), "pulse/start blocked", dev.slaveAddress, protocol.writeFunction, dev.motorRegs[4], result, false);
+            return;
+        }
         nextPosition += forward ? pulse : -static_cast<int32_t>(pulse);
-        value = 1;
+        value = forward ? protocol.forwardValue : protocol.reverseValue;
     }
     // A lost reply is ambiguous for edge-triggered motor registers. Never
     // inherit the master's automatic retry policy for these commands.
+    if (move && cancelledByStop(cmd)) return;
     if (!transactionTimeout(cmd, timeout)) return;
-    auto result = bus->writeRegisterOnce(dev.slaveAddress, reg, value, true, timeout, 0);
+    auto result = writeMotor(*bus, dev, reg, value, timeout);
     cmd.success = result.error == ONESHOT_SUCCESS;
     if (!cmd.success) {
-        strlcpy(cmd.error, "Command result unconfirmed; no automatic retry", sizeof(cmd.error));
+        char detail[80];
+        describeResult(detail, sizeof(detail), cmd.action, dev.slaveAddress, protocol.writeFunction, reg, result, false);
+        snprintf(cmd.error, sizeof(cmd.error), "%s; unconfirmed, no retry", detail);
         return;
     }
     if (!strcmp(cmd.action, "setPulse")) pulse = value;
@@ -140,9 +241,9 @@ void worker(void*) {
         {
             Lock lock(portMAX_DELAY);
             if (lock.held) {
-                selected = service().selectNext();
-                if (selected >= 0) { service().commands[selected].phase = Phase::RUNNING; cmd = service().commands[selected]; }
-                else if (millis() - lastWork >= 60000U) { service().worker = nullptr; retire = true; }
+                selected = lock.state->selectNext();
+                if (selected >= 0) { lock.state->commands[selected].phase = Phase::RUNNING; cmd = lock.state->commands[selected]; }
+                else if (millis() - lastWork >= 60000U) { lock.state->worker = nullptr; retire = true; }
             }
         }
         if (selected < 0) {
@@ -155,18 +256,29 @@ void worker(void*) {
         {
             Lock lock(portMAX_DELAY);
             if (lock.held) {
-                service().commands[selected] = cmd;
-                for (auto& state : service().states) if (!strcmp(state.ref, cmd.ref)) {
+                lock.state->commands[selected] = cmd;
+                for (auto& state : lock.state->states) if (!strcmp(state.ref, cmd.ref)) {
                     if (!strcmp(cmd.action, "readStatus")) {
                         state.value.known = cmd.known;
                         if (cmd.known) { state.value.speed = cmd.speed; state.value.pulse = cmd.pulse; state.value.updatedMs = cmd.finishedMs; }
+                        strlcpy(state.value.readError, cmd.error, sizeof(state.value.readError));
                     } else {
-                        strlcpy(state.value.lastAction, cmd.action, sizeof(state.value.lastAction));
+                        if (cmd.success && (!strcmp(cmd.action, "forward") ||
+                            !strcmp(cmd.action, "reverse") || !strcmp(cmd.action, "stop"))) {
+                            strlcpy(state.value.lastAcknowledgedAction, cmd.action, sizeof(state.value.lastAcknowledgedAction));
+                            state.value.acknowledgedMs = cmd.finishedMs;
+                        }
+                        if (state.value.operationId == cmd.id) {
+                            state.value.commandKnown = true;
+                            state.value.commandSuccess = cmd.success;
+                            state.value.commandUpdatedMs = cmd.finishedMs;
+                            strlcpy(state.value.error, cmd.error, sizeof(state.value.error));
+                        }
                         // Parameter acknowledgement does not refresh a full readback.
                         if (cmd.success && !strcmp(cmd.action, "setSpeed")) state.value.speed = static_cast<uint16_t>(cmd.value);
                         if (cmd.success && !strcmp(cmd.action, "setPulse")) state.value.pulse = static_cast<uint16_t>(cmd.value);
+                        if (!strcmp(cmd.action, "setSpeed") || !strcmp(cmd.action, "setPulse")) state.value.known = false;
                     }
-                    strlcpy(state.value.error, cmd.error, sizeof(state.value.error));
                 }
             }
         }
@@ -196,9 +308,13 @@ void MotorControlService::appendChoices(JsonArray out) {
         JsonObject item = out.add<JsonObject>();
         item["id"] = reference(dev); item["controlRef"] = item["id"];
         item["label"] = dev.name; item["kind"] = "control"; item["type"] = "motor";
-        item["group"] = "motor"; item["available"] = true; item["slaveAddress"] = dev.slaveAddress;
+        item["group"] = "motor"; item["available"] = dev.motorProtocol.valid; item["slaveAddress"] = dev.slaveAddress;
+        item["finitePulseMove"] = dev.motorProtocol.finitePulseMove;
         item["rangeMin"] = 0; item["rangeMax"] = 65535;
         item["precision"] = dev.motorDecimals; item["motionFeedback"] = false;
+        item["softLimitEnabled"] = dev.hasMotorSoftLimit();
+        item["minPosition"] = dev.motorMinPosition; item["maxPosition"] = dev.motorMaxPosition;
+        item["positionFeedback"] = false;
     }
 }
 bool MotorControlService::submit(const String& ref, const String& action, int value,
@@ -222,15 +338,21 @@ bool MotorControlService::submitImpl(const String& ref, const String& action, in
     // The scale belongs to the validated device identity, never the layout's
     // free-form display precision. Cache it even before the first readback.
     uint8_t precision = 0;
+    bool softLimitEnabled = false;
+    int32_t minPosition = 0, maxPosition = 0, estimatedPosition = 0;
     {
         auto owner = lease(); auto* bus = owner.get();
         const int index = bus ? findMotor(*bus, ref) : -1;
         if (index < 0) { error = "Motor unavailable or configuration changed"; return false; }
         precision = std::min<uint8_t>(bus->getSubDevice(static_cast<uint8_t>(index)).motorDecimals, 6);
+        const auto& dev = bus->getSubDevice(static_cast<uint8_t>(index));
+        softLimitEnabled = dev.hasMotorSoftLimit();
+        minPosition = dev.motorMinPosition; maxPosition = dev.motorMaxPosition;
+        estimatedPosition = dev.motorCurrentPosition;
     }
     Lock lock;
     if (!lock.held) { error = "Motor service busy"; return false; }
-    auto& s = service();
+    auto& s = *lock.state;
     int slot = -1; const char* queueError = nullptr;
     if (!s.reserve(ref.c_str(), action.c_str(), value, requestId.c_str(), millis(), slot, operationId, queueError)) {
         error = queueError; return false;
@@ -246,7 +368,12 @@ bool MotorControlService::submitImpl(const String& ref, const String& action, in
     }
     // An unavailable optional display cache must never veto a stop request.
     if (!state && !stop) { error = "Motor state capacity reached"; return false; }
-    if (state) state->value.precision = precision;
+    if (state) {
+        state->value.precision = precision;
+        state->value.softLimitEnabled = softLimitEnabled;
+        state->value.minPosition = minPosition; state->value.maxPosition = maxPosition;
+        state->value.estimatedPosition = estimatedPosition;
+    }
     if (!s.worker && xTaskCreate(worker, "motor_control", 6144, nullptr, 1, &s.worker) != pdPASS) {
         s.worker = nullptr; error = "Motor worker unavailable"; return false;
     }
@@ -258,14 +385,22 @@ bool MotorControlService::submitImpl(const String& ref, const String& action, in
     c.timeoutMs = timeoutMs; c.legacyValue = legacyValue;
     strlcpy(c.ref, ref.c_str(), sizeof(c.ref)); strlcpy(c.action, action.c_str(), sizeof(c.action));
     strlcpy(c.requestId, requestId.c_str(), sizeof(c.requestId)); c.value = value; c.phase = Phase::QUEUED;
+    if (state && !read) {
+        state->value.operationId = c.id; state->value.commandKnown = false;
+        state->value.commandSuccess = false; state->value.error[0] = 0;
+        strlcpy(state->value.lastAction, action.c_str(), sizeof(state->value.lastAction));
+    }
     operationId = c.id; xTaskNotifyGive(s.worker); return true;
 }
-bool MotorControlService::operation(uint32_t id, JsonObject out) {
-    Lock lock; if (!lock.held) return false;
-    for (const auto& c : service().commands) if (c.id == id && c.phase != Phase::EMPTY) {
+bool MotorControlService::operation(uint32_t id, JsonObject out, bool* busy) {
+    Lock lock;
+    if (busy) *busy = !lock.held;
+    if (!lock.held) return false;
+    for (const auto& c : lock.state->commands) if (c.id == id && c.phase != Phase::EMPTY) {
         out["operationId"] = id; out["pending"] = c.phase != Phase::DONE;
         out["success"] = c.phase == Phase::DONE && c.success; out["action"] = c.action;
         out["error"] = c.error; out["motionKnown"] = false;
+        if (c.phase == Phase::DONE && !strcmp(c.action, "readStatus")) out["parametersKnown"] = c.known;
         if (c.known) { out["speed"] = c.speed; out["pulse"] = c.pulse; }
         return true;
     }
@@ -273,10 +408,14 @@ bool MotorControlService::operation(uint32_t id, JsonObject out) {
 }
 bool MotorControlService::state(const String& ref, MotorControlState& out) {
     Lock lock; if (!lock.held) return false;
-    for (const auto& item : service().states) if (ref == item.ref) {
+    for (const auto& item : lock.state->states) if (ref == item.ref) {
         out = item.value; out.pending = false;
         if (millis() - out.updatedMs > 15000U) out.known = false;
-        for (const auto& cmd : service().commands) if (ref == cmd.ref && (cmd.phase == Phase::QUEUED || cmd.phase == Phase::RUNNING)) out.pending = true;
+        // Display busy state represents a control request. Polling readback
+        // has its own operation status and must not disable the controls.
+        for (const auto& cmd : lock.state->commands)
+            if (ref == cmd.ref && strcmp(cmd.action, "readStatus") &&
+                (cmd.phase == Phase::QUEUED || cmd.phase == Phase::RUNNING)) out.pending = true;
         return true;
     }
     return false;

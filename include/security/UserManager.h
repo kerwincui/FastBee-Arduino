@@ -113,7 +113,7 @@ public:
     
     // ============ IUserManager 接口实现 ============
     
-    bool addUser(const String& username, const String& password) override;
+    bool addUser(const String& username, const String& password, const String& description = "") override;
     bool deleteUser(const String& username) override;
     bool updatePassword(const String& username, const String& newPassword) override;
     bool validateUser(const String& username, const String& password) override;
@@ -127,7 +127,7 @@ public:
     void unlockAccount(const String& username) override;
     bool changePassword(const String& username, const String& oldPassword, const String& newPassword) override;
     bool resetPassword(const String& username, const String& newPassword) override;
-    bool updateUser(const String& username, const String& newPassword, bool enabled) override;
+    bool updateUser(const String& username, const String& newPassword, bool enabled, const String* description = nullptr) override;
     size_t getUserCount() override;
 
     // ============ 用户查询 ============
@@ -198,6 +198,9 @@ public:
     uint32_t getCookieMaxAge() const { return config.cookieMaxAge; }
     bool isCookieHttpOnly() const { return config.cookieHttpOnly; }
     bool isCookieSecure() const { return config.cookieSecure; }
+    uint8_t getMinPasswordLength() const override { return config.minPasswordLength; }
+    uint8_t getMaxPasswordLength() const override { return config.maxPasswordLength; }
+    bool requiresStrongPasswords() const override { return config.requireStrongPasswords; }
     uint8_t getMaxLoginAttempts() const { return config.maxLoginAttempts; }
     uint32_t getLoginLockoutTime() const { return config.loginLockoutTime; }
     bool allowsMultipleSessions() const { return config.allowMultipleSessions; }
@@ -210,7 +213,7 @@ public:
      * @brief 更新密码策略配置（4个UI可配置字段）
      * @details 更新后自动持久化到 users.json
      */
-    void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+    bool updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
                               uint8_t minPwdLen, bool requireStrong);
 
     // ============ 工具方法 ============

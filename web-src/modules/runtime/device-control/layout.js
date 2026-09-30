@@ -123,6 +123,8 @@
 
             var maxBottom = 0;
             if (saved && typeof saved === 'object') {
+                var restored = [];
+                var added = [];
                 for (var i = 0; i < cards.length; i++) {
                     var key = cards[i].getAttribute('data-dc-sort-key');
                     var pos = saved[key];
@@ -135,38 +137,54 @@
                         if (pos.h) {
                             cards[i].style.height = pos.h + 'px';
                         }
+                        restored.push(cards[i]);
                     } else {
-                        cards[i].style.left = '0px';
-                        cards[i].style.top = maxBottom + 'px';
+                        added.push(cards[i]);
                     }
-                    var bottom = parseInt(cards[i].style.top) + cards[i].offsetHeight;
-                    if (bottom > maxBottom) maxBottom = bottom;
                 }
+                // Restore every saved card before finding space for new peer cards.
+                this._dcAutoGridLayout(flow, added, restored);
             } else {
                 this._dcAutoGridLayout(flow, cards);
-                for (var i = 0; i < cards.length; i++) {
-                    var bottom = parseInt(cards[i].style.top || 0) + cards[i].offsetHeight;
-                    if (bottom > maxBottom) maxBottom = bottom;
-                }
+            }
+            for (var i = 0; i < cards.length; i++) {
+                var bottom = parseInt(cards[i].style.top || 0) + cards[i].offsetHeight;
+                if (bottom > maxBottom) maxBottom = bottom;
             }
             flow.style.minHeight = (maxBottom + 20) + 'px';
         },
 
-        _dcAutoGridLayout: function(flow, cards) {
+        _dcAutoGridLayout: function(flow, cards, occupied) {
             var gap = 15;
             var colWidth = 340 + gap;
-            var cols = Math.max(1, Math.floor(flow.clientWidth / colWidth));
+            var cols = Math.max(1, Math.floor((flow.clientWidth + gap) / colWidth));
+            var isExecution = function(card) { return card.classList.contains('dc-execution-card'); };
+            var separateExecutions = cols >= 3 && Array.prototype.some.call(cards, isExecution) &&
+                Array.prototype.every.call(cards, function(card) {
+                    var span = Math.ceil((card.offsetWidth + gap) / colWidth);
+                    return isExecution(card) ? span === 1 : span < cols;
+                });
             var colTops = [];
             for (var c = 0; c < cols; c++) colTops.push(0);
+            (occupied || []).forEach(function(card) {
+                var first = Math.max(0, Math.floor(card.offsetLeft / colWidth));
+                var end = Math.min(cols, Math.ceil((card.offsetLeft + card.offsetWidth + gap) / colWidth));
+                for (var c = first; c < end; c++) {
+                    colTops[c] = Math.max(colTops[c], card.offsetTop + card.offsetHeight + gap);
+                }
+            });
 
             for (var i = 0; i < cards.length; i++) {
-                var key = cards[i].getAttribute('data-dc-sort-key');
-                var isWide = (key === 'health' || key === 'monitor-data');
-                var span = (isWide && cols >= 2) ? 2 : 1;
-
-                var bestCol = 0;
+                // CSS controls card widths (including the Modbus inventory).
+                // Reserve every column covered by the measured, unscaled box.
+                var span = Math.max(1, Math.ceil((cards[i].offsetWidth + gap) / colWidth));
+                span = Math.min(cols, span);
+                var executionColumn = separateExecutions && isExecution(cards[i]);
+                var firstCol = executionColumn ? cols - 1 : 0;
+                var endCol = separateExecutions ? (executionColumn ? cols : cols - 1) : cols;
+                var bestCol = firstCol;
                 var bestTop = Infinity;
-                for (var c = 0; c <= cols - span; c++) {
+                for (var c = firstCol; c <= endCol - span; c++) {
                     var maxTop = 0;
                     for (var s = 0; s < span; s++) {
                         if (colTops[c + s] > maxTop) maxTop = colTops[c + s];

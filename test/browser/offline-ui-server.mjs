@@ -8,7 +8,7 @@ import { genericPeripheralTypes, genericPeripherals } from './generic-peripheral
 
 const browserDir = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(browserDir, '..', '..');
-const wwwRoot = join(repositoryRoot, 'data', 'www');
+const wwwRoot = process.env.OFFLINE_UI_WEB_ROOT ? resolve(process.env.OFFLINE_UI_WEB_ROOT) : join(repositoryRoot, 'data', 'www');
 // request-governor.js reserves localhost/127.0.0.1 for physical-device mDNS.
 // Another loopback address keeps all browser API calls on this mock origin.
 const host = process.env.OFFLINE_UI_HOST || '127.0.0.2';
@@ -231,7 +231,7 @@ function screenWeatherPublic() {
 }
 let screenPanelRevision = 7;
 let screenPanelConfig = structuredClone(initialScreenPanelConfig);
-let historyConfig = { enabled: true, sourceAllowlist: ['modbus.boiler.temperature', 'legacy.missing'], maxSources: 16, writesPaused: false };
+let historyConfig = { revision: 0, enabled: true, sourceAllowlist: ['modbus.boiler.temperature', 'legacy.missing'], maxSources: 16, writesPaused: false };
 let historyStatus = { persisted: true, sourceCount: 2 };
 let remoteResources = structuredClone(initialRemoteResources);
 let requestCounts = {};
@@ -242,7 +242,7 @@ function resetSmartPanelState() {
   screenWeather = { id: 'main', enabled: true, location: 'shanghai', intervalSeconds: 1800, apiKey: 'offline-secret' };
   screenPanelRevision = 7;
   screenPanelConfig = structuredClone(initialScreenPanelConfig);
-  historyConfig = { enabled: true, sourceAllowlist: ['modbus.boiler.temperature', 'legacy.missing'], maxSources: 16, writesPaused: false };
+  historyConfig = { revision: 0, enabled: true, sourceAllowlist: ['modbus.boiler.temperature', 'legacy.missing'], maxSources: 16, writesPaused: false };
   historyStatus = { persisted: true, sourceCount: 2 };
   remoteResources = structuredClone(initialRemoteResources);
   requestCounts = {};
@@ -377,6 +377,7 @@ function responseFor(pathname, searchParams = new URLSearchParams(), targetProfi
           ssid: '',
           staSSID: '',
           ipAddress: '',
+          macAddress: '02:00:00:00:00:01',
           rssi: 0,
           uptime: 0,
         },
@@ -747,6 +748,10 @@ const server = createServer(async (request, response) => {
     const body = await readPayload(request);
     const requests = Array.isArray(body.requests) ? body.requests : [];
     const results = requests.map((item) => {
+      if (String(item?.method || 'GET').toUpperCase() !== 'GET') {
+        requestCounts['POST /api/batch-write-attempt'] = (requestCounts['POST /api/batch-write-attempt'] || 0) + 1;
+        return { success: false, error: 'Batch only accepts read requests', code: 400 };
+      }
       const itemUrl = new URL(String(item?.url || '/'), `http://${host}:${port}`);
       return responseFor(itemUrl.pathname, itemUrl.searchParams, targetProfile);
     });
@@ -814,8 +819,17 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === '/api/periph-exec/history/config' && method === 'POST') {
     const body = await readPayload(request);
+    if (!Number.isInteger(body.expectedRevision)) {
+      sendJson(response, 400, { success: false, message: 'expectedRevision is required' }, method);
+      return;
+    }
+    if (body.expectedRevision !== historyConfig.revision) {
+      sendJson(response, 409, { success: false, message: 'History configuration revision conflict' }, method);
+      return;
+    }
     historyConfig = {
       ...historyConfig,
+      revision: historyConfig.revision + 1,
       enabled: body.enabled === true,
       sourceAllowlist: Array.isArray(body.sourceAllowlist) ? body.sourceAllowlist.map(String).slice(0, 16) : [],
     };

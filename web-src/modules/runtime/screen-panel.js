@@ -6,7 +6,8 @@
     if (typeof AppState === 'undefined') return;
 
     var helpers = AppState._screenPanelModelHelpers;
-    var STORAGE_KEY = 'fastbee.screenPanel.draft.v1';
+    function screenElement(id) { return document.getElementById(id); }
+    var STORAGE_KEY = 'fastbee.screenPanel.draft.v2.' + (typeof location !== 'undefined' ? location.host : 'device');
     var HISTORY_LIMIT = 20;
     var DEFAULT_LIMITS = { maxPages: 8, maxCards: 24, maxCardsPerPage: 12 };
     var SOURCE_KINDS = helpers.SOURCE_KINDS;
@@ -59,13 +60,13 @@
                 choiceCapabilities: {},
                 selectedPageId: 'home',
                 selectedCardId: '',
-                previewPageId: 'home',
                 undo: [],
                 redo: [],
                 dirty: false,
                 draftTimer: null,
                 stateTimer: null,
                 pointer: null,
+                orderPointer: null,
                 loaded: false
             };
             return this._spModel;
@@ -97,7 +98,7 @@
         },
 
         _spSetMessage(message, tone) {
-            var element = document.getElementById('sp-page-message');
+            var element = screenElement('sp-page-message');
             if (!element) return;
             element.textContent = message || '';
             element.classList.toggle('fb-hidden', !message);
@@ -106,7 +107,7 @@
         },
 
         _spSetLayoutError(message) {
-            var element = document.getElementById('sp-layout-error');
+            var element = screenElement('sp-layout-error');
             if (!element) return;
             element.textContent = message || '';
             element.classList.toggle('fb-hidden', !message);
@@ -115,16 +116,23 @@
         _spPersistDraftSoon() {
             var model = this._spEnsureModel();
             if (model.draftTimer) clearTimeout(model.draftTimer);
+            if (!model.deviceMac) return;
+            var deviceMac = model.deviceMac, storageKey = STORAGE_KEY + '.' + deviceMac;
             model.draftTimer = setTimeout(function() {
                 model.draftTimer = null;
+                if (model.deviceMac !== deviceMac) return;
                 try {
-                    if (!model.dirty) {
-                        localStorage.removeItem(STORAGE_KEY);
+                    if (!model.dirty && !model.historyDirty) {
+                        localStorage.removeItem(storageKey);
                         return;
                     }
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    localStorage.setItem(storageKey, JSON.stringify({
+                        deviceMac: deviceMac,
                         baseRevision: model.revision,
-                        config: model.config,
+                        baseConfig: model.savedConfig ? sanitizeConfig(model.savedConfig, model.choices) : null,
+                        historyRevision: model.historyConfig && model.historyConfig.revision,
+                        historyDraft: model.historyDraft,
+                        config: sanitizeConfig(model.config, model.choices),
                         selectedPageId: model.selectedPageId,
                         selectedCardId: model.selectedCardId,
                         updatedAt: Date.now()
@@ -137,20 +145,40 @@
             var model = this._spEnsureModel();
             if (model.draftTimer) clearTimeout(model.draftTimer);
             model.draftTimer = null;
-            try { localStorage.removeItem(STORAGE_KEY); } catch (_) { /* ignore */ }
+            if (model.deviceMac) try { localStorage.removeItem(STORAGE_KEY + '.' + model.deviceMac); } catch (_) { /* ignore */ }
+        },
+
+        _spRecoverDraft() {
+            var model = this._spEnsureModel(), draft = model.recoverableDraft;
+            if (!draft) return;
+            model.config = draft.config; model.savedConfig = draft.baseConfig; model.revision = draft.baseRevision;
+            model.configConflict = draft.conflict; model.selectedPageId = draft.selectedPageId; model.selectedCardId = '';
+            if (draft.historyDraft && model.historyConfig && draft.historyRevision === model.historyConfig.revision) {
+                model.historyDraft = draft.historyDraft; model.historyDirty = !helpers.configEqual(model.historyDraft, model.historyConfig);
+            }
+            this._spMarkDirty();
+            if (draft.conflict) this._spSetMessage('草稿已恢复，但与设备配置有冲突。请先导出草稿，再核对设备配置。', 'error');
         },
 
         _spRestoreDraft(serverConfig, revision) {
+            var deviceMac = this._spEnsureModel().deviceMac;
+            if (!deviceMac) return null;
             try {
-                var raw = localStorage.getItem(STORAGE_KEY);
+                var raw = localStorage.getItem(STORAGE_KEY + '.' + deviceMac);
                 if (!raw) return null;
                 var draft = JSON.parse(raw);
-                if (!draft || !draft.config || finiteNumber(draft.baseRevision, -1) !== finiteNumber(revision, 0)) return null;
-                var normalized = normalizeConfig(draft.config);
+                if (!draft || draft.deviceMac !== deviceMac || !draft.config) return null;
+                var sameRevision = finiteNumber(draft.baseRevision, -1) === finiteNumber(revision, 0);
+                if (!sameRevision && !draft.baseConfig) return null;
+                var remote = sanitizeConfig(serverConfig), base = sameRevision ? remote : draft.baseConfig;
+                var merged = helpers.mergeConfig(base, draft.config, remote);
                 return {
-                    config: normalized,
+                    config: normalizeConfig(merged.config),
+                    baseConfig: normalizeConfig(merged.conflicts.length ? base : remote),
+                    baseRevision: merged.conflicts.length ? draft.baseRevision : revision,
+                    conflict: merged.conflicts.length ? { revision: revision, config: clone(serverConfig), paths: merged.conflicts } : null,
                     selectedPageId: draft.selectedPageId,
-                    selectedCardId: draft.selectedCardId
+                    selectedCardId: draft.selectedCardId, historyRevision: draft.historyRevision, historyDraft: draft.historyDraft
                 };
             } catch (_) {
                 return null;
@@ -166,7 +194,8 @@
 
         _spMarkDirty(options) {
             var model = this._spEnsureModel();
-            model.dirty = JSON.stringify(model.config) !== JSON.stringify(model.savedConfig);
+            model.config.settings.bottomNavPageIds = helpers.normalizeBottomNavPageIds(model.config.settings, model.config.pages);
+            model.dirty = !helpers.configEqual(sanitizeConfig(model.config, model.choices), sanitizeConfig(model.savedConfig, model.choices));
             this._spPersistDraftSoon();
             this._spRenderDirtyState();
             if (!options || options.render !== false) this._spRenderAll();
@@ -180,13 +209,13 @@
 
         _spRenderDirtyState() {
             var model = this._spEnsureModel();
-            var dirty = document.getElementById('sp-dirty-state');
+            var dirty = screenElement('sp-dirty-state');
             if (dirty) {
-                dirty.textContent = (model.dirty || model.weatherDirty) ? '有未保存修改' : '已保存';
-                dirty.classList.toggle('is-dirty', model.dirty || model.weatherDirty);
+                dirty.textContent = (model.dirty || model.weatherDirty || model.historyDirty) ? '有未保存修改' : '已保存';
+                dirty.classList.toggle('is-dirty', model.dirty || model.weatherDirty || model.historyDirty);
             }
-            var undo = document.getElementById('sp-undo');
-            var redo = document.getElementById('sp-redo');
+            var undo = screenElement('sp-undo');
+            var redo = screenElement('sp-redo');
             if (undo) undo.disabled = model.undo.length === 0;
             if (redo) redo.disabled = model.redo.length === 0;
         },
@@ -194,18 +223,16 @@
         _spApplyStatus() {
             var model = this._spEnsureModel();
             var meta = displayStateMeta(model.application);
-            var badge = document.getElementById('sp-runtime-badge');
-            var summary = document.getElementById('sp-apply-summary');
+            var badge = screenElement('sp-runtime-badge');
+            var summary = screenElement('sp-apply-summary');
             if (badge) {
                 badge.className = 'status-badge ' + meta.className;
                 badge.textContent = meta.pendingRestart && meta.text !== '待重启' ? meta.text + ' · 待重启' : meta.text;
             }
             if (summary) {
-                var applied = model.application && (model.application.appliedRevision || model.application.revision);
-                summary.textContent = meta.reason || (applied !== undefined ? ('设备已应用版本 ' + applied) : '可离线编辑');
+                summary.textContent = meta.reason || '';
+                summary.classList.toggle('fb-hidden', !meta.reason);
             }
-            var stateSummary = document.getElementById('sp-preview-state-summary');
-            if (stateSummary) stateSummary.textContent = meta.reason || ('面板状态：' + meta.text);
         },
 
         _spApplySurfaceTheme(surface, config, page) {
@@ -229,8 +256,9 @@
             surface.dataset.outputWidth = String(output.width);
             surface.dataset.outputHeight = String(output.height);
             surface.dataset.rotation = String(rotation);
-            var canvasSize = document.getElementById('sp-canvas-size');
+            var canvasSize = screenElement('sp-canvas-size');
             if (canvasSize && surface.id === 'sp-editor-canvas') {
+                surface.parentElement?.style.setProperty('--sp-ratio', String(output.width / output.height));
                 canvasSize.textContent = '逻辑尺寸 ' + logical.width + ' × ' + logical.height +
                     (rotation ? (' · 输出 ' + output.width + ' × ' + output.height + ' · 旋转 ' + rotation + '°') : '');
             }
@@ -268,53 +296,6 @@
             return String(value);
         },
 
-        _spLineSvg(card) {
-            var history = this._spEnsureModel().histories[card.sourceRef] || {};
-            var points = Array.isArray(history.points) ? history.points.slice(-10) : [];
-            var values = points.map(function(point) { return Number(point.value); }).filter(Number.isFinite);
-            if (values.length < 2) return '<div class="sp-card-meta">暂无历史记录</div>';
-            var min = Math.min.apply(Math, values);
-            var max = Math.max.apply(Math, values);
-            if (min === max) { min -= 1; max += 1; }
-            var coords = values.map(function(value, index) {
-                var x = values.length === 1 ? 50 : index * 100 / (values.length - 1);
-                var y = 92 - (value - min) * 78 / (max - min);
-                return x.toFixed(1) + ',' + y.toFixed(1);
-            }).join(' ');
-            return '<svg class="sp-line-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
-                '<line x1="0" y1="92" x2="100" y2="92"></line><line x1="0" y1="53" x2="100" y2="53"></line>' +
-                '<polyline points="' + coords + '"></polyline></svg>';
-        },
-
-        _spBarSeriesContent(card, state) {
-            var choices = this._spEnsureModel().choices;
-            var sources = (card.sourceRefs || []).slice(0, 4);
-            var units = sources.map(function(ref) {
-                var series = (state.series || []).find(function(item) { return item.sourceRef === ref; }) || {};
-                var choice = choices.find(function(item) { return choiceRef(item) === ref; });
-                return String(series.unit !== undefined ? series.unit : choice && choice.unit || '');
-            });
-            return '<div class="sp-bar-series">' + sources.map((ref, index) => {
-                var series = (state.series || []).find(function(item) { return item.sourceRef === ref; }) || {};
-                var choice = choices.find(function(item) { return choiceRef(item) === ref; });
-                var quality = String(series.quality || 'unknown').toLowerCase();
-                var labels = { good: '正常', stale: '已过期', offline: '离线', error: '错误', unknown: '未知' };
-                if (!labels[quality]) quality = 'unknown';
-                var matchingUnit = units[index] === units[0];
-                var value = series.value;
-                var valid = matchingUnit && quality !== 'unknown' && value !== undefined && value !== null &&
-                    typeof value !== 'boolean' && String(value).trim() !== '' && Number.isFinite(Number(value));
-                var min = finiteNumber(card.min, 0), max = finiteNumber(card.max, 100);
-                var percent = valid && max > min ? clamp((Number(value) - min) * 100 / (max - min), 0, 100) : 0;
-                var status = matchingUnit ? labels[quality] : '单位不一致';
-                if (matchingUnit && Number(series.updatedMs) > 0) status += ' · T+' + Math.floor((Number(series.updatedMs) >>> 0) / 1000) + 's';
-                return '<div class="sp-bar-series-row" data-quality="' + (matchingUnit ? quality : 'error') + '">' +
-                    '<div class="sp-bar-series-label"><span>' + escapeHtml(series.label || choice && choiceLabel(choice) || ref) + '</span><strong>' +
-                    escapeHtml(valid ? this._spFormatValue(value, card.precision) + (units[index] ? ' ' + units[index] : '') : '--') + '</strong></div>' +
-                    '<div class="sp-bar-track"><div class="sp-bar-fill" style="--sp-progress:' + percent.toFixed(1) + '%"></div></div>' +
-                    '<div class="sp-card-meta">' + escapeHtml(status) + '</div></div>';
-            }).join('') + '</div>';
-        },
 
         _spApplyCardRect(element, card, page, config, heightScale) {
             var logical = this._spReferenceSize(page, config);
@@ -337,17 +318,21 @@
             this._spApplySurfaceSize(surface, page, config);
             surface.classList.toggle('is-canvas-mode', editing && page.layoutMode === 'canvas');
             surface.innerHTML = '';
-            var footerRatio = editing ? 0 : 72 / rotatedSize(this._spReferenceSize(page, config), page.rotation).height;
-            if (!editing) {
+            var footerRatio = Math.min(0.3, 72 / rotatedSize(this._spReferenceSize(page, config), page.rotation).height);
+            {
                 var footer = document.createElement('nav'); footer.className = 'sp-device-footer';
                 footer.style.height = (footerRatio * 100) + '%';
                 var index = config.pages.indexOf(page);
-                var navPages = config.pages.slice(0, 5);
+                var ids = [config.settings.homePageId].concat(config.settings.bottomNavPageIds || []).concat(config.pages.map(function(item) { return item.id; }));
+                var navPages = ids.filter(function(id, index) { return ids.indexOf(id) === index; }).map(function(id) { return config.pages.find(function(item) { return item.id === id; }); }).filter(Boolean);
+                var more = config.pages.length > 5;
+                navPages = navPages.slice(0, more ? 4 : 5);
+                if (more) navPages.push({ id: '__more__', title: '更多' });
                 footer.style.gridTemplateColumns = 'repeat(' + Math.max(1, navPages.length) + ', minmax(0, 1fr))';
                 footer.innerHTML = navPages.map(function(item) {
                     var active = item.id === page.id;
                     return '<button type="button"' + (active ? ' class="is-active" aria-current="page"' : '') +
-                        ' data-sp-preview-page="' + escapeHtml(item.id) + '">' + escapeHtml(item.title) + '</button>';
+                        ' data-sp-editor-page="' + escapeHtml(item.id) + '">' + escapeHtml(item.title) + '</button>';
                 }).join('');
                 surface.appendChild(footer);
             }
@@ -385,109 +370,57 @@
 
         _spRenderPageTabs() {
             var model = this._spEnsureModel();
-            var container = document.getElementById('sp-page-tabs');
-            if (!container) return;
-            container.innerHTML = '';
-            model.config.pages.forEach(function(page) {
-                var button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'sp-page-tab' + (page.id === model.selectedPageId ? ' is-active' : '');
-                button.dataset.pageId = page.id;
-                button.setAttribute('role', 'tab');
-                button.setAttribute('aria-selected', page.id === model.selectedPageId ? 'true' : 'false');
-                button.textContent = page.title;
-                if (page.id === model.config.settings.homePageId) {
-                    var home = document.createElement('span');
-                    home.className = 'sp-home-mark';
-                    home.textContent = '首页';
-                    button.appendChild(home);
-                }
-                container.appendChild(button);
-            });
+            var container = screenElement('sp-page-tabs');
+            if (!container || model.orderPointer) return;
+            container.innerHTML = model.config.pages.map(function(page) {
+                var active = page.id === model.selectedPageId;
+                return '<button type="button" class="sp-page-tab' + (active ? ' is-active' : '') + '" data-page-id="' + escapeHtml(page.id) +
+                    '" role="tab" aria-selected="' + active + '" title="拖动调整页面顺序"><span class="sp-sort-handle" aria-hidden="true">↕</span>' + escapeHtml(page.title) +
+                    (page.id === model.config.settings.homePageId ? '<span class="sp-home-mark">首页</span>' : '') + '</button>';
+            }).join('');
             var currentIndex = model.config.pages.findIndex(function(page) { return page.id === model.selectedPageId; });
-            var moveUp = document.getElementById('sp-page-up');
-            var moveDown = document.getElementById('sp-page-down');
+            var moveUp = screenElement('sp-page-up');
+            var moveDown = screenElement('sp-page-down');
             if (moveUp) moveUp.disabled = currentIndex <= 0;
             if (moveDown) moveDown.disabled = currentIndex < 0 || currentIndex >= model.config.pages.length - 1;
         },
 
-        _spRenderPreviewPagination(pageId, config) {
-            var model = this._spEnsureModel();
-            config = config || model.config;
-            var index = Math.max(0, config.pages.findIndex(function(page) { return page.id === pageId; }));
-            var pagination = document.getElementById('sp-preview-pagination');
-            var previous = document.getElementById('sp-preview-prev');
-            var next = document.getElementById('sp-preview-next');
-            if (previous) previous.disabled = index <= 0;
-            if (next) next.disabled = index >= config.pages.length - 1;
-            if (!pagination) return;
-            pagination.innerHTML = '';
-            if (config.pages.length <= 1) return;
-            config.pages.forEach(function(page, pageIndex) {
-                var dot = document.createElement('button');
-                dot.type = 'button';
-                dot.className = 'sp-page-dot' + (pageIndex === index ? ' is-active' : '');
-                dot.dataset.pageId = page.id;
-                dot.setAttribute('aria-label', '预览 ' + page.title);
-                pagination.appendChild(dot);
-            });
-        },
-
-        _spPreviewConfig() {
-            var source = document.getElementById('sp-preview-source');
-            var model = this._spEnsureModel();
-            return source && source.value === 'saved' ? model.savedConfig : model.config;
-        },
-
         _spRenderPreview() {
             var model = this._spEnsureModel();
-            var config = this._spPreviewConfig();
-            var page = config.pages.find(function(item) { return item.id === model.previewPageId; }) ||
-                config.pages.find(function(item) { return item.id === config.settings.homePageId; }) || config.pages[0];
-            if (!page) return;
-            model.previewPageId = page.id;
-            var frame = document.getElementById('sp-preview-canvas');
-            this._spRenderSurface(frame, page, false, config);
-            this._spRenderPreviewPagination(page.id, config);
-            var mode = document.getElementById('sp-preview-mode');
-            var source = document.getElementById('sp-preview-source');
-            if (mode) mode.textContent = source && source.value === 'saved' ? '显示设备已保存配置' : (model.dirty ? '显示当前未保存草稿' : '显示当前配置');
+            var page = this._spCurrentPage();
+            if (!page || model.pointer || model.orderPointer) return;
+            this._spRenderSurface(screenElement('sp-editor-canvas'), page, true);
             this._spLoadVisibleHistories(page);
         },
 
         _spRenderSettings() {
             var model = this._spEnsureModel();
             var settings = model.config.settings;
-            var setValue = function(id, value) { var el = document.getElementById(id); if (el) el.value = value; };
+            var setValue = function(id, value) { var el = screenElement(id); if (el) el.value = value; };
             setValue('sp-theme-id', settings.themeId || 'dark');
             setValue('sp-background-id', settings.background && settings.background.presetId || 'solid');
             setValue('sp-brightness', finiteNumber(settings.brightnessPercent, 70));
-            setValue('sp-idle-sleep', finiteNumber(settings.idleSleepSeconds, 120));
-            var output = document.getElementById('sp-brightness-output');
+            var output = screenElement('sp-brightness-output');
             var continuous = model.capabilities.brightnessContinuous !== false;
-            var brightness = document.getElementById('sp-brightness'); if (brightness) brightness.disabled = !continuous;
-            if (output) output.textContent = continuous ? (Number(settings.brightnessPercent) === 0 ? '最低亮度' : finiteNumber(settings.brightnessPercent, 70) + '%') : '仅支持背光开关';
+            var brightness = screenElement('sp-brightness'); if (brightness) brightness.disabled = !continuous;
+            if (output) output.textContent = continuous ? (Number(settings.brightnessPercent) === 0 ? '最低亮度' : finiteNumber(settings.brightnessPercent, 70) + '%') : this._spSystemActionReason('brightness');
             setValue('sp-confirm-idle', finiteNumber(settings.controlConfirmIdleSeconds, 60));
-            var beep = document.getElementById('sp-touch-beep'); if (beep) beep.checked = settings.touchBeepEnabled !== false;
-            var allowRestart = document.getElementById('sp-allow-restart');
+            var beep = screenElement('sp-touch-beep'); if (beep) { beep.checked = settings.touchBeepEnabled !== false; beep.disabled = this._spSystemActionSupport('buzzer') === false; }
+            var beepInfo = screenElement('sp-beep-capability');
+            if (beepInfo) beepInfo.textContent = this._spSystemActionSupport('buzzer') === false ? this._spSystemActionReason('buzzer') : '触摸时播放短提示音';
+            var nav = screenElement('sp-bottom-nav');
+            if (nav) nav.innerHTML = model.config.pages.map(function(page) { return '<option value="' + escapeHtml(page.id) + '"' + ((settings.bottomNavPageIds || []).indexOf(page.id) >= 0 ? ' selected' : '') + '>' + escapeHtml(page.title) + '</option>'; }).join('');
+            var allowRestart = screenElement('sp-allow-restart');
             if (allowRestart) allowRestart.checked = settings.allowSystemRestart === true;
             this._spRenderSystemCapabilities();
-            var displaySelect = document.getElementById('sp-display-ref');
-            if (displaySelect) {
-                var old = model.config.displayRef || '';
-                displaySelect.innerHTML = '<option value="">未绑定屏幕</option>';
-                model.displays.forEach(function(display) {
-                    var option = document.createElement('option');
-                    option.value = String(display.id || display.ref || '');
-                    var params = display.params || display.config || display;
-                    option.textContent = choiceLabel(display) + (params.width && params.height ? (' · ' + params.width + '×' + params.height) : '');
-                    displaySelect.appendChild(option);
-                });
-                displaySelect.value = old;
-            }
+            this._spChoiceOptions(screenElement('sp-display-ref'), model.displays.map(function(display) {
+                var params = display.params || display.config || display;
+                return { ref: String(display.id || display.ref || ''), label: choiceLabel(display) +
+                    (params.width && params.height ? ' · ' + params.width + '×' + params.height : '') };
+            }), model.config.displayRef, '未绑定屏幕');
             var page = this._spCurrentPage();
-            var pageLimit = document.getElementById('sp-page-limit');
-            if (pageLimit) pageLimit.textContent = model.config.pages.length + '/' + this._spLimits().maxPages + ' 页 · 可增删排序，不固定三屏';
+            var pageLimit = screenElement('sp-page-limit');
+            if (pageLimit) pageLimit.textContent = model.config.pages.length + '/' + this._spLimits().maxPages + ' 页';
             setValue('sp-layout-template', page.layoutId || 'mixed-grid');
             document.querySelectorAll('[data-sp-layout-mode]').forEach(function(button) {
                 button.classList.toggle('is-active', button.dataset.spLayoutMode === page.layoutMode);
@@ -497,248 +430,200 @@
 
         _spSystemActionSupport(kind) {
             var capabilities = this._spEnsureModel().capabilities || {};
-            var direct = { 'sleep-time': 'sleep', 'touch-beep': 'buzzer', 'confirm-idle': 'touch', brightness: 'brightnessContinuous', sleep: 'sleep', buzzer: 'buzzer', restart: 'systemRestart' };
+            var direct = { 'sleep-time': 'sleep', 'touch-beep': 'buzzer', 'confirm-idle': 'controlConfirmIdle', brightness: 'brightnessContinuous', sleep: 'sleep', buzzer: 'buzzer', restart: 'systemRestart' };
             if (Object.prototype.hasOwnProperty.call(capabilities, direct[kind])) return capabilities[direct[kind]] !== false;
             var actions = capabilities.systemActions || capabilities.displayActions || {};
             if (kind === 'sleep-time') kind = 'sleep';
+            if (kind === 'touch-beep') kind = 'buzzer';
             if (Array.isArray(actions)) return actions.indexOf(kind) >= 0;
             return Object.prototype.hasOwnProperty.call(actions, kind) ? actions[kind] !== false : null;
         },
 
+        _spSystemActionReason(kind) {
+            var model = this._spEnsureModel();
+            var caps = model.capabilities || {};
+            var key = { 'sleep-time': 'sleep', 'touch-beep': 'buzzer', 'confirm-idle': 'controlConfirmIdle', brightness: 'brightnessContinuous', restart: 'systemRestart' }[kind] || kind;
+            var reason = (caps.disabledReasons || {})[key];
+            if (reason) return reason;
+            if (caps.touchReady === false && caps.touchConfigured) return '触摸控制器未就绪，正在重试';
+            if (caps.touchWake === false && model.application.runtime && model.application.runtime.running) return '触摸输入不可用，请检查显示外设的触摸配置';
+            return '当前显示设备未提供“' + CARD_LABELS[kind] + '”功能';
+        },
+
         _spRenderSystemCapabilities() {
-            var container = document.getElementById('sp-system-capabilities');
-            if (!container) return;
-            container.innerHTML = SYSTEM_ACTION_KINDS.map((kind) => {
-                var support = this._spSystemActionSupport(kind);
-                var state = support === true ? '支持' : support === false ? '不支持' : '由显示设备决定';
-                var stateClass = support === true ? 'is-supported' : support === false ? 'is-unsupported' : 'is-unknown';
-                return '<span class="sp-capability-chip ' + stateClass + '"><strong>' + CARD_LABELS[kind] + '</strong>' + state + '</span>';
-            }).join('');
+            var model = this._spEnsureModel();
+            var container = screenElement('sp-system-capabilities');
+            var reasons = [];
+            document.querySelectorAll('[data-sp-add]').forEach((button) => {
+                var kind = button.dataset.spAdd;
+                if (SYSTEM_ACTION_KINDS.indexOf(kind) < 0) return;
+                var unavailable = this._spSystemActionSupport(kind) === false;
+                button.disabled = unavailable;
+                button.draggable = !unavailable;
+                button.title = unavailable ? this._spSystemActionReason(kind) : CARD_LABELS[kind];
+                if (unavailable && reasons.indexOf(button.title) < 0) reasons.push(button.title);
+            });
+            if (container) {
+                container.textContent = reasons.join('；');
+                container.classList.toggle('fb-hidden', !reasons.length);
+            }
+            [['sp-brightness', 'brightness'], ['sp-touch-beep', 'buzzer']].forEach(([id, kind]) => {
+                var input = screenElement(id);
+                if (!input) return;
+                input.disabled = this._spSystemActionSupport(kind) === false;
+                input.title = input.disabled ? this._spSystemActionReason(kind) : '';
+            });
+            var output = screenElement('sp-brightness-output');
+            if (output) output.textContent = this._spSystemActionSupport('brightness') === false ? this._spSystemActionReason('brightness') :
+                (Number(model.config.settings.brightnessPercent) === 0 ? '最低亮度' : finiteNumber(model.config.settings.brightnessPercent, 70) + '%');
+            var beepInfo = screenElement('sp-beep-capability');
+            if (beepInfo) beepInfo.textContent = this._spSystemActionSupport('buzzer') === false ? this._spSystemActionReason('buzzer') : '触摸时播放短提示音';
+            this._spRenderAutoSleep();
         },
 
         _spRenderHistorySettings() {
             var model = this._spEnsureModel();
-            var enabledInput = document.getElementById('sp-history-enabled');
-            var sourceSelect = document.getElementById('sp-history-sources');
-            var saveButton = document.getElementById('sp-history-save');
-            var status = document.getElementById('sp-history-status');
-            if (!enabledInput || !sourceSelect || !saveButton || !status) return;
-
+            var enabledInput = screenElement('sp-history-enabled');
+            var sourceSelect = screenElement('sp-history-sources');
+            var status = screenElement('sp-history-status');
+            if (!enabledInput || !sourceSelect || !status) return;
             var capability = model.choiceCapabilities && model.choiceCapabilities.history || {};
             var supported = capability.supported !== false && !!model.historyConfig;
-            var config = model.historyConfig || { enabled: false, sourceAllowlist: [] };
-            var allowlist = Array.isArray(config.sourceAllowlist) ? config.sourceAllowlist.map(String) : [];
-            var numericChoices = model.choices.filter(function(choice) {
-                return !isControlChoice(choice) && String(choice && choice.type || '').toLowerCase() === 'number';
-            });
-            var known = {};
-            numericChoices.forEach(function(choice) { known[choiceRef(choice)] = true; });
-
-            sourceSelect.innerHTML = '';
-            var allOption = document.createElement('option');
-            allOption.value = '__all__';
-            allOption.textContent = '全部显式开启记录的数值来源';
-            allOption.selected = allowlist.length === 0;
-            sourceSelect.appendChild(allOption);
-            numericChoices.forEach(function(choice) {
-                var option = document.createElement('option');
-                option.value = choiceRef(choice);
-                option.textContent = choiceLabel(choice);
-                option.selected = allowlist.indexOf(option.value) >= 0;
-                sourceSelect.appendChild(option);
-            });
-            allowlist.filter(function(ref) { return !known[ref]; }).forEach(function(ref) {
-                var option = document.createElement('option');
-                option.value = ref;
-                option.textContent = ref + ' (当前不可用，保留)';
-                option.selected = true;
-                option.disabled = true;
-                option.dataset.preserve = 'true';
-                sourceSelect.appendChild(option);
-            });
+            var config = model.historyDraft || model.historyConfig || { enabled: false, sourceAllowlist: [] };
+            var allowlist = config.sourceAllowlist || [];
+            var choices = [{ ref: '__all__', label: '全部已开启记录的数值来源' }].concat(model.choices.filter(function(choice) {
+                return !isControlChoice(choice) && String(choice.type || '').toLowerCase() === 'number';
+            }));
+            allowlist.forEach(function(ref) { if (!choices.some(function(item) { return choiceRef(item) === ref; })) choices.push({ ref: ref, label: ref + '（不可用，保留）', preserve: true }); });
+            sourceSelect.innerHTML = choices.map(function(choice) { var ref = choiceRef(choice); return '<option value="' + escapeHtml(ref) + '"' +
+                (allowlist.indexOf(ref) >= 0 || ref === '__all__' && !allowlist.length ? ' selected' : '') + (choice.preserve ? ' disabled data-preserve="true"' : '') + '>' + escapeHtml(choiceLabel(choice)) + '</option>'; }).join('');
 
             enabledInput.checked = config.enabled === true;
             enabledInput.disabled = !supported || config.writesPaused === true;
             sourceSelect.disabled = !supported || config.writesPaused === true;
-            saveButton.disabled = !supported || config.writesPaused === true;
             var persistence = model.historyStatus || {};
-            status.textContent = !supported ? '当前固件未提供最近记录' : config.writesPaused === true ? '历史写入已暂停' :
+            status.textContent = !supported ? '不支持最近记录' : config.writesPaused === true ? '历史写入已暂停' :
                 (config.enabled ? (persistence.persisted === false ? '已启用，配置待持久化' : '已启用，每个来源最多 10 条') : '已停用');
         },
 
-        _spSaveHistorySettings() {
-            if (!this.guardDeveloperModeAction()) return Promise.resolve(false);
+        _spHistoryPayload() {
             var model = this._spEnsureModel();
-            var enabledInput = document.getElementById('sp-history-enabled');
-            var sourceSelect = document.getElementById('sp-history-sources');
-            var button = document.getElementById('sp-history-save');
-            if (!enabledInput || !sourceSelect || !model.historyConfig) return Promise.resolve(false);
-            var selected = Array.from(sourceSelect.options).filter(function(option) {
-                return option.selected;
+            if (!model.historyConfig) return null;
+            var draft = model.historyDraft || model.historyConfig;
+            return { expectedRevision: model.historyConfig.revision, enabled: draft.enabled === true,
+                sourceAllowlist: (draft.sourceAllowlist || []).slice() };
+        },
+
+        _spChangeHistoryDraft() {
+            var model = this._spEnsureModel();
+            if (!model.historyConfig) return;
+            var selected = Array.from(screenElement('sp-history-sources').options).filter(function(option) {
+                return option.selected || option.dataset.preserve === 'true';
             }).map(function(option) { return option.value; });
-            var allSources = selected.indexOf('__all__') >= 0;
-            var sourceAllowlist = allSources ? [] : selected.filter(function(ref) { return ref !== '__all__'; });
-            Array.from(sourceSelect.options).filter(function(option) {
-                return option.dataset.preserve === 'true';
-            }).forEach(function(option) {
-                if (!allSources && sourceAllowlist.indexOf(option.value) < 0) sourceAllowlist.push(option.value);
-            });
-            var maxSources = finiteNumber(model.historyConfig.maxSources,
-                finiteNumber(model.choiceCapabilities && model.choiceCapabilities.history && model.choiceCapabilities.history.maxSources, 16));
-            if (sourceAllowlist.length > maxSources) {
-                this._spSetMessage('最近记录来源超过上限 ' + maxSources, 'error');
-                return Promise.resolve(false);
-            }
-            if (button) { button.disabled = true; button.textContent = '正在保存...'; }
-            return apiPostJson('/api/periph-exec/history/config', {
-                enabled: enabledInput.checked === true,
-                sourceAllowlist: sourceAllowlist
-            }).then((response) => {
-                if (!response || response.success === false || !response.data) throw new Error(response && response.message || '保存失败');
-                model.historyConfig = response.data.config || model.historyConfig;
-                model.historyStatus = response.data.status || model.historyStatus;
-                model.histories = {};
-                this._spRenderHistorySettings();
-                this._spRenderAll();
-                this._spSetMessage('最近记录设置已保存', 'success');
-                if (typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/periph-exec/history/config');
-                return true;
-            }).catch((error) => {
-                if (!(error && error._pageAborted)) this._spSetMessage(error && error.message || '最近记录设置保存失败', 'error');
-                return false;
-            }).finally(() => {
-                if (button) button.textContent = '保存记录设置';
-                this._spRenderHistorySettings();
-            });
+            model.historyDraft = Object.assign({}, model.historyConfig, { enabled: screenElement('sp-history-enabled').checked,
+                sourceAllowlist: selected.indexOf('__all__') >= 0 ? [] : selected });
+            model.historyDirty = JSON.stringify(model.historyDraft) !== JSON.stringify(model.historyConfig);
+            this._spRenderDirtyState(); this._spPersistDraftSoon();
+        },
+
+        _spOpenProperties(mode) {
+            var model = this._spEnsureModel();
+            model.propertyMode = typeof mode === 'string' ? mode : mode === true ? 'global' : this._spCurrentCard() ? 'component' : 'page';
+            model.globalProperties = model.propertyMode === 'global';
+            var inspector = screenElement('sp-inspector'); if (inspector) inspector.classList.add('is-open');
+            this._spRenderInspector();
         },
 
         _spRenderInspector() {
             var model = this._spEnsureModel();
             var card = this._spCurrentCard();
-            var empty = document.getElementById('sp-inspector-empty');
-            var form = document.getElementById('sp-inspector-form');
+            var empty = screenElement('sp-inspector-empty');
+            var form = screenElement('sp-inspector-form');
             if (!empty || !form) return;
+            var mode = model.propertyMode || (model.globalProperties ? 'global' : card ? 'component' : 'page');
+            var component = mode === 'component';
+            var toggle = function(id, show) { var el = screenElement(id); if (el) el.classList.toggle('fb-hidden', !show); };
+            toggle('sp-global-properties', mode === 'global');
+            toggle('sp-component-inspector', component);
+            toggle('sp-weather-properties', mode === 'weather' || component && card && card.kind === 'weather');
+            toggle('sp-history-properties', mode === 'history' || component && card && card.kind === 'line');
+            toggle('sp-page-properties', mode === 'page');
+            [['sp-properties-toggle', 'page'], ['sp-component-properties', 'component'], ['sp-global-settings', 'global']].forEach(function(pair) {
+                var button = screenElement(pair[0]); if (button) { button.setAttribute('aria-pressed', String(mode === pair[1])); button.classList.toggle('is-active', mode === pair[1]); }
+            });
+            var page = this._spCurrentPage();
+            screenElement('sp-page-theme').value = page.themeId || '';
+            screenElement('sp-page-background').value = page.background && page.background.presetId || '';
             empty.classList.toggle('fb-hidden', !!card);
             form.classList.toggle('fb-hidden', !card);
             if (!card) return;
-            var kind = document.getElementById('sp-inspector-kind');
-            var id = document.getElementById('sp-inspector-id');
-            var title = document.getElementById('sp-card-title');
+            var kind = screenElement('sp-inspector-kind');
+            var title = screenElement('sp-card-title');
             if (kind) kind.textContent = CARD_LABELS[card.kind] || card.kind;
-            if (id) id.textContent = card.id.slice(-6);
             if (title) title.value = card.title || '';
 
-            var sourceField = document.getElementById('sp-source-field');
-            var seriesField = document.getElementById('sp-bar-sources-field');
-            var controlField = document.getElementById('sp-control-field');
-            var pageField = document.getElementById('sp-page-link-field');
-            var displayField = document.getElementById('sp-display-field');
-            var numeric = document.getElementById('sp-numeric-fields');
-            var stepField = document.getElementById('sp-card-step-field');
-            var initialField = document.getElementById('sp-card-initial-field');
-            var confirmField = document.getElementById('sp-confirm-field');
-            var usesSource = SOURCE_KINDS.indexOf(card.kind) >= 0;
-            if (sourceField) sourceField.classList.toggle('fb-hidden', !usesSource);
-            if (seriesField) seriesField.classList.toggle('fb-hidden', card.kind !== 'bar');
-            if (controlField) controlField.classList.toggle('fb-hidden', card.kind !== 'control' && card.kind !== 'motor');
-            if (pageField) pageField.classList.toggle('fb-hidden', card.kind !== 'page-link');
-            var motorFields = document.getElementById('sp-motor-fields');
-            if (motorFields) motorFields.classList.toggle('fb-hidden', card.kind !== 'motor');
-            [['speed','motorSpeed'], ['pulse','motorPulse'], ['speed-step','motorSpeedStep'], ['pulse-step','motorPulseStep']].forEach(function(pair) {
-                var field = document.getElementById('sp-motor-' + pair[0]); if (field) field.value = card[pair[1]] === undefined ? CARD_DEFAULTS.motor[pair[1]] : card[pair[1]];
-            });
             var numericControl = card.kind === 'control' && card.display === 'number';
-            if (numeric) numeric.classList.toggle('fb-hidden', ['data', 'gauge', 'bar', 'line'].indexOf(card.kind) < 0 && !numericControl);
-            if (stepField) stepField.classList.toggle('fb-hidden', !numericControl);
-            if (initialField) initialField.classList.toggle('fb-hidden', !numericControl);
-            if (confirmField) confirmField.classList.toggle('fb-hidden', ['control'].concat(SYSTEM_ACTION_KINDS).indexOf(card.kind) < 0);
-
+            toggle('sp-source-field', card.kind !== 'weather' && SOURCE_KINDS.indexOf(card.kind) >= 0);
+            toggle('sp-bar-sources-field', card.kind === 'bar');
+            toggle('sp-control-field', card.kind === 'control' || card.kind === 'motor');
+            toggle('sp-page-link-field', card.kind === 'page-link');
+            toggle('sp-motor-fields', card.kind === 'motor');
+            toggle('sp-numeric-fields', ['data', 'gauge', 'bar', 'line'].indexOf(card.kind) >= 0 || numericControl);
+            toggle('sp-card-step-field', numericControl); toggle('sp-card-initial-field', numericControl);
+            ['sp-card-min', 'sp-card-max'].forEach(function(id) { screenElement(id).closest('label').classList.toggle('fb-hidden', !numericControl && ['gauge', 'bar'].indexOf(card.kind) < 0); });
+            toggle('sp-confirm-field', ['control'].concat(SYSTEM_ACTION_KINDS).indexOf(card.kind) >= 0);
+            [['speed','motorSpeed'], ['pulse','motorPulse'], ['speed-step','motorSpeedStep'], ['pulse-step','motorPulseStep']].forEach(function(pair) {
+                var field = screenElement('sp-motor-' + pair[0]); if (field) field.value = card[pair[1]] === undefined ? CARD_DEFAULTS.motor[pair[1]] : card[pair[1]];
+            });
             var dataChoices = model.choices.filter(function(item) {
-                if (card.kind === 'weather') return isWeatherChoice(item);
-                if (card.kind === 'bar') return helpers.isNumericChoice(item);
+                if (['bar', 'gauge', 'line'].indexOf(card.kind) >= 0) return helpers.isNumericChoice(item);
                 return !isControlChoice(item) && !isWeatherChoice(item) && String(item.kind || '').toLowerCase() !== 'system';
             });
-            this._spChoiceOptions(document.getElementById('sp-card-source'), dataChoices, card.sourceRef, card.kind === 'weather' ? '请选择天气来源' : '请选择数据来源');
+            this._spChoiceOptions(screenElement('sp-card-source'), dataChoices, card.sourceRef, '请选择数据来源');
             for (var seriesIndex = 1; seriesIndex < 4; seriesIndex++) {
-                this._spChoiceOptions(document.getElementById('sp-card-source-' + seriesIndex), dataChoices,
+                this._spChoiceOptions(screenElement('sp-card-source-' + seriesIndex), dataChoices,
                     card.sourceRefs && card.sourceRefs[seriesIndex] || '', '不添加对比来源');
             }
-            this._spChoiceOptions(document.getElementById('sp-card-control'), model.choices.filter(function(choice) { return card.kind === 'motor' ? choice.type === 'motor' : isControlChoice(choice) && choice.type !== 'motor'; }), card.controlRef, '请选择控制项');
+            this._spChoiceOptions(screenElement('sp-card-control'), model.choices.filter(function(choice) { return card.kind === 'motor' ? choice.type === 'motor' : isControlChoice(choice) && choice.type !== 'motor'; }), card.controlRef, '请选择控制项');
 
-            var pageSelect = document.getElementById('sp-card-target-page');
-            if (pageSelect) {
-                pageSelect.innerHTML = '';
-                model.config.pages.forEach(function(page) {
-                    var option = document.createElement('option');
-                    option.value = page.id;
-                    option.textContent = page.title;
-                    pageSelect.appendChild(option);
-                });
-                pageSelect.value = card.targetPageId || '';
-            }
+            this._spChoiceOptions(screenElement('sp-card-target-page'), model.config.pages, card.targetPageId, '选择目标页');
 
-            var display = document.getElementById('sp-card-display');
+            var display = screenElement('sp-card-display');
             if (display) {
-                var displayOptions = {
-                    motor: [['motor', '电机控制']], 'touch-beep': [['touch-beep', '触摸音']], 'confirm-idle': [['confirm-idle', '操作确认']], 'sleep-time': [['sleep-time', '自动息屏']], data: [['value', '数值']], status: [['status', '状态']], gauge: [['gauge', '仪表/进度']],
-                    bar: [['bar', '当前值柱状']], line: [['recent10', '最近10点折线']], control: [['switch', '开关'], ['action', '执行一次 / 场景'], ['number', '数值调节并执行']],
-                    clock: [['clock', '时间与日期']], weather: [['weather', '天气概览']],
-                    'page-link': [['page-link', '页面入口']], brightness: [['brightness', '设置亮度']],
-                    sleep: [['sleep', '立即息屏']], buzzer: [['buzzer', '蜂鸣器短响']], restart: [['restart', '重启按钮']]
-                };
-                display.innerHTML = (displayOptions[card.kind] || []).map(function(option) {
-                    return '<option value="' + option[0] + '">' + option[1] + '</option>';
-                }).join('');
+                var displayOptions = card.kind === 'control' ? [['switch', '开关'], ['action', '执行一次'], ['number', '数值调节']] : [[card.display || CARD_DEFAULTS[card.kind].display, CARD_LABELS[card.kind]]];
+                display.innerHTML = displayOptions.map(function(option) { return '<option value="' + option[0] + '">' + option[1] + '</option>'; }).join('');
                 display.value = card.display || '';
+                display.disabled = card.kind === 'control' && model.choices.some(function(choice) { return choiceRef(choice) === card.controlRef; });
             }
             var values = {
                 'sp-card-unit': card.unit || '', 'sp-card-precision': finiteNumber(card.precision, 1),
                 'sp-card-min': finiteNumber(card.min, 0), 'sp-card-max': finiteNumber(card.max, 100),
                 'sp-card-step': finiteNumber(card.step, 1), 'sp-card-initial': finiteNumber(card.initialValue, card.min || 0),
-                'sp-card-size': card.size || 'small'
+                'sp-card-size': card.size || CARD_DEFAULTS[card.kind].size
             };
-            Object.keys(values).forEach(function(key) { var input = document.getElementById(key); if (input) input.value = values[key]; });
-            var confirm = document.getElementById('sp-card-confirm');
+            this._spRenderCardSize(card);
+            ['x', 'y', 'w', 'h'].forEach(function(key) { values['sp-card-' + key] = card.rect && card.rect[key]; });
+            Object.keys(values).forEach(function(key) { var input = screenElement(key); if (input) input.value = values[key]; });
+            var confirm = screenElement('sp-card-confirm');
             if (confirm) confirm.checked = card.confirm === true;
-            if (displayField) displayField.classList.toggle('fb-hidden', false);
-        },
-
-        _spRenderMobileList() {
-            var page = this._spCurrentPage();
-            var container = document.getElementById('sp-mobile-card-list');
-            if (!container || !page) return;
-            container.innerHTML = '';
-            page.cards.forEach(function(card, index) {
-                var row = document.createElement('div');
-                row.className = 'sp-mobile-card-row';
-                row.dataset.cardId = card.id;
-                row.innerHTML = '<div><strong>' + escapeHtml(card.title || CARD_LABELS[card.kind]) + '</strong><small>' +
-                    escapeHtml(CARD_LABELS[card.kind] || card.kind) + ' · ' + escapeHtml(card.size || 'small') + '</small></div>' +
-                    '<div class="sp-mobile-card-actions">' +
-                    '<button type="button" class="fb-btn fb-btn-sm" data-sp-card-move="up" aria-label="上移"' + (index === 0 ? ' disabled' : '') + '>&uarr;</button>' +
-                    '<button type="button" class="fb-btn fb-btn-sm" data-sp-card-move="down" aria-label="下移"' + (index === page.cards.length - 1 ? ' disabled' : '') + '>&darr;</button>' +
-                    '<button type="button" class="fb-btn fb-btn-sm" data-sp-card-select="true">设置</button></div>';
-                container.appendChild(row);
-            });
+            toggle('sp-display-field', card.kind === 'control');
         },
 
         _spRenderAll() {
             var model = this._spEnsureModel();
-            if (!document.getElementById('screen-panel-page')) return;
+            if (!screenElement('screen-panel-page')) return;
             if (!model.config.pages.some(function(page) { return page.id === model.selectedPageId; })) model.selectedPageId = model.config.pages[0].id;
             var page = this._spCurrentPage();
             this._spEnsurePageRects(page);
             this._spRenderSettings();
             this._spRenderPageTabs();
-            this._spRenderContentList();
-            this._spRenderSurface(document.getElementById('sp-editor-canvas'), page, true);
-            this._spRenderInspector();
-            this._spRenderMobileList();
+            this._spMountInspector();
             this._spRenderPreview();
+            var title = screenElement('sp-editor-title'); if (title) title.textContent = page.title;
             this._spRenderDirtyState();
             this._spApplyStatus();
             var validation = this._spValidateConfig(model.config);
-            var summary = document.getElementById('sp-validation-summary');
+            var summary = screenElement('sp-validation-summary');
             if (summary) summary.textContent = validation.errors.length ? (validation.errors.length + ' 项需要处理') : (model.config.pages.length + ' 页 · ' + validation.cardCount + ' 个组件');
         },
 
@@ -747,55 +632,54 @@
         },
 
         _spSetupEvents() {
-            var root = document.getElementById('screen-panel-page');
+            var root = screenElement('screen-panel-page');
             if (!root || this._screenPanelEventsRoot === root) return;
             this._screenPanelEventsRoot = root;
 
             root.addEventListener('click', (event) => {
-                var adjust = event.target.closest('[data-sp-adjust-page]');
-                if (adjust) { this._spEnsureModel().selectedPageId = adjust.dataset.spAdjustPage; document.getElementById('sp-layout-editor').open = true; this._spRenderAll(); document.getElementById('sp-layout-editor').scrollIntoView({ block: 'start' }); return; }
-                var tab = event.target.closest('.sp-top-tabs [data-tab]');
-                if (tab) { this._spSwitchTopTab(tab.dataset.tab); return; }
+                if (Date.now() < (this._spEnsureModel().suppressClickUntil || 0) && event.target.closest('.sp-page-tab, .sp-panel-card')) { event.preventDefault(); return; }
+                if (!event.target.closest('.sp-more summary')) root.querySelector('.sp-more')?.removeAttribute('open');
+                var section = event.target.closest('[data-sp-section]');
+                if (section) { root.querySelector('.sp-toolbox-content').scrollTop = screenElement(section.dataset.spSection).offsetTop; return; }
                 var nav = event.target.closest('[data-sp-nav]');
                 if (nav) { this._spNavigate(nav.dataset.spNav, nav.dataset.spTargetTab); return; }
                 var pageTab = event.target.closest('.sp-page-tab[data-page-id]');
                 if (pageTab) {
                     this._spEnsureModel().selectedPageId = pageTab.dataset.pageId;
                     this._spEnsureModel().selectedCardId = '';
+                    this._spEnsureModel().propertyMode = 'page';
                     this._spRenderAll();
                     return;
                 }
-                var dot = event.target.closest('.sp-page-dot[data-page-id]');
-                if (dot) { this._spEnsureModel().previewPageId = dot.dataset.pageId; this._spRenderPreview(); return; }
-                var previewPage = event.target.closest('[data-sp-preview-page]');
-                if (previewPage) { this._spEnsureModel().previewPageId = previewPage.dataset.spPreviewPage; this._spRenderPreview(); return; }
+                var previewPage = event.target.closest('[data-sp-editor-page]');
+                if (previewPage) {
+                    var id = previewPage.dataset.spEditorPage;
+                    if (id === '__more__') {
+                        var surface = previewPage.closest('.sp-render-surface'), existing = surface.querySelector('.sp-nav-more');
+                        if (existing) existing.remove(); else {
+                            var menu = document.createElement('div'); menu.className = 'sp-nav-more';
+                            menu.innerHTML = this._spEnsureModel().config.pages.map(function(page) {
+                                return '<button type="button" data-sp-editor-page="' + escapeHtml(page.id) + '">' + escapeHtml(page.title) + '</button>';
+                            }).join(''); surface.appendChild(menu);
+                        }
+                    } else { this._spEnsureModel().selectedPageId = id; this._spEnsureModel().selectedCardId = ''; this._spEnsureModel().propertyMode = 'page'; this._spRenderAll(); }
+                    return;
+                }
                 var add = event.target.closest('[data-sp-add]');
                 if (add) { this._spAddCard(add.dataset.spAdd); return; }
                 var mode = event.target.closest('[data-sp-layout-mode]');
                 if (mode) { this._spChangeLayoutMode(mode.dataset.spLayoutMode); return; }
                 var cardElement = event.target.closest('#sp-editor-canvas .sp-panel-card[data-card-id]');
                 if (cardElement && !event.target.closest('.sp-resize-handle')) {
+                    if (Date.now() < (this._spEnsureModel().suppressClickUntil || 0)) return;
                     this._spEnsureModel().selectedCardId = cardElement.dataset.cardId;
-                    this._spRenderAll();
+                    this._spEnsureModel().globalProperties = false;
+                    this._spRenderAll(); this._spOpenProperties(false);
                     return;
                 }
-                var mobileRow = event.target.closest('.sp-mobile-card-row[data-card-id]');
-                if (mobileRow) {
-                    if (event.target.closest('[data-sp-card-select]')) {
-                        this._spEnsureModel().selectedCardId = mobileRow.dataset.cardId;
-                        this._spRenderAll();
-                    } else {
-                        var move = event.target.closest('[data-sp-card-move]');
-                        if (move) this._spMoveCard(mobileRow.dataset.cardId, move.dataset.spCardMove);
-                    }
-                    return;
-                }
-                switch (event.target.id) {
+                switch (event.target.closest('button')?.id || event.target.id) {
                     case 'sp-refresh-btn': this.loadScreenPanelPage({ noCache: true, preserveDraft: true }); break;
                     case 'sp-preview-refresh-btn': this._spRefreshState(true); break;
-                    case 'sp-preview-home': this._spEnsureModel().previewPageId = this._spPreviewConfig().settings.homePageId; this._spRenderPreview(); break;
-                    case 'sp-footer-prev': case 'sp-preview-prev': this._spMovePreview(-1); break;
-                    case 'sp-footer-next': case 'sp-preview-next': this._spMovePreview(1); break;
                     case 'sp-generate-three-screen': this._spGenerateThreeScreenTemplate(); break;
                     case 'sp-page-add': this._spAddPage(); break;
                     case 'sp-page-rename': this._spRenamePage(); break;
@@ -807,63 +691,41 @@
                     case 'sp-undo': this._spUndo(); break;
                     case 'sp-redo': this._spRedo(); break;
                     case 'sp-card-delete': this._spDeleteCard(); break;
-                    case 'sp-import-config': document.getElementById('sp-import-file')?.click(); break;
+                    case 'sp-import-config': screenElement('sp-import-file')?.click(); break;
                     case 'sp-export-config': this._spExportConfig(); break;
                     case 'sp-reset-draft': this._spResetDraft(); break;
-                    case 'sp-history-save': this._spSaveHistorySettings(); break;
+                    case 'sp-draft-restore': {
+                        this._spRecoverDraft();
+                        screenElement('sp-draft-recovery').classList.add('fb-hidden'); break;
+                    }
+                    case 'sp-draft-discard': this._spClearDraft(); screenElement('sp-draft-recovery').classList.add('fb-hidden'); break;
+                    case 'sp-global-settings': this._spOpenProperties('global'); break;
+                    case 'sp-properties-toggle': this._spOpenProperties('page'); break;
+                    case 'sp-component-properties': this._spOpenProperties('component'); break;
+                    case 'sp-history-settings': this._spOpenProperties('history'); break;
+                    case 'sp-weather-settings': this._spOpenProperties('weather'); break;
+                    case 'sp-properties-close': screenElement('sp-inspector').classList.remove('is-open'); screenElement('sp-properties-toggle').focus(); break;
                     case 'sp-save-config': this._spSaveAll(); break;
                     case 'sp-weather-refresh': this._spRefreshWeather(); break;
-                    case 'sp-edit-current': this._spEnsureModel().selectedPageId = this._spEnsureModel().previewPageId; this._spSwitchTopTab('sp-config'); this._spRenderAll(); break;
                 }
             });
 
             root.addEventListener('change', (event) => {
+                if (event.target.id === 'sp-auto-sleep-enabled') { this._spSetAutoSleepEnabled(event.target.checked); return; }
+                if (event.target.id === 'sp-idle-sleep' && Number(event.target.value) > 0 && this._spSystemActionSupport('sleep-time') === false) { this._spRenderAutoSleep(); return; }
+                if (event.target.id.startsWith('sp-history-')) { this._spChangeHistoryDraft(); return; }
+                if (event.target.id === 'sp-bottom-nav') {
+                    this._spMutate(function(config) { config.settings.bottomNavPageIds = Array.from(event.target.selectedOptions).map(function(option) { return option.value; }).slice(0, 5); }); return;
+                }
+                if (event.target.id === 'sp-page-theme' || event.target.id === 'sp-page-background') {
+                    this._spMutate(() => { var page = this._spCurrentPage(); if (event.target.id === 'sp-page-theme') { if (event.target.value) page.themeId = event.target.value; else delete page.themeId; }
+                        else { if (event.target.value) page.background = { presetId: event.target.value }; else delete page.background; } }); return;
+                }
+                if (event.target.closest('#sp-inspector-form')) { this._spApplyInspector(true, event.target); if (event.target.tagName === 'SELECT') this._spRenderInspector(); return; }
                 if (event.target.id.startsWith('sp-weather-')) {
+                    if (event.target.id === 'sp-weather-clear-key' && event.target.checked) screenElement('sp-weather-enabled').checked = false;
                     this._spEnsureModel().weatherDirty = true;
                     this._spRenderDirtyState(); return;
-                }
-                if (event.target.matches('[data-sp-content-source]')) {
-                    var id = event.target.dataset.spContentSource, ref = event.target.value;
-                    this._spMutate((config) => config.pages.forEach((page) => {
-                        page.cards.forEach((card) => {
-                            if (card.id !== id) return;
-                            var choice = this._spEnsureModel().choices.find(function(item) { return choiceRef(item) === ref; });
-                            if (card.kind === 'motor' || card.kind === 'control') card.controlRef = ref;
-                            else { card.sourceRef = ref; if (choice) { card.unit = choice.unit || ''; card.precision = finiteNumber(choice.precision, 1); card.title = choiceLabel(choice); } }
-                        });
-                    })); return;
-                }
-                if (event.target.id === 'sp-preview-source') { this._spRenderPreview(); return; }
-                if (event.target.id === 'sp-card-control') {
-                    var selected = this._spEnsureModel().choices.find(function(choice) {
-                        return choiceRef(choice) === event.target.value;
-                    });
-                    var selectedType = String(selected && selected.type || '').toLowerCase();
-                    var displaySelect = document.getElementById('sp-card-display');
-                    if (displaySelect && ['switch', 'action', 'number'].indexOf(selectedType) >= 0) {
-                        displaySelect.value = selectedType;
-                    }
-                    var numericFields = document.getElementById('sp-numeric-fields');
-                    var isNumber = selectedType === 'number';
-                    if (numericFields) numericFields.classList.toggle('fb-hidden', !isNumber);
-                    ['sp-card-step-field', 'sp-card-initial-field'].forEach(function(id) {
-                        document.getElementById(id)?.classList.toggle('fb-hidden', !isNumber);
-                    });
-                    if (isNumber && this._spCurrentCard()?.display !== 'number') {
-                        var defaults = {
-                            'sp-card-unit': selected.unit || '',
-                            'sp-card-precision': finiteNumber(selected.precision, 0),
-                            'sp-card-min': finiteNumber(selected.rangeMin, 0),
-                            'sp-card-max': finiteNumber(selected.rangeMax, 100),
-                            'sp-card-step': finiteNumber(selected.step, 1),
-                            'sp-card-initial': finiteNumber(selected.initialValue, 0)
-                        };
-                        Object.keys(defaults).forEach(function(id) {
-                            var field = document.getElementById(id);
-                            if (field) field.value = defaults[id];
-                        });
-                    }
-                    return;
                 }
                 if (event.target.id === 'sp-layout-template') {
                     this._spMutate(() => { var page = this._spCurrentPage(); page.layoutId = event.target.value; this._spLayoutTemplatePage(page); });
@@ -906,68 +768,60 @@
 
             root.addEventListener('input', (event) => {
                 if (event.target.id.startsWith('sp-weather-')) { this._spEnsureModel().weatherDirty = true; this._spRenderDirtyState(); }
+                if (event.target.closest('#sp-inspector-form') && event.target.tagName === 'INPUT') this._spApplyInspector(true, event.target);
+                if (event.target.id === 'sp-brightness') {
+                    this._spEnsureModel().config.settings.brightnessPercent = finiteNumber(event.target.value, 70);
+                    this._spMarkDirty({ render: false });
+                }
                 var outputMap = { 'sp-brightness': 'sp-brightness-output' };
-                var output = document.getElementById(outputMap[event.target.id]);
+                var output = screenElement(outputMap[event.target.id]);
                 if (output) output.textContent = Number(event.target.value) === 0 ? '最低亮度' : event.target.value + '%';
             });
-            var brightness = document.getElementById('sp-brightness');
+            root.addEventListener('focusin', (event) => {
+                if (event.target.closest('#sp-inspector-form')) this._spEnsureModel().inspectorEdit = { element: event.target, saved: false };
+            });
+            var brightness = screenElement('sp-brightness');
             if (brightness) brightness.addEventListener('change', (event) => {
                 this._spMutate(function(config) { config.settings.brightnessPercent = finiteNumber(event.target.value, 70); });
-            });
-            var editor = document.getElementById('sp-layout-editor');
-            if (editor) editor.addEventListener('toggle', () => {
-                if (editor.open) this._spMountInspector();
             });
             root.addEventListener('submit', (event) => {
                 if (event.target.id === 'sp-inspector-form') { event.preventDefault(); this._spApplyInspector(); }
             });
-            var importFile = document.getElementById('sp-import-file');
+            var importFile = screenElement('sp-import-file');
             if (importFile) importFile.addEventListener('change', (event) => this._spImportConfig(event.target.files && event.target.files[0]));
-            var canvas = document.getElementById('sp-editor-canvas');
+            root.addEventListener('dragstart', (event) => {
+                var button = event.target.closest('[data-sp-add]');
+                if (button && event.dataTransfer) { event.dataTransfer.setData('application/x-fastbee-component', button.dataset.spAdd); event.dataTransfer.effectAllowed = 'copy'; }
+            });
+            root.addEventListener('pointerdown', (event) => {
+                var pageTab = event.target.closest('.sp-page-tab[data-page-id]');
+                if (pageTab) this._spOrderPointerDown(event, 'page', pageTab);
+            });
+            var canvas = screenElement('sp-editor-canvas');
             if (canvas) {
-                canvas.addEventListener('pointerdown', (event) => this._spPointerDown(event));
+                canvas.addEventListener('dragover', function(event) {
+                    if (Array.from(event.dataTransfer.types).indexOf('application/x-fastbee-component') >= 0) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }
+                });
+                canvas.addEventListener('drop', (event) => {
+                    var kind = event.dataTransfer.getData('application/x-fastbee-component'); if (!kind) return;
+                    event.preventDefault(); this._spDropComponent(kind, event.clientX, event.clientY);
+                });
+                canvas.addEventListener('pointerdown', (event) => {
+                    var card = event.target.closest('.sp-panel-card[data-card-id]');
+                    if (card && this._spCurrentPage().layoutMode === 'template') this._spOrderPointerDown(event, 'card', card);
+                    else this._spPointerDown(event);
+                });
                 canvas.addEventListener('keydown', (event) => this._spCanvasKeydown(event));
             }
-            var previewCanvas = document.getElementById('sp-preview-canvas');
-            if (previewCanvas) previewCanvas.addEventListener('keydown', (event) => {
-                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-                    event.preventDefault();
-                    this._spMovePreview(event.key === 'ArrowLeft' ? -1 : 1);
-                }
-            });
             root.addEventListener('keydown', (event) => {
-                var topTab = event.target.closest('.sp-top-tabs [role="tab"]');
-                if (topTab && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-                    var target = document.getElementById(topTab.id === 'sp-tab-preview' ? 'sp-tab-config' : 'sp-tab-preview');
-                    event.preventDefault();
-                    this._spSwitchTopTab(target.dataset.tab);
-                    target.focus();
-                    return;
-                }
+                if (event.key === 'Escape' && this._spEnsureModel().orderPointer) { event.preventDefault(); this._spOrderPointerUp({ type: 'pointercancel' }); return; }
+                if (event.key === 'Escape') { screenElement('sp-inspector')?.classList.remove('is-open'); root.querySelector('.sp-more')?.removeAttribute('open'); }
                 if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+                    if (event.target.matches('input, textarea, select')) return;
                     event.preventDefault();
                     if (event.shiftKey) this._spRedo(); else this._spUndo();
                 }
             });
-        },
-
-        _spSwitchTopTab(tabId) {
-            var root = document.getElementById('screen-panel-page');
-            if (!root) return;
-            root.querySelectorAll('.sp-top-tabs [data-tab]').forEach(function(button) {
-                var active = button.dataset.tab === tabId;
-                button.classList.toggle('active', active);
-                button.setAttribute('aria-selected', active ? 'true' : 'false');
-                button.tabIndex = active ? 0 : -1;
-            });
-            ['sp-preview', 'sp-config'].forEach(function(id) {
-                var section = document.getElementById(id);
-                if (!section) return;
-                var active = id === tabId;
-                section.classList.toggle('active', active);
-                section.hidden = !active;
-            });
-            if (tabId === 'sp-preview') this._spRenderPreview();
         },
 
         _spNavigate(target, targetTab) {
@@ -978,6 +832,11 @@
             Promise.resolve(this.changePage(page)).then(() => {
                 if (targetTab && page === 'protocol') this.showConfigTab('protocol-page', targetTab);
             });
+        },
+
+        _spSupportedTemplate(page) {
+            page.cards = page.cards.filter((card) => SYSTEM_ACTION_KINDS.indexOf(card.kind) < 0 || this._spSystemActionSupport(card.kind) !== false);
+            return page;
         },
 
         _spGenerateThreeScreenTemplate() {
@@ -994,11 +853,10 @@
             var size = this._spReferenceSize(current);
             var rotation = current && current.rotation || 0;
             var config = helpers.buildThreeScreenTemplate(model.config, model.choices, size, rotation);
-            config.pages.forEach((page) => this._spLayoutTemplatePage(page, config));
+            config.pages.forEach((page) => this._spLayoutTemplatePage(this._spSupportedTemplate(page), config));
             this._spPushUndo();
             model.config = config;
             model.selectedPageId = 'home';
-            model.previewPageId = 'home';
             model.selectedCardId = '';
             this._spMarkDirty();
             this._spSetMessage('起始界面已生成', 'success');
@@ -1007,16 +865,14 @@
         _spAddPage() {
             var model = this._spEnsureModel();
             var limits = this._spLimits();
-            if (model.config.pages.length >= limits.maxPages) {
-                this._spSetMessage('页面数量已达到设备上限 ' + limits.maxPages, 'error');
-                return;
-            }
-            var preset = document.getElementById('sp-page-preset');
+            if (model.config.pages.length >= limits.maxPages) { this._spSetMessage('页面数量已达上限', 'error'); return; }
+            var preset = screenElement('sp-page-preset');
             var template = preset && preset.value || 'blank';
             var id = safeId('page');
             var currentPage = this._spCurrentPage();
             var newPage = helpers.buildPageTemplate(template, model.config, model.choices,
                 this._spReferenceSize(currentPage), currentPage.rotation || 0, id);
+            this._spSupportedTemplate(newPage);
             var existingCards = model.config.pages.reduce(function(total, page) { return total + page.cards.length; }, 0);
             if (newPage.cards.length > limits.maxCardsPerPage || existingCards + newPage.cards.length > limits.maxCards) {
                 this._spSetMessage('组件超限，请删除组件或添加空白页', 'error');
@@ -1029,7 +885,6 @@
             this._spMutate(function(config) {
                 config.pages.push(newPage);
                 model.selectedPageId = id;
-                model.previewPageId = id;
                 model.selectedCardId = '';
             });
         },
@@ -1043,20 +898,53 @@
             this._spMutate(function() { page.title = title; });
         },
 
-        _spSetHomePage() {
-            var page = this._spCurrentPage();
-            this._spMutate(function(config) { config.settings.homePageId = page.id; });
+        _spOrderPointerDown(event, kind, element) {
+            var model = this._spEnsureModel();
+            if (event.button !== 0 || event.isPrimary === false || model.pointer || model.orderPointer || !model.loaded) return;
+            if (kind === 'page' && event.pointerType === 'touch' && !event.target.closest('.sp-sort-handle')) return;
+            event.preventDefault();
+            var pointer = model.orderPointer = { kind: kind, pointerId: event.pointerId,
+                sourceId: kind === 'page' ? element.dataset.pageId : element.dataset.cardId,
+                pageId: model.selectedPageId, config: model.config,
+                startX: event.clientX, startY: event.clientY, moved: false, targetId: '', element: element };
+            var move = (e) => this._spOrderPointerMove(e);
+            var up = (e) => this._spOrderPointerUp(e);
+            var cancel = () => this._spOrderPointerUp({ type: 'pointercancel' });
+            pointer.cleanup = function() {
+                document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
+                document.removeEventListener('pointercancel', up); window.removeEventListener('blur', cancel);
+            };
+            document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+            document.addEventListener('pointercancel', up); window.addEventListener('blur', cancel);
         },
 
-        _spMovePage(direction) {
-            var model = this._spEnsureModel();
-            var index = model.config.pages.findIndex(function(page) { return page.id === model.selectedPageId; });
-            var target = index + direction;
-            if (index < 0 || target < 0 || target >= model.config.pages.length) return;
-            this._spMutate(function(config) {
-                var page = config.pages.splice(index, 1)[0];
-                config.pages.splice(target, 0, page);
-            });
+        _spOrderPointerMove(event) {
+            var pointer = this._spEnsureModel().orderPointer;
+            if (!pointer || event.pointerId !== pointer.pointerId) return;
+            if (!pointer.moved && Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) < 6) return;
+            pointer.moved = true;
+            pointer.element.classList.add('is-sorting');
+            var container = screenElement(pointer.kind === 'page' ? 'sp-page-tabs' : 'sp-editor-canvas');
+            var hit = document.elementFromPoint(event.clientX, event.clientY);
+            var target = hit && hit.closest(pointer.kind === 'page' ? '.sp-page-tab[data-page-id]' : '.sp-panel-card[data-card-id]');
+            pointer.targetId = target && container?.contains(target) ? (pointer.kind === 'page' ? target.dataset.pageId : target.dataset.cardId) : '';
+            if (pointer.targetId === pointer.sourceId) pointer.targetId = '';
+            container?.querySelectorAll('.is-sort-target').forEach(function(item) { item.classList.remove('is-sort-target'); });
+            if (pointer.targetId) target.classList.add('is-sort-target');
+        },
+
+        _spOrderPointerUp(event) {
+            var model = this._spEnsureModel(), pointer = model.orderPointer;
+            if (!pointer || (event.pointerId !== undefined && event.pointerId !== pointer.pointerId)) return;
+            if (event.type === 'pointerup') this._spOrderPointerMove(event);
+            pointer.cleanup(); model.orderPointer = null;
+            pointer.element.classList.remove('is-sorting');
+            screenElement('screen-panel-page')?.querySelectorAll('.is-sort-target').forEach(function(item) { item.classList.remove('is-sort-target'); });
+            if (!pointer.moved) return;
+            model.suppressClickUntil = Date.now() + 250;
+            if (event.type === 'pointerup' && pointer.config === model.config && pointer.pageId === model.selectedPageId && pointer.targetId) {
+                this._spReorderItem(pointer.kind, pointer.sourceId, pointer.targetId);
+            }
         },
 
         _spDeletePage() {
@@ -1074,12 +962,11 @@
                 });
                 if (config.settings.homePageId === page.id) config.settings.homePageId = config.pages[0].id;
                 model.selectedPageId = config.pages[0].id;
-                model.previewPageId = config.pages[0].id;
                 model.selectedCardId = '';
             });
         },
 
-        _spAddCard(kind) {
+        _spAddCard(kind, dropped) {
             var executeOnce = kind === 'execute';
             if (executeOnce) kind = 'control';
             var model = this._spEnsureModel();
@@ -1093,36 +980,44 @@
             if (!CARD_DEFAULTS[kind]) return;
             if (kind === 'motor' && !model.choices.some(function(choice) { return choice.type === 'motor'; })) { this._spSetMessage('请先配置电机', 'error'); return; }
             if (kind === 'restart' && model.config.settings.allowSystemRestart !== true) {
-                this._spSwitchTopTab('sp-config');
-                this._spSetMessage('请先在配置中开启重启许可', 'error');
+                this._spOpenProperties('global');
+                this._spSetMessage('请先在全局属性中开启“允许从屏幕重启设备”', 'error');
                 return;
             }
             var systemSupport = SYSTEM_ACTION_KINDS.indexOf(kind) >= 0 ? this._spSystemActionSupport(kind) : null;
             if (systemSupport === false) {
-                this._spSetMessage('当前显示设备不支持“' + CARD_LABELS[kind] + '”操作', 'error');
+                this._spSetMessage(this._spSystemActionReason(kind), 'error');
                 return;
             }
             var historyRequired = kind === 'line' && (!model.historyConfig || model.historyConfig.enabled !== true);
-            if (historyRequired) {
-                this._spSwitchTopTab('sp-config');
-            }
             var card = Object.assign({
                 id: safeId('card'), kind: kind, sourceRef: '', controlRef: '', targetPageId: '',
                 unit: '', precision: 1, min: 0, max: 100, step: 1, initialValue: 0,
                 confirm: false
             }, clone(CARD_DEFAULTS[kind]));
+            if (kind === 'weather') {
+                var source = model.choices.find(isWeatherChoice); card.sourceRef = source ? choiceRef(source) : '';
+                var enabled = screenElement('sp-weather-enabled');
+                if (enabled && !enabled.checked) { enabled.checked = true; model.weatherDirty = true; }
+            }
             if (kind === 'motor') card.controlRef = choiceRef(model.choices.find(function(choice) { return choice.type === 'motor'; }));
             if (executeOnce) { card.title = '执行一次'; card.display = 'action'; }
             if (kind === 'brightness') card.actionValue = clamp(Math.round(finiteNumber(model.config.settings.brightnessPercent, 70)), 0, 100);
             if (kind === 'page-link') card.targetPageId = model.config.pages.find(function(item) { return item.id !== page.id; })?.id || page.id;
+            if (page.layoutMode === 'canvas' || dropped) {
+                card.rect = this._spPresetRect(card, page);
+                if (!this._spPlaceCard(page, card)) { this._spSetLayoutError('没有足够空间，请缩小组件或新增页面'); return; }
+            }
             this._spMutate(() => {
+                if (dropped) page.layoutMode = 'canvas';
                 page.cards.push(card);
-                this._spLayoutTemplatePage(page);
-                model.selectedCardId = card.id;
+                if (page.layoutMode === 'template') this._spLayoutTemplatePage(page);
+                model.selectedCardId = card.id; model.globalProperties = false; model.propertyMode = 'component';
             });
+            this._spOpenProperties(false);
             this._spSetMessage(historyRequired ?
-                '折线已添加，保存时自动启用所选来源的最近记录。' :
-                ('已添加“' + card.title + '”，请在右侧选择绑定内容。'), historyRequired ? 'error' : 'success');
+                '保存时启用所选来源记录。' :
+                ('已添加“' + card.title + '”，请设置属性。'), historyRequired ? 'error' : 'success');
         },
 
         _spDeleteCard() {
@@ -1137,26 +1032,58 @@
             });
         },
 
-        _spApplyInspector() {
+        _spPresetRect(card, page) {
+            var size = this._spReferenceSize(page), min = this._spMinimumSize(card);
+            var w = card.size === 'small' ? Math.floor((size.width - 32) / 2) : size.width - 24;
+            var h = card.size === 'large' ? Math.floor(size.height * .55) : card.size === 'wide' ? 144 : 104;
+            return { x: card.rect ? card.rect.x : 8, y: card.rect ? card.rect.y : 8, w: Math.min(size.width, Math.max(min.w, w)), h: Math.min(size.height, Math.max(min.h, h)) };
+        },
+
+        _spMinimumSize(card) {
+            return helpers.minimumCardSize(card);
+        },
+
+        _spRenderCardSize(card) {
+            var select = screenElement('sp-card-size');
+            if (!select) return;
+            select.innerHTML = '<option value="small">小</option><option value="wide">宽</option><option value="large">大</option>' +
+                '<option value="custom" disabled>自定义' + (card.rect ? '（' + Number(card.rect.w) + ' × ' + Number(card.rect.h) + '）' : '') + '</option>';
+            select.value = card.size || CARD_DEFAULTS[card.kind].size;
+        },
+
+        _spPlaceCard(page, card) {
+            var size = this._spReferenceSize(page);
+            for (var y = 8; y + card.rect.h <= size.height; y += 8) {
+                for (var x = 8; x + card.rect.w <= size.width; x += 8) {
+                    card.rect.x = x; card.rect.y = y;
+                    if (!this._spRectCollision(page, card)) return true;
+                }
+            }
+            return false;
+        },
+
+        _spApplyInspector(live, input) {
             var card = this._spCurrentCard();
             var page = this._spCurrentPage();
             if (!card) return;
-            var get = function(id) { return document.getElementById(id); };
+            if (input && input.type === 'number' && (input.value === '' || !input.validity.valid)) return;
+            var model = this._spEnsureModel(), before = clone(model.config), oldSize = card.size;
+            var get = function(id) { return screenElement(id); };
             var barRefs = [];
             if (card.kind === 'bar') {
                 barRefs = [get('sp-card-source')?.value || '', get('sp-card-source-1')?.value || '',
                     get('sp-card-source-2')?.value || '', get('sp-card-source-3')?.value || ''].filter(Boolean);
                 var selectedChoices = barRefs.map((ref) => this._spEnsureModel().choices.find(function(choice) { return choiceRef(choice) === ref; }));
                 if ((barRefs.length && !get('sp-card-source')?.value) || new Set(barRefs).size !== barRefs.length ||
-                    selectedChoices.some(function(choice) { return !helpers.isNumericChoice(choice); }) ||
-                    selectedChoices.some(function(choice) { return String(choice.unit || '') !== String(selectedChoices[0].unit || ''); })) {
-                    this._spSetMessage('请选择不重复的同单位数值来源，并先设置数据来源', 'error');
+                    selectedChoices.some(function(choice) { return choice && !helpers.isNumericChoice(choice); }) ||
+                    selectedChoices.some(function(choice) { return choice && selectedChoices[0] && String(choice.unit || '') !== String(selectedChoices[0].unit || ''); })) {
+                    this._spSetMessage('请选择不重复的同单位数值来源', 'error');
                     return;
                 }
             }
-            this._spMutate(() => {
+            {
                 card.title = String(get('sp-card-title')?.value || CARD_LABELS[card.kind]).trim().slice(0, 64);
-                card.sourceRef = get('sp-card-source')?.value || '';
+                if (card.kind !== 'weather') card.sourceRef = get('sp-card-source')?.value || '';
                 if (card.kind === 'bar') card.sourceRefs = barRefs.length > 1 ? barRefs : [];
                 card.controlRef = get('sp-card-control')?.value || '';
                 card.targetPageId = get('sp-card-target-page')?.value || '';
@@ -1175,12 +1102,38 @@
                 card.max = finiteNumber(get('sp-card-max')?.value, 100);
                 card.step = finiteNumber(get('sp-card-step')?.value, 1);
                 card.initialValue = finiteNumber(get('sp-card-initial')?.value, card.min);
-                card.size = get('sp-card-size')?.value || 'small';
+                card.size = get('sp-card-size')?.value || card.size || CARD_DEFAULTS[card.kind].size;
                 if (card.kind === 'control' && card.display === 'number' && card.size === 'small') card.size = 'large';
                 card.confirm = card.kind === 'motor' || get('sp-card-confirm')?.checked === true;
-                if (page.layoutMode === 'template') this._spLayoutTemplatePage(page);
-            });
-            this._spSetMessage('组件设置已应用到草稿', 'success');
+                var geometry = input && ['sp-card-x', 'sp-card-y', 'sp-card-w', 'sp-card-h'].indexOf(input.id) >= 0;
+                if (geometry || card.size !== oldSize) {
+                    var rect = geometry ? clone(card.rect) : this._spPresetRect(card, page);
+                    if (geometry) rect[input.id.slice(-1)] = Number(input.value);
+                    var size = this._spReferenceSize(page), minimum = this._spMinimumSize(card);
+                    if (!geometry) { rect.x = clamp(rect.x, 0, size.width - rect.w); rect.y = clamp(rect.y, 0, size.height - rect.h); }
+                    if (rect.w < minimum.w || rect.h < minimum.h || rect.x < 0 || rect.y < 0 || rect.x + rect.w > size.width || rect.y + rect.h > size.height) {
+                        model.config = before;
+                        this._spSetLayoutError('尺寸至少 ' + minimum.w + ' × ' + minimum.h + '，位置和尺寸不能超出画布'); return;
+                    }
+                    card.rect = rect; page.layoutMode = 'canvas';
+                    if (geometry) { card.size = 'custom'; this._spRenderCardSize(card); }
+                }
+            }
+            if (JSON.stringify(before) === JSON.stringify(model.config)) return;
+            var edit = model.inspectorEdit;
+            if (!input || input.tagName === 'SELECT' || !edit || edit.element !== input || !edit.saved) {
+                model.undo.push(before); if (model.undo.length > HISTORY_LIMIT) model.undo.shift(); model.redo = [];
+                if (edit && edit.element === input) edit.saved = true;
+            }
+            this._spSetLayoutError(this._spRectCollision(page, card) ? '组件重叠，请调整位置或尺寸后保存' : '');
+            this._spMarkDirty({ render: !live });
+            if (live) {
+                this._spRenderSurface(screenElement('sp-editor-canvas'), page, true);
+                document.querySelectorAll('[data-sp-layout-mode]').forEach(function(button) { button.classList.toggle('is-active', button.dataset.spLayoutMode === page.layoutMode); });
+                this._spLoadVisibleHistories(page);
+                    var validation = this._spValidateConfig(this._spEnsureModel().config);
+                screenElement('sp-validation-summary').textContent = validation.errors.length ? validation.errors.length + ' 项需要处理' : '修改已加入草稿';
+            }
         },
 
         _spChangeLayoutMode(mode) {
@@ -1195,37 +1148,18 @@
 
         _spApplyTemplate() {
             var page = this._spCurrentPage();
-            if (page.cards.length > 0 && !window.confirm('将按当前模板重新排列组件，绑定内容不会改变。继续吗？')) return;
+            if (page.cards.length > 0 && !window.confirm('按模板重新排版？绑定内容保留。')) return;
             this._spMutate(() => { page.layoutMode = 'template'; this._spLayoutTemplatePage(page); });
         },
 
-        _spMoveCard(cardId, direction) {
-            var page = this._spCurrentPage();
-            var index = page.cards.findIndex(function(card) { return card.id === cardId; });
-            var target = direction === 'up' ? index - 1 : index + 1;
-            if (index < 0 || target < 0 || target >= page.cards.length) return;
-            this._spMutate(() => {
-                var moved = page.cards.splice(index, 1)[0];
-                page.cards.splice(target, 0, moved);
-                this._spLayoutTemplatePage(page);
-            });
-        },
-
-        _spUndo() {
+        _spUndo() { this._spTravelHistory(false); },
+        _spRedo() { this._spTravelHistory(true); },
+        _spTravelHistory(forward) {
             var model = this._spEnsureModel();
-            if (!model.undo.length) return;
-            model.redo.push(clone(model.config));
-            model.config = normalizeConfig(model.undo.pop());
-            if (!model.config.pages.some(function(page) { return page.id === model.selectedPageId; })) model.selectedPageId = model.config.pages[0].id;
-            model.selectedCardId = '';
-            this._spMarkDirty();
-        },
-
-        _spRedo() {
-            var model = this._spEnsureModel();
-            if (!model.redo.length) return;
-            model.undo.push(clone(model.config));
-            model.config = normalizeConfig(model.redo.pop());
+            var source = forward ? model.redo : model.undo, target = forward ? model.undo : model.redo;
+            if (!source.length) return;
+            target.push(clone(model.config));
+            model.config = normalizeConfig(source.pop());
             if (!model.config.pages.some(function(page) { return page.id === model.selectedPageId; })) model.selectedPageId = model.config.pages[0].id;
             model.selectedCardId = '';
             this._spMarkDirty();
@@ -1233,11 +1167,15 @@
 
         _spResetDraft() {
             var model = this._spEnsureModel();
-            if ((model.dirty || model.weatherDirty) && !window.confirm('撤销全部未保存修改？')) return;
-            model.weatherDirty = false; this._spRenderWeather();
+            if ((model.dirty || model.weatherDirty || model.historyDirty) && !window.confirm('撤销全部未保存修改？')) return;
+            if (model.configConflict) {
+                model.revision = model.configConflict.revision;
+                model.savedConfig = normalizeConfig(model.configConflict.config);
+                model.configConflict = null;
+            }
+            model.weatherDirty = false; model.historyDirty = false; model.historyDraft = clone(model.historyConfig); this._spRenderWeather();
             model.config = normalizeConfig(model.savedConfig);
             model.selectedPageId = model.config.settings.homePageId || model.config.pages[0].id;
-            model.previewPageId = model.selectedPageId;
             model.selectedCardId = '';
             model.undo = [];
             model.redo = [];
@@ -1245,15 +1183,6 @@
             this._spClearDraft();
             this._spSetMessage('已恢复设备保存的配置', 'success');
             this._spRenderAll();
-        },
-
-        _spMovePreview(direction) {
-            var model = this._spEnsureModel();
-            var config = this._spPreviewConfig();
-            var index = config.pages.findIndex(function(page) { return page.id === model.previewPageId; });
-            index = clamp(index + direction, 0, config.pages.length - 1);
-            model.previewPageId = config.pages[index].id;
-            this._spRenderPreview();
         },
 
         _spCanvasKeydown(event) {
@@ -1281,10 +1210,27 @@
             };
             if (this._spRectCollision(page, card)) {
                 model.config = normalizeConfig(model.undo.pop());
-                this._spSetLayoutError('移动后会与其他组件重叠，已保留原位置');
+                this._spSetLayoutError('组件重叠，已恢复原位置');
             } else {
                 this._spSetLayoutError('');
             }
+            this._spMarkDirty();
+            var moved = screenElement('sp-editor-canvas')?.querySelector('[data-card-id="' + card.id + '"]');
+            moved?.focus({ preventScroll: true });
+        },
+
+        _spDropComponent(kind, clientX, clientY) {
+            var model = this._spEnsureModel(), page = this._spCurrentPage(), count = page.cards.length;
+            this._spAddCard(kind, true);
+            if (page.cards.length === count) return;
+            var card = this._spCurrentCard(), canvas = screenElement('sp-editor-canvas');
+            var bounds = canvas.getBoundingClientRect(), size = this._spReferenceSize(page), output = rotatedSize(size, page.rotation);
+            var rect = rotateRect(card.rect, size, page.rotation), before = clone(card.rect);
+            rect.x = clamp(snap((clientX - bounds.left) / Math.max(1, bounds.width) * output.width - rect.w / 2, 8), 0, output.width - rect.w);
+            rect.y = clamp(snap((clientY - bounds.top) / Math.max(1, bounds.height * (1 - Math.min(0.3, 72 / output.height))) * output.height - rect.h / 2, 8), 0, output.height - rect.h);
+            card.rect = unrotateRect(rect, size, page.rotation);
+            if (this._spRectCollision(page, card)) { card.rect = before; this._spSetLayoutError('组件重叠，已添加到可用位置'); }
+            else { page.layoutMode = 'canvas'; this._spSetLayoutError(''); }
             this._spMarkDirty();
         },
 
@@ -1296,8 +1242,11 @@
             if (!card || !card.rect) return;
             event.preventDefault();
             var model = this._spEnsureModel();
+            if (model.pointer || event.isPrimary === false) return;
             var logicalSize = this._spReferenceSize(page);
             model.selectedCardId = card.id;
+            model.propertyMode = 'component';
+            screenElement('sp-editor-canvas').querySelectorAll('.sp-panel-card').forEach(function(item) { item.classList.toggle('is-selected', item === element); });
             model.pointer = {
                 pointerId: event.pointerId,
                 mode: event.target.closest('[data-sp-resize]') ? 'resize' : 'move',
@@ -1310,10 +1259,11 @@
                 moved: false
             };
             element.setPointerCapture?.(event.pointerId);
-            var canvas = document.getElementById('sp-editor-canvas');
+            var canvas = screenElement('sp-editor-canvas');
             canvas?.classList.add('is-dragging');
             var move = (moveEvent) => this._spPointerMove(moveEvent);
             var up = (upEvent) => {
+                if (upEvent.pointerId !== event.pointerId) return;
                 document.removeEventListener('pointermove', move);
                 document.removeEventListener('pointerup', up);
                 document.removeEventListener('pointercancel', up);
@@ -1330,7 +1280,7 @@
             if (!pointer || event.pointerId !== pointer.pointerId) return;
             var page = this._spCurrentPage();
             var card = page.cards.find(function(item) { return item.id === pointer.cardId; });
-            var canvas = document.getElementById('sp-editor-canvas');
+            var canvas = screenElement('sp-editor-canvas');
             var element = canvas && Array.prototype.find.call(canvas.querySelectorAll('.sp-panel-card[data-card-id]'), function(candidate) {
                 return candidate.dataset.cardId === pointer.cardId;
             });
@@ -1339,13 +1289,14 @@
             var size = this._spReferenceSize(page);
             var output = rotatedSize(size, page.rotation);
             var dx = (event.clientX - pointer.startX) * output.width / Math.max(bounds.width, 1);
-            var dy = (event.clientY - pointer.startY) * output.height / Math.max(bounds.height, 1);
+            var dy = (event.clientY - pointer.startY) * output.height / Math.max(bounds.height * (1 - Math.min(0.3, 72 / output.height)), 1);
             if (Math.abs(dx) + Math.abs(dy) < 2) return;
             pointer.moved = true;
             var displayRect = clone(pointer.startDisplayRect || rotateRect(pointer.startRect, size, page.rotation));
             if (pointer.mode === 'resize') {
-                displayRect.w = clamp(snap(displayRect.w + dx, 8), 72, output.width - displayRect.x);
-                displayRect.h = clamp(snap(displayRect.h + dy, 8), 56, output.height - displayRect.y);
+                var minimum = this._spMinimumSize(card), rotated = page.rotation === 90 || page.rotation === 270;
+                displayRect.w = clamp(snap(displayRect.w + dx, 8), rotated ? minimum.h : minimum.w, output.width - displayRect.x);
+                displayRect.h = clamp(snap(displayRect.h + dy, 8), rotated ? minimum.w : minimum.h, output.height - displayRect.y);
             } else {
                 displayRect.x = clamp(snap(displayRect.x + dx, 8), 0, output.width - displayRect.w);
                 displayRect.y = clamp(snap(displayRect.y + dy, 8), 0, output.height - displayRect.h);
@@ -1355,24 +1306,29 @@
                 x: Math.round(logicalRect.x), y: Math.round(logicalRect.y),
                 w: Math.round(logicalRect.w), h: Math.round(logicalRect.h)
             };
+            if (pointer.mode === 'resize') { card.size = 'custom'; this._spRenderCardSize(card); }
             var aligning = this._spNearAlignment(page, card);
             element.classList.toggle('is-aligning', aligning);
             element.classList.toggle('is-invalid', this._spRectCollision(page, card));
-            this._spApplyCardRect(element, card, page);
+            this._spApplyCardRect(element, card, page, undefined, 1 - Math.min(0.3, 72 / output.height));
+            ['x', 'y', 'w', 'h'].forEach(function(key) { var input = screenElement('sp-card-' + key); if (input) input.value = card.rect[key]; });
         },
 
         _spPointerUp(event) {
             var model = this._spEnsureModel();
             var pointer = model.pointer;
-            model.pointer = null;
-            document.getElementById('sp-editor-canvas')?.classList.remove('is-dragging');
             if (!pointer || (event.pointerId !== undefined && event.pointerId !== pointer.pointerId)) return;
+            model.pointer = null;
+            screenElement('sp-editor-canvas')?.classList.remove('is-dragging');
             var page = this._spCurrentPage();
             var card = page.cards.find(function(item) { return item.id === pointer.cardId; });
             if (!pointer.moved || !card) { this._spRenderAll(); return; }
-            if (this._spRectCollision(page, card)) {
+            model.suppressClickUntil = Date.now() + 250;
+            if (event.type === 'pointercancel') {
                 model.config = normalizeConfig(pointer.snapshot);
-                this._spSetLayoutError('组件不能重叠，已恢复移动前的位置');
+            } else if (this._spRectCollision(page, card)) {
+                model.config = normalizeConfig(pointer.snapshot);
+                this._spSetLayoutError('组件重叠，已恢复原位置');
             } else {
                 model.undo.push(pointer.snapshot);
                 if (model.undo.length > HISTORY_LIMIT) model.undo.shift();
@@ -1402,41 +1358,48 @@
         _spLoadVisibleHistories(page) {
             var model = this._spEnsureModel();
             page.cards.filter(function(card) { return card.kind === 'line' && card.sourceRef; }).forEach((card) => {
-                if (model.histories[card.sourceRef] && !model.histories[card.sourceRef].loading) return;
-                model.histories[card.sourceRef] = { loading: true, points: [] };
-                apiGet('/api/periph-exec/history', { sourceRef: card.sourceRef }).then((response) => {
-                    if (response && response.success && response.data) model.histories[card.sourceRef] = response.data;
-                    else model.histories[card.sourceRef] = { points: [] };
-                    if (this.currentPage === 'screen-panel') this._spRenderPreview();
-                }).catch(() => { model.histories[card.sourceRef] = { points: [] }; });
+                var ref = card.sourceRef, previous = model.histories[ref];
+                if (previous && (previous.loading || Date.now() - previous.loadedAt < 8000)) return;
+                var request = Object.assign({}, previous || { points: [] }, { loading: true });
+                model.histories[ref] = request;
+                var getter = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+                getter('/api/periph-exec/history', { sourceRef: ref }).then((response) => {
+                    if (!response || !response.success || !response.data) throw new Error('history unavailable');
+                    if (model.histories[ref] === request) model.histories[ref] = Object.assign({}, response.data, { loadedAt: Date.now() });
+                }).catch(() => {
+                    if (model.histories[ref] === request) model.histories[ref] = Object.assign({}, previous || { points: [] }, { loading: false, loadedAt: Date.now(), stale: true });
+                }).finally(() => { if (this.currentPage === 'screen-panel' && !model.pointer) this._spRenderSurface(screenElement('sp-editor-canvas'), this._spCurrentPage(), true); });
             });
+        },
+
+        _spReadApplication(state) {
+            var model = this._spEnsureModel();
+            model.application = Object.assign({}, state.application || state.panel || {});
+            if (state.appliedRevision !== undefined) model.application.appliedRevision = state.appliedRevision;
+            if (state.capabilities) model.capabilities = state.capabilities;
         },
 
         _spRefreshState(notify) {
             var model = this._spEnsureModel();
-            if (notify) model.histories = {};
+            if (model.weatherStatus) this._spWeatherStatus(model.weatherStatus);
+            if (notify) Object.keys(model.histories).forEach(function(ref) { model.histories[ref].loadedAt = 0; });
             var getter = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
             return getter('/api/screen-panel/state').then((response) => {
                 if (response && response.success && response.data) {
                     model.state = response.data;
-                    var application = response.data.application || response.data.panel || {};
-                    model.application = Object.assign({}, model.application || {}, application, {
-                        revision: application.revision !== undefined ? application.revision : response.data.revision,
-                        appliedRevision: response.data.appliedRevision
-                    });
+                    this._spReadApplication(response.data);
                     if (this.currentPage === 'screen-panel') {
                         this._spRenderPreview();
-                        this._spRenderSurface(document.getElementById('sp-editor-canvas'), this._spCurrentPage(), true);
                         this._spApplyStatus();
+                        this._spRenderSystemCapabilities();
                     }
-                    if (notify) this._spSetMessage('显示数据和运行状态已刷新', 'success');
-                } else throw new Error('设备状态暂不可用');
+                    if (notify) this._spSetMessage('状态已刷新', 'success');
+                } else throw new Error('状态不可用');
                 return response;
             }).catch((error) => {
                 if (model.state.clock) model.state.clock.quality = 'offline';
                 if (this.currentPage === 'screen-panel' && !(error && error._pageAborted)) {
                     this._spRenderPreview();
-                    this._spRenderSurface(document.getElementById('sp-editor-canvas'), this._spCurrentPage(), true);
                 }
                 if (notify && !(error && error._pageAborted)) this._spSetMessage('刷新失败，保留上次数据', 'error');
                 return null;
@@ -1463,7 +1426,7 @@
         },
 
         _spImportConfig(file) {
-            var input = document.getElementById('sp-import-file');
+            var input = screenElement('sp-import-file');
             if (!file) return Promise.resolve(false);
             if (file.size > 64 * 1024) {
                 this._spSetMessage('文件超过 64 KiB', 'error');
@@ -1492,14 +1455,12 @@
                 this._spPushUndo();
                 model.config = clean;
                 model.selectedPageId = clean.settings.homePageId || clean.pages[0].id;
-                model.previewPageId = model.selectedPageId;
                 model.selectedCardId = '';
                 this._spMarkDirty();
-                this._spSwitchTopTab('sp-preview');
                 var validation = this._spValidateConfig(clean);
                 this._spSetMessage(validation.errors.length
-                    ? ('布局已导入为草稿，但有 ' + validation.errors.length + ' 项需要修正后才能保存：' + validation.errors[0])
-                    : '布局已导入为草稿，请保存并应用', validation.errors.length ? 'error' : 'success');
+                    ? ('草稿有 ' + validation.errors.length + ' 项错误：' + validation.errors[0])
+                    : '布局已导入为草稿', validation.errors.length ? 'error' : 'success');
                 return true;
             }).catch((error) => {
                 this._spSetMessage('导入失败：' + (error && error.message || '文件格式无效'), 'error');
@@ -1518,6 +1479,7 @@
         },
 
         _spStopStatePolling() {
+            this._spOrderPointerUp({ type: 'pointercancel' });
             var model = this._spEnsureModel();
             if (model.stateTimer) clearInterval(model.stateTimer);
             model.stateTimer = null;
@@ -1544,8 +1506,9 @@
             return loadPage(1);
         },
 
-        _spSave() {
+        async _spSave() {
             var model = this._spEnsureModel();
+            if (model.layoutSaving) return false;
             var validation = this._spValidateConfig(model.config);
             if (validation.errors.length) {
                 this._spSetMessage(validation.errors[0] + (validation.errors.length > 1 ? ('；另有 ' + (validation.errors.length - 1) + ' 项') : ''), 'error');
@@ -1559,41 +1522,80 @@
                 this._spSetMessage('布局超过 20 KiB，请减少组件', 'error');
                 return Promise.resolve(false);
             }
-            var button = document.getElementById('sp-save-config');
+            var button = screenElement('sp-save-config');
             if (button) { button.disabled = true; button.textContent = '正在保存...'; }
-            return apiPostJson('/api/screen-panel/config', {
-                expectedRevision: model.revision,
-                config: cleanConfig
-            }).then((response) => {
-                if (!response || response.success === false) throw new Error(response && response.message || '保存失败');
+            model.layoutSaving = true;
+            var submittedConfig = clone(cleanConfig), baseConfig = sanitizeConfig(model.savedConfig, model.choices);
+            var expectedRevision = model.revision, deviceMac = model.deviceMac;
+            var response;
+            function checked(result) {
+                if (!result || result.success === false) {
+                    var error = new Error(result && (result.error || result.message) || '保存失败');
+                    error.status = result && result.code; error.data = result; throw error;
+                }
+                return result;
+            }
+            try {
+                try {
+                    response = checked(await apiPostJson('/api/screen-panel/config', { expectedRevision: expectedRevision, config: cleanConfig }));
+                } catch (error) {
+                    if (!error || error.status !== 409) throw error;
+                    var getter = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+                    var latest = checked(await getter('/api/screen-panel/config', { _t: Date.now() }));
+                    var current = latest.data;
+                    if (!current || !current.config || !Number.isInteger(current.revision) || current.revision < 1 || model.deviceMac !== deviceMac) throw error;
+                    var remoteConfig = sanitizeConfig(current.config, model.choices);
+                    var merged = helpers.mergeConfig(baseConfig, cleanConfig, remoteConfig);
+                    if (merged.conflicts.length) {
+                        model.configConflict = { revision: current.revision, config: clone(current.config), paths: merged.conflicts };
+                        error.data = { currentRevision: current.revision };
+                        throw error;
+                    }
+                    cleanConfig = merged.config;
+                    var mergedValidation = this._spValidateConfig(normalizeConfig(cleanConfig));
+                    if (mergedValidation.errors.length) throw new Error(mergedValidation.errors.join('；'));
+                    serialized = JSON.stringify(cleanConfig);
+                    if ((typeof TextEncoder === 'function' ? new TextEncoder().encode(serialized).length : serialized.length) > 20 * 1024) throw new Error('合并后的布局超过 20 KiB，请减少组件');
+                    expectedRevision = current.revision;
+                    // A lost response may be retried even though the first save succeeded.
+                    response = helpers.configEqual(cleanConfig, remoteConfig) ? latest : checked(await apiPostJson('/api/screen-panel/config', {
+                        expectedRevision: expectedRevision, config: cleanConfig
+                    }));
+                }
+                if (model.deviceMac !== deviceMac) throw new Error('设备已切换，请重新读取配置');
                 var data = response.data || {};
-                model.revision = finiteNumber(data.revision, model.revision + 1);
-                model.config = normalizeConfig(data.config || model.config);
-                model.savedConfig = clone(model.config);
+                var saved = sanitizeConfig(data.config || cleanConfig, model.choices);
+                var pending = helpers.mergeConfig(submittedConfig, sanitizeConfig(model.config, model.choices), saved);
+                model.revision = finiteNumber(data.revision, expectedRevision + 1);
+                model.config = normalizeConfig(pending.config);
+                model.savedConfig = normalizeConfig(saved);
+                model.configConflict = null;
                 model.application = data.application || model.application;
-                model.dirty = false; model.persisted = true;
+                model.dirty = !helpers.configEqual(sanitizeConfig(model.config, model.choices), saved); model.persisted = true;
                 model.undo = [];
                 model.redo = [];
-                this._spClearDraft();
-                this._spSetMessage(data.application && data.application.pendingRestart ? '已保存，重启后应用到物理屏' : '配置已保存', 'success');
+                if (model.dirty) this._spPersistDraftSoon(); else this._spClearDraft();
+                this._spSetMessage(model.dirty ? '配置已保存，保存期间的新修改仍保留在草稿' : data.application && data.application.pendingRestart ? '已保存，重启后应用到物理屏' : '配置已保存', 'success');
                 this._spRenderAll();
                 return true;
-            }).catch((error) => {
+            } catch (error) {
                 if (error && error.status === 409) {
                     var currentRevision = error.data && (error.data.currentRevision || error.data.data && error.data.data.currentRevision);
-                    this._spSetMessage('另一窗口已保存新配置' + (currentRevision !== undefined ? ('（版本 ' + currentRevision + '）') : '') + '。草稿已保留，请刷新核对。', 'error');
+                    this._spSetMessage('设备配置已更新' + (currentRevision !== undefined ? ('（版本 ' + currentRevision + '）') : '') + '，可能来自触屏操作或其他窗口。存在冲突或版本再次变化，草稿已保留；请先导出草稿，再刷新核对或撤销草稿以读取设备配置。', 'error');
                 } else if (!(error && error._pageAborted)) {
-                    this._spSetMessage(error && error.data && error.data.message || error.message || '保存失败，请稍后重试', 'error');
+                    this._spSetMessage(error && error.data && (error.data.error || error.data.message) || error.message || '保存失败，请稍后重试', 'error');
                 }
                 return false;
-            }).finally(function() {
+            } finally {
+                model.layoutSaving = false;
                 if (button) { button.disabled = false; button.textContent = '保存并应用'; }
-            });
+            }
         },
 
         loadScreenPanelPage(options) {
             options = options || {};
             var model = this._spEnsureModel();
+            var loadId = model.loadId = (model.loadId || 0) + 1;
             this._spSetupEvents();
             this._spSetMessage('');
             var getter = options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
@@ -1603,64 +1605,95 @@
                 getter('/api/peripherals', { page: 1, pageSize: 50 }),
                 getter('/api/screen-panel/state'),
                 getter('/api/periph-exec/history/config'),
-                getter('/api/screen-panel/weather')
+                getter('/api/screen-panel/weather'),
+                (typeof apiGetFresh === 'function' ? apiGetFresh : apiGet)('/api/network/status', { _t: Date.now() })
             ];
             return Promise.allSettled(requests).then((results) => {
-                var configResponse = results[0].status === 'fulfilled' ? results[0].value : null;
+                if (loadId !== model.loadId) return null;
+                var responses = results.map(function(result) { return result.status === 'fulfilled' ? result.value : null; });
+                var configResponse = responses[0];
                 if (!configResponse || configResponse.success === false || !configResponse.data) {
-                    throw results[0].reason || new Error('设备屏幕配置不可用');
+                    throw results[0].reason || new Error('屏幕配置不可用');
                 }
                 var payload = configResponse.data;
                 var serverConfig = normalizeConfig(payload.config || null);
-                model.revision = finiteNumber(payload.revision, 0);
+                var identity = responses[6];
+                var mac = identity && identity.success !== false && identity.data ? String(identity.data.macAddress || '').toUpperCase() : '';
+                if (!/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac) || /^(00:){5}00$|^(FF:){5}FF$/.test(mac)) mac = '';
+                var sameDevice = !!mac && model.deviceMac === mac;
+                var keepSelection = sameDevice && options.preserveDraft !== false && model.loaded;
+                if (!sameDevice) {
+                    if (model.draftTimer) clearTimeout(model.draftTimer);
+                    model.draftTimer = null;
+                    model.historyDirty = model.weatherDirty = false;
+                    model.recoverableDraft = null;
+                }
+                model.deviceMac = mac;
+                var keepDraft = sameDevice && options.preserveDraft !== false && model.loaded && model.dirty;
+                if (!keepDraft) model.revision = finiteNumber(payload.revision, 0);
                 model.persisted = !!payload.config && model.revision > 0;
                 model.capabilities = payload.capabilities || {};
                 model.application = payload.application || {};
-                model.savedConfig = clone(serverConfig);
+                if (!keepDraft) {
+                    model.savedConfig = clone(serverConfig);
+                    model.configConflict = null;
+                } else {
+                    var merged = helpers.mergeConfig(sanitizeConfig(model.savedConfig, model.choices), sanitizeConfig(model.config, model.choices), sanitizeConfig(serverConfig, model.choices));
+                    if (!merged.conflicts.length) {
+                        model.config = normalizeConfig(merged.config);
+                        model.savedConfig = clone(serverConfig);
+                        model.revision = finiteNumber(payload.revision, model.revision);
+                        model.configConflict = null;
+                    } else model.configConflict = { revision: payload.revision, config: clone(serverConfig), paths: merged.conflicts };
+                }
                 var restored = options.preserveDraft !== false ? this._spRestoreDraft(serverConfig, model.revision) : null;
-                model.config = restored ? restored.config : serverConfig;
-                model.dirty = !!restored && JSON.stringify(model.config) !== JSON.stringify(serverConfig);
-                model.selectedPageId = restored && model.config.pages.some(function(page) { return page.id === restored.selectedPageId; }) ? restored.selectedPageId :
+                if (!keepDraft) model.config = serverConfig;
+                model.recoverableDraft = restored;
+                model.dirty = !helpers.configEqual(sanitizeConfig(model.config, model.choices), sanitizeConfig(serverConfig, model.choices));
+                if (!keepDraft && !keepSelection) model.selectedPageId = restored && model.config.pages.some(function(page) { return page.id === restored.selectedPageId; }) ? restored.selectedPageId :
                     (model.config.settings.homePageId || model.config.pages[0].id);
-                model.selectedCardId = restored ? restored.selectedCardId || '' : '';
-                model.previewPageId = model.selectedPageId;
-                var choicePayload = results[1].status === 'fulfilled' && results[1].value || {};
+                if (!keepDraft && !keepSelection) model.selectedCardId = restored ? restored.selectedCardId || '' : '';
+                var choicePayload = responses[1] || {};
                 model.choices = Array.isArray(choicePayload.items) ? choicePayload.items : [];
                 model.choiceCapabilities = choicePayload.capabilities || {};
-                var peripherals = results[2].status === 'fulfilled' ? unwrapList(results[2].value) : [];
+                var peripherals = unwrapList(responses[2]);
                 var capabilityDisplays = Array.isArray(model.capabilities.displays) ? model.capabilities.displays : [];
                 model.displays = peripherals.filter(isDisplayPeripheral).concat(capabilityDisplays.filter(function(candidate) {
                     return !peripherals.some(function(item) { return String(item.id) === String(candidate.id || candidate.ref); });
                 }));
-                if (results[3].status === 'fulfilled' && results[3].value && results[3].value.success) {
-                    model.state = results[3].value.data || { items: {} };
-                    if (model.state.application || model.state.panel) {
-                        model.application = Object.assign({}, model.application,
-                            model.state.application || model.state.panel,
-                            { appliedRevision: model.state.appliedRevision });
-                    }
+                if (responses[3] && responses[3].success) {
+                    model.state = responses[3].data || { items: {} };
+                    this._spReadApplication(model.state);
                 }
-                if (results[4].status === 'fulfilled' && results[4].value && results[4].value.success && results[4].value.data) {
-                    model.historyConfig = results[4].value.data.config || null;
-                    model.historyStatus = results[4].value.data.status || null;
+                if (responses[4] && responses[4].success && responses[4].data) {
+                    if (!model.historyDirty || options.preserveDraft === false) { model.historyConfig = responses[4].data.config || null; model.historyDraft = clone(model.historyConfig); model.historyDirty = false; }
+                    model.historyStatus = responses[4].data.status || null;
                 } else {
                     model.historyConfig = null;
                     model.historyStatus = null;
                 }
-                if (results[5].status === 'fulfilled' && results[5].value && results[5].value.success) {
-                    if (!model.weatherDirty || options.preserveDraft === false) { model.weather = results[5].value.data; model.weatherDirty = false; this._spRenderWeather(); }
-                } else { document.getElementById('sp-weather-status').textContent = '天气配置暂不可用'; }
+                if (responses[5] && responses[5].success) {
+                    if (!model.weatherDirty || options.preserveDraft === false) { model.weather = responses[5].data; model.weatherDirty = false; this._spRenderWeather(); }
+                } else { screenElement('sp-weather-status').textContent = '天气配置暂不可用'; }
                 if (!model.config.displayRef && model.displays.length === 1) { model.config.displayRef = String(model.displays[0].id || model.displays[0].ref); model.dirty = true; }
                 model.loaded = true;
                 model.undo = [];
                 model.redo = [];
                 this._spRenderAll();
+                if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('tab') === 'history') {
+                    this._spOpenProperties('history');
+                }
                 this._spStartStatePolling();
-                if (restored) this._spSetMessage('已恢复未保存草稿', 'success');
+                if (keepDraft) {
+                    this._spPersistDraftSoon();
+                    if (model.configConflict) this._spSetMessage('设备配置已更新（版本 ' + payload.revision + '），与草稿有冲突。草稿已保留；可先导出草稿，再撤销草稿以读取设备配置。', 'error');
+                }
+                var recovery = screenElement('sp-draft-recovery'); if (recovery) recovery.classList.toggle('fb-hidden', !restored);
                 return payload;
             }).catch((error) => {
+                if (loadId !== model.loadId) return null;
                 if (!(error && error._pageAborted)) {
-                    this._spSetMessage('无法读取设备屏幕配置：' + (error && error.message || '设备暂不可用'), 'error');
+                    this._spSetMessage('读取配置失败：' + (error && error.message || '设备暂不可用'), 'error');
                     model.config = model.config || defaultConfig();
                     this._spRenderAll();
                 }

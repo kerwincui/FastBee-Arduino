@@ -139,6 +139,7 @@
         },
 
         async _runPeripheralPreflight(data) {
+            const session = this._periphFormSession;
             var fingerprint = this._peripheralConfigFingerprint(data);
             if (this._periphPreflightFingerprint === fingerprint) {
                 data.confirmWarnings = 1;
@@ -150,6 +151,7 @@
                 var response = await post('/api/peripherals/preflight', Object.assign({
                     operation: document.getElementById('peripheral-original-id')?.value ? 'update' : 'add'
                 }, data));
+                if (session !== this._periphFormSession) return false;
                 if (!response || response.success === false) throw new Error(response?.message || response?.error || '预检失败');
                 var result = this._normalizePeripheralPreflight(response);
                 this._renderPeripheralPreflight(
@@ -168,6 +170,7 @@
                 this._periphPreflightAcknowledgements = 0;
                 return true;
             } catch (err) {
+                if (session !== this._periphFormSession) return false;
                 if (!this._isUnsupportedPeripheralPreflight(err)) throw err;
                 var status = Number(err && (err.status ?? err.statusCode ?? err.response?.status));
                 this._renderPeripheralPreflight({
@@ -235,6 +238,9 @@
         async savePeripheralConfig() {
             if (!this.guardDeveloperModeAction()) return;
             if (this._periphSaveBusy) return;
+            const session = this._periphFormSession;
+            const active = () => session && this._periphFormSession === session && this.currentPage === 'peripheral';
+            if (!active()) return;
             const originalId = document.getElementById('peripheral-original-id').value;
             const id = document.getElementById('peripheral-id-input').value.trim();
             const name = document.getElementById('peripheral-name-input').value.trim();
@@ -331,6 +337,7 @@
                 data.filterMode = readAdcInteger('adc-filter-mode', 0, 0, 1);
                 data.signalMode = readAdcInteger('adc-signal-mode', 0, 0, 4);
                 data.conversionEnabled = !!document.getElementById('adc-conversion-enabled')?.checked;
+                data.calibratedVoltage = !!document.getElementById('adc-calibrated-voltage')?.checked;
                 data.clampEnabled = !!document.getElementById('adc-clamp-enabled')?.checked;
                 data.decimalPlaces = readAdcInteger('adc-decimal-places', 2, 0, 6);
                 data.inputMin = readAdcNumber('adc-input-min', 0);
@@ -556,7 +563,9 @@
             this._periphSaveBusy = true;
             if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '预检中...'; }
             try {
-                if (!await this._runPeripheralPreflight(data)) {
+                const allowed = await this._runPeripheralPreflight(data);
+                if (!active()) { this._periphSaveBusy = false; return; }
+                if (!allowed) {
                     this._periphSaveBusy = false;
                     this._updatePeripheralTypeAvailability(typeNum);
                     if (saveBtn) {
@@ -569,13 +578,15 @@
                 this._periphSaveBusy = false;
                 if (saveBtn) saveBtn.textContent = origText;
                 this._updatePeripheralTypeAvailability(typeNum);
-                this.showInlineError(errEl, this._peripheralIoErrorMessage(err, '保存前资源预检失败'));
+                if (active()) this.showInlineError(errEl, this._peripheralIoErrorMessage(err, '保存前资源预检失败'));
                 return;
             }
             if (saveBtn) saveBtn.textContent = t('peri-saving', '保存中...');
             const url = isEdit ? '/api/peripherals/update' : '/api/peripherals';
-            apiPost(url, data)
+            return apiPost(url, data)
                 .then(res => {
+                    if (res && res.success && typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/peripherals');
+                    if (!active()) return;
                     if (res && res.success) {
                         var newPeriphId = res.data && res.data.id ? res.data.id : (isEdit ? originalId : '');
                         this.closePeripheralModal();
@@ -589,6 +600,7 @@
                     }
                 })
                 .catch(err => {
+                    if (!active()) return;
                     console.error('Save peripheral failed:', err);
                     this.showInlineError(errEl, err?.data?.error || err?.data?.message || t('peri-save-fail', '保存失败，请检查连接'));
                 })
@@ -598,7 +610,8 @@
                         saveBtn.textContent = this._periphPreflightFingerprint
                             ? t('peri-confirm-save', '确认并保存') : t('peri-save', '保存');
                     }
-                    this._updatePeripheralTypeAvailability(typeNum);
+                    const currentType = document.getElementById('peripheral-type-input');
+                    if (currentType) this._updatePeripheralTypeAvailability(Number(currentType.value));
                 });
         },
 

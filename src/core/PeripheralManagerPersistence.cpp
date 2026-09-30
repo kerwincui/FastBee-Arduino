@@ -136,6 +136,7 @@ bool PeripheralManager::saveConfiguration() {
                 config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW) ||
                 config.params.adc.conversionEnabled ||
                 config.params.adc.clampEnabled ||
+                config.params.adc.calibratedVoltage ||
                 config.params.adc.inputMin != 0.0f || config.params.adc.inputMax != 0.0f ||
                 config.params.adc.engineeringMin != 0.0f || config.params.adc.engineeringMax != 100.0f ||
                 config.params.adc.engineeringOffset != 0.0f || config.params.adc.decimalPlaces != 2 ||
@@ -147,6 +148,7 @@ bool PeripheralManager::saveConfiguration() {
                 params["signalMode"] = config.params.adc.signalMode;
                 params["conversionEnabled"] = config.params.adc.conversionEnabled;
                 params["clampEnabled"] = config.params.adc.clampEnabled;
+                params["calibratedVoltage"] = config.params.adc.calibratedVoltage;
                 params["decimalPlaces"] = config.params.adc.decimalPlaces;
                 params["inputMin"] = config.params.adc.inputMin;
                 params["inputMax"] = config.params.adc.inputMax;
@@ -529,6 +531,7 @@ bool PeripheralManager::loadConfiguration() {
                     config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
                 }
                 config.params.adc.conversionEnabled = params["conversionEnabled"] | false;
+                config.params.adc.calibratedVoltage = params["calibratedVoltage"] | false;
                 config.params.adc.clampEnabled = params["clampEnabled"] | false;
                 int decimals = params["decimalPlaces"] | 2;
                 if (decimals < 0) decimals = 0;

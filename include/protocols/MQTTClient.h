@@ -87,7 +87,7 @@ struct MQTTConfig {
     String username;
     String password;
     String topicPrefix;
-    String otaBaseUrl;          // FastBee relative firmware URL base (HTTPS)
+    String otaBaseUrl;          // Legacy storage: HTTP/HTTPS base edited in Device OTA
     String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
     bool autoReconnect;        // 自动重连

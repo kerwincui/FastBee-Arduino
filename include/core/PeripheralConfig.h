@@ -281,6 +281,7 @@ struct PeripheralConfig {
             uint8_t signalMode;       // AnalogSignalMode
             bool conversionEnabled;   // 是否输出工程量
             bool clampEnabled;        // 越界时钳位；关闭则返回无效值
+            bool calibratedVoltage;   // 使用芯片校准曲线换算采样电压；缺省 false 保持旧配置
             uint8_t decimalPlaces;    // 上报小数位 0-6
             float inputMin;           // 输入信号下限(V/mA/raw)，0=按信号类型推导
             float inputMax;           // 输入信号上限(V/mA/raw)，0=按信号类型推导
@@ -733,10 +734,24 @@ inline float positiveAnalogConfigValue(float value, float fallback) {
     return (!isnan(value) && !isinf(value) && value > 0.0f) ? value : fallback;
 }
 
+// Diagnostic current is inferred from the ADC pin voltage and configured
+// front-end parameters. It is not an independently measured loop current.
+inline float calculateAnalogInputCurrentMa(const PeripheralConfig& config, float pinVoltage) {
+    const auto& adc = config.params.adc;
+    if ((adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::CURRENT_0_20MA) &&
+         adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::CURRENT_4_20MA)) ||
+        isnan(pinVoltage) || isinf(pinVoltage) || pinVoltage < 0.0f) return NAN;
+    const float gain = positiveAnalogConfigValue(adc.inputGain, 1.0f);
+    const float shunt = positiveAnalogConfigValue(adc.shuntResistance, 165.0f);
+    const float current = ((pinVoltage - adc.inputOffset) / gain) * 1000.0f / shunt;
+    return (!isnan(current) && !isinf(current)) ? current : NAN;
+}
+
 // Pure, allocation-free AI conversion shared by runtime reporting and native
 // boundary tests. A disabled conversion deliberately preserves the raw count.
 inline float convertAnalogInputRaw(const PeripheralConfig& config, uint16_t raw,
-                                   AnalogInputQuality* quality = nullptr) {
+                                   AnalogInputQuality* quality = nullptr,
+                                   float calibratedPinVoltage = NAN) {
     const auto& adc = config.params.adc;
     const uint8_t mode = adc.signalMode;
     if (!adc.conversionEnabled || mode == static_cast<uint8_t>(AnalogSignalMode::RAW)) {
@@ -762,7 +777,12 @@ inline float convertAnalogInputRaw(const PeripheralConfig& config, uint16_t raw,
             inputMax = adc.rawMax > adc.rawMin ? adc.rawMax : adcMax;
         }
     } else {
-        const float pinVoltage = static_cast<float>(raw) * vRef / adcMax;
+        // A calibrated sample is supplied by the ADC driver, never estimated
+        // from an expected temperature. Failure must not fall back silently.
+        if (adc.calibratedVoltage &&
+            (isnan(calibratedPinVoltage) || isinf(calibratedPinVoltage) || calibratedPinVoltage < 0.0f)) return NAN;
+        const float pinVoltage = adc.calibratedVoltage
+            ? calibratedPinVoltage : static_cast<float>(raw) * vRef / adcMax;
         if (mode == static_cast<uint8_t>(AnalogSignalMode::VOLTAGE_0_10V)) {
             const float voltageRatio = positiveAnalogConfigValue(adc.voltageRatio, 1.0f);
             inputValue = pinVoltage * voltageRatio;
@@ -774,7 +794,7 @@ inline float convertAnalogInputRaw(const PeripheralConfig& config, uint16_t raw,
         } else {
             const float gain = positiveAnalogConfigValue(adc.inputGain, 1.0f);
             const float shunt = positiveAnalogConfigValue(adc.shuntResistance, 165.0f);
-            inputValue = ((pinVoltage - adc.inputOffset) / gain) * 1000.0f / shunt;
+            inputValue = calculateAnalogInputCurrentMa(config, pinVoltage);
             inputLsb = (vRef / adcMax / gain) * 1000.0f / shunt;
             if (inputMin == 0.0f && inputMax == 0.0f) {
                 inputMin = mode == static_cast<uint8_t>(AnalogSignalMode::CURRENT_4_20MA) ? 4.0f : 0.0f;

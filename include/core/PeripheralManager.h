@@ -181,7 +181,7 @@ public:
     float readAnalogValueByCStr(const char* peripheralId);
     // 使用调用方已经取得的同一份 ADC 原始值执行工程量转换，避免重复采样。
     float convertAnalogRawValue(const String& peripheralId, uint16_t rawValue,
-                                AnalogInputQuality* quality = nullptr);
+                                AnalogInputQuality* quality = nullptr, float* pinVoltage = nullptr);
 
     // 切换GPIO状态
     bool togglePin(uint8_t pin);

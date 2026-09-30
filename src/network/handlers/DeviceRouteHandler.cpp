@@ -2,6 +2,8 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
+#include "network/DeviceConfigValidation.h"
+#include "systems/ConfigStorage.h"
 #include "systems/LoggerSystem.h"
 #include "utils/TimeUtils.h"
 #include "core/FeatureFlags.h"
@@ -155,11 +157,17 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
 void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!ctx->requireAuth(request)) return;
     JsonObject obj = json.as<JsonObject>();
+    if (const char* error = FastBee::validateDeviceConfigPatch(obj)) {
+        ctx->sendError(request, 400, error);
+        return;
+    }
     JsonDocument doc;
     // Read existing config first
     if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-        if (f) { deserializeJson(doc, f); f.close(); }
+        if (!ConfigStorage::getInstance().loadJSONConfig(DEVICE_CONFIG_FILE, doc) || !doc.is<JsonObject>()) {
+            ctx->sendError(request, 500, "Existing device configuration is unreadable");
+            return;
+        }
     }
     // Update fields from JSON body
     if (obj["deviceName"].is<String>()) doc["deviceName"] = obj["deviceName"].as<String>();
@@ -193,41 +201,36 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
     if (obj["timezone"].is<String>()) doc["timezone"] = obj["timezone"].as<String>();
     if (obj["enableNTP"].is<String>() || obj["enableNTP"].is<bool>()) {
         String v = obj["enableNTP"].as<String>();
-        doc["enableNTP"] = (v == "1" || v == "true" || obj["enableNTP"].as<bool>());
+        doc["enableNTP"] = (v == "1" || v == "true");
     }
     if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) doc["syncInterval"] = obj["syncInterval"].as<int>();
     if (obj["logLevel"].is<String>()) {
         String lv = obj["logLevel"].as<String>();
-        // 即时应用日志级别
-        LogLevel level = LOG_INFO;
-        if      (lv == "DEBUG")   level = LOG_DEBUG;
-        else if (lv == "INFO")    level = LOG_INFO;
-        else if (lv == "WARNING") level = LOG_WARNING;
-        else if (lv == "ERROR")   level = LOG_ERROR;
-        LOGGER.setLogLevel(level);
         doc["logLevel"] = lv;
     }
     if (obj["cacheDuration"].is<int>() || obj["cacheDuration"].is<String>()) {
         int cd = obj["cacheDuration"].as<int>();
         doc["cacheDuration"] = cd;
-        ctx->cacheDuration = (uint32_t)cd;
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
         doc["developerModeEnabled"] = false;
     }
 
     // 安全策略字段：转发到 UserManager 持久化到 users.json
-    bool hasSecurityFields = false;
+    const bool hasSecurityFields = !obj["maxLoginAttempts"].isNull() || !obj["loginLockoutTime"].isNull() ||
+        !obj["minPasswordLength"].isNull() || !obj["requireStrongPasswords"].isNull();
     uint8_t  sMaxAttempts  = 5;
     uint32_t sLockoutTime  = 300000UL;
     uint8_t  sMinPwdLen    = 6;
     bool     sRequireStrong = false;
     // 先读取 users.json 当前值作为默认值
-    if (LittleFS.exists("/config/users.json")) {
-        File uf = LittleFS.open("/config/users.json", "r");
-        if (uf) {
-            JsonDocument usersDoc;
-            if (deserializeJson(usersDoc, uf) == DeserializationError::Ok) {
+    if (hasSecurityFields && LittleFS.exists("/config/users.json")) {
+        JsonDocument usersDoc;
+        if (!ConfigStorage::getInstance().loadJSONConfig("/config/users.json", usersDoc)) {
+            ctx->sendError(request, 500, "Existing security policy is unreadable");
+            return;
+        }
+        {
                 JsonObject sec = usersDoc["security"];
                 if (!sec.isNull()) {
                     sMaxAttempts   = sec["maxLoginAttempts"] | 5;
@@ -235,24 +238,34 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
                     sMinPwdLen     = sec["minPasswordLength"] | 6;
                     sRequireStrong = sec["requireStrongPasswords"] | false;
                 }
-            }
-            uf.close();
         }
     }
-    if (obj["maxLoginAttempts"].is<int>())  { sMaxAttempts  = (uint8_t)obj["maxLoginAttempts"].as<int>();  hasSecurityFields = true; }
-    if (obj["loginLockoutTime"].is<int>() || obj["loginLockoutTime"].is<long>()) {
-        sLockoutTime = (uint32_t)obj["loginLockoutTime"].as<long>(); hasSecurityFields = true;
+    if (!obj["maxLoginAttempts"].isNull()) sMaxAttempts = obj["maxLoginAttempts"].as<uint8_t>();
+    if (!obj["loginLockoutTime"].isNull()) sLockoutTime = obj["loginLockoutTime"].as<uint32_t>();
+    if (!obj["minPasswordLength"].isNull()) sMinPwdLen = obj["minPasswordLength"].as<uint8_t>();
+    if (!obj["requireStrongPasswords"].isNull()) {
+        const String value = obj["requireStrongPasswords"].as<String>();
+        sRequireStrong = value == "true" || value == "1";
     }
-    if (obj["minPasswordLength"].is<int>()) { sMinPwdLen    = (uint8_t)obj["minPasswordLength"].as<int>(); hasSecurityFields = true; }
-    if (obj["requireStrongPasswords"].is<bool>()) { sRequireStrong = obj["requireStrongPasswords"].as<bool>(); hasSecurityFields = true; }
-    if (hasSecurityFields && ctx->userManager) {
-        ctx->userManager->updatePasswordPolicy(sMaxAttempts, sLockoutTime, sMinPwdLen, sRequireStrong);
+    if (hasSecurityFields) {
+        if (!ctx->userManager || !ctx->userManager->updatePasswordPolicy(sMaxAttempts, sLockoutTime, sMinPwdLen, sRequireStrong)) {
+            ctx->sendError(request, 500, "Failed to save security policy");
+            return;
+        }
+        ctx->sendSuccess(request, "Security policy saved");
+        return;
     }
 
-    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
-    if (!f) { ctx->sendError(request, 500, "Failed to save device config"); return; }
-    serializeJsonPretty(doc, f);
-    f.close();
+    if (!ConfigStorage::getInstance().saveJSONConfig(DEVICE_CONFIG_FILE, doc)) {
+        ctx->sendError(request, 500, "Failed to save device config");
+        return;
+    }
+    // Publish runtime side effects only after the verified atomic commit.
+    if (!obj["cacheDuration"].isNull()) ctx->cacheDuration = doc["cacheDuration"].as<uint32_t>();
+    if (!obj["logLevel"].isNull()) {
+        const String lv = doc["logLevel"].as<String>();
+        LOGGER.setLogLevel(lv == "DEBUG" ? LOG_DEBUG : lv == "WARNING" ? LOG_WARNING : lv == "ERROR" ? LOG_ERROR : LOG_INFO);
+    }
     LOGGER.info("Device configuration updated via web");
     
     // 构建响应，包含生成的 deviceId
@@ -363,30 +376,15 @@ void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) 
 
 void DeviceRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-
-    JsonDocument doc;
-    doc["deviceName"] = ctx->getParamValue(request, "deviceName", "FastBee-ESP32");
-    
-    String devId = ctx->getParamValue(request, "deviceId", "");
-    devId.trim();
-    if (devId.isEmpty()) {
-        String mac = WiFi.macAddress();
-        mac.replace(":", "");
-        devId = "FBE" + mac;
+    JsonDocument patch;
+    const char* fields[] = { "deviceName", "deviceId", "productNumber", "userId", "description",
+        "ntpServer1", "ntpServer2", "timezone", "enableNTP", "syncInterval", "logLevel", "cacheDuration",
+        "maxLoginAttempts", "loginLockoutTime", "minPasswordLength", "requireStrongPasswords" };
+    for (const char* field : fields) {
+        if (request->hasParam(field, true) || request->hasParam(field)) patch[field] = ctx->getParamValue(request, field, "");
     }
-    doc["deviceId"] = devId;
-    doc["developerModeEnabled"] = ctx->isDeveloperModeEnabled();
-
-    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
-    if (!f) {
-        ctx->sendError(request, 500, "Failed to save device config");
-        return;
-    }
-
-    serializeJsonPretty(doc, f);
-    f.close();
-
-    ctx->sendSuccess(request, "Device configuration saved");
+    JsonVariant body = patch.as<JsonVariant>();
+    handleSaveDeviceConfigJson(request, body);
 }
 
 void DeviceRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {

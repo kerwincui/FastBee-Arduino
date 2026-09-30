@@ -46,6 +46,52 @@ async function mount(page: Page) {
 
 test.beforeEach(async ({page}) => mount(page));
 
+test('diagnostics stays in more menu and remains available to read-only users', async ({page}) => {
+  await page.evaluate(async () => {
+    const w = window as any;
+    w.AppState.isDeveloperModeEnabled = () => false;
+    w.AppState.guardDeveloperModeAction = () => false;
+    w.__detail = { id: 'item0', name: '串口', type: 1, enabled: true, implemented: true, params: {} };
+    await w.AppState.loadPeripherals();
+  });
+  const row = page.locator('#peripheral-table-body tr').first();
+  const diagnose = row.locator('[data-peripheral-action="diagnose"]');
+  await expect(diagnose).toBeHidden();
+  await row.locator('summary').click();
+  await expect(diagnose).toBeVisible();
+  await expect(diagnose).toBeEnabled();
+  await expect(row.locator('[data-peripheral-action="edit"]')).toBeDisabled();
+});
+
+test('execution data options use the whole dialog width and preserve draft when managing history', async ({page}) => {
+  const html = source('web-src/pages/modals.html');
+  const start = html.indexOf('<div class="pe-rule-options"');
+  const end = html.indexOf('<!-- 第二部分', start);
+  await page.setContent('<style>' + source('web-src/css/main.css') + '</style><div style="width:min(900px,calc(100vw - 32px));margin:16px"><input id="draft" value="未保存的规则">' + html.slice(start, end) + '</div>');
+  const options = page.locator('.pe-rule-options');
+  await expect(options.locator('input[type="checkbox"]')).toHaveCount(3);
+  await expect(options.locator('button')).toHaveCount(1);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await options.evaluate(el => ({
+      columns: getComputedStyle(el).gridTemplateColumns.split(' ').length,
+      overflow: document.documentElement.scrollWidth > innerWidth,
+      direct: el.children.length
+    }));
+    expect(geometry).toEqual({ columns: width === 1440 ? 2 : 1, overflow: false, direct: 4 });
+  }
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__opened = [];
+    w.open = (...args: any[]) => { w.__opened.push(args); };
+    w.AppState._peModalBound = false;
+    w.AppState._bindPeriphExecModalEvents();
+  });
+  await page.locator('#periph-exec-history-settings-link').click();
+  await expect(page.locator('#draft')).toHaveValue('未保存的规则');
+  expect(await page.evaluate(() => (window as any).__opened[0].slice(1))).toEqual(['_blank', 'noopener']);
+});
+
 for (const kind of ['peripheral','exec']) for (const clamp of [true,false]) {
   test(`${kind}: delete last page row 11 to 10 (${clamp ? 'server clamp' : 'older server fallback'})`, async ({page}) => {
     await page.evaluate(async ({kind,clamp}) => {

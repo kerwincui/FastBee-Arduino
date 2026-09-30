@@ -264,12 +264,14 @@
          * 加载网络配置
          */
         loadNetworkConfig() {
-            apiGet('/api/network/config')
+            const seq = this._networkConfigSeq = (this._networkConfigSeq || 0) + 1;
+            this._networkConfigLoaded = false;
+            this._networkLoadState('网络配置加载中…', false);
+            const getter = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+            return getter('/api/network/config')
                 .then(res => {
-                    if (!res || !res.success) {
-                        Notification.error('加载网络配置失败', '网络设置');
-                        return;
-                    }
+                    if (seq !== this._networkConfigSeq || this.currentPage !== 'network') return;
+                    if (!res || !res.success || !res.data) throw new Error('加载网络配置失败');
 
                     const data = res.data || {};
                     const device = data.device || {};
@@ -337,9 +339,13 @@
                     this._setValue('cell-pwr', cell.pwrPin !== undefined ? cell.pwrPin.toString() : '38');
                     this._setValue('cell-baud', cell.baudRate !== undefined ? cell.baudRate.toString() : '115200');
                     this._setValue('cell-apn', cell.apn || 'CMNET');
+                    this._networkConfigLoaded = true;
+                    this._networkLoadState('网络配置已加载', true);
 
                 })
                 .catch(err => {
+                    if (seq !== this._networkConfigSeq || this.currentPage !== 'network') return;
+                    this._networkLoadState('网络配置加载失败，请重新加载', false, true);
                     // 页面切换导致的请求中止属预期行为，静默返回避免误报
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     if (typeof window.apiNotifyError === 'function') {
@@ -353,6 +359,34 @@
         /**
          * 切换静态IP字段显示/隐藏
          */
+        _networkLoadState(message, ready, retry) {
+            const root = document.getElementById('network-page');
+            if (!root) return;
+            root.querySelectorAll('form button[type="submit"], #network-type-save-btn').forEach(button => { button.disabled = !ready; });
+            let status = document.getElementById('network-config-load-status');
+            if (!status) {
+                status = document.createElement('div');
+                status.id = 'network-config-load-status';
+                status.className = 'u-hint-bar';
+                status.setAttribute('role', 'status');
+                root.prepend(status);
+            }
+            status.textContent = message;
+            if (retry) {
+                const button = document.createElement('button');
+                button.type = 'button'; button.className = 'fb-btn fb-btn-sm';
+                button.textContent = '重新加载';
+                button.addEventListener('click', () => this.loadNetworkConfig());
+                status.appendChild(button);
+            }
+        },
+
+        _networkCanSave(formId) {
+            const form = document.getElementById(formId);
+            return this._networkConfigLoaded === true && this.currentPage === 'network' &&
+                form && !form.querySelector('button[type="submit"]')?.disabled;
+        },
+
         _toggleStaticIPFields(show) {
             const fields = ['static-ip', 'gateway', 'subnet', 'dns1', 'dns2'];
             fields.forEach(id => {
@@ -394,6 +428,8 @@
         },
 
         _stopNetworkPageWork() {
+            this._networkConfigSeq = (this._networkConfigSeq || 0) + 1;
+            this._networkConfigLoaded = false;
             this._stopNetworkStatusPolling();
             [
                 '_networkModeChangeTimer',
@@ -523,6 +559,8 @@
         },
 
         saveNetworkConfig() {
+            if (!this._networkCanSave('wifi-form')) return;
+            const saveSeq = this._networkConfigSeq;
             const config = {
                 networkType: document.getElementById('network-type')?.value || '0',
                 mode: document.getElementById('wifi-mode')?.value || '2',
@@ -548,6 +586,7 @@
 
             return apiPut('/api/network/config', config)
                 .then(res => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     if (res && res.success) {
                         this._showMessage('wifi-success', true);
 
@@ -607,6 +646,7 @@
                     }
                 })
                 .catch(err => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     console.error('Save network config failed:', err);
                     // 区分超时（请求可能未到达）vs 连接断开（设备主动重启网络）
                     const isTimeout = err && err.name === 'AbortError';
@@ -655,6 +695,8 @@
          * 保存热点配置
          */
         saveAPConfig() {
+            if (!this._networkCanSave('ap-form')) return;
+            const saveSeq = this._networkConfigSeq;
             const config = {
                 apSSID: document.getElementById('ap-ssid')?.value || '',
                 apPassword: document.getElementById('ap-password')?.value || '',
@@ -673,6 +715,7 @@
 
             return apiPut('/api/network/config', config)
                 .then(res => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     if (res && res.success) {
                         this._showMessage('ap-success', true);
                         Notification.success('热点配置保存成功！', '网络设置');
@@ -681,6 +724,7 @@
                     }
                 })
                 .catch(err => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     console.error('Save AP config failed:', err);
                     Notification.error('保存失败', '网络设置');
                 })
@@ -707,6 +751,8 @@
          * 保存高级配置
          */
         saveAdvancedConfig() {
+            if (!this._networkCanSave('advanced-form')) return;
+            const saveSeq = this._networkConfigSeq;
             const config = {
                 ipConfigType: document.getElementById('wifi-dhcp')?.value || '0',
                 staticIP: document.getElementById('static-ip')?.value || '',
@@ -730,6 +776,7 @@
 
             return apiPut('/api/network/config', config)
                 .then(res => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     if (res && res.success) {
                         this._showMessage('advanced-success', true);
 
@@ -751,6 +798,7 @@
                     }
                 })
                 .catch(err => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     console.error('Save advanced config failed:', err);
                     Notification.error('保存失败', '网络设置');
                 })
@@ -766,6 +814,8 @@
          * 保存以太网配置
          */
         saveEthernetConfig() {
+            if (!this._networkCanSave('ethernet-form')) return;
+            const saveSeq = this._networkConfigSeq;
             const config = {
                 networkType: '1',
                 ethernet: {
@@ -786,6 +836,7 @@
 
             apiPut('/api/network/config', config)
                 .then(res => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
                             + '\n网络配置变更需要重启网络服务才能生效，请等待约10秒...'
@@ -805,6 +856,7 @@
                     }
                 })
                 .catch(() => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     Notification.error('保存失败', '网络设置');
                     if (submitBtn) submitBtn.disabled = false;
                     if (submitBtnText) submitBtnText.textContent = originalText;
@@ -815,6 +867,8 @@
          * 保存4G配置
          */
         saveCellularConfig() {
+            if (!this._networkCanSave('cellular-form')) return;
+            const saveSeq = this._networkConfigSeq;
             const config = {
                 networkType: '2',
                 cellular: {
@@ -834,6 +888,7 @@
 
             apiPut('/api/network/config', config)
                 .then(res => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
                             + '\n网络配置变更需要重启网络服务才能生效，请等待约15秒...'
@@ -852,6 +907,7 @@
                     }
                 })
                 .catch(() => {
+                    if (saveSeq !== this._networkConfigSeq || this.currentPage !== 'network') return;
                     Notification.error('保存失败', '网络设置');
                     if (submitBtn) submitBtn.disabled = false;
                     if (submitBtnText) submitBtnText.textContent = originalText;

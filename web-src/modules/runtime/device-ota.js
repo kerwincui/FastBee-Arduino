@@ -30,14 +30,36 @@
         _otaNetworkOnline: false,
         _otaSupported: true,
         _otaFreeSketchSpace: 0,
+        _otaConfigLoaded: false,
+        _otaConfigLoading: false,
+        _otaConfigSaving: false,
         
         // WP-13/73: Page lifecycle management (timer cleanup on page hide)
         _pageShown: false,
-        _onPageHide: function() { this._stopAllTimers(); },
+        _hideDeviceOta() {
+            this._otaEpoch = (this._otaEpoch || 0) + 1;
+            this._stopAllTimers();
+            this._otaBusy = false;
+            this._otaConfigLoading = false;
+            this._otaConfigSaving = false;
+        },
+
+        _otaActive(epoch) {
+            return epoch === (this._otaEpoch || 0) && (!this.currentPage || this.currentPage === 'device');
+        },
 
         // ============ 初始化 ============
 
         setupDeviceOta() {
+            const root = getEl('ota-upload-form');
+            if (root && root._otaBound) return;
+            if (root) root._otaBound = true;
+            this._otaConfigLoaded = false;
+            const configForm = getEl('ota-config-form');
+            if (configForm) configForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveOtaConfig();
+            });
             const refreshBtn = getEl('ota-refresh-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', () => this.refreshOtaInfo());
 
@@ -58,7 +80,7 @@
 
             // WP-73: Register page hide handler for timer cleanup
             if (typeof AppState !== 'undefined') {
-                AppState.onPageHide('device-ota', this._onPageHide);
+                AppState.onPageHide('device-ota', this._hideDeviceOta);
             }
             
             this.refreshOtaInfo();
@@ -77,6 +99,7 @@
          * 刷新固件信息（版本/空间）、网络状态与 OTA 状态
          */
         refreshOtaInfo() {
+            const epoch = this._otaEpoch || 0;
             const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             if (!getter) return;
 
@@ -84,6 +107,7 @@
             // 能力并在页面上明确说明，避免用户操作到不存在的 OTA 路由。
             const capabilityReady = getter('/api/system/capabilities')
                 .then(res => {
+                    if (!this._otaActive(epoch)) return false;
                     const caps = (res && res.success && res.data) ? res.data : null;
                     const supported = !!caps && caps.ota === true;
                     if (caps && typeof caps.ota === 'boolean') this._applyOtaCapability(supported);
@@ -94,6 +118,7 @@
             // 固件信息：当前版本、Flash 总量、可升级空间
             getter('/api/system/info')
                 .then(res => {
+                    if (!this._otaActive(epoch)) return;
                     if (!res || !res.success || !res.data) return;
                     const dev = res.data.device || {};
                     const flash = res.data.flash || {};
@@ -112,6 +137,7 @@
             // 网络状态：决定在线升级入口可用性
             getter('/api/network/status')
                 .then(res => {
+                    if (!this._otaActive(epoch)) return;
                     const d = (res && res.success && res.data) ? res.data : null;
                     const status = d
                         ? (d.status || ((d.connected || d.networkConnected || d.ipAddress) ? 'connected' : 'disconnected'))
@@ -127,15 +153,99 @@
             // 能力查询必须先完成。4MB C3/C6 固件没有 OTA 路由，提前
             // 请求 /api/ota/status 会制造无意义的 404 和控制台错误。
             capabilityReady.then(supported => {
-                if (supported) this._loadOtaStatus();
+                if (supported && this._otaActive(epoch)) {
+                    this._loadOtaStatus();
+                    if (!this._otaConfigLoaded) this._loadOtaConfig();
+                }
             });
         },
 
+        _isValidOtaUrl(value, isBase) {
+            if (isBase && value === '') return true;
+            if (!(value.startsWith('https://') || value.startsWith('http://')) ||
+                /[\x00-\x20\x7f\\]/.test(value) || value.includes('#') ||
+                value.length > (isBase ? 512 : 768) || (isBase && value.includes('?'))) return false;
+            try {
+                const parsed = new URL(value);
+                const authority = value.split('://')[1].split(/[/?#]/)[0];
+                return !!parsed.hostname && !authority.includes('@') &&
+                    !parsed.username && !parsed.password && parsed.port !== '0';
+            } catch (_) {
+                return false;
+            }
+        },
+
+        _loadOtaConfig() {
+            const epoch = this._otaEpoch || 0;
+            if (this._otaConfigLoading || this._otaConfigSaving) return;
+            this._otaConfigLoading = true;
+            this._updateButtonStates();
+            const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            return getter('/api/protocol/config?section=ota&compact=true')
+                .then(res => {
+                    if (!this._otaActive(epoch)) return;
+                    if (!res || !res.success || !res.data || typeof res.data.otaBaseUrl !== 'string') {
+                        throw new Error((res && (res.error || res.message)) || '读取 OTA 设置失败');
+                    }
+                    const input = getEl('ota-base-url');
+                    if (input) input.value = res.data.otaBaseUrl;
+                    this._otaConfigLoaded = true;
+                })
+                .catch(err => {
+                    if (!this._otaActive(epoch)) return;
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    this._showOtaMessage('ota-config-message', false, (err && err.message) || '读取 OTA 设置失败，请刷新后重试');
+                })
+                .finally(() => {
+                    if (!this._otaActive(epoch)) return;
+                    this._otaConfigLoading = false;
+                    this._updateButtonStates();
+                });
+        },
+
+        saveOtaConfig() {
+            const epoch = this._otaEpoch || 0;
+            if (!this._otaConfigLoaded || this._otaConfigLoading || this._otaConfigSaving ||
+                this._otaBusy || !this._otaSupported) return;
+            const input = getEl('ota-base-url');
+            if (!input) return;
+            const baseUrl = input.value.trim();
+            if (!this._isValidOtaUrl(baseUrl, true)) {
+                this._showOtaMessage('ota-config-message', false, '请输入有效的 HTTP/HTTPS 基址，不含账号、密码、查询参数或片段；留空使用默认 HTTPS。');
+                input.focus();
+                return;
+            }
+            this._otaConfigSaving = true;
+            this._updateButtonStates();
+            // Send only the OTA field: never submit cached MQTT settings.
+            return apiPost('/api/protocol/config', { mqtt_otaBaseUrl: baseUrl })
+                .then(res => {
+                    if (!this._otaActive(epoch)) return;
+                    if (!res || !res.success) {
+                        throw new Error((res && (res.error || res.message)) || '保存 OTA 设置失败');
+                    }
+                    input.value = baseUrl;
+                    this._showOtaMessage('ota-config-message', true, 'OTA 设置已保存，下次平台升级生效，无需重启。');
+                })
+                .catch(err => {
+                    if (!this._otaActive(epoch)) return;
+                    if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
+                    this._showOtaMessage('ota-config-message', false, (err && err.message) || '保存 OTA 设置失败');
+                })
+                .finally(() => {
+                    if (!this._otaActive(epoch)) return;
+                    this._otaConfigSaving = false;
+                    this._updateButtonStates();
+                });
+        },
+
         _loadOtaStatus() {
+            const epoch = this._otaEpoch || 0;
             const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             if (!getter) return;
             getter('/api/ota/status')
                 .then(res => {
+                    if (!this._otaActive(epoch)) return;
                     const body = (res && res.success && res.data) ? res.data : null;
                     if (body) this._updateOtaStatusUI(body);
                 })
@@ -170,6 +280,12 @@
         },
 
         _updateButtonStates() {
+            const configDisabled = !this._otaConfigLoaded || this._otaConfigLoading ||
+                this._otaConfigSaving || this._otaBusy || !this._otaSupported;
+            const baseInput = getEl('ota-base-url');
+            if (baseInput) baseInput.disabled = configDisabled;
+            const configBtn = getEl('ota-config-save-btn');
+            if (configBtn) configBtn.disabled = configDisabled;
             const urlBtn = getEl('ota-url-btn');
             if (urlBtn) urlBtn.disabled = this._otaBusy || !this._otaNetworkOnline || !this._otaSupported;
             const uploadBtn = getEl('ota-upload-btn');
@@ -195,20 +311,21 @@
         // ============ 在线升级（URL 下载） ============
 
         startOnlineUpgrade() {
+            const epoch = this._otaEpoch || 0;
             if (this._otaBusy) return;
             if (!this._otaSupported) {
-                this._showMessage('ota-online-message', false, '当前分区不支持 OTA 升级');
+                this._showOtaMessage('ota-online-message', false, '当前分区不支持 OTA 升级');
                 return;
             }
             const input = getEl('ota-url');
             const url = input ? input.value.trim() : '';
-            if (!/^https?:\/\/.+/i.test(url)) {
-                this._showMessage('ota-online-message', false,
+            if (!this._isValidOtaUrl(url, false)) {
+                this._showOtaMessage('ota-online-message', false,
                     t('dev-ota-url-invalid', '请输入有效的固件下载地址（http/https）'));
                 return;
             }
             if (!this._otaNetworkOnline) {
-                this._showMessage('ota-online-message', false,
+                this._showOtaMessage('ota-online-message', false,
                     t('dev-ota-no-network-hint', '当前未检测到可用的网络连接，请先连接网络，或选择本地文件上传方式升级。'));
                 return;
             }
@@ -217,22 +334,24 @@
             this._setBusy(true);
             this._resetProgress();
 
-            apiPost('/api/ota/url', { url: url })
+            return apiPost('/api/ota/url', { url: url })
                 .then(res => {
+                    if (!this._otaActive(epoch)) return;
                     if (res && res.success) {
-                        this._showMessage('ota-online-message', true,
+                        this._showOtaMessage('ota-online-message', true,
                             t('dev-ota-download-started', '固件下载已开始，请关注升级进度'));
                         this._startPolling();
                     } else {
                         this._setBusy(false);
-                        this._showMessage('ota-online-message', false,
+                        this._showOtaMessage('ota-online-message', false,
                             (res && (res.error || res.message)) || t('dev-ota-start-failed', '启动升级失败'));
                     }
                 })
                 .catch(err => {
+                    if (!this._otaActive(epoch)) return;
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     this._setBusy(false);
-                    this._showMessage('ota-online-message', false,
+                    this._showOtaMessage('ota-online-message', false,
                         (err && err.message) || t('dev-ota-start-failed', '启动升级失败'));
                 });
         },
@@ -248,7 +367,7 @@
             }
             const file = input.files[0];
             if (!file.name.toLowerCase().endsWith('.bin')) {
-                this._showMessage('ota-upload-message', false,
+                this._showOtaMessage('ota-upload-message', false,
                     t('dev-ota-file-invalid', '请选择 .bin 格式的固件文件'));
                 input.value = '';
                 if (nameEl) nameEl.textContent = t('no-file-selected', '未选择任何文件');
@@ -258,26 +377,31 @@
         },
 
         startLocalUpload() {
+            const epoch = this._otaEpoch || 0;
             if (this._otaBusy) return;
             if (!this._otaSupported) {
-                this._showMessage('ota-upload-message', false, '当前分区不支持 OTA 升级');
+                this._showOtaMessage('ota-upload-message', false, '当前分区不支持 OTA 升级');
                 return;
             }
             const input = getEl('ota-file');
             if (!input || !input.files || input.files.length === 0) {
-                this._showMessage('ota-upload-message', false,
+                this._showOtaMessage('ota-upload-message', false,
                     t('dev-ota-file-empty', '请先选择固件文件'));
                 return;
             }
             const file = input.files[0];
+            if (file.size === 0) {
+                this._showOtaMessage('ota-upload-message', false, '固件文件为空');
+                return;
+            }
             if (!file.name.toLowerCase().endsWith('.bin')) {
-                this._showMessage('ota-upload-message', false,
+                this._showOtaMessage('ota-upload-message', false,
                     t('dev-ota-file-invalid', '请选择 .bin 格式的固件文件'));
                 return;
             }
             // 固件大于可用升级空间时提前拦截（服务端 beginOTA 亦会校验）
             if (this._otaFreeSketchSpace > 0 && file.size > this._otaFreeSketchSpace) {
-                this._showMessage('ota-upload-message', false,
+                this._showOtaMessage('ota-upload-message', false,
                     t('dev-ota-file-too-large', '固件大小超出可用升级空间'));
                 return;
             }
@@ -288,14 +412,16 @@
 
             const self = this;
             // Step 1: begin（携带 size 参数，服务端预留空间并执行内存门控）
-            fetch('/api/ota/begin', {
+            return fetch('/api/ota/begin', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: 'size=' + file.size
             })
                 .then(function (res) {
+                    if (!self._otaActive(epoch)) return;
                     return res.json().catch(function () { return {}; }).then(function (data) {
-                        if (!res.ok || (data && data.error) || data.success === false) {
+                        if (!self._otaActive(epoch)) return;
+                        if (!res.ok || (data && data.error) || data.success !== true) {
                             throw new Error((data && data.error) || ('HTTP ' + res.status));
                         }
                         // Step 2: multipart 上传固件文件
@@ -305,13 +431,15 @@
                     });
                 })
                 .then(function (res) {
+                    if (!res || !self._otaActive(epoch)) return;
                     return res.json().catch(function () { return {}; }).then(function (data) {
-                        if ((data && data.error) || data.success === false) {
+                        if (!self._otaActive(epoch)) return;
+                        if (!res.ok || (data && data.error) || data.success !== true) {
                             throw new Error((data && data.error) || 'upload failed');
                         }
                         // final 分块响应：写入完成，设备将在 3 秒后重启
                         self._setProgress(100, t('dev-ota-writing-done', '固件写入完成'));
-                        self._showMessage('ota-upload-message', true,
+                        self._showOtaMessage('ota-upload-message', true,
                             t('dev-ota-restarting', '升级完成，设备正在重启...'));
                         if (typeof Notification !== 'undefined' && Notification.success) {
                             Notification.success(t('dev-ota-restarting', '升级完成，设备正在重启...'), 'OTA');
@@ -320,9 +448,10 @@
                     });
                 })
                 .catch(function (err) {
+                    if (!self._otaActive(epoch)) return;
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
                     self._setBusy(false);
-                    self._showMessage('ota-upload-message', false,
+                    self._showOtaMessage('ota-upload-message', false,
                         t('dev-ota-upload-failed', '固件上传失败') + ': ' + (err.message || err));
                 });
         },
@@ -378,26 +507,30 @@
          * 轮询 /api/ota/status（URL 下载型 OTA 的进度来源）
          */
         _startPolling() {
+            const epoch = this._otaEpoch || 0;
+            if (!this._otaActive(epoch)) return;
             this._stopPolling();
             const self = this;
             let failCount = 0;
             let sawProgress = false;
-            let pollCount = 0;
-            const maxPolls = 600; // 最长 10 分钟，与服务端下载 deadline 对齐
+            const deadline = Date.now() + 600000; // 包含慢请求等待时间
+            let pending = false;
 
             this._otaPollTimer = setInterval(function () {
-                pollCount++;
-                if (pollCount > maxPolls) {
+                if (!self._otaActive(epoch)) return;
+                if (Date.now() >= deadline) {
                     self._stopPolling();
                     self._setBusy(false);
-                    self._showMessage('ota-online-message', false,
+                    self._showOtaMessage('ota-online-message', false,
                         t('dev-ota-poll-timeout', '升级状态轮询超时，请刷新页面检查设备状态'));
                     return;
                 }
 
-                fetch('/api/ota/status', { cache: 'no-store' })
-                    .then(function (res) { return res.json(); })
+                if (pending) return;
+                pending = true;
+                self._otaRead('/api/ota/status')
                     .then(function (payload) {
+                        if (!self._otaActive(epoch)) return;
                         failCount = 0;
                         const body = (payload && payload.data) ? payload.data : (payload || {});
                         self._updateOtaStatusUI(body);
@@ -407,27 +540,28 @@
                             return;
                         }
                         // 不再进行中：完成或失败
-                        if (body.progress >= 100 || (sawProgress && !body.error)) {
+                        if (body.progress >= 100 && !body.error) {
                             self._stopPolling();
-                            self._showMessage('ota-online-message', true,
+                            self._showOtaMessage('ota-online-message', true,
                                 t('dev-ota-restarting', '升级完成，设备正在重启...'));
                             self._pollDeviceRecovery();
                         } else if (body.error) {
                             self._stopPolling();
                             self._setBusy(false);
-                            self._showMessage('ota-online-message', false, body.error);
+                            self._showOtaMessage('ota-online-message', false, body.error);
                         }
                     })
                     .catch(function () {
+                        if (!self._otaActive(epoch)) return;
                         failCount++;
                         // 升级成功后设备重启会导致请求失败，连续失败判定为重启中
                         if (sawProgress && failCount >= 5) {
                             self._stopPolling();
-                            self._showMessage('ota-online-message', true,
-                                t('dev-ota-restarting', '升级完成，设备正在重启...'));
+                            self._showOtaMessage('ota-online-message', false,
+                                '连接中断，升级结果尚未确认，正在等待设备恢复');
                             self._pollDeviceRecovery();
                         }
-                    });
+                    }).finally(function () { pending = false; });
             }, 1000);
         },
 
@@ -441,6 +575,8 @@
         // WP-73: Stop all timers (OTA polling + recovery monitoring)
         _stopAllTimers() {
             this._stopPolling();
+            clearTimeout(this._otaReloadTimer);
+            if (this._otaReadController) this._otaReadController.abort();
             if (this._otaRecoveryTimer) {
                 clearInterval(this._otaRecoveryTimer);
                 this._otaRecoveryTimer = null;
@@ -450,7 +586,7 @@
         
         // WP-73: Cleanup when module unloads
         destroy() {
-            this._stopAllTimers();
+            this._hideDeviceOta();
             this._pageShown = false;
         },
 
@@ -458,41 +594,63 @@
          * 轮询 /api/health 等待设备重启恢复，恢复后自动刷新页面
          */
         _pollDeviceRecovery() {
+            const epoch = this._otaEpoch || 0;
+            if (!this._otaActive(epoch)) return;
             this._stopPolling();
             if (this._otaRecoveryTimer) clearInterval(this._otaRecoveryTimer);
             const self = this;
-            let pollCount = 0;
-            const maxPolls = 90; // 最长等待 90s
+            const deadline = Date.now() + 90000;
+            let pending = false;
 
             this._otaRecoveryTimer = setInterval(function () {
-                pollCount++;
-                if (pollCount > maxPolls) {
+                if (!self._otaActive(epoch)) return;
+                if (Date.now() >= deadline) {
                     clearInterval(self._otaRecoveryTimer);
                     self._otaRecoveryTimer = null;
                     self._setBusy(false);
-                    self._showMessage('ota-online-message', false,
+                    self._showOtaMessage('ota-online-message', false,
                         t('dev-ota-recovery-timeout', '设备恢复超时，请手动刷新页面'));
                     return;
                 }
 
-                fetch('/api/health', { cache: 'no-store' })
+                if (pending) return;
+                pending = true;
+                self._otaRead('/api/health', true)
                     .then(function (res) {
+                        if (!self._otaActive(epoch)) return;
                         if (res.ok) {
                             clearInterval(self._otaRecoveryTimer);
                             self._otaRecoveryTimer = null;
-                            self._setProgress(100, t('dev-ota-done', '升级完成'));
-                            self._showMessage('ota-online-message', true,
-                                t('dev-ota-reloading', '设备已恢复，正在刷新页面...'));
-                            setTimeout(function () { window.location.reload(); }, 1500);
+                            self._showOtaMessage('ota-online-message', true,
+                                '设备已恢复，刷新后请核对固件版本');
+                            self._otaReloadTimer = setTimeout(function () {
+                                if (self._otaActive(epoch)) window.location.reload();
+                            }, 1500);
                         }
                     })
                     .catch(function () {
                         // 设备仍在重启中，继续轮询
-                    });
+                    }).finally(function () { pending = false; });
             }, 1000);
         },
 
         // ============ 通用助手 ============
+
+        _otaRead(url, raw) {
+            const controller = this._otaReadController = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            return fetch(url, { cache: 'no-store', signal: controller.signal }).then(res => {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                if (raw) return res;
+                return res.json().then(body => {
+                    if (!body || body.success === false) throw new Error(body?.error || '读取升级状态失败');
+                    return body;
+                });
+            }).finally(() => {
+                clearTimeout(timeout);
+                if (this._otaReadController === controller) this._otaReadController = null;
+            });
+        },
 
         _setBusy(busy) {
             this._otaBusy = busy;
@@ -504,7 +662,7 @@
             if (el) el.textContent = text;
         },
 
-        _showMessage(elId, ok, text) {
+        _showOtaMessage(elId, ok, text) {
             const el = getEl(elId);
             if (!el) return;
             el.textContent = text;

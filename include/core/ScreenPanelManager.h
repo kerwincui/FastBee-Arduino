@@ -62,6 +62,7 @@ struct ScreenPanelHistoryPoint {
     uint32_t sequence = 0;
     uint32_t uptimeMs = 0;
     uint64_t epochMs = 0;
+    char bootId[32]{};
     bool restored = false;
 };
 
@@ -106,9 +107,13 @@ struct ScreenPanelCardSnapshot {
     uint16_t motorConfirmValue = 0;
     uint32_t selectedHistorySequence = 0;
     bool motorKnown = false, motorSpeedDirty = false, motorPulseDirty = false;
+    bool motorCommandKnown = false, motorCommandSuccess = false, motorSoftLimitEnabled = false;
+    uint32_t motorCommandUpdatedMs = 0;
+    char motorReadError[128]{};
     char error[97]{};
     char historyError[97]{};
     char weatherCondition[25]{};
+    char weatherReason[32]{};
     char weatherCity[49]{};
     ScreenCardKind kind = ScreenCardKind::DATA;
     ScreenVisualType visualType = ScreenVisualType::VALUE;

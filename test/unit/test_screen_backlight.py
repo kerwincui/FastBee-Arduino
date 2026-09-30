@@ -1,5 +1,6 @@
 """Execute SPI production brightness/sleep methods with injected LEDC failures."""
 import os
+import json
 import pathlib
 import shutil
 import subprocess
@@ -35,26 +36,39 @@ using FastBee::Screen::backlightDuty;
 using FastBee::Screen::normalizeBrightnessPercent;
 struct PwmCase { uint8_t percent; bool sleeping; bool activeHigh; uint8_t duty; };
 int main() {
-    assert(normalizeBrightnessPercent(0) == 10);
-    assert(normalizeBrightnessPercent(1) == 10);
+    assert(normalizeBrightnessPercent(0) == 0);
+    assert(normalizeBrightnessPercent(1) == 1);
     assert(normalizeBrightnessPercent(10) == 10);
     assert(normalizeBrightnessPercent(50) == 50);
     assert(normalizeBrightnessPercent(100) == 100);
     assert(normalizeBrightnessPercent(255) == 100);
     const PwmCase table[] = {
-        {1, false, true, 48}, {10, false, true, 48},
+        {0, false, true, 26}, {1, false, true, 28}, {10, false, true, 48},
         {50, false, true, 140}, {100, false, true, 255},
-        {1, false, false, 207}, {10, false, false, 207},
+        {0, false, false, 229}, {1, false, false, 227}, {10, false, false, 207},
         {50, false, false, 115}, {100, false, false, 0},
         {50, true, true, 0}, {50, true, false, 255},
     };
     for (const auto& entry : table) {
         assert(backlightDuty(entry.percent, entry.sleeping, entry.activeHigh) == entry.duty);
     }
-    // RGB + CH32 uses the same duty byte (register 0x05), so this table is the
-    // hardware-independent baseline; actual PWM polarity wiring is only real-device verifiable.
+    // Bind the public board sample to production duty calculations. The user confirmed
+    // that high electrical duty dims this board; other boards keep their own polarity.
+    const bool panelActiveHigh = PANEL_ACTIVE_HIGH;
+    assert(!panelActiveHigh);
+    assert(backlightDuty(0, false, panelActiveHigh) == 229);
+    assert(backlightDuty(100, false, panelActiveHigh) == 0);
+    assert(backlightDuty(70, true, panelActiveHigh) == 255);
+    for (int percent = 1; percent <= 100; ++percent) {
+        assert(backlightDuty(percent, false, panelActiveHigh) <
+               backlightDuty(percent - 1, false, panelActiveHigh));
+        assert(backlightDuty(percent, false, panelActiveHigh) != 255);
+    }
 }
 """
+        sample = json.loads((ROOT / 'docs/waveshare-esp32s3-touch-lcd4/peripherals.json').read_text(encoding='utf-8'))
+        panel = next(item for item in sample['peripherals'] if item['id'] == 'panel_display')
+        cpp = cpp.replace('PANEL_ACTIVE_HIGH', json.dumps(panel['params']['backlightActiveHigh']))
         with tempfile.TemporaryDirectory(prefix='fastbee-backlight-table-') as temporary:
             folder = pathlib.Path(temporary)
             (folder / 'table.cpp').write_text(cpp, encoding='utf-8')
@@ -102,7 +116,7 @@ int main(){
  for(bool active:{false,true}){
   Spi s;s._config.backlightActiveHigh=active;
   auto expect=[&](int value){return active?value:255-value;};
-  assert(s.setBrightness(0)&&duty==expect(48));
+  assert(s.setBrightness(0)&&duty==expect(26));
   int prior=duty;
   for(int value=1;value<=100;++value){assert(s.setBrightness(value));assert(active?duty>=prior:duty<=prior);prior=duty;}
   assert(duty==expect(255));
@@ -113,7 +127,7 @@ int main(){
   failed=false;assert(s.setSleep(true)&&duty==expect(0)&&s.commands.back()==CMD_SLPIN);
   assert(s.setBrightness(70)&&duty==expect(0));
   assert(s.setSleep(false)&&duty==expect(186)&&s.commands.back()==CMD_SLPOUT);
-  assert(s.setBrightness(0)&&s.setSleep(true)&&s.setSleep(false)&&duty==expect(48));
+  assert(s.setBrightness(0)&&s.setSleep(true)&&s.setSleep(false)&&duty==expect(26));
  }
  Spi noPwm;noPwm._config.backlight=-1;
  assert(noPwm.setBrightness(100));assert(!noPwm.setBrightness(0));

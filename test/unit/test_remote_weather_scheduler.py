@@ -1,121 +1,82 @@
-"""Execute the production weather worker admission and retry policy."""
+"""Run the production manager scheduling/status paths with a controlled clock.
 
-from __future__ import annotations
-
-import json
-import os
+No deployment capture is test input; networking is an explicit mock boundary.
+"""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
-
+from test.unit.test_screen_snapshot_cache import definition
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = (ROOT / "src/protocols/RemoteResourceManager.cpp").read_text(encoding="utf-8")
-
-
-def production_policy() -> str:
-    start = SOURCE.index("bool due(uint32_t now,uint32_t deadline)")
-    end = SOURCE.index("bool weatherNetworkConnected()", start)
-    return SOURCE[start:end]
-
 
 class RemoteWeatherSchedulerTests(unittest.TestCase):
-    def test_tick_and_collection_use_production_policy(self):
-        tick_start = SOURCE.index("void RemoteResourceManager::tick()")
-        tick_end = SOURCE.index("void RemoteResourceManager::weatherTask(", tick_start)
-        tick = SOURCE[tick_start:tick_end]
-        collect_start = SOURCE.index("void RemoteResourceManager::collectWeather()")
-        collect = SOURCE[collect_start:]
-
-        self.assertIn("weatherNetworkConnected()", tick)
-        self.assertIn("weatherWorkerEligible(", tick)
-        self.assertIn("WEATHER_WORKER_MIN_INTERNAL_BYTES", production_policy())
-        self.assertIn('error=="Network offline"', collect)
-        self.assertIn('error=="Weather network request failed"', collect)
-        self.assertIn("weatherFailureDelayMs(", collect)
-
-
-    def test_deployed_ntp_blocker_has_recoverable_retry_and_user_friendly_status(self):
-        evidence = ROOT / 'artifacts/touch-optimization-20260922/postdeploy-api.json'
-        data = json.loads(evidence.read_text(encoding='utf-8'))
-        weather = next(entry['data'] for entry in data['checks'] if entry['route'] == '/api/screen-panel/weather')
-        status = weather['status']
-        self.assertEqual('error', status['status'])
-        # Field baseline: no live device is available here, so the deployed API
-        # capture is the reproducible contract. NTP/TLS admission failures should
-        # be transient and user-actionable instead of a raw internal blocker.
-        self.assertGreater(status['retryAfterMs'], 0)
-        self.assertNotIn('NTP before TLS', status['error'])
-
-    def test_production_policy_offline_recovery_and_failure_limits(self):
+    def test_production_manager_admission_recovery_status_cache_and_generation(self):
         compiler = shutil.which("g++") or shutil.which("clang++")
         fallback = Path("D:/msys64/ucrt64/bin/g++.exe")
-        if not compiler and fallback.exists():
-            compiler = str(fallback)
-        if not compiler:
-            self.skipTest("A C++17 compiler is required")
+        if not compiler and fallback.exists(): compiler = str(fallback)
+        if not compiler: raise RuntimeError("C++17 compiler required")
+        source = (ROOT / "src/protocols/RemoteResourceManager.cpp").read_text(encoding="utf-8")
+        names = ["bool weatherNetworkConnected()", "class Guard", "void RemoteResourceManager::applyConfig(", "bool RemoteResourceManager::getValue(",
+                 "bool RemoteResourceManager::requestRead(", "bool RemoteResourceManager::getWeatherTestStatus(",
+                 "void RemoteResourceManager::tick()", "void RemoteResourceManager::weatherTask(",
+                 "void RemoteResourceManager::collectWeather()"]
+        definitions = [definition(source, name) + (";" if name == "class Guard" else "") for name in names]
+        with tempfile.TemporaryDirectory(prefix="fastbee-weather-manager-") as folder:
+            temp = Path(folder)
+            (temp / "manager.inc").write_text("\n".join(definitions), encoding="utf-8")
+            binary = temp / ("weather.exe" if os.name == "nt" else "weather")
+            headers = next((ROOT / ".pio/libdeps").glob("*/ArduinoJson/src/ArduinoJson.h"))
+            env = dict(os.environ)
+            env["PATH"] = str(Path(compiler).parent) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run([compiler,"-std=c++17","-Wall","-Wextra","-Werror",
+                "-Wno-unused-but-set-variable", "-DUNIT_TEST", "-DFASTBEE_ENABLE_PERIPH_EXEC=0",
+                "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0", "-DARDUINOJSON_ENABLE_STD_STRING=1",
+                *[f"-I{p}" for p in (temp, ROOT/"test/mocks", headers.parent, ROOT/"include")],
+                str(ROOT/"test/unit/cpp/weather_manager_harness.cpp"),"-o",str(binary)],
+                capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60,env=env)
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
+            result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=15,env=env)
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
 
-        harness = f"""
-#include <algorithm>
-#include <cassert>
-#include <cstddef>
-#include <cstdint>
+    def test_tls_response_and_error_contract(self):
+        source=(ROOT/"src/protocols/RemoteResourceManager.cpp").read_text(encoding="utf-8")
+        fetch=definition(source,"bool fetchWeather(")
+        for token in ("setCACertBundle", "time(nullptr)>=1577836800", "HTTPC_DISABLE_FOLLOW_REDIRECTS",
+                      "heap_caps_get_largest_free_block", "MAX_BODY", "providerFailure", "language=zh-Hans&unit=c"):
+            self.assertIn(token,fetch)
+        self.assertNotIn("setInsecure",fetch)
+        self.assertNotIn('source["url"]',fetch)
+        self.assertIn("15000U",definition(source,"class BoundedResponse"))
 
-{production_policy()}
+    def test_production_fetch_tls_bounds_and_provider_errors(self):
+        compiler=shutil.which("g++") or shutil.which("clang++")
+        fallback=Path("D:/msys64/ucrt64/bin/g++.exe")
+        if not compiler and fallback.exists(): compiler=str(fallback)
+        if not compiler: raise RuntimeError("C++17 compiler required")
+        source=(ROOT/"src/protocols/RemoteResourceManager.cpp").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="fastbee-weather-fetch-") as folder:
+            temp=Path(folder)
+            # Extend only the Arduino String shim with the normal concat API.
+            arduino=(ROOT/"test/mocks/Arduino.h").read_text(encoding="utf-8")
+            arduino=arduino.replace("    void clear() { _value.clear(); }",
+                "    bool concat(const char* text, size_t len) { _value.append(text,len); return true; }\n"
+                "    void clear() { _value.clear(); }")
+            (temp/"Arduino.h").write_text(arduino,encoding="utf-8")
+            (temp/"fetch.inc").write_text(definition(source,"String escaped(")+"\n"+
+                definition(source,"class BoundedResponse")+";\n"+definition(source,"bool fetchWeather("),encoding="utf-8")
+            headers=next((ROOT/".pio/libdeps").glob("*/ArduinoJson/src/ArduinoJson.h"))
+            binary=temp/("fetch.exe" if os.name=="nt" else "fetch")
+            env=dict(os.environ); env["PATH"]=str(Path(compiler).parent)+os.pathsep+env.get("PATH","")
+            result=subprocess.run([compiler,"-std=c++17","-Wall","-Wextra","-Werror",
+                "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0","-DARDUINOJSON_ENABLE_STD_STRING=1",
+                *[f"-I{p}" for p in (temp,headers.parent,ROOT/"include")],
+                str(ROOT/"test/unit/cpp/weather_fetch_harness.cpp"),"-o",str(binary)],
+                capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60,env=env)
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
+            result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=15,env=env)
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
 
-int main() {{
-    // A due source remains idle while offline, then is admitted immediately
-    // once networking returns without consuming its configured interval.
-    assert(due(1000U, 0U));
-    assert(!weatherWorkerEligible(false, false, true, false, due(1000U, 0U), 24000U));
-    assert(weatherWorkerEligible(true, false, true, false, due(1000U, 0U), 24000U));
-
-    // Existing OTA, worker, due-state and internal-memory gates remain active.
-    assert(!weatherWorkerEligible(true, true, true, false, true, 24000U));
-    assert(!weatherWorkerEligible(true, false, false, false, true, 24000U));
-    assert(!weatherWorkerEligible(true, false, true, true, true, 24000U));
-    assert(!weatherWorkerEligible(true, false, true, false, false, 24000U));
-    assert(!weatherWorkerEligible(true, false, true, false, true, 23999U));
-
-    // A disconnect race retries with bounded exponential spacing instead of
-    // consuming the normal 30-minute successful collection period.
-    assert(weatherFailureDelayMs(1, true, 1800000U) == 30000U);
-    assert(weatherFailureDelayMs(2, true, 1800000U) == 60000U);
-    assert(weatherFailureDelayMs(3, true, 1800000U) == 120000U);
-    assert(weatherFailureDelayMs(4, true, 1800000U) == 240000U);
-    assert(weatherFailureDelayMs(5, true, 1800000U) == 300000U);
-    assert(weatherFailureDelayMs(6, true, 1800000U) == 300000U);
-    const uint32_t retryAt = 1000U + weatherFailureDelayMs(1, true, 1800000U);
-    assert(!due(30999U, retryAt));
-    assert(due(31000U, retryAt));
-
-    // Non-transport failures retain the configured interval and original
-    // backoff floor, so provider failures cannot cause request bursts.
-    assert(weatherFailureDelayMs(1, false, 1800000U) == 1800000U);
-    assert(weatherFailureDelayMs(1, false, 60000U) == 120000U);
-    assert(weatherFailureDelayMs(6, false, 60000U) == 3840000U);
-}}
-"""
-        with tempfile.TemporaryDirectory(prefix="fastbee-weather-scheduler-") as directory:
-            directory_path = Path(directory)
-            cpp = directory_path / "scheduler.cpp"
-            executable = directory_path / ("scheduler.exe" if os.name == "nt" else "scheduler")
-            cpp.write_text(harness, encoding="utf-8")
-            result = subprocess.run(
-                [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                 str(cpp), "-o", str(executable)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=60,
-            )
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            result = subprocess.run(
-                [str(executable)], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=15,
-            )
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == "__main__": unittest.main()

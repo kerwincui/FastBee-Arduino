@@ -18,7 +18,7 @@
         line: '10点折线',
         control: '控制', motor: '电机控制', 'sleep-time': '自动息屏', 'touch-beep': '触摸音', 'confirm-idle': '操作确认',
         clock: '时钟',
-        weather: '天气',
+        weather: '心知天气',
         'page-link': '页面入口',
         brightness: '设置亮度',
         sleep: '立即息屏',
@@ -33,7 +33,7 @@
         line: { title: '最近趋势', display: 'recent10', size: 'wide' },
         control: { title: '控制', display: 'action', size: 'wide', confirm: true, min: 0, max: 100, step: 1, initialValue: 0 },
         clock: { title: '时间', display: 'clock', size: 'wide' },
-        weather: { title: '天气', display: 'weather', size: 'large' },
+        weather: { title: '心知天气', display: 'weather', size: 'large' },
         'page-link': { title: '打开页面', display: 'page-link', size: 'small' },
         motor: { title: '电机控制', display: 'motor', size: 'large', confirm: true, motorSpeed: 50, motorPulse: 1600, motorSpeedStep: 1, motorPulseStep: 100 },
         'sleep-time': { title: '自动息屏', display: 'sleep-time', size: 'wide', systemActionId: 'sleep-time' },
@@ -117,7 +117,7 @@
 
     function normalizeBrightnessPercent(value) {
         var rounded = clamp(Math.round(finiteNumber(value, 70)), 0, 100);
-        return rounded < MIN_VISIBLE_BRIGHTNESS_PERCENT ? MIN_VISIBLE_BRIGHTNESS_PERCENT : rounded;
+        return rounded;
     }
 
     function validIdentifier(value) {
@@ -227,9 +227,10 @@
                 }
                 if (kind === 'brightness') item.actionValue = normalizeBrightnessPercent(item.actionValue);
                 item.targetPageId = String(item.targetPageId || item.pageId || '');
-                item.confirm = kind === 'motor' || item.confirm === true || item.requireConfirmation === true;
-                item.min = finiteNumber(item.min !== undefined ? item.min : item.rangeMin, 0);
-                item.max = finiteNumber(item.max !== undefined ? item.max : item.rangeMax, 100);
+                item.confirm = kind === 'motor' || (card && card.confirm !== undefined ? card.confirm === true :
+                    card && card.requireConfirmation !== undefined ? card.requireConfirmation === true : item.confirm === true);
+                item.min = finiteNumber(card && card.min !== undefined ? card.min : card && card.rangeMin, 0);
+                item.max = finiteNumber(card && card.max !== undefined ? card.max : card && card.rangeMax, 100);
                 item.step = finiteNumber(item.step, 1);
                 item.initialValue = finiteNumber(item.initialValue, item.min);
                 item.sourceRefs = Array.isArray(item.sourceRefs) ? item.sourceRefs.map(String) : [];
@@ -241,6 +242,9 @@
                         w: Math.round(finiteNumber(item.rect.w, 210)), h: Math.round(finiteNumber(item.rect.h, 96))
                     };
                 }
+                // The wire format stores rectangles, not editor size presets.
+                item.size = ['small', 'wide', 'large', 'custom'].indexOf(card && card.size) >= 0
+                    ? card.size : item.rect ? 'custom' : CARD_DEFAULTS[kind].size;
                 return item;
             }) : [];
             return normalized;
@@ -345,12 +349,51 @@
     }
 
 
+    function configEqual(a, b) {
+        if (a === b) return true;
+        if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+        var keys = Object.keys(a);
+        return keys.length === Object.keys(b).length && keys.every(function(key) {
+            return Object.prototype.hasOwnProperty.call(b, key) && configEqual(a[key], b[key]);
+        });
+    }
+
+    // Arrays are atomic: page order, card placement and navigation must agree.
+    function mergeConfig(base, local, remote) {
+        var conflicts = [];
+        function merge(before, ours, theirs, path) {
+            if (configEqual(ours, before)) return theirs;
+            if (configEqual(theirs, before) || configEqual(ours, theirs)) return ours;
+            var objects = [before, ours, theirs].every(function(value) {
+                return value && typeof value === 'object' && !Array.isArray(value);
+            });
+            if (!objects) { conflicts.push(path); return ours; }
+            var result = {};
+            Array.from(new Set(Object.keys(before).concat(Object.keys(ours), Object.keys(theirs)))).forEach(function(key) {
+                var value = merge(before[key], ours[key], theirs[key], path ? path + '.' + key : key);
+                if (value !== undefined) result[key] = value;
+            });
+            return result;
+        }
+        return { config: clone(merge(base, local, remote, '')), conflicts: conflicts };
+    }
+
+    function minimumCardSize(card) {
+        if (card.kind === 'motor') return { w: 280, h: 320 };
+        if (card.kind === 'brightness') return { w: 180, h: 80 };
+        if (card.kind === 'control' && card.display === 'number') return { w: 180, h: 112 };
+        if (card.kind === 'bar' && card.sourceRefs && card.sourceRefs.length) return { w: 100, h: 36 + 40 * card.sourceRefs.length };
+        if (card.kind === 'line') return { w: 160, h: 136 };
+        return { w: 72, h: 56 };
+    }
+
     function choiceRef(item) {
         return String(item && (item.ref || item.sourceRef || item.controlRef || item.id) || '');
     }
 
     function choiceLabel(item) {
-        return String(item && (item.label || item.name || item.title || choiceRef(item)) || '未命名项目');
+        var label = String(item && (item.label || item.name || item.title || choiceRef(item)) || '未命名项目');
+        return ({ 'Air temperature': '空气温度', 'Air humidity': '空气湿度', 'System uptime': '运行时长', '心知天气 temperature': '心知天气温度' })[label] || label;
     }
 
 
@@ -388,6 +431,9 @@
         var meta = map[status] || ['状态未知', 'status-badge-neutral'];
         return {
             text: meta[0], className: meta[1], reason: panel.reason || panel.error || '',
+            appliedRevision: panel.applied !== false && !panel.pendingRestart && !panel.restartRequired && !panel.error &&
+                (['applied', 'running', 'active'].indexOf(status) >= 0 || status === 'unknown' && (panel.applied === true || panel.appliedRevision !== undefined))
+                ? finiteNumber(panel.appliedRevision !== undefined ? panel.appliedRevision : panel.revision, -1) : -1,
             pendingRestart: panel.pendingRestart === true || panel.restartRequired === true
         };
     }
@@ -438,6 +484,8 @@
         var pages = [page('home', '首页', home)];
         if (numeric.length) pages.push(page('trend', '温湿度趋势', numeric.map(function(item, i) { return card('line', 'trend-' + i, item); })));
         if (motor) pages.push(page('motor', '电机控制', [card('motor', 'motor-main', motor)]));
+        var actions = available.filter(function(item) { return isControlChoice(item) && item.type !== 'motor' && item.allowPanelControl !== false; }).slice(0, 4);
+        if (actions.length) pages.push(page('controls', '外设执行', actions.map(function(item, index) { return Object.assign(card('control', 'control-' + index), { title: choiceLabel(item), controlRef: choiceRef(item), display: item.type || 'action', confirm: item.requiresConfirmation === true }); })));
         var system = page('system', '系统设置', ['brightness', 'sleep-time', 'touch-beep', 'confirm-idle', 'sleep'].map(function(kind) { return card(kind, 'system-' + kind); }));
         system.layoutId = 'data-detail';
         pages.push(system);
@@ -551,14 +599,20 @@
             var detailColumns = Math.floor((metrics.contentHeight - detailGap * 6) / 5) < 44 ? 2 : 1;
             var detailRows = Math.ceil(page.cards.length / detailColumns);
             var detailWidth = Math.max(1, Math.floor((metrics.width - detailX * 2 - detailGap * (detailColumns - 1)) / detailColumns));
-            var detailHeight = Math.max(44, Math.floor((metrics.contentHeight - detailGap * (detailRows + 1)) / detailRows));
+            var detailHeights = Array(detailRows).fill(44);
+            page.cards.forEach(function(card, index) {
+                var row = Math.floor(index / detailColumns);
+                detailHeights[row] = Math.max(detailHeights[row], minimumCardSize(card).h);
+            });
+            var detailExtra = Math.max(0, metrics.contentHeight - detailGap * (detailRows + 1) - detailHeights.reduce(function(sum, height) { return sum + height; }, 0));
+            detailHeights = detailHeights.map(function(height, row) { return height + Math.floor(detailExtra / detailRows) + (row < detailExtra % detailRows ? 1 : 0); });
             page.cards.forEach(function(card, index) {
                 var column = index % detailColumns;
                 var row = Math.floor(index / detailColumns);
                 card.rect = {
                     x: detailX + column * (detailWidth + detailGap),
-                    y: detailGap + row * (detailHeight + detailGap),
-                    w: detailWidth, h: detailHeight
+                    y: detailGap * (row + 1) + detailHeights.slice(0, row).reduce(function(sum, height) { return sum + height; }, 0),
+                    w: detailWidth, h: detailHeights[row]
                 };
             });
             return;
@@ -581,7 +635,7 @@
             }
         }
         page.cards.forEach(function(card, index) {
-            var size = card.size || 'small';
+            var size = card.size && card.size !== 'custom' ? card.size : CARD_DEFAULTS[card.kind].size;
             var colSpan = size === 'small' ? 1 : Math.min(2, metrics.cols);
             var rowSpan = size === 'large' ? 2 : 1;
             // Keep controls beside a motor when possible. This leaves one
@@ -628,14 +682,20 @@
                 Math.floor((metrics.contentHeight - 44 * usedRows) / (usedRows + 1))));
             fittedRowHeight = Math.floor((metrics.contentHeight - layoutGap * (usedRows + 1)) / usedRows);
         }
-        fittedRowHeight = Math.max(1, fittedRowHeight);
+        var rowHeights = Array(usedRows).fill(1);
+        placements.forEach(function(item) {
+            var required = Math.ceil((minimumCardSize(item.card).h - layoutGap * (item.rowSpan - 1)) / item.rowSpan);
+            for (var row = item.row; row < item.row + item.rowSpan; row++) rowHeights[row] = Math.max(rowHeights[row], required);
+        });
+        var extra = Math.max(0, metrics.contentHeight - layoutGap * (usedRows + 1) - rowHeights.reduce(function(sum, height) { return sum + height; }, 0));
+        rowHeights = rowHeights.map(function(height, row) { return height + Math.floor(extra / usedRows) + (row < extra % usedRows ? 1 : 0); });
         var colWidth = (metrics.width - layoutGap * (metrics.cols + 1)) / metrics.cols;
         placements.forEach(function(item) {
             item.card.rect = {
                 x: Math.round(layoutGap + item.col * (colWidth + layoutGap)),
-                y: Math.round(layoutGap + item.row * (fittedRowHeight + layoutGap)),
+                y: layoutGap * (item.row + 1) + rowHeights.slice(0, item.row).reduce(function(sum, height) { return sum + height; }, 0),
                 w: Math.round(colWidth * item.colSpan + layoutGap * (item.colSpan - 1)),
-                h: Math.round(fittedRowHeight * item.rowSpan + layoutGap * (item.rowSpan - 1))
+                h: rowHeights.slice(item.row, item.row + item.rowSpan).reduce(function(sum, height) { return sum + height; }, 0) + layoutGap * (item.rowSpan - 1)
             };
         });
     }
@@ -652,6 +712,8 @@
         var contentHeight = Math.max(64, size.height - DEVICE_FOOTER_HEIGHT);
         for (var index = 0; index < page.cards.length; index++) {
             if (!templateRectIsUsable(page.cards[index].rect, size, contentHeight)) return true;
+            var minimum = minimumCardSize(page.cards[index]);
+            if (page.cards[index].rect.w < minimum.w || page.cards[index].rect.h < minimum.h) return true;
             for (var compare = index + 1; compare < page.cards.length; compare++) {
                 if (!templateRectIsUsable(page.cards[compare].rect, size, contentHeight) ||
                     rectsOverlap(page.cards[index].rect, page.cards[compare].rect)) return true;
@@ -672,6 +734,7 @@
         var model = context._spEnsureModel();
         var errors = [];
         var cardCount = 0;
+        if (!Number.isInteger(config.settings.idleSleepSeconds) || config.settings.idleSleepSeconds < 0 || config.settings.idleSleepSeconds > 86400) errors.push('自动息屏时间须为 0 到 86400 秒');
         if (!Number.isInteger(config.settings.controlConfirmIdleSeconds) || config.settings.controlConfirmIdleSeconds < 15 || config.settings.controlConfirmIdleSeconds > 600) errors.push('操作确认间隔须为 15 到 600 秒');
         if (!Array.isArray(config.pages) || config.pages.length === 0) errors.push('至少保留一个页面');
         if (config.pages.length > limits.maxPages) errors.push('页面数量超过设备上限 ' + limits.maxPages);
@@ -681,7 +744,7 @@
             return String(display.id || display.ref || '') === String(config.displayRef);
         })) errors.push('显示设备引用已不可用');
         (config.settings.bottomNavPageIds || []).forEach(function(id) {
-            if (!validIdentifier(id) || !config.pages.some(function(page) { return page.id === id; })) errors.push('???????????' + id);
+            if (!validIdentifier(id) || !config.pages.some(function(page) { return page.id === id; })) errors.push('底栏页面引用无效：' + id);
         });
         config.pages.forEach((page) => {
             if (!/^[A-Za-z0-9_-]{1,40}$/.test(String(page.id || ''))) errors.push('页面 ID 格式无效：' + page.id);
@@ -705,6 +768,10 @@
                 if (SOURCE_KINDS.indexOf(card.kind) >= 0 && card.kind !== 'weather' && !card.sourceRef) errors.push(label + '未选择来源');
                 if (card.sourceRef && !model.choices.some(function(choice) { return choiceRef(choice) === card.sourceRef && !isControlChoice(choice); })) {
                     errors.push(label + '的数据来源已不可用');
+                }
+                if (['gauge', 'bar', 'line'].indexOf(card.kind) >= 0 && card.sourceRef) {
+                    var dataChoice = model.choices.find(function(choice) { return choiceRef(choice) === card.sourceRef; });
+                    if (dataChoice && !isNumericChoice(dataChoice)) errors.push(label + '需要数值来源');
                 }
                 if (Array.isArray(card.sourceRefs) && card.sourceRefs.length) {
                     if (card.kind !== 'bar' || card.sourceRefs.length > 4 ||
@@ -732,6 +799,7 @@
                 if (['gauge', 'bar'].indexOf(card.kind) >= 0 && !(Number(card.max) > Number(card.min))) {
                     errors.push(label + '量程上限必须大于下限');
                 }
+                if (card.kind === 'control' && !card.controlRef) errors.push(label + '未选择控制项，请在组件属性中选择');
                 if (card.kind === 'control' && card.controlRef && !model.choices.some(function(choice) {
                     return choiceRef(choice) === card.controlRef && isControlChoice(choice) &&
                         choice.available !== false && choice.allowPanelControl !== false;
@@ -761,6 +829,7 @@
                 }
                 if (card.kind === 'page-link' && !pageIds[card.targetPageId] && !config.pages.some(function(item) { return item.id === card.targetPageId; })) errors.push(label + '未选择有效目标页');
                 if (card.kind === 'brightness' && !(Number(card.actionValue) >= 0 && Number(card.actionValue) <= 100)) errors.push(label + '的目标亮度须为 0 到 100（0 为最低亮度）');
+                if (card.kind === 'brightness' && (rect.w < 180 || rect.h < 80)) errors.push(label + '亮度滑块至少需要 180 × 80，请调整尺寸或使用自动排版');
                 if (card.kind === 'restart' && config.settings.allowSystemRestart !== true) errors.push(label + '需要先开启重启许可');
                 if (card.kind === 'restart' && card.confirm !== true) errors.push(label + '必须开启执行前二次确认');
                 for (var compare = index + 1; compare < page.cards.length; compare++) {
@@ -793,9 +862,13 @@
         defaultConfig,
         normalizeConfig,
         sanitizeConfig,
+        configEqual,
+        mergeConfig,
+        minimumCardSize,
         referenceSize,
         templateMetrics,
         layoutTemplatePage,
+        templatePageNeedsLayout,
         ensurePageRects,
         validateConfig,
         isNumericChoice,
@@ -820,17 +893,155 @@
     } else {
         AppState._screenPanelModelHelpers = helpers;
     }
-})();
-
-// Settings share the existing lazy model asset; no additional network request.
-(function() {
-    if (typeof AppState === "undefined") return;
-    var helpers = AppState._screenPanelModelHelpers;
-    var SOURCE_KINDS = helpers.SOURCE_KINDS, choiceRef = helpers.choiceRef, choiceLabel = helpers.choiceLabel;
-    var isControlChoice = helpers.isControlChoice, isWeatherChoice = helpers.isWeatherChoice, finiteNumber = helpers.finiteNumber;
-    var CARD_LABELS = helpers.CARD_LABELS, SYSTEM_ACTION_KINDS = helpers.SYSTEM_ACTION_KINDS;
-    var clamp = helpers.clamp, cardIconMarkup = helpers.cardIconMarkup, weatherIconMarkup = helpers.weatherIconMarkup;
+    // Settings share the existing lazy model asset and its helpers.
+    function screenElement(id) { return document.getElementById(id); }
     AppState._screenPanelSettingsMethods = {
+        _spSetHomePage() {
+            var page = this._spCurrentPage();
+            this._spMutate(function(config) { config.settings.homePageId = page.id; });
+        },
+
+        _spMovePage(direction) {
+            var model = this._spEnsureModel();
+            var index = model.config.pages.findIndex(function(page) { return page.id === model.selectedPageId; });
+            var target = index + direction;
+            if (index < 0 || target < 0 || target >= model.config.pages.length) return;
+            this._spReorderItem('page', model.selectedPageId, model.config.pages[target].id);
+        },
+
+        _spReorderItem(kind, sourceId, targetId) {
+            var model = this._spEnsureModel(), page = this._spCurrentPage();
+            if (kind !== 'page' && (kind !== 'card' || !page || page.layoutMode !== 'template')) return false;
+            var items = kind === 'page' ? model.config.pages : page.cards;
+            var from = items.findIndex(function(item) { return item.id === sourceId; });
+            var to = items.findIndex(function(item) { return item.id === targetId; });
+            if (from < 0 || to < 0 || from === to) return false;
+            // Validate the new template before committing one undoable edit.
+            if (kind === 'card') {
+                var candidate = clone(page);
+                candidate.cards.splice(to, 0, candidate.cards.splice(from, 1)[0]);
+                this._spLayoutTemplatePage(candidate);
+                if (helpers.templatePageNeedsLayout(candidate, model.config, this)) {
+                    this._spSetLayoutError('排序后组件无法完整排入当前页面，请先调整组件尺寸'); return false;
+                }
+            }
+            this._spMutate((config) => {
+                items.splice(to, 0, items.splice(from, 1)[0]);
+                if (kind === 'page') {
+                    var selected = config.settings.bottomNavPageIds || [];
+                    config.settings.bottomNavPageIds = config.pages.map(function(item) { return item.id; }).filter(function(id) { return selected.indexOf(id) >= 0; });
+                } else {
+                    page.cards.forEach(function(card, index) { card.rect = candidate.cards[index].rect; });
+                    model.selectedCardId = sourceId;
+                }
+            });
+            this._spSetLayoutError('');
+            return true;
+        },
+
+        _spRenderAutoSleep() {
+            var model = this._spEnsureModel();
+            var seconds = finiteNumber(model.config.settings.idleSleepSeconds, 120);
+            var supported = this._spSystemActionSupport('sleep-time') !== false;
+            if (seconds > 0) model.autoSleepDelaySeconds = seconds;
+            var enabled = screenElement('sp-auto-sleep-enabled');
+            if (enabled) {
+                enabled.checked = seconds > 0;
+                // Permit disabling a saved timeout even while touch recovery is pending.
+                enabled.disabled = !supported && seconds === 0;
+            }
+            var idle = screenElement('sp-idle-sleep');
+            if (idle) {
+                if (!Array.from(idle.options).some(function(option) { return Number(option.value) === seconds; })) {
+                    var custom = document.createElement('option'); custom.value = seconds; custom.textContent = seconds + ' 秒'; idle.appendChild(custom);
+                }
+                idle.value = seconds;
+                idle.disabled = !supported || seconds === 0;
+                idle.title = supported ? '' : this._spSystemActionReason('sleep-time');
+            }
+            var reason = screenElement('sp-sleep-capability');
+            if (reason) { reason.textContent = supported ? '' : this._spSystemActionReason('sleep-time'); reason.classList.toggle('fb-hidden', supported); }
+        },
+
+        _spSetAutoSleepEnabled(enabled) {
+            var model = this._spEnsureModel(), settings = model.config.settings;
+            if (enabled && this._spSystemActionSupport('sleep-time') === false) { this._spRenderAutoSleep(); return; }
+            var seconds = finiteNumber(settings.idleSleepSeconds, 120);
+            if (seconds > 0) model.autoSleepDelaySeconds = seconds;
+            var next = enabled ? clamp(finiteNumber(model.autoSleepDelaySeconds, 120), 1, 86400) : 0;
+            if (next === seconds) return;
+            this._spMutate(function(config) { config.settings.idleSleepSeconds = next; });
+        },
+
+        _spLineSvg(card) {
+            var history = this._spEnsureModel().histories[card.sourceRef] || {};
+            var points = Array.isArray(history.points) ? history.points.slice(-10) : [];
+            var valid = function(point) { return point.value !== null && point.value !== '' && typeof point.value !== 'boolean' && Number.isFinite(Number(point.value)); };
+            var values = points.filter(valid).map(function(point) { return Number(point.value); });
+            if (!values.length) return '<div class="sp-card-meta">暂无历史记录</div>';
+            var min = Math.min.apply(Math, values);
+            var max = Math.max.apply(Math, values);
+            if (min === max) { min -= 1; max += 1; }
+            var sameBoot = function(a, b) {
+                return a.bootId || b.bootId ? !!a.bootId && a.bootId === b.bootId : !a.restored && !b.restored;
+            };
+            var delta = function(a, b) {
+                if (!valid(a) || !valid(b)) return 0;
+                if (sameBoot(a, b) && b.uptimeMs > a.uptimeMs) return b.uptimeMs - a.uptimeMs;
+                if (a.bootId && b.bootId && a.bootId !== b.bootId) return 0;
+                if (a.epochMs && b.epochMs > a.epochMs) return b.epochMs - a.epochMs;
+                return 0;
+            };
+            var intervals = points.slice(1).map(function(point, i) { return delta(points[i], point); }).filter(function(value) { return value > 0; }).sort(function(a, b) { return a - b; });
+            var cadence = intervals[Math.floor((intervals.length - 1) / 2)] || 0;
+            var epochAxis = points.every(function(point, i) { return point.epochMs && (!i || point.epochMs >= points[i - 1].epochMs); });
+            var uptimeAxis = points.every(function(point, i) { return (point.bootId || !point.restored) && Number.isFinite(point.uptimeMs) && (!i || sameBoot(points[i - 1], point) && point.uptimeMs >= points[i - 1].uptimeMs); });
+            var timeKey = uptimeAxis ? 'uptimeMs' : epochAxis ? 'epochMs' : '';
+            var span = timeKey ? points[points.length - 1][timeKey] - points[0][timeKey] : 0;
+            var coords = points.map(function(point, i) {
+                var fraction = span > 0 ? (point[timeKey] - points[0][timeKey]) / span : points.length > 1 ? i / (points.length - 1) : .5;
+                return (4 + fraction * 92).toFixed(1) + ',' + (92 - (Number(point.value) - min) * 78 / (max - min)).toFixed(1);
+            });
+            var drawing = points.map(function(point, i) {
+                if (!valid(point)) return '';
+                var xy = coords[i].split(','), elapsed = i ? delta(points[i - 1], point) : 0;
+                return (elapsed && cadence && elapsed <= cadence * 3 ? '<polyline points="' + coords[i - 1] + ' ' + coords[i] + '"></polyline>' : '') +
+                    '<circle cx="' + xy[0] + '" cy="' + xy[1] + '" r="2"></circle>';
+            }).join('');
+            return '<svg class="sp-line-chart" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+                '<line x1="0" y1="92" x2="100" y2="92"></line><line x1="0" y1="53" x2="100" y2="53"></line>' +
+                drawing + '</svg>';
+        },
+
+        _spBarSeriesContent(card, state) {
+            var choices = this._spEnsureModel().choices;
+            var sources = (card.sourceRefs || []).slice(0, 4);
+            var units = sources.map(function(ref) {
+                var series = (state.series || []).find(function(item) { return item.sourceRef === ref; }) || {};
+                var choice = choices.find(function(item) { return choiceRef(item) === ref; });
+                return String(series.unit !== undefined ? series.unit : choice && choice.unit || '');
+            });
+            return '<div class="sp-bar-series">' + sources.map((ref, index) => {
+                var series = (state.series || []).find(function(item) { return item.sourceRef === ref; }) || {};
+                var choice = choices.find(function(item) { return choiceRef(item) === ref; });
+                var quality = String(series.quality || 'unknown').toLowerCase();
+                var labels = { good: '正常', stale: '已过期', offline: '离线', error: '错误', unknown: '未知' };
+                if (!labels[quality]) quality = 'unknown';
+                var matchingUnit = units[index] === units[0];
+                var value = series.value;
+                var valid = matchingUnit && quality !== 'unknown' && value !== undefined && value !== null &&
+                    typeof value !== 'boolean' && String(value).trim() !== '' && Number.isFinite(Number(value));
+                var min = finiteNumber(card.min, 0), max = finiteNumber(card.max, 100);
+                var percent = valid && max > min ? clamp((Number(value) - min) * 100 / (max - min), 0, 100) : 0;
+                var status = matchingUnit ? labels[quality] : '单位不一致';
+                if (matchingUnit && Number(series.updatedMs) > 0) status += ' · T+' + Math.floor((Number(series.updatedMs) >>> 0) / 1000) + 's';
+                return '<div class="sp-bar-series-row" data-quality="' + (matchingUnit ? quality : 'error') + '">' +
+                    '<div class="sp-bar-series-label"><span>' + escapeHtml(series.label || choice && choiceLabel(choice) || ref) + '</span><strong>' +
+                    escapeHtml(valid ? this._spFormatValue(value, card.precision) + (units[index] ? ' ' + units[index] : '') : '--') + '</strong></div>' +
+                    '<div class="sp-bar-track"><div class="sp-bar-fill" style="--sp-progress:' + percent.toFixed(1) + '%"></div></div>' +
+                    '<div class="sp-card-meta">' + escapeHtml(status) + '</div></div>';
+            }).join('') + '</div>';
+        },
         _spCardContent(card, config) {
             var state = this._spCardState(card);
             var value = state.value !== undefined ? state.value : state.text;
@@ -844,7 +1055,7 @@
                 content += '<div class="sp-card-value-row"><span class="sp-card-value">' + escapeHtml(this._spFormatValue(value, card.precision)) + '</span>' +
                     (unit ? '<span class="sp-card-unit">' + escapeHtml(unit) + '</span>' : '') + '</div>';
             } else if (card.kind === 'status') {
-                var status = String(state.state !== undefined ? state.state : value || 'unknown').toLowerCase();
+                var status = String(state.state !== undefined ? state.state : value !== undefined && value !== null ? value : 'unknown').toLowerCase();
                 var dot = status === 'on' || status === 'true' || status === '1' ? 'is-on' :
                     (status === 'off' || status === 'false' || status === '0' ? 'is-off' : 'is-pending');
                 content += '<div class="sp-status-value"><span class="sp-status-dot ' + dot + '"></span><span class="sp-card-value">' +
@@ -889,7 +1100,7 @@
             } else if (card.kind === 'weather') {
                 var condition = String(state.condition || state.conditionCode || '').toLowerCase();
                 var temperature = state.temperature !== undefined ? state.temperature : value;
-                var weatherMeta = !card.sourceRef ? '待配置天气来源' : state.description || state.city || (temperature === undefined ? '暂无天气数据' : '天气来源');
+                var weatherMeta = !card.sourceRef ? '请在组件属性中配置心知天气' : state.description || state.city || (temperature === undefined ? '暂无天气数据' : '天气来源');
                 content += '<div class="sp-weather-main">' + weatherIconMarkup(card.iconId, condition, escapeHtml) +
                     '<div class="sp-weather-copy"><div class="sp-card-value">' + escapeHtml(state.text || this._spFormatValue(temperature, card.precision)) +
                     (unit ? ' ' + escapeHtml(unit) : '') + '</div><div class="sp-card-meta">' + escapeHtml(weatherMeta) + '</div></div></div>' +
@@ -907,10 +1118,11 @@
 
 
         _spMotorPreview(card, state, precision) {
-            var values = [['速度', this._spFormatValue(card.motorSpeed / Math.pow(10, precision), precision)], ['脉冲', card.motorPulse]];
-            return '<div class="sp-motor-preview"><small>' + (state.pending ? '指令处理中' : '运行状态未确认') + '</small>' + values.map(function(item) {
-                return '<div class="sp-motor-param"><span><small>' + item[0] + '</small><strong>' + escapeHtml(String(item[1])) + '</strong></span><button disabled>−</button><button disabled>＋</button><button disabled>应用</button></div>';
-            }).join('') + '<div class="sp-motor-actions"><button disabled>正转</button><button disabled>反转</button></div><button class="sp-motor-stop" disabled>停止</button></div>';
+            var values = [['速度', this._spFormatValue(card.motorSpeed / Math.pow(10, precision), precision), this._spFormatValue(state.motorSpeed / Math.pow(10, precision), precision)], ['脉冲', card.motorPulse, state.motorPulse]];
+            var status = state.pending ? '指令处理中' : state.motorCommandSuccess ? '已应答，运行状态未确认' : state.error ? '指令未确认' : '运行状态未确认';
+            return '<div class="sp-motor-preview"><small>' + escapeHtml(status) + '</small>' + values.map(function(item) {
+                return '<div class="sp-motor-param"><span><small>' + item[0] + '</small><strong>' + escapeHtml(item[1]) + '</strong><small>读回 ' + escapeHtml(state.motorKnown ? item[2] : '--') + '</small></span><button disabled>−</button><button disabled>＋</button><button disabled>应用</button></div>';
+            }).join('') + '<div class="sp-motor-actions"><button class="sp-motor-forward" disabled>正转</button><button class="sp-motor-stop" disabled>停止</button><button class="sp-motor-reverse" disabled>反转</button></div></div>';
         },
         _spSystemPreview(card, settings) {
             var kind = card.kind, value;
@@ -927,60 +1139,39 @@
         },
         _spChoiceOptions(select, items, selected, placeholder) {
             if (!select) return;
-            select.innerHTML = '';
-            var empty = document.createElement('option');
-            empty.value = '';
-            empty.textContent = placeholder || '请选择';
-            select.appendChild(empty);
-            items.forEach(function(item) {
-                var ref = choiceRef(item);
-                if (!ref) return;
-                var option = document.createElement('option');
-                option.value = ref;
-                option.textContent = choiceLabel(item) + (item.available === false ? '（不可用）' : '');
-                option.disabled = item.available === false;
-                select.appendChild(option);
-            });
+            items = items.slice();
+            if (selected && !items.some(function(item) { return choiceRef(item) === selected; })) items.push({ ref: selected, label: selected, available: false });
+            select.innerHTML = '<option value="">' + escapeHtml(placeholder || '请选择') + '</option>' + items.filter(function(item) {
+                return choiceRef(item);
+            }).map(function(item) {
+                return '<option value="' + escapeHtml(choiceRef(item)) + '"' + (item.available === false ? ' disabled' : '') + '>' +
+                    escapeHtml(choiceLabel(item)) + (item.available === false ? '（不可用）' : '') + '</option>';
+            }).join('');
             select.value = selected || '';
         },
 
         _spMountInspector() {
-            var host = document.getElementById("sp-inspector");
-            if (host && !host.children.length) host.innerHTML = " <div id=\"sp-inspector-empty\" class=\"sp-inspector-empty\">选择画布组件设置属性</div> <form id=\"sp-inspector-form\" class=\"fb-hidden\" novalidate> <div class=\"sp-inspector-heading\"> <div><span id=\"sp-inspector-kind\" class=\"fb-tag fb-tag-primary\">组件</span><strong id=\"sp-inspector-id\"></strong></div> <button id=\"sp-card-delete\" type=\"button\" class=\"fb-btn fb-btn-sm fb-text-danger\">删除</button> </div> <label class=\"sp-field-stack\">名称 <input id=\"sp-card-title\" type=\"text\" maxlength=\"64\" autocomplete=\"off\"> <small id=\"sp-title-hint\">最多 2 行</small> </label> <label id=\"sp-source-field\" class=\"sp-field-stack\">数据来源 <select id=\"sp-card-source\"></select> </label> <div id=\"sp-bar-sources-field\" class=\"sp-field-stack fb-hidden\"> <label>对比来源 2<select id=\"sp-card-source-1\"></select></label> <label>对比来源 3<select id=\"sp-card-source-2\"></select></label> <label>对比来源 4<select id=\"sp-card-source-3\"></select></label> </div> <label id=\"sp-control-field\" class=\"sp-field-stack fb-hidden\">电机、开关或外设执行规则 <select id=\"sp-card-control\"></select> </label> <label id=\"sp-page-link-field\" class=\"sp-field-stack fb-hidden\">目标页面 <select id=\"sp-card-target-page\"></select> </label>  <label id=\"sp-display-field\" class=\"sp-field-stack\">显示形式 <select id=\"sp-card-display\"></select> </label> <div id=\"sp-motor-fields\" class=\"sp-inspector-grid fb-hidden\"> <small>首次/闲置确认：使用全局间隔</small> <label>初始速度<input id=\"sp-motor-speed\" type=\"number\" min=\"0\" max=\"65535\" value=\"50\"></label> <label>初始脉冲<input id=\"sp-motor-pulse\" type=\"number\" min=\"0\" max=\"65535\" value=\"1600\"></label> <label>速度步长<input id=\"sp-motor-speed-step\" type=\"number\" min=\"1\" max=\"65535\" value=\"1\"></label> <label>脉冲步长<input id=\"sp-motor-pulse-step\" type=\"number\" min=\"1\" max=\"65535\" value=\"100\"></label> </div> <div id=\"sp-numeric-fields\" class=\"sp-inspector-grid\"> <label>单位<input id=\"sp-card-unit\" type=\"text\" maxlength=\"16\"></label> <label>小数位<input id=\"sp-card-precision\" type=\"number\" min=\"0\" max=\"6\" value=\"1\"></label> <label>下限<input id=\"sp-card-min\" type=\"number\" step=\"any\" value=\"0\"></label> <label>上限<input id=\"sp-card-max\" type=\"number\" step=\"any\" value=\"100\"></label> <label id=\"sp-card-step-field\" class=\"fb-hidden\">步长<input id=\"sp-card-step\" type=\"number\" step=\"any\" value=\"1\"></label> <label id=\"sp-card-initial-field\" class=\"fb-hidden\">初始值<input id=\"sp-card-initial\" type=\"number\" step=\"any\" value=\"0\"></label> </div> <label id=\"sp-size-field\" class=\"sp-field-stack\">尺寸 <select id=\"sp-card-size\"><option value=\"small\">小</option><option value=\"wide\">宽</option><option value=\"large\">大</option></select> </label> <label id=\"sp-confirm-field\" class=\"sp-checkbox fb-hidden\"><input id=\"sp-card-confirm\" type=\"checkbox\">在物理屏执行前确认</label> <div class=\"sp-inspector-actions\"> <button id=\"sp-card-apply\" type=\"submit\" class=\"fb-btn fb-btn-primary\">应用设置</button> </div> </form> ";
+            var host = screenElement('sp-component-inspector');
+            if (host && !host.children.length) host.innerHTML = " <div id=\"sp-inspector-empty\" class=\"sp-inspector-empty\">选择画布组件设置属性</div> <form id=\"sp-inspector-form\" class=\"fb-hidden\" novalidate> <div class=\"sp-inspector-heading\"> <div><span id=\"sp-inspector-kind\" class=\"fb-tag fb-tag-primary\">组件</span></div> <button id=\"sp-card-delete\" type=\"button\" class=\"fb-btn fb-btn-sm fb-text-danger\">删除</button> </div> <label class=\"sp-field-stack\">名称 <input id=\"sp-card-title\" type=\"text\" maxlength=\"64\" autocomplete=\"off\"> </label> <label id=\"sp-source-field\" class=\"sp-field-stack\">数据来源 <select id=\"sp-card-source\"></select> </label> <div id=\"sp-bar-sources-field\" class=\"sp-field-stack fb-hidden\"> <label>对比来源 2<select id=\"sp-card-source-1\"></select></label> <label>对比来源 3<select id=\"sp-card-source-2\"></select></label> <label>对比来源 4<select id=\"sp-card-source-3\"></select></label> </div> <label id=\"sp-control-field\" class=\"sp-field-stack fb-hidden\">控制来源 <select id=\"sp-card-control\"></select> </label> <label id=\"sp-page-link-field\" class=\"sp-field-stack fb-hidden\">目标页面 <select id=\"sp-card-target-page\"></select> </label>  <label id=\"sp-display-field\" class=\"sp-field-stack\">显示形式 <select id=\"sp-card-display\"></select> </label> <div id=\"sp-motor-fields\" class=\"sp-inspector-grid fb-hidden\"> <label>初始速度<input id=\"sp-motor-speed\" type=\"number\" min=\"0\" max=\"65535\" value=\"50\"></label> <label>初始脉冲<input id=\"sp-motor-pulse\" type=\"number\" min=\"0\" max=\"65535\" value=\"1600\"></label> <label>速度步长<input id=\"sp-motor-speed-step\" type=\"number\" min=\"1\" max=\"65535\" value=\"1\"></label> <label>脉冲步长<input id=\"sp-motor-pulse-step\" type=\"number\" min=\"1\" max=\"65535\" value=\"100\"></label> </div> <div id=\"sp-numeric-fields\" class=\"sp-inspector-grid\"> <label>单位<input id=\"sp-card-unit\" type=\"text\" maxlength=\"16\"></label> <label>小数位<input id=\"sp-card-precision\" type=\"number\" min=\"0\" max=\"6\" value=\"1\"></label> <label>下限<input id=\"sp-card-min\" type=\"number\" step=\"any\" value=\"0\"></label> <label>上限<input id=\"sp-card-max\" type=\"number\" step=\"any\" value=\"100\"></label> <label id=\"sp-card-step-field\" class=\"fb-hidden\">步长<input id=\"sp-card-step\" type=\"number\" step=\"any\" value=\"1\"></label> <label id=\"sp-card-initial-field\" class=\"fb-hidden\">初始值<input id=\"sp-card-initial\" type=\"number\" step=\"any\" value=\"0\"></label> </div> <label id=\"sp-size-field\" class=\"sp-field-stack\">尺寸 <select id=\"sp-card-size\"><option value=\"small\">小</option><option value=\"wide\">宽</option><option value=\"large\">大</option></select> </label> <label id=\"sp-confirm-field\" class=\"sp-checkbox fb-hidden\"><input id=\"sp-card-confirm\" type=\"checkbox\">执行前确认</label> </form>";
+            if (host && !screenElement('sp-card-x')) {
+                host.querySelector('form').insertAdjacentHTML('beforeend', '<fieldset class="sp-geometry"><legend>位置与尺寸 · px</legend><div class="sp-inspector-grid">' + [['x', '横向位置'], ['y', '纵向位置'], ['w', '宽度'], ['h', '高度']].map(function(pair) {
+                    return '<label>' + pair[1] + '<input id="sp-card-' + pair[0] + '" type="number" min="' + (pair[0] === 'x' || pair[0] === 'y' ? '0' : '1') + '" step="1"></label>';
+                }).join('') + '</div></fieldset>');
+            }
             this._spRenderInspector();
         },
-        _spRenderContentList() {
-            var model = this._spEnsureModel(), host = document.getElementById('sp-content-list');
-            if (!host) return;
-            host.innerHTML = model.config.pages.map(function(page) {
-                return '<div class="sp-content-page"><div class="sp-config-section-heading"><strong>' + escapeHtml(page.title) + '</strong><button class="fb-btn fb-btn-sm" data-sp-adjust-page="' + escapeHtml(page.id) + '">调整</button></div>' +
-                    page.cards.map(function(card) {
-                        var control = card.kind === 'motor' || card.kind === 'control';
-                        if (!control && SOURCE_KINDS.indexOf(card.kind) < 0) return '<span class="sp-content-tag">' + escapeHtml(card.title) + '</span>';
-                        var choices = model.choices.filter(function(choice) {
-                            if (card.kind === 'motor') return choice.type === 'motor';
-                            if (control) return isControlChoice(choice) && choice.type !== 'motor';
-                            return card.kind === 'weather' ? isWeatherChoice(choice) : helpers.isNumericChoice(choice);
-                        });
-                        return '<label class="sp-content-source">' + escapeHtml(card.title) + '<select data-sp-content-source="' + escapeHtml(card.id) + '"><option value="">选择来源</option>' + choices.map(function(choice) {
-                            var ref = choiceRef(choice);
-                            return '<option value="' + escapeHtml(ref) + '"' + (ref === (control ? card.controlRef : card.sourceRef) ? ' selected' : '') + '>' + escapeHtml(choiceLabel(choice)) + '</option>';
-                        }).join('') + '</select></label>';
-                    }).join('') + '</div>';
-            }).join('');
-        },
-
         _spRenderWeather() {
             var weather = this._spEnsureModel().weather;
             if (!weather) return;
-            document.getElementById('sp-weather-enabled').checked = weather.enabled === true;
-            document.getElementById('sp-weather-location').value = weather.location || 'beijing';
-            document.getElementById('sp-weather-interval').value = weather.intervalSeconds || 1800;
-            var key = document.getElementById('sp-weather-key');
+            screenElement('sp-weather-enabled').checked = weather.enabled === true;
+            screenElement('sp-weather-location').value = weather.location || 'beijing';
+            screenElement('sp-weather-interval').value = weather.intervalSeconds || 1800;
+            var key = screenElement('sp-weather-key');
+            screenElement('sp-weather-clear-key').checked = false;
             key.value = ''; key.placeholder = weather.hasApiKey ? '已设置，留空保留' : '输入心知天气 API Key';
             var migration = weather.migration || {};
-            document.getElementById('sp-weather-migration').classList.toggle('fb-hidden', migration.required !== true);
-            document.getElementById('sp-weather-legacy').innerHTML = '<option value="">请选择</option>' + (migration.candidates || []).filter(function(item) { return item.compatible; }).map(function(item) {
+            screenElement('sp-weather-migration').classList.toggle('fb-hidden', migration.required !== true);
+            screenElement('sp-weather-legacy').innerHTML = '<option value="">请选择</option>' + (migration.candidates || []).filter(function(item) { return item.compatible; }).map(function(item) {
                 return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.label || item.location || item.id) + '</option>';
             }).join('') + '<option value="new">重新配置心知天气</option>';
             this._spWeatherStatus(weather.status);
@@ -988,16 +1179,24 @@
 
         _spWeatherStatus(status) {
             status = status || {};
+            var now = Date.now(), elapsed = status.seenAt ? now - status.seenAt : 0;
+            ['manualRetryAfterMs', 'automaticRetryAfterMs'].forEach(function(key) { if (status[key] != null) status[key] = Math.max(0, Number(status[key]) - elapsed); });
+            status.seenAt = now;
             var preview = status.preview || status.weather || {};
-            document.getElementById('sp-weather-status').textContent = status.message || status.error ||
+            var message = status.message || status.error ||
                 (status.pending ? '正在更新天气' : preview.temperature !== undefined ?
                     [preview.city, preview.description, preview.temperature + '℃', preview.providerUpdatedAt || ''].filter(Boolean).join(' · ') : '保存后可更新天气');
+            if (!status.blocked && Number(status.automaticRetryAfterMs) > 0) message += ' · 自动更新约 ' + Math.ceil(status.automaticRetryAfterMs / 1000) + ' 秒后';
+            screenElement('sp-weather-status').textContent = message;
+            var model = this._spEnsureModel(); model.weatherStatus = status;
+            var refresh = screenElement('sp-weather-refresh');
+            if (refresh) refresh.disabled = status.pending === true || Number(status.manualRetryAfterMs || 0) > 0;
         },
 
         async _spRefreshWeather() {
             var model = this._spEnsureModel();
             if (!model.weather || model.weatherDirty) { this._spSetMessage('请先保存天气配置', 'error'); return; }
-            var button = document.getElementById('sp-weather-refresh'); button.disabled = true;
+            var button = screenElement('sp-weather-refresh'); button.disabled = true;
             try {
                 var response = await apiPost('/api/screen-panel/weather/refresh', { id: model.weather.id });
                 if (!response || !response.success) throw new Error(response && (response.error || response.message) || '天气更新失败');
@@ -1012,7 +1211,7 @@
                     }
                 }
             } catch (error) { this._spSetMessage(error.data && (error.data.error || error.data.message) || error.message || '天气更新失败', 'error'); }
-            finally { button.disabled = false; }
+            finally { this._spWeatherStatus(model.weatherStatus); }
         },
 
         async _spSaveAll() {
@@ -1020,47 +1219,59 @@
             var model = this._spEnsureModel();
             if (model.saving) return false;
             var validation = this._spValidateConfig(model.config);
+            // Validate all resource groups before the first write; successful groups remain saved on retry.
+            var weather = this._spWeatherPayload();
+            var history = this._spHistoryPayload();
+            if (model.weatherDirty) {
+                if (!model.weather) validation.errors.push('天气配置尚未加载');
+                if (weather.enabled && (!weather.location || !(weather.apiKey || model.weather && model.weather.hasApiKey))) validation.errors.push('请填写心知天气 Key 和城市');
+                if (model.weather && model.weather.migration && model.weather.migration.required && !weather.legacySourceId) validation.errors.push('请选择要保留的天气来源');
+            }
+            var sources = Array.from(new Set(model.config.pages.flatMap(function(page) { return page.cards.filter(function(card) { return card.kind === 'line'; }).map(function(card) { return card.sourceRef; }).filter(Boolean); })));
+            if (sources.length && !model.historyConfig) validation.errors.push('设备未提供最近记录设置');
+            if (history && sources.length) {
+                history.sourceAllowlist = history.enabled && !history.sourceAllowlist.length ? [] : Array.from(new Set(history.sourceAllowlist.concat(sources)));
+                history.enabled = true;
+            }
+            if (history && history.sourceAllowlist.length > finiteNumber(model.historyConfig.maxSources, 16)) validation.errors.push('最近记录来源超过设备上限');
             if (validation.errors.length) { this._spSetMessage(validation.errors.join('；'), 'error'); return false; }
             var saved = [];
             model.saving = true;
-            var form = document.getElementById('sp-config'); form.inert = true;
+            var form = screenElement('sp-config'); form.inert = true;
             try {
                 if (model.weatherDirty) {
-                    if (!model.weather) throw new Error('天气配置尚未加载');
-                    var response = await apiPostJson('/api/screen-panel/weather', {
-                        expectedRevision: model.weather.revision,
-                        enabled: document.getElementById('sp-weather-enabled').checked,
-                        location: document.getElementById('sp-weather-location').value.trim(),
-                        intervalSeconds: Number(document.getElementById('sp-weather-interval').value),
-                        apiKey: document.getElementById('sp-weather-key').value,
-                        legacySourceId: document.getElementById('sp-weather-legacy').value
-                    });
+                    var response = await apiPostJson('/api/screen-panel/weather', weather);
                     if (!response || !response.success) throw new Error(response && (response.error || response.message) || '天气保存失败');
                     model.weather = response.data; model.weatherDirty = false; saved.push('天气'); this._spRenderWeather();
-                    var choices = await this._spLoadAllChoices(apiGetFresh);
+                    var choices = await this._spLoadAllChoices(typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
                     model.choices = choices.items || model.choices;
+                    var weatherChoice = model.choices.find(helpers.isWeatherChoice);
+                    if (weatherChoice) model.config.pages.forEach(function(page) { page.cards.forEach(function(card) { if (card.kind === 'weather') card.sourceRef = helpers.choiceRef(weatherChoice); }); });
+                    model.dirty = JSON.stringify(model.config) !== JSON.stringify(model.savedConfig);
                 }
-                var sources = Array.from(new Set(model.config.pages.flatMap(function(page) { return page.cards.filter(function(card) { return card.kind === 'line'; }).map(function(card) { return card.sourceRef; }).filter(Boolean); })));
-                if (sources.length) {
-                    if (!model.historyConfig) throw new Error('设备未提供最近记录设置');
-                    var old = model.historyConfig;
-                    var allowlist = Array.isArray(old.sourceAllowlist) ? old.sourceAllowlist : [];
-                    var next = old.enabled && !allowlist.length ? [] : Array.from(new Set(allowlist.concat(sources)));
-                    if (next.length > finiteNumber(old.maxSources, 16)) throw new Error('最近记录来源超过设备上限');
-                    if (!old.enabled || JSON.stringify(next) !== JSON.stringify(allowlist)) {
-                        var history = await apiPostJson('/api/periph-exec/history/config', { enabled: true, sourceAllowlist: next });
-                        if (!history || !history.success) throw new Error('最近记录设置保存失败');
-                        model.historyConfig = history.data.config; saved.push('最近记录');
-                    }
+                if (history && (history.enabled !== model.historyConfig.enabled || JSON.stringify(history.sourceAllowlist) !== JSON.stringify(model.historyConfig.sourceAllowlist || []))) {
+                    var result = await apiPostJson('/api/periph-exec/history/config', history);
+                    if (!result || !result.success || !result.data || !result.data.config) throw new Error(result && result.message || '最近记录设置保存失败');
+                    model.historyConfig = result.data.config; model.historyDraft = helpers.clone(model.historyConfig); model.historyDirty = false;
+                    model.historyStatus = result.data.status || model.historyStatus; saved.push('最近记录');
+                    this._spRenderHistorySettings();
                 }
                 if ((model.dirty || !model.persisted) && !await this._spSave()) {
-                    var detail = document.getElementById('sp-page-message');
+                    var detail = screenElement('sp-page-message');
                     throw new Error(detail && detail.textContent || '屏幕布局未保存，请检查提示后重试');
                 }
-                this._spRenderAll(); this._spSetMessage(model.application && model.application.pendingRestart ? '已保存，重启后应用到物理屏' : '配置已保存并提交应用', 'success'); return true;
+                model.historyDirty = false;
+                this._spRenderAll(); this._spSetMessage(model.application && model.application.pendingRestart ? '已保存，重启后应用到物理屏' : '已保存，设备应用状态见上方', 'success'); return true;
             } catch (error) {
-                this._spSetMessage((saved.length ? saved.join('、') + '已保存；' : '') + (error.data && (error.data.error || error.data.message) || error.message || '保存失败'), 'error'); return false;
+                this._spSetMessage((saved.length ? saved.join('、') + '已保存；' : '') + (error.status === 409 ? '配置已被其他窗口修改，草稿已保留，请重新读取并核对。' : error.data && (error.data.error || error.data.message) || error.message || '保存失败'), 'error'); return false;
             } finally { model.saving = false; form.inert = false; this._spRenderDirtyState(); }
+        },
+
+        _spWeatherPayload() {
+            var model = this._spEnsureModel(), get = function(id) { return screenElement(id); };
+            return { expectedRevision: model.weather && model.weather.revision, enabled: get('sp-weather-clear-key').checked ? false : get('sp-weather-enabled').checked, clearApiKey: get('sp-weather-clear-key').checked,
+                location: get('sp-weather-location').value.trim(), intervalSeconds: Number(get('sp-weather-interval').value),
+                apiKey: get('sp-weather-key').value, legacySourceId: get('sp-weather-legacy').value };
         },
 
     };

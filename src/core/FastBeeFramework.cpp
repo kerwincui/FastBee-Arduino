@@ -1415,11 +1415,12 @@ bool FastBeeFramework::addSystemTasks() {
     }
 
 
-    // 按键事件检测任务（每100ms）- 优先级 HIGH 确保 MEMGUARD SEVERE 时仍执行
-    // 注意：50ms间隔过于激进，可能导致执行超时和看门狗复位
+    // Match the scheduler's 20 ms sampling gate. A 100 ms task interval
+    // stretches 50 ms DI debounce to 100-200 ms and misses short pulses.
+    // HIGH keeps local inputs available during MEMGUARD SEVERE.
     if (!taskManager->addTask("button_event_check", [](void* param) {
         PeriphExecManager::getInstance().checkButtonEvents();
-    }, nullptr, 100, TaskPriority::PRIORITY_HIGH)) {
+    }, nullptr, 20, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add button event check task");
     }
 #endif

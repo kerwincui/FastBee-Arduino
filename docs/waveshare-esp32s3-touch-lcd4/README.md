@@ -1,14 +1,16 @@
 # Waveshare ESP32-S3-Touch-LCD-4 设备屏幕测试配置
 
-2026-09-23 背光修正：本现场板用户实测 PWM 高值变暗，因此样例采用 `backlightActiveHigh=false`；部署时只修正本机显示外设同名字段，不全局反转其他屏。RGB 的 CH32 PWM 与 GPIO PWM 现在均使用该极性配置。普通亮度 0–100 映射可见亮度约 10%–100%，0 为最低亮度；只有显式息屏或停用显示才关闭背光，唤醒恢复最后设置。
+新版界面使用说明见[设备触摸屏：预览、编辑与操作](../touch-screen-user-guide.md)。该说明对应当前源码；本机部署与实屏验收状态应以本次发布记录为准，下方旧固件版本、IP 和测试记录仅作历史参考。
 
-该极性来自本机实测，不能推广到所有 Rev4：[厂商当前 CH32 说明](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-4/blob/main/examples/esp-idf/ioexpander/README.md)描述 PWM 高值更亮，与本机相反。其他批次应按实际效果选择已有极性字段。离线测试验证两种极性、亮度端点、休眠恢复和写入失败；实屏结果仍须部署后确认。
+本机背光极性修正：2026-09-25 用户实物反馈，现场 `backlightActiveHigh=true` 时 100% 黑屏、0% 最亮，确认当前配置方向相反。该 Rev4 显示外设 `panel_display` 应设为 `backlightActiveHigh=false`，公开 `peripherals.json` 已同步。此结论仅针对本机 CH32 背光连接，不全局反转其他屏。逻辑 0% 保留约 10% 可见亮度，100% 最亮；只有显式息屏关闭背光。实际部署后，亮度递增、端点及触摸唤醒效果仍待用户现场复核。
+
+[厂商 CH32 说明](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-4/blob/main/examples/esp-idf/ioexpander/README.md)需结合板本和实物判断。生产后端将按配置计算的 duty 直接写入 `0x05`：本机低有效配置对应逻辑 0% 写 229、100% 写 0、息屏写 255。离线测试同时覆盖该板样例与通用两种极性；不能替代部署后的实体确认。通过外设编辑保存极性后需重启设备，不能把保存成功当作显示运行时已重新启动。
 
 [返回配置样例索引](../README.md)
 
 触摸提示音可在“外设配置 → 显示外设 → 触摸提示音时长”选择 20、30、60、100 或 150 ms，默认 30 ms。现有配置缺少 `touchBuzzerDurationMs` 时加载为 30，接口接受 20–150 的整数。开关仍由设备屏幕的触摸提示音设置控制。板载蜂鸣器为固定音量：厂商 CH32 接口通过 EXIO6/BEE_EN 电平开关蜂鸣器，EXIO_PWM 用于背光，未提供蜂鸣器音量寄存器；因此本项调整鸣叫时长，不表示音量可调，也不改外设执行已有的独立蜂鸣动作。
 
-当前布局与操作说明见[触控屏使用与配置](panel-quick-start.md)。
+当前操作请使用[新版使用说明](../touch-screen-user-guide.md)；[旧现场快速说明](panel-quick-start.md)仅保留历史记录。
 
 RGB 触控屏的编译期缓冲合同记录在 [`rgb-build-contract.json`](rgb-build-contract.json)：运行配置的 `bufferLines=16` 必须对应 `FASTBEE_RGB_BOUNCE_LINES=16`、`FASTBEE_RGB_REQUIRE_BOUNCE=1` 和 30,720 字节双 bounce。`npm run test:contracts` 会始终校验版本库合同；若本机存在候选 ini/构建报告，也会自动交叉校验。发布前可运行 `node scripts/test-rgb-touch-build-contract.js --require-build-report`，防止只改配置却没有用匹配宏重新构建。
 

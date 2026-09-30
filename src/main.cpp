@@ -5,6 +5,7 @@
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
 #include "systems/OtaSelfCheck.h"
+#include "network/TlsMemory.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
 #include <esp_chip_info.h>
@@ -112,6 +113,9 @@ void setup() {
 #endif
 
     // 重新配置任务看门狗（Task Watchdog Timer）
+    // Install before framework/network startup so MQTT and HTTPS share the
+    // same allocator from their first TLS allocation.
+    FastBee::TlsMemory::ensureAllocator();
     // ESP-IDF v5 框架默认启用 TWDT（5s超时），AsyncTCP 库内部会调用 esp_task_wdt_reset()
     // 不能 deinit（否则库调用 reset 会报错），只需加大超时防止长操作触发复位
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)

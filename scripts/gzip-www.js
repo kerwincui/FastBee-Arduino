@@ -16,7 +16,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
-const zlib = require('zlib');
+const { gzipWebAsset } = require('./web-gzip');
 const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
@@ -420,13 +420,13 @@ function deleteOldGzFiles() {
     }
 }
 
-function compressFile(filePath) {
+async function compressFile(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     if (!COMPRESS_EXTENSIONS.has(ext)) return;
     if (!shouldTouchWwwFile(filePath)) return;
 
     const content = fs.readFileSync(filePath);
-    const compressed = zlib.gzipSync(content, { level: 9 });
+    const compressed = await gzipWebAsset(content);
     const gzPath = `${filePath}.gz`;
 
     try {
@@ -450,10 +450,12 @@ function compressFile(filePath) {
     console.log(`  Compressed: ${path.relative(WWW_DIR, filePath)} (${originalSize} -> ${compressedSize}, -${ratio}%)`);
 }
 
-function compressAllFiles() {
+async function compressAllFiles() {
     console.log('\n[Step 2] Compressing HTML/JS/CSS files...');
 
-    walkDir(WWW_DIR, compressFile);
+    const files = [];
+    walkDir(WWW_DIR, (filePath) => files.push(filePath));
+    for (const filePath of files) await compressFile(filePath);
 
     const totalRatio = stats.totalOriginalSize > 0
         ? ((1 - stats.totalCompressedSize / stats.totalOriginalSize) * 100).toFixed(1)
@@ -567,7 +569,7 @@ function runPioCommand(args, label, options = {}) {
     });
 }
 
-function buildPublishStage() {
+async function buildPublishStage() {
     console.log('\n[Step 0] Building web modules...');
     const buildResult = buildWebModules();
     buildResult.syncedModules.forEach((item) => {
@@ -589,7 +591,7 @@ function buildPublishStage() {
     // 统一架构：始终生成 SW，能力差异由设备状态控制。
 
     deleteOldGzFiles();
-    compressAllFiles();
+    await compressAllFiles();
     if (stats.failedCompress > 0) {
         throw new Error(`Failed to create ${stats.failedCompress} gzip publish artifact(s)`);
     }
@@ -619,7 +621,7 @@ async function main() {
     console.log(`Target directory: ${WWW_DIR}`);
     console.log(`Staging directory: ${STAGING_WWW_DIR}`);
 
-    const { buildResult, stageResult } = withWebPublishLock(buildPublishStage, {
+    const { buildResult, stageResult } = await withWebPublishLock(buildPublishStage, {
         label: `gzip-www:${buildResultEnvironmentHint()}`
     });
 

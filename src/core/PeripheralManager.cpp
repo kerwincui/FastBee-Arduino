@@ -6,6 +6,7 @@
  */
 
 #include "core/PeripheralManager.h"
+#include "core/AnalogInputCalibration.h"
 #include "core/AsyncExecTypes.h"
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
@@ -189,11 +190,30 @@ bool isMemoryOptionalPeripheralType(PeripheralType type) {
     }
 }
 
-// 将 AI 原始计数转换为工程量。该函数只做算术，不分配堆内存，便于在
-// 外设执行轮询、协议上报和 Web 状态读取中复用。
+// Calibration handles are bounded and reused. All callers hold the manager
+// mutex; API, execution and reporting convert the same acquired raw sample.
 float convertAnalogRaw(const PeripheralConfig& config, uint16_t raw,
-                       AnalogInputQuality* quality = nullptr) {
+                       AnalogInputQuality* quality = nullptr, float* pinVoltage = nullptr) {
+    if (pinVoltage) *pinVoltage = NAN;
+    const auto& adc = config.params.adc;
+    if (adc.calibratedVoltage && adc.conversionEnabled && adc.signalMode >= 1 && adc.signalMode <= 3) {
+        float voltage = NAN;
+        FastBee::calibratedAdcVoltage(config.getPrimaryPin(), adc.attenuation, adc.resolution, raw, voltage);
+        if (pinVoltage) *pinVoltage = voltage;
+        return convertAnalogInputRaw(config, raw, quality, voltage);
+    }
+    if (pinVoltage && adc.signalMode >= 1 && adc.signalMode <= 3) {
+        const uint8_t bits = adc.resolution >= 9 && adc.resolution <= 12 ? adc.resolution : 12;
+        *pinVoltage = raw * positiveAnalogConfigValue(adc.vRef, 3.3f) / ((1UL << bits) - 1);
+    }
     return convertAnalogInputRaw(config, raw, quality);
+}
+
+void prepareAnalogInput(const PeripheralConfig& config) {
+    const auto& adc = config.params.adc;
+    if (!adc.calibratedVoltage) return;
+    analogReadResolution(adc.resolution >= 9 && adc.resolution <= 12 ? adc.resolution : 12);
+    analogSetPinAttenuation(config.getPrimaryPin(), static_cast<adc_attenuation_t>(adc.attenuation <= 3 ? adc.attenuation : 3));
 }
 
 struct NeoPixelRgb {
@@ -2436,6 +2456,7 @@ uint16_t PeripheralManager::readAnalog(const String& peripheralId) {
         if (samples < 1) samples = 1;
         if (samples > 16) samples = 16;
         uint8_t mode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+        prepareAnalogInput(*config);
         return adcFilterRead(pin, samples, mode);
     }
 
@@ -2462,6 +2483,7 @@ uint16_t PeripheralManager::readAnalogByCStr(const char* peripheralId) {
         if (samples < 1) samples = 1;
         if (samples > 16) samples = 16;
         uint8_t mode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+        prepareAnalogInput(*config);
         return adcFilterRead(pin, samples, mode);
     }
 
@@ -2479,6 +2501,7 @@ float PeripheralManager::readAnalogValue(const String& peripheralId) {
     if (samples < 1) samples = 1;
     if (samples > 16) samples = 16;
     uint8_t filterMode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+    prepareAnalogInput(*config);
     return convertAnalogRaw(*config, adcFilterRead(pin, samples, filterMode));
 }
 
@@ -2494,18 +2517,19 @@ float PeripheralManager::readAnalogValueByCStr(const char* peripheralId) {
     if (samples < 1) samples = 1;
     if (samples > 16) samples = 16;
     uint8_t filterMode = config->params.adc.filterMode > 1 ? 0 : config->params.adc.filterMode;
+    prepareAnalogInput(*config);
     return convertAnalogRaw(*config, adcFilterRead(pin, samples, filterMode));
 }
 
 float PeripheralManager::convertAnalogRawValue(const String& peripheralId, uint16_t rawValue,
-                                               AnalogInputQuality* quality) {
+                                               AnalogInputQuality* quality, float* pinVoltage) {
     RecursiveMutexGuard lock(_mutex);
     const auto* config = getPeripheralCStrLocked(peripheralId.c_str());
     if (!config || !isAdcInputType(config->type)) {
         if (quality) *quality = AnalogInputQuality::INVALID_CONFIG;
         return NAN;
     }
-    return convertAnalogRaw(*config, rawValue, quality);
+    return convertAnalogRaw(*config, rawValue, quality, pinVoltage);
 }
 
 // ADC 多采样滤波：均值滤波平滑随机噪声，中值滤波抑制脉冲尖峰

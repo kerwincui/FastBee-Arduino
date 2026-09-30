@@ -10,6 +10,7 @@
 #include "screen/ScreenInteraction.h"
 #include "screen/RgbRecovery.h"
 #include "screen/StripeChangeCache.h"
+#include "screen/WeatherStatusText.h"
 #include "systems/LoggerSystem.h"
 
 #ifndef FASTBEE_SCREEN_WORKER_ISOLATION
@@ -548,6 +549,7 @@ public:
         _bufferBytes = 0;
         _display = nullptr;
         _width = _height = _lines = 0;
+        _navigationOpen = false;
     }
 
     ~StripeRenderer() { end(); }
@@ -555,7 +557,15 @@ public:
     size_t bufferBytes() const { return _bufferBytes; }
     uint16_t width() const { return _width; }
     uint16_t height() const { return _height; }
-    void setPressed(const char* cardId) { snprintf(_pressedCard, sizeof(_pressedCard), "%s", cardId ? cardId : ""); }
+    void invalidate() { _stripeCache.invalidate(); }
+    void setPressed(const char* cardId, uint16_t x = 0, uint16_t y = 0) {
+        snprintf(_pressedCard, sizeof(_pressedCard), "%s", cardId ? cardId : "");
+        _pressedX = x; _pressedY = y;
+    }
+    bool controlPressed(const ScreenPanelCardSnapshot& card, const PixelRect& bounds) const {
+        return _pressedCard[0] && !strcmp(card.id, _pressedCard) &&
+            screenRectContains(bounds, _pressedX, _pressedY);
+    }
 
     bool render(const ScreenPanelSnapshot& snapshot,
                 const char* confirmationCardId, String& error) {
@@ -596,6 +606,7 @@ public:
             if (confirmationCardId && confirmationCardId[0]) {
                 drawConfirmation(canvas, snapshot, confirmationCardId, palette);
             }
+            if (_navigationOpen) drawPageMenu(canvas, snapshot, palette);
             const size_t pixelCount = static_cast<size_t>(_width) * stripeHeight;
             if (!_stripeCache.submit(stripeY / _lines, _buffer, pixelCount, [&]() {
                     return _display->pushPixels(0, stripeY, _width, stripeHeight,
@@ -610,6 +621,7 @@ public:
     }
 
     int hitTest(const ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y) const {
+        if (_navigationOpen) return -1;
         if (y >= contentHeight()) return -1;
         if (snapshot.pageCount == 0) return -1;
         const uint8_t pageIndex = std::min<uint8_t>(
@@ -621,7 +633,7 @@ public:
             const ScreenPanelCardSnapshot& card = snapshot.cards[cardIndex];
             if (!card.interactive) continue;
             const PixelRect rect = mapRect(card.rect, page);
-            if (screenRectContains(rect, x, y)) {
+            if (screenRectContains(rect, x, y) && actionHitTest(snapshot, card, x, y)) {
                 return static_cast<int>(cardIndex);
             }
         }
@@ -633,22 +645,45 @@ public:
         return _height > FOOTER_HEIGHT + 24 ? _height - FOOTER_HEIGHT : _height;
     }
     uint8_t navigationCount(const ScreenPanelSnapshot& snapshot) const {
-        if (snapshot.bottomNavCount) {
-            return std::min<uint8_t>(snapshot.bottomNavCount,
-                                     ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES);
-        }
+        if (snapshot.pageCount > 5) return 5;
         return std::min<uint8_t>(5, snapshot.pageCount);
     }
     int navigationPageIndex(const ScreenPanelSnapshot& snapshot, uint8_t tab) const {
         if (tab >= navigationCount(snapshot)) return -1;
-        if (snapshot.bottomNavCount) {
-            const char* pageId = snapshot.bottomNavPageIds[tab].data();
-            for (uint8_t i = 0; i < snapshot.pageCount; ++i) {
-                if (strcmp(snapshot.pages[i].id, pageId) == 0) return i;
-            }
-            return -1;
+        if (snapshot.pageCount > 5 && tab == 4) return -2;
+        // Home remains a reliable first target. Apply user order to the
+        // remaining shortcuts, then fill unused slots without blank targets.
+        std::array<uint8_t, ScreenPanelSnapshot::MAX_PAGES> indices{};
+        uint8_t count = 1;
+        const auto append = [&](uint8_t index) {
+            for (uint8_t i = 0; i < count; ++i) if (indices[i] == index) return;
+            if (count < indices.size()) indices[count++] = index;
+        };
+        for (uint8_t configured = 0; configured < snapshot.bottomNavCount &&
+             configured < ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES; ++configured) {
+            for (uint8_t i = 0; i < snapshot.pageCount; ++i)
+                if (strcmp(snapshot.pages[i].id, snapshot.bottomNavPageIds[configured].data()) == 0) append(i);
         }
-        return tab < snapshot.pageCount ? tab : -1;
+        for (uint8_t i = 0; i < snapshot.pageCount; ++i) append(i);
+        return tab < count ? indices[tab] : -1;
+    }
+    bool navigationOpen() const { return _navigationOpen; }
+    void toggleNavigation() { _navigationOpen = !_navigationOpen; }
+    void closeNavigation() { _navigationOpen = false; }
+    PixelRect pageMenuRect(uint8_t page) const {
+        const int columns = _width >= 240 ? 2 : 1;
+        const int width = (_width - 24 - (columns - 1) * 8) / columns;
+        const int rows = (ScreenPanelSnapshot::MAX_PAGES + columns - 1) / columns;
+        const int height = std::min<int>(64, (contentHeight() - 42) / rows - 6);
+        return {static_cast<int16_t>(12 + (page % columns) * (width + 8)),
+                static_cast<int16_t>(36 + (page / columns) * (height + 6)),
+                static_cast<int16_t>(width), static_cast<int16_t>(height)};
+    }
+    int pageMenuHit(const ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y) const {
+        if (!_navigationOpen) return -1;
+        for (uint8_t i = 0; i < snapshot.pageCount; ++i)
+            if (screenRectContains(pageMenuRect(i), x, y)) return i;
+        return -1;
     }
     bool homeHitTest(const ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y) const {
         return navigationPageIndex(snapshot, pageNavigationHit(snapshot, x, y)) == 0;
@@ -665,7 +700,7 @@ public:
                        const ScreenPanelCardSnapshot& card,
                        uint16_t x, uint16_t y) const {
         const PixelRect bounds = cardBounds(snapshot, card);
-        if (card.kind == ScreenCardKind::PAGE_LINK) return screenRectContains(bounds, x, y);
+        if (card.kind == ScreenCardKind::PAGE_LINK) return screenRectContains(navigationButton(bounds), x, y);
         if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
             const ScreenMotorLayout layout{bounds};
             if (!layout.valid()) return false;
@@ -709,14 +744,51 @@ public:
         return false;
     }
     bool feedbackHitTest(const ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y) const {
+        if (_navigationOpen) return pageMenuHit(snapshot, x, y) >= 0 || pageNavigationHit(snapshot, x, y) >= 0;
         if (pageNavigationHit(snapshot, x, y) >= 0) return true;
         if (!snapshot.pageCount || y >= contentHeight()) return false;
-        const auto& page = snapshot.pages[std::min<uint8_t>(snapshot.activePageIndex, snapshot.pageCount - 1)];
-        for (size_t i = page.firstCard; i < page.firstCard + page.cardCount && i < snapshot.cardCount; ++i)
-            if (snapshot.cards[i].kind == ScreenCardKind::SYSTEM &&
-                !strcmp(snapshot.cards[i].systemActionId, "sleep")) continue;
-            else if (actionHitTest(snapshot, snapshot.cards[i], x, y)) return true;
-        return false;
+        const int hit = hitTest(snapshot, x, y);
+        return hit >= 0 && !(snapshot.cards[hit].kind == ScreenCardKind::SYSTEM &&
+            !strcmp(snapshot.cards[hit].systemActionId, "sleep"));
+    }
+
+    // Capture a specific control, never its containing card. A release in a
+    // different button, or a press beginning in padding, cannot issue commands.
+    int tapTarget(const ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y,
+                  const char* confirmationCardId) const {
+        const int tab = pageNavigationHit(snapshot, x, y);
+        if (tab >= 0) return 0x1000 + tab;
+        if (_navigationOpen) {
+            const int page = pageMenuHit(snapshot, x, y);
+            return page >= 0 ? 0x1100 + page : 0;
+        }
+        if (confirmationCardId && confirmationCardId[0]) {
+            bool motor = false;
+            for (uint8_t i = 0; i < snapshot.cardCount; ++i)
+                if (!strcmp(snapshot.cards[i].id, confirmationCardId))
+                    motor = snapshot.cards[i].visualType == ScreenVisualType::MOTOR_CONTROL;
+            if (motor && confirmationStopHit(x, y)) return 0x1200;
+            bool confirmed = false;
+            return confirmationChoice(x, y, confirmed, motor) ? 0x1201 + confirmed : 0;
+        }
+        const int index = hitTest(snapshot, x, y);
+        if (index < 0) return 0;
+        const auto& card = snapshot.cards[index];
+        const PixelRect bounds = cardBounds(snapshot, card);
+        int control = 1;
+        if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
+            const ScreenMotorLayout layout{bounds};
+            if (screenRectContains(layout.stop(), x, y)) control = 3;
+            for (unsigned col = 0; col < 2; ++col)
+                if (screenRectContains(layout.direction(col), x, y)) control = 1 + col;
+            for (unsigned row = 0; row < 2; ++row) for (unsigned col = 0; col < 3; ++col)
+                if (screenRectContains(layout.adjust(row, col), x, y)) control = 4 + row * 3 + col;
+        } else if (card.visualType == ScreenVisualType::SELECT) {
+            control = screenRectContains(screenSelectButton(bounds, true), x, y) ? 2 : 1;
+        } else if (card.visualType == ScreenVisualType::NUMBER_CONTROL) {
+            control = static_cast<int>(numericControlHitTest(snapshot, card, x, y));
+        }
+        return 1 + index * 16 + control;
     }
 
     PixelRect cardBounds(const ScreenPanelSnapshot& snapshot, const ScreenPanelCardSnapshot& card) const {
@@ -914,21 +986,45 @@ private:
                 const int tabWidth = std::max<int>(1, _width / tabCount);
                 for (uint8_t tab = 0; tab < tabCount; ++tab) {
                     const int pageIndex = navigationPageIndex(snapshot, tab);
-                    if (pageIndex < 0) continue;
+                    if (pageIndex == -1) continue;
                     const int left = tab * tabWidth;
                     const int right = tab == tabCount - 1 ? _width : (tab + 1) * tabWidth;
-                    const bool selected = static_cast<uint8_t>(pageIndex) == snapshot.activePageIndex;
+                    const bool selected = pageIndex == -2 ? _navigationOpen : static_cast<uint8_t>(pageIndex) == snapshot.activePageIndex;
                     const uint16_t color = selected ? palette.accent : palette.text;
                     if (selected) canvas.roundedRect(left + 5, top + 6, right - left - 10,
                                                      std::max<int>(1, _height - top - 12), 8,
                                                      blend565(palette.accent, palette.card, 24), palette.accent);
-                    canvas.text(left + 5, top + 20, snapshot.pages[pageIndex].title,
-                                color, right - left - 10, 1);
-                    char index[4]; snprintf(index, sizeof(index), "%u", static_cast<unsigned>(tab + 1));
-                    canvas.text(left + 5, top + 43, index, palette.muted,
-                                right - left - 10, 1);
+                    const int center = (left + right) / 2;
+                    if (pageIndex == 0) drawCardIcon(canvas, "home", center, top + 23, palette);
+                    else if (pageIndex == -2) {
+                        for (int dot = -1; dot <= 1; ++dot) canvas.circle(center + dot * 7, top + 23, 2, color, true);
+                    } else {
+                        canvas.roundedRect(center - 8, top + 15, 16, 16, 3, palette.backgroundAlt, color);
+                        canvas.line(center - 4, top + 21, center + 4, top + 21, color);
+                        canvas.line(center - 4, top + 26, center + 2, top + 26, color);
+                    }
+                    const char* label = pageIndex == -2 ? "更多" : snapshot.pages[pageIndex].title;
+                    int labelWidth = 0;
+                    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(label); *p; ++p)
+                        if ((*p & 0xc0) != 0x80) labelWidth += *p < 0x80 ? 6 : 12;
+                    const int labelX = left + std::max(5, (right - left - labelWidth) / 2);
+                    canvas.text(labelX, top + 44, label, color, right - labelX - 5, 1);
                 }
             }
+        }
+    }
+
+    void drawPageMenu(StripeCanvas& canvas, const ScreenPanelSnapshot& snapshot,
+                      const Palette& palette) const {
+        canvas.fillRect(0, 0, _width, contentHeight(), palette.background);
+        canvas.text(14, 12, "切换页面", palette.text, _width - 28, 1);
+        for (uint8_t i = 0; i < snapshot.pageCount; ++i) {
+            const auto rect = pageMenuRect(i);
+            const bool selected = i == snapshot.activePageIndex;
+            canvas.roundedRect(rect.x, rect.y, rect.w, rect.h, 8, palette.card,
+                               selected ? palette.accent : palette.cardBorder);
+            canvas.text(rect.x + 12, rect.y + (rect.h - 12) / 2,
+                        snapshot.pages[i].title, selected ? palette.accent : palette.text, rect.w - 24, 1);
         }
     }
 
@@ -940,8 +1036,7 @@ private:
         // existing pixel clipping instead of dropping visible overflow.
         if (rect.h >= 96 && !canvas.intersectsRows(rect.y,
                 static_cast<int32_t>(rect.y) + rect.h)) return;
-        const uint16_t border = card.pending || (_pressedCard[0] && !strcmp(card.id, _pressedCard)) ? palette.accent : palette.cardBorder;
-        canvas.roundedRect(rect.x, rect.y, rect.w, rect.h, 9, palette.card, border);
+        canvas.roundedRect(rect.x, rect.y, rect.w, rect.h, 9, palette.card, palette.cardBorder);
         if (rect.w >= 96 && rect.h >= 80) {
             // Quiet surfaces keep the live values and command affordances prominent.
             canvas.line(rect.x + 12, rect.y + 29, rect.x + rect.w - 13, rect.y + 29,
@@ -1141,14 +1236,31 @@ private:
                     rect.w - 16, 1);
     }
 
-    static void historyTime(const ScreenPanelHistoryPoint& point, char* text, size_t size) {
+    static void historyTime(const ScreenPanelHistoryPoint& point, char* text, size_t size, bool withDate = false) {
         if (point.epochMs >= 1609459200000ULL) {
             const time_t epoch = point.epochMs / 1000;
             struct tm info{};
-            if (localtime_r(&epoch, &info)) { strftime(text, size, "%H:%M", &info); return; }
+            if (localtime_r(&epoch, &info)) { strftime(text, size, withDate ? "%m/%d %H:%M" : "%H:%M", &info); return; }
         }
         if (point.restored) snprintf(text, size, "重启前 #%lu", static_cast<unsigned long>(point.sequence));
         else snprintf(text, size, "+%lu:%02lu", static_cast<unsigned long>(point.uptimeMs / 60000), static_cast<unsigned long>(point.uptimeMs / 1000 % 60));
+    }
+
+    static bool sameHistoryBoot(const ScreenPanelHistoryPoint& a,
+                                const ScreenPanelHistoryPoint& b) {
+        if (a.bootId[0] || b.bootId[0])
+            return a.bootId[0] && b.bootId[0] && !strcmp(a.bootId, b.bootId);
+        return !a.restored && !b.restored;
+    }
+
+    static uint64_t historyElapsed(const ScreenPanelHistoryPoint& a,
+                                   const ScreenPanelHistoryPoint& b) {
+        // Persisted boot identity makes uptime comparable after restoration.
+        // Prefer monotonic uptime so wall-clock corrections cannot remove lines.
+        if (sameHistoryBoot(a, b) && b.uptimeMs > a.uptimeMs)
+            return b.uptimeMs - a.uptimeMs;
+        if (a.bootId[0] && b.bootId[0] && strcmp(a.bootId, b.bootId)) return 0;
+        return a.epochMs && b.epochMs > a.epochMs ? b.epochMs - a.epochMs : 0;
     }
 
     void drawLineChart(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,
@@ -1171,29 +1283,49 @@ private:
         }
         const auto& first = card.history[0]; const auto& last = card.history[card.historyCount - 1];
         bool epochAxis = first.epochMs != 0;
-        bool uptimeAxis = !first.restored;
+        bool uptimeAxis = first.bootId[0] || !first.restored;
         for (uint8_t i = 1; i < card.historyCount; ++i) {
             epochAxis = epochAxis && card.history[i].epochMs >= card.history[i - 1].epochMs;
-            uptimeAxis = uptimeAxis && !card.history[i].restored && card.history[i].uptimeMs >= card.history[i - 1].uptimeMs;
+            uptimeAxis = uptimeAxis && sameHistoryBoot(card.history[i - 1], card.history[i]) &&
+                card.history[i].uptimeMs >= card.history[i - 1].uptimeMs;
         }
+        // Sequences are global across sources, not consecutive within a chart.
+        // Use elapsed sample time; incompatible clock domains remain disconnected.
+        std::array<uint64_t, 10> intervals{};
+        size_t intervalCount = 0;
+        for (uint8_t i = 1; i < card.historyCount; ++i) {
+            const auto& a = card.history[i - 1]; const auto& b = card.history[i];
+            const uint64_t elapsed = historyElapsed(a, b);
+            if (elapsed) intervals[intervalCount++] = elapsed;
+        }
+        std::sort(intervals.begin(), intervals.begin() + intervalCount);
+        const uint64_t cadence = intervalCount ? intervals[(intervalCount - 1) / 2] : 0;
         int selected = card.historyCount - 1;
         for (uint8_t i = 0; i < card.historyCount; ++i) if (card.history[i].sequence == card.selectedHistorySequence) selected = i;
         int16_t previousX = 0, previousY = 0;
         for (uint8_t i = 0; i < card.historyCount; ++i) {
             double fraction = card.historyCount > 1 ? static_cast<double>(i) / (card.historyCount - 1) : 0.5;
-            if (epochAxis && last.epochMs > first.epochMs) fraction = static_cast<double>(card.history[i].epochMs - first.epochMs) / (last.epochMs - first.epochMs);
-            else if (uptimeAxis && last.uptimeMs > first.uptimeMs) fraction = static_cast<double>(card.history[i].uptimeMs - first.uptimeMs) / (last.uptimeMs - first.uptimeMs);
+            if (uptimeAxis && last.uptimeMs > first.uptimeMs) fraction = static_cast<double>(card.history[i].uptimeMs - first.uptimeMs) / (last.uptimeMs - first.uptimeMs);
+            else if (epochAxis && last.epochMs > first.epochMs) fraction = static_cast<double>(card.history[i].epochMs - first.epochMs) / (last.epochMs - first.epochMs);
             const int16_t x = x0 + fraction * width;
             const int16_t y = y0 + height - (card.history[i].value - minimum) * height / (maximum - minimum);
-            if (i) canvas.line(previousX, previousY, x, y, palette.accent);
+            if (i) {
+                const auto& a = card.history[i - 1]; const auto& b = card.history[i];
+                const uint64_t elapsed = historyElapsed(a, b);
+                if (elapsed && cadence && elapsed <= cadence * 3U)
+                    canvas.line(previousX, previousY, x, y, palette.accent);
+            }
             canvas.circle(x, y, i == selected ? 4 : 2, palette.accent, true);
             previousX = x; previousY = y;
         }
         char start[40], end[40], selectedTime[40], detail[96];
-        historyTime(first, start, sizeof(start)); historyTime(last, end, sizeof(end));
+        char firstDate[40], lastDate[40];
+        historyTime(first, firstDate, sizeof(firstDate), true); historyTime(last, lastDate, sizeof(lastDate), true);
+        const bool acrossDays = epochAxis && strncmp(firstDate, lastDate, 5) != 0;
+        historyTime(first, start, sizeof(start), acrossDays); historyTime(last, end, sizeof(end), acrossDays);
         canvas.text(x0, y0 + height + 6, start, palette.muted, width / 2, 1);
         canvas.text(x0 + width / 2, y0 + height + 6, end, palette.muted, width / 2, 1);
-        historyTime(card.history[selected], selectedTime, sizeof(selectedTime));
+        historyTime(card.history[selected], selectedTime, sizeof(selectedTime), acrossDays);
         snprintf(detail, sizeof(detail), "%s  %.*f%s%s", selectedTime, card.precision, card.history[selected].value, card.unit, card.historyStale ? " · 历史记录" : "");
         canvas.text(rect.x + 10, rect.y + rect.h - 22, detail, palette.text, rect.w - 20, 1);
     }
@@ -1204,7 +1336,14 @@ private:
             canvas.text(rect.x + 10, rect.y + 34, "请在网页放大电机卡片", palette.muted, rect.w - 20, 1);
             return;
         }
-        canvas.text(rect.x + 12, rect.y + 36, card.pending ? "正在发送指令" : "运行状态未确认", palette.muted, rect.w - 24, 1);
+        char commandStatus[80];
+        const char* actionName = !strcmp(card.value, "forward") ? "正转" : !strcmp(card.value, "reverse") ? "反转" :
+            !strcmp(card.value, "stop") ? "停止" : !strcmp(card.value, "setSpeed") ? "设速" : "设脉冲";
+        if (card.pending) snprintf(commandStatus, sizeof(commandStatus), "正在发送指令");
+        else if (card.motorCommandKnown) snprintf(commandStatus, sizeof(commandStatus), "%s%s", actionName,
+            card.motorCommandSuccess ? "已应答，运动状态未知" : "未确认，请勿继续启动");
+        else snprintf(commandStatus, sizeof(commandStatus), "运行状态未确认");
+        canvas.text(rect.x + 12, rect.y + 36, commandStatus, palette.muted, rect.w - 24, 1);
         const uint8_t precision = std::min<uint8_t>(card.motorPrecision, 6);
         const double speedScale = std::pow(10.0, precision);
         for (int row = 0; row < 2; ++row) {
@@ -1230,22 +1369,30 @@ private:
             for (int col = 0; col < 3; ++col) {
                 const auto button = layout.adjust(row, col);
                 const uint16_t color = card.pending ? palette.muted : col == 2 ? palette.accent : palette.text;
-                canvas.roundedRect(button.x, button.y, button.w, button.h, 6, palette.backgroundAlt, col == 2 ? color : palette.cardBorder);
+                canvas.roundedRect(button.x, button.y, button.w, button.h, 6,
+                    controlPressed(card, button) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt,
+                    col == 2 ? color : palette.cardBorder);
                 canvas.text(button.x + (button.w - (col == 2 ? 24 : 12)) / 2, button.y + (button.h - 12) / 2,
                             labels[col], color, button.w - 8, 1);
             }
         }
         for (int col = 0; col < 2; ++col) {
             const auto button = layout.direction(col);
-            const bool blocked = card.pending || card.motorSpeedDirty || card.motorPulseDirty;
-            const uint16_t color = blocked ? palette.muted : palette.accent;
-            canvas.roundedRect(button.x, button.y, button.w, button.h, 7, blend565(color, palette.card, 25), color);
-            canvas.text(button.x + (button.w - 48) / 2, button.y + 10, col ? "反转" : "正转", color, button.w - 12, 2);
+            const uint16_t color = col ? rgb565(32, 91, 174) : rgb565(24, 116, 70);
+            canvas.roundedRect(button.x, button.y, button.w, button.h, 7,
+                controlPressed(card, button) ? blend565(color, palette.card, 185) : color, color);
+            canvas.text(button.x + (button.w - 48) / 2, button.y + (button.h - 24) / 2, col ? "反转" : "正转",
+                        rgb565(255, 255, 255), button.w - 12, 2);
         }
         const auto stop = layout.stop();
-        canvas.roundedRect(stop.x, stop.y, stop.w, stop.h, 7, blend565(palette.warning, palette.card, 35), palette.warning);
-        canvas.text(stop.x + (stop.w - 48) / 2, stop.y + 10, "停止", palette.warning, stop.w - 12, 2);
-        if (card.error[0]) canvas.text(rect.x + 12, rect.y + rect.h - 15, card.error, palette.warning, rect.w - 24, 1);
+        const uint16_t stopColor = rgb565(168, 56, 66);
+        canvas.roundedRect(stop.x, stop.y, stop.w, stop.h, 7,
+            controlPressed(card, stop) ? blend565(stopColor, palette.card, 185) : stopColor, stopColor);
+        canvas.text(stop.x + (stop.w - 48) / 2, stop.y + (stop.h - 24) / 2, "停止", rgb565(255, 255, 255), stop.w - 12, 2);
+        const char* safety = card.error[0] ? card.error : !card.motorKnown ? "参数未读回，禁止启动；停止仍可请求" :
+            !card.motorPulse ? "脉冲必须大于零；请设置后读取确认" :
+            card.motorSoftLimitEnabled ? "软限位仅按指令估算，仍需实体限位" : "软限位未启用，请先确认安全行程";
+        canvas.text(rect.x + 12, rect.y + rect.h - 15, safety, palette.warning, rect.w - 24, 1);
     }
 
     void drawSlider(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card, const PixelRect& rect, const Palette& palette) const {
@@ -1272,7 +1419,8 @@ private:
         const auto left = screenSelectButton(rect, false), right = screenSelectButton(rect, true);
         for (bool next : {false, true}) {
             const auto b = screenSelectButton(rect, next);
-            canvas.roundedRect(b.x, b.y, b.w, b.h, 6, palette.backgroundAlt, palette.cardBorder);
+            canvas.roundedRect(b.x, b.y, b.w, b.h, 6,
+                controlPressed(card, b) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt, palette.cardBorder);
             canvas.text(b.x + (b.w - 12) / 2, b.y + (b.h - 12) / 2, next ? "+" : "-", palette.text, b.w - 4, 1);
         }
         canvas.text(left.x + left.w + 12, left.y + (left.h - 12) / 2, label,
@@ -1297,7 +1445,8 @@ private:
         const int16_t y = rect.y + rect.h / 2 - 4;
         const uint16_t track = !unconfigured && card.quality == ScreenValueQuality::GOOD
             ? (on ? palette.success : palette.muted) : palette.cardBorder;
-        canvas.roundedRect(x, y, width, height, 7, track, track);
+        canvas.roundedRect(x, y, width, height, 7, track,
+            controlPressed(card, {x, y, width, height}) ? palette.accent : track);
         canvas.circle(on ? x + width - 13 : x + 13, y + 13, 9,
                       unconfigured ? palette.muted : palette.text, true);
         canvas.text(rect.x + 9, rect.y + rect.h / 2,
@@ -1316,7 +1465,8 @@ private:
         const int16_t buttonW = rect.w - 20;
         const int16_t buttonH = std::min<int16_t>(44, rect.h - (buttonY - rect.y) - 6);
         canvas.roundedRect(buttonX, buttonY, buttonW, buttonH, 6,
-                           unconfigured || card.pending ? palette.cardBorder : palette.backgroundAlt,
+                           unconfigured || card.pending ? palette.cardBorder :
+                               controlPressed(card, {buttonX, buttonY, buttonW, buttonH}) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt,
                            unconfigured ? palette.cardBorder : palette.accent);
         canvas.text(buttonX + 8, buttonY + (buttonH - 12) / 2,
                     unconfigured ? "待配置" : card.pending ? "执行中" : card.kind == ScreenCardKind::SYSTEM ? (!strcmp(card.systemActionId, "sleep") ? "轻触息屏 / 触摸唤醒" : card.title) : "执行一次",
@@ -1334,9 +1484,9 @@ private:
         const int16_t plusX = rect.x + rect.w - 10 - buttonSize;
         const uint16_t buttonColor = unconfigured ? palette.cardBorder : palette.backgroundAlt;
         canvas.roundedRect(minusX, stepTop, buttonSize, buttonSize, 5,
-                           buttonColor, palette.cardBorder);
+                           controlPressed(card, {minusX, stepTop, buttonSize, buttonSize}) ? palette.accent : buttonColor, palette.cardBorder);
         canvas.roundedRect(plusX, stepTop, buttonSize, buttonSize, 5,
-                           buttonColor, palette.cardBorder);
+                           controlPressed(card, {plusX, stepTop, buttonSize, buttonSize}) ? palette.accent : buttonColor, palette.cardBorder);
         canvas.text(minusX + 14, stepTop + 11, "-", palette.text,
                     buttonSize - 12, 1);
         canvas.text(plusX + 13, stepTop + 11, "+", palette.text,
@@ -1352,7 +1502,8 @@ private:
         const int16_t executeY = rect.y + rect.h - 38;
         const int16_t executeW = rect.w - 20;
         canvas.roundedRect(rect.x + 10, executeY, executeW, 29, 5,
-                           unconfigured || card.pending ? palette.cardBorder : palette.accent,
+                           unconfigured || card.pending ? palette.cardBorder :
+                               controlPressed(card, {static_cast<int16_t>(rect.x + 10), executeY, executeW, 29}) ? blend565(palette.accent, palette.text, 65) : palette.accent,
                            unconfigured ? palette.cardBorder : palette.accent);
         canvas.text(rect.x + 18, executeY + 8,
                     unconfigured ? "待配置" : card.pending ? "执行中" : "执行",
@@ -1360,15 +1511,24 @@ private:
                     executeW - 16, 1);
     }
 
+    static PixelRect navigationButton(const PixelRect& bounds) {
+        const int top = std::max(34, static_cast<int>(bounds.h) - 50);
+        return {static_cast<int16_t>(bounds.x + 10), static_cast<int16_t>(bounds.y + top),
+                static_cast<int16_t>(bounds.w - 20), static_cast<int16_t>(std::max(0, std::min(40, bounds.h - top - 6)))};
+    }
+
     void drawNavigation(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,
                         const PixelRect& rect, const Palette& palette) const {
-        const int16_t cx = rect.x + rect.w - 21;
-        const int16_t cy = rect.y + rect.h / 2 + 5;
+        const auto button = navigationButton(rect);
+        canvas.roundedRect(button.x, button.y, button.w, button.h, 6,
+            controlPressed(card, button) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt, palette.accent);
+        const int16_t cx = button.x + button.w - 18;
+        const int16_t cy = button.y + button.h / 2;
         canvas.line(cx - 5, cy - 7, cx + 3, cy, palette.accent);
         canvas.line(cx + 3, cy, cx - 5, cy + 7, palette.accent);
-        canvas.text(rect.x + 9, rect.y + rect.h / 2,
+        canvas.text(button.x + 9, button.y + (button.h - 12) / 2,
                     card.value[0] ? card.value : "打开页面",
-                    palette.text, rect.w - 42, 1);
+                    palette.text, button.w - 42, 1);
     }
 
     void drawClock(StripeCanvas& canvas, const PixelRect& rect,
@@ -1508,15 +1668,10 @@ private:
                     palette.text, rect.x + rect.w - textX - 8, 2);
         const int16_t statusY = rect.y + rect.h - 18;
         const char* detail = card.weatherCity[0] ? card.weatherCity : qualityText(card.quality);
-        if (!card.error[0]) {
-            canvas.text(textX, rect.y + 57, detail, palette.muted, rect.x + rect.w - textX - 8, 1);
-            canvas.text(rect.x + 9, statusY, "心知天气", palette.muted, rect.w - 18, 1);
-        }
-        if (card.error[0]) {
-            const char* message = strstr(card.error, "NTP") ? "等待设备校时" : "天气暂不可用";
-            canvas.text(rect.x + 9, statusY, message, palette.muted,
-                        rect.w - 18, 1);
-        }
+        canvas.text(textX, rect.y + 57, detail, palette.muted, rect.x + rect.w - textX - 8, 1);
+        const char* reason = card.weatherReason[0] ? card.weatherReason : card.error[0] ? "unknown" : "none";
+        canvas.text(rect.x + 9, statusY, weatherStatusText(reason, card.hasWeatherTemperature,
+                    card.quality == ScreenValueQuality::STALE), palette.muted, rect.w - 18, 1);
     }
 
     void drawConfirmation(StripeCanvas& canvas,
@@ -1569,6 +1724,8 @@ private:
 
     IDisplayBackend* _display = nullptr;
     char _pressedCard[41]{};
+    uint16_t _pressedX = 0, _pressedY = 0;
+    bool _navigationOpen = false;
     uint16_t* _buffer = nullptr;
     StripeChangeCache _stripeCache;
     StripeChangeCache::Entry* _stripeEntries = nullptr;
@@ -1639,6 +1796,29 @@ void updateRuntimeState(bool running, bool sleeping, size_t allocated,
     state.lastError = error;
 }
 
+ScreenSystemActionCapabilities readSystemActionCapabilities() {
+    ScreenSystemActionCapabilities caps{};
+    ScreenDevice& device = ScreenDevice::instance();
+    IDisplayBackend* display = device.display();
+    ITouchBackend* touch = device.touch();
+    caps.displayReady = display && display->ready();
+    caps.touchConfigured = device.config() &&
+        strcasecmp(device.config()->touchBackend, "none") != 0;
+    caps.touchReady = touch && touch->ready();
+    strlcpy(caps.touchError, device.touchError().c_str(), sizeof(caps.touchError));
+    if (caps.displayReady && caps.touchReady) {
+        const DisplayCapabilities displayCaps = display->capabilities();
+        caps.brightness = displayCaps.brightness;
+        caps.brightnessContinuous = displayCaps.brightnessContinuous;
+        caps.minVisibleBrightnessPercent = displayCaps.minVisibleBrightnessPercent;
+        caps.sleep = displayCaps.sleep;
+        caps.touchWake = true;
+        caps.buzzer = displayCaps.buzzer;
+        caps.restart = true;
+    }
+    return caps;
+}
+
 void signalStarted(bool success, const String& error) {
     LOG_INFOF("ScreenRuntime: start=%s error=%s internal=%u psram=%u",
               success ? "running" : "failed", error.c_str(),
@@ -1650,28 +1830,8 @@ void signalStarted(bool success, const String& error) {
             RuntimeState& state = runtimeState();
             state.startSucceeded = success;
             state.running = success;
-            state.systemActionCapabilities = {};
-            if (success) {
-                ScreenDevice& device = ScreenDevice::instance();
-                IDisplayBackend* display = device.display();
-                ITouchBackend* touch = device.touch();
-                const bool interactive = display && display->ready() &&
-                                         touch && touch->ready();
-                if (interactive) {
-                    const DisplayCapabilities displayCaps =
-                        display->capabilities();
-                    state.systemActionCapabilities.brightness =
-                        displayCaps.brightness;
-                    state.systemActionCapabilities.brightnessContinuous = displayCaps.brightnessContinuous;
-                    state.systemActionCapabilities.minVisibleBrightnessPercent = displayCaps.minVisibleBrightnessPercent;
-                    state.systemActionCapabilities.sleep = displayCaps.sleep;
-                    state.systemActionCapabilities.touchWake = touch && touch->ready();
-                    state.systemActionCapabilities.buzzer = displayCaps.buzzer;
-                    // SystemRebooter is available on every supported ESP32
-                    // target; interaction readiness is the remaining gate.
-                    state.systemActionCapabilities.restart = true;
-                }
-            }
+            state.systemActionCapabilities = success ? readSystemActionCapabilities() :
+                ScreenSystemActionCapabilities{};
             state.lastError = error;
         }
     }
@@ -1699,6 +1859,10 @@ void finishTask() {
 struct TouchGesture {
     bool down = false;
     bool suppressUntilRelease = false;
+    bool tapCancelled = false;
+    int tapTarget = 0;
+    uint32_t revision = 0;
+    uint8_t pageIndex = 0;
     int slider = -1;
     uint32_t sliderUpdatedMs = 0;
     uint16_t startX = 0;
@@ -1715,7 +1879,7 @@ bool dispatchCardAction(ScreenPanelCardSnapshot& card,
         const uint8_t selected = card.motorConfirmAction;
         card.motorConfirmAction = 0;
         if (!selected || selected > 4 || card.pending) return false;
-        if (selected <= 2 && (card.motorSpeedDirty || card.motorPulseDirty)) return false;
+        if (selected <= 2 && (!card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty)) return false;
         String action(actions[selected]);
         if (selected > 2) action += ":" + String(card.motorConfirmValue);
         uint32_t operation = 0; String error;
@@ -1786,8 +1950,9 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
         if (screenRectContains(layout.stop(), x, y)) action = "stop";
         for (unsigned col = 0; col < 2; ++col) {
             if (screenRectContains(layout.direction(col), x, y)) {
-                if (card.pending || card.motorSpeedDirty || card.motorPulseDirty) {
-                    strlcpy(card.error, card.pending ? "请等待指令完成" : "请先应用修改后的参数", sizeof(card.error)); return true;
+                if (card.pending || !card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty) {
+                    strlcpy(card.error, card.pending ? "请等待指令完成" : !card.motorKnown ? "请先读取并确认速度和脉冲" :
+                        !card.motorPulse ? "单次脉冲必须大于零" : "请先应用修改后的参数", sizeof(card.error)); return true;
                 }
                 action = col ? "reverse" : "forward";
             }
@@ -1877,11 +2042,24 @@ void handleTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
                size_t confirmationCapacity, ScreenControlSession* controlSession = nullptr,
                uint32_t now = 0) {
     if (controlSession) controlSession->observe(snapshot.revision, now, snapshot.controlConfirmIdleSeconds);
-    const int pageTab = renderer.pageNavigationHit(x, y);
+    const int pageTab = renderer.pageNavigationHit(snapshot, x, y);
     if (pageTab >= 0) {
         confirmationCardId[0] = '\0';
-        if (pageTab < snapshot.pageCount && pageTab < 5)
-            ScreenPanelManager::instance().setActivePage(String(snapshot.pages[pageTab].id));
+        const int pageIndex = renderer.navigationPageIndex(snapshot, pageTab);
+        if (pageIndex == -2) renderer.toggleNavigation();
+        else if (pageIndex >= 0 && pageIndex < snapshot.pageCount) {
+            renderer.closeNavigation();
+            ScreenPanelManager::instance().setActivePage(String(snapshot.pages[pageIndex].id));
+        }
+        return;
+    }
+    if (renderer.navigationOpen()) {
+        const int pageIndex = renderer.pageMenuHit(snapshot, x, y);
+        if (pageIndex >= 0) {
+            renderer.closeNavigation();
+            confirmationCardId[0] = '\0';
+            ScreenPanelManager::instance().setActivePage(String(snapshot.pages[pageIndex].id));
+        }
         return;
     }
     if (confirmationCardId[0]) {
@@ -2020,22 +2198,28 @@ void runScreenTask() {
     uint32_t idleSleepSeconds = snapshot->idleSleepSeconds;
     bool sleeping = false;
     bool forceRender = true;
+    bool renderRetryPending = false;
+    uint32_t lastRenderAttemptMs = 0;
     bool brightnessOverridden = false;
     uint32_t brightnessOverrideRevision = 0;
-    bool buzzerNeedsOff = false;
+    // Clear a retained latch before accepting feedback, including MCU-only
+    // resets. A failed OFF stays pending through sleep and bus recovery.
+    bool buzzerNeedsOff = device.display()->capabilities().buzzer;
     uint32_t buzzerOffAtMs = 0;
     uint32_t buzzerOffFailureLoggedAtMs = 0;
     uint32_t lastTouchBeepMs = 0;
     bool touchBeepStarted = false;
     const auto touchFeedback = [&](uint32_t now) {
-        if (!snapshot->touchBeepEnabled || !device.display()->capabilities().buzzer ||
+        if (!snapshot->touchBeepEnabled || buzzerNeedsOff ||
+            !device.display()->capabilities().buzzer ||
             (touchBeepStarted && now - lastTouchBeepMs < 100U)) return;
         // One short asynchronous pulse per touch. The common off/retry path
         // also clears a pulse whose I2C write failed part way through.
         const bool sounded = device.display()->setBuzzer(true);
         buzzerNeedsOff = true;
-        (void)config;
-        buzzerOffAtMs = sounded ? now + BUZZER_PULSE_MS : now;
+        const uint32_t duration = std::max<uint32_t>(20U,
+            std::min<uint32_t>(150U, config->touchBuzzerDurationMs));
+        buzzerOffAtMs = sounded ? now + duration : now;
         lastTouchBeepMs = now; touchBeepStarted = true;
     };
 #if FASTBEE_SCREEN_PERF_TELEMETRY == 1
@@ -2060,6 +2244,27 @@ void runScreenTask() {
         // requests run here, outside the interrupt and without file logging.
         fastbee_rgb_recovery_service(now);
         if (device.display()) device.display()->service(now);
+        if (device.serviceTouch(now)) {
+            // Never complete a gesture or a pending confirmation across a
+            // controller failure/reinitialization. Only the screen task owns I/O.
+            gesture = TouchGesture{};
+            gesture.suppressUntilRelease = true;
+            renderer.setPressed(nullptr);
+            confirmationCardId[0] = '\0';
+            controlSession.reset();
+            lastInteractionMs = now;
+            if (sleeping && device.display()->setSleep(false)) {
+                sleeping = false;
+                renderer.invalidate();
+                updateRuntimeState(true, false, snapshotBytes + renderer.bufferBytes() + framebufferBytes);
+            }
+            const auto caps = readSystemActionCapabilities();
+            {
+                StateLock lock;
+                if (lock.locked()) state.systemActionCapabilities = caps;
+            }
+            forceRender = true;
+        }
 
         // The active-high buzzer must always converge to off. A failed I2C
         // write remains pending and is retried without blocking rendering.
@@ -2103,6 +2308,8 @@ void runScreenTask() {
                 if (applied) applied = device.display()->setBrightness(pendingValue);
                 if (applied) {
                     appliedBrightness = pendingValue;
+                    renderer.invalidate();
+                    forceRender = true;
                     brightnessOverridden = true;
                     brightnessOverrideRevision = snapshot->revision;
                     lastInteractionMs = now;
@@ -2116,9 +2323,9 @@ void runScreenTask() {
                 // or delayed I2C write cannot leave the buzzer latched while
                 // the panel is asleep.
                 if (caps.buzzer) {
-                    device.display()->setBuzzer(false);
-                    buzzerNeedsOff = false;
-                    buzzerOffFailureLoggedAtMs = 0;
+                    buzzerNeedsOff = !device.display()->setBuzzer(false);
+                    buzzerOffAtMs = now + BUZZER_OFF_RETRY_MS;
+                    if (!buzzerNeedsOff) buzzerOffFailureLoggedAtMs = 0;
                 }
                 applied = device.display()->setSleep(true);
                 if (applied) {
@@ -2130,10 +2337,10 @@ void runScreenTask() {
                         snapshotBytes + renderer.bufferBytes() + framebufferBytes);
                 }
             } else if (pendingAction == ScreenSystemAction::BUZZER &&
-                       caps.buzzer) {
+                       caps.buzzer && !buzzerNeedsOff) {
                 // Clear a stale latch before starting or extending the pulse.
-                device.display()->setBuzzer(false);
-                applied = device.display()->setBuzzer(true);
+                if (device.display()->setBuzzer(false))
+                    applied = device.display()->setBuzzer(true);
                 buzzerNeedsOff = true;
                 buzzerOffAtMs = applied ? now + BUZZER_PULSE_MS : now;
                 buzzerOffFailureLoggedAtMs = 0;
@@ -2176,6 +2383,7 @@ void runScreenTask() {
                     confirmationCardId[0] = '\0';
                     gesture = TouchGesture{};
                     gesture.suppressUntilRelease = true;
+                    renderer.invalidate();
                     updateRuntimeState(true, false,
                                        snapshotBytes + renderer.bufferBytes() + framebufferBytes);
                     forceRender = true;
@@ -2188,9 +2396,12 @@ void runScreenTask() {
                     gesture.startX = point.x;
                     gesture.startY = point.y;
                     gesture.startedMs = now;
+                    gesture.revision = snapshot->revision;
+                    gesture.pageIndex = snapshot->activePageIndex;
+                    gesture.tapTarget = renderer.tapTarget(*snapshot, point.x, point.y, confirmationCardId);
                     const int hit = confirmationCardId[0] ? -1 : renderer.hitTest(*snapshot, point.x, point.y);
-                    renderer.setPressed(hit >= 0 ? snapshot->cards[hit].id : nullptr);
-                    forceRender = true; state.refreshRequested.store(true, std::memory_order_release);
+                    renderer.setPressed(hit >= 0 ? snapshot->cards[hit].id : nullptr, point.x, point.y);
+                    if (hit >= 0) forceRender = true;
                     if (hit >= 0 && snapshot->cards[hit].visualType == ScreenVisualType::SLIDER &&
                         renderer.actionHitTest(*snapshot, snapshot->cards[hit], point.x, point.y) &&
                         device.display()->capabilities().brightnessContinuous) {
@@ -2200,6 +2411,14 @@ void runScreenTask() {
                 }
                 gesture.lastX = point.x;
                 gesture.lastY = point.y;
+                if (!gesture.tapCancelled &&
+                    (abs(static_cast<int>(point.x) - gesture.startX) > TAP_MOVE_PX ||
+                     abs(static_cast<int>(point.y) - gesture.startY) > TAP_MOVE_PX ||
+                     renderer.tapTarget(*snapshot, point.x, point.y, confirmationCardId) != gesture.tapTarget)) {
+                    gesture.tapCancelled = true;
+                    renderer.setPressed(nullptr);
+                    forceRender = true;
+                }
                 if (gesture.slider >= 0 && now - gesture.sliderUpdatedMs >= 100U) {
                     auto& card = snapshot->cards[gesture.slider];
                     const auto rect = renderer.cardBounds(*snapshot, card);
@@ -2230,11 +2449,17 @@ void runScreenTask() {
                         strlcpy(card.error, saveError.c_str(), sizeof(card.error));
                         ScreenPanelManager::instance().reportApplication(false, false, saveError);
                     }
-                } else if (abs(dx) >= swipeThreshold && abs(dx) > abs(dy) * 3 / 2) {
+                } else if (!state.refreshRequested.load(std::memory_order_acquire) &&
+                           gesture.revision == snapshot->revision && gesture.pageIndex == snapshot->activePageIndex &&
+                           abs(dx) >= swipeThreshold && abs(dx) > abs(dy) * 3 / 2) {
+                    renderer.closeNavigation();
                     if (!confirmationCardId[0]) changePage(*snapshot, dx < 0 ? 1 : -1);
                     confirmationCardId[0] = '\0';
-                } else if (abs(dx) <= TAP_MOVE_PX && abs(dy) <= TAP_MOVE_PX &&
-                           duration <= TAP_MAX_MS) {
+                } else if (!gesture.tapCancelled && gesture.tapTarget &&
+                           !state.refreshRequested.load(std::memory_order_acquire) &&
+                           gesture.revision == snapshot->revision && gesture.pageIndex == snapshot->activePageIndex &&
+                           renderer.tapTarget(*snapshot, gesture.lastX, gesture.lastY, confirmationCardId) == gesture.tapTarget &&
+                           abs(dx) <= TAP_MOVE_PX && abs(dy) <= TAP_MOVE_PX && duration <= TAP_MAX_MS) {
                     if (confirmationCardId[0] || renderer.feedbackHitTest(*snapshot, gesture.lastX, gesture.lastY)) touchFeedback(now);
                     handleTap(renderer, *snapshot, gesture.lastX, gesture.lastY,
                               confirmationCardId, sizeof(confirmationCardId), &controlSession, now);
@@ -2248,33 +2473,62 @@ void runScreenTask() {
 
         const bool requestedRefresh = state.refreshRequested.exchange(
             false, std::memory_order_acq_rel);
+        if (requestedRefresh && gesture.down && gesture.slider < 0) {
+            // Release snapshot ownership immediately after a saved layout.
+            // Consuming the remaining contact must never dispatch its old target.
+            gesture = TouchGesture{};
+            gesture.suppressUntilRelease = true;
+            renderer.setPressed(nullptr);
+            confirmationCardId[0] = '\0';
+            controlSession.reset();
+            forceRender = true;
+        }
 #if FASTBEE_SCREEN_WORKER_ISOLATION == 1
         if (isolation.allowSnapshot(isolationPhase) &&
             (isolationPhaseFrame || requestedRefresh || now - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS)) {
 #else
-        if (requestedRefresh || now - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS) {
+        if (forceRender || (!gesture.down && (requestedRefresh || now - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS))) {
 #endif
             // A failed refresh keeps the last good screen and retries at the
             // same bounded interval, rather than parsing at the touch rate.
-            lastSnapshotMs = now;
+            if (!gesture.down) lastSnapshotMs = now;
 #if FASTBEE_SCREEN_PERF_TELEMETRY == 1
             const int64_t snapshotStarted = esp_timer_get_time();
 #endif
-            const bool captured = ScreenPanelManager::instance().getActiveSnapshot(
+            // Draw the captured button immediately; background status reads and
+            // snapshot replacement must not compete with an ongoing gesture.
+            const bool captured = gesture.down || ScreenPanelManager::instance().getActiveSnapshot(
                 *snapshot, snapshotCache);
 #if FASTBEE_SCREEN_PERF_TELEMETRY == 1
             const uint32_t snapshotElapsed = static_cast<uint32_t>(
                 esp_timer_get_time() - snapshotStarted);
-            ++snapshotCount;
-            snapshotMicros += snapshotElapsed;
-            snapshotMaxMicros = std::max(snapshotMaxMicros, snapshotElapsed);
+            if (!gesture.down) {
+                ++snapshotCount;
+                snapshotMicros += snapshotElapsed;
+                snapshotMaxMicros = std::max(snapshotMaxMicros, snapshotElapsed);
+            }
 #endif
             if (captured) {
                 if (controlSessionRevision != snapshot->revision) {
                     controlSession.reset(); confirmationCardId[0] = '\0';
                     controlSessionRevision = snapshot->revision;
+                    renderer.closeNavigation();
+                    renderer.invalidate();
+                    lastInteractionMs = now;
+                    appliedBrightness = 255;
+                    forceRender = true;
+                    // A saved layout should be visible without a reboot or a
+                    // second save; the wake contact may not operate its controls.
+                    if (sleeping && device.display()->setBrightness(snapshot->brightnessPercent) &&
+                        device.display()->setSleep(false)) {
+                        sleeping = false;
+                        gesture = TouchGesture{};
+                        gesture.suppressUntilRelease = true;
+                        updateRuntimeState(true, false,
+                            snapshotBytes + renderer.bufferBytes() + framebufferBytes);
+                    }
                 }
-                if (!sleeping && now - lastMotorReadMs >= 5000U) {
+                if (!sleeping && !gesture.down && now - lastMotorReadMs >= 5000U) {
                     lastMotorReadMs = now;
                     const auto& page = snapshot->pages[snapshot->activePageIndex];
                     for (size_t i = page.firstCard; i < page.firstCard + page.cardCount; ++i) {
@@ -2320,23 +2574,28 @@ void runScreenTask() {
                 const uint32_t hash = snapshotHash(*snapshot, confirmationCardId);
 #if FASTBEE_SCREEN_WORKER_ISOLATION == 1
                 if (isolation.allowRender(isolationPhase) &&
-                    (isolationPhaseFrame || forceRender || hash != previousHash)) {
+                    (isolationPhaseFrame || forceRender || hash != previousHash) &&
+                    (!renderRetryPending || now - lastRenderAttemptMs >= 250U)) {
                     const uint8_t pageIndex = snapshot->pageCount == 0 ? 0 :
                         std::min<uint8_t>(snapshot->activePageIndex, snapshot->pageCount - 1U);
                     ScreenIsolationTitle<sizeof(snapshot->pages[0].title)> isolationTitle(
                         snapshot->pageCount ? snapshot->pages[pageIndex].title : nullptr,
                         ScreenWorkerIsolation::title(isolationPhase));
 #else
-                if (forceRender || hash != previousHash) {
+                if ((forceRender || hash != previousHash) &&
+                    (!renderRetryPending || now - lastRenderAttemptMs >= 250U)) {
 #endif
 #if FASTBEE_SCREEN_PERF_TELEMETRY == 1
                     const int64_t renderStarted = esp_timer_get_time();
 #endif
                     if (!renderer.render(*snapshot, confirmationCardId, error)) {
+                        renderRetryPending = true;
+                        lastRenderAttemptMs = millis();
                         LOG_WARNINGF("ScreenRuntime: render failed: %s", error.c_str());
                         updateRuntimeState(true, sleeping,
                             snapshotBytes + renderer.bufferBytes() + framebufferBytes, error);
                     } else {
+                        renderRetryPending = false;
                         previousHash = hash;
 #if FASTBEE_SCREEN_WORKER_ISOLATION == 1
                         isolation.rendered(isolationPhase);
@@ -2351,7 +2610,7 @@ void runScreenTask() {
                     renderMicros += renderElapsed;
                     renderMaxMicros = std::max(renderMaxMicros, renderElapsed);
 #endif
-                    forceRender = false;
+                    forceRender = renderRetryPending;
                 }
             }
         }
@@ -2417,6 +2676,8 @@ void runScreenTask() {
     // buzzer-on write from being left latched by a stop/reconfigure request.
     for (uint8_t attempt = 0; attempt < 3; ++attempt) {
         if (device.display()->setBuzzer(false)) break;
+        if (attempt == 2 && device.display()->capabilities().buzzer)
+            LOG_WARNING("ScreenRuntime: buzzer OFF unconfirmed at shutdown; backend cleanup will retry");
         delay(2);
     }
     renderer.end();

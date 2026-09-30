@@ -91,7 +91,8 @@ SessionStatus AuthManager::validateSession(const UserSession& session) {
     
     unsigned long currentTime = millis();
     
-    if (currentTime > session.expireTime) {
+    // Unsigned elapsed time remains valid across the 32-bit millis rollover.
+    if (static_cast<uint32_t>(currentTime - session.lastAccessTime) >= securityConfig.sessionTimeout) {
         status.valid = false;
         status.expired = true;
         status.locked = false;
@@ -129,7 +130,8 @@ void AuthManager::cleanupExpiredSessions() {
     unsigned long currentTime = millis();
     
     for (auto it = activeSessions.begin(); it != activeSessions.end();) {
-        if (currentTime > it->second.expireTime || !it->second.isActive) {
+        if (static_cast<uint32_t>(currentTime - it->second.lastAccessTime) >= securityConfig.sessionTimeout ||
+            !it->second.isActive) {
             logAuthEvent("session_expired", it->second.username, 
                         "Session expired or invalidated", true);
             it = activeSessions.erase(it);
@@ -519,15 +521,8 @@ std::vector<UserSession> AuthManager::getUserSessions(const String& username) {
 }
 
 bool AuthManager::updateSessionAccessTime(const String& sessionId) {
-    SessionsLock lk(_sessionsMutex);
-    auto it = activeSessions.find(sessionId);
-    if (it != activeSessions.end()) {
-        unsigned long currentTime = millis();
-        it->second.lastAccessTime = currentTime;
-        it->second.expireTime = currentTime + securityConfig.sessionTimeout;
-        return true;
-    }
-    return false;
+    // Never revive an expired, disabled or revoked session by touching it.
+    return verifySession(sessionId, true).success;
 }
 
 size_t AuthManager::getActiveSessionCount() {
@@ -755,19 +750,21 @@ String AuthManager::generateRandomToken(uint8_t length) {
 }
 
 static String readSessionCookieValue(const String& cookieHeader, const String& cookieName) {
-    int start = cookieHeader.indexOf(cookieName + "=");
-    if (start == -1) {
-        return "";
+    // Match complete cookie names, not suffixes such as other_sessionId.
+    int start = 0;
+    while (start < static_cast<int>(cookieHeader.length())) {
+        int end = cookieHeader.indexOf(';', start);
+        if (end < 0) end = cookieHeader.length();
+        String pair = cookieHeader.substring(start, end);
+        pair.trim();
+        if (pair.startsWith(cookieName + "=")) {
+            String value = pair.substring(cookieName.length() + 1);
+            value.trim();
+            return value;
+        }
+        start = end + 1;
     }
-
-    start += cookieName.length() + 1;
-    int end = cookieHeader.indexOf(';', start);
-    if (end == -1) {
-        end = cookieHeader.length();
-    }
-    String value = cookieHeader.substring(start, end);
-    value.trim();
-    return value;
+    return "";
 }
 
 String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request, 
@@ -807,6 +804,12 @@ String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request,
         }
     }
     
+    return extractSessionIdFromCookie(request, cookieName);
+}
+
+String AuthManager::extractSessionIdFromCookie(AsyncWebServerRequest* request,
+                                              const String& cookieName) {
+    if (!request) return "";
     if (request->hasHeader("Cookie")) {
         String cookieHeader = request->header("Cookie");
         String token = readSessionCookieValue(cookieHeader, cookieName);

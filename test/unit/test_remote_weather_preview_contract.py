@@ -56,8 +56,8 @@ class RemoteWeatherPreviewContractTests(unittest.TestCase):
 
     def test_network_io_stays_in_the_existing_worker_and_is_rate_limited(self):
         request = braced_block(MANAGER, "bool RemoteResourceManager::requestRead(")
-        self.assertIn("now-s.updatedMs<300000U", request)
-        self.assertIn("now-s.lastManualRequestMs<300000U", request)
+        self.assertIn("manualRemaining(now,s.known,s.updatedMs,s.manualRequestSeen,s.lastManualRequestMs)", request)
+        self.assertIn("s.manualRequestPending", request)
         self.assertIn("s.requested=true", request)
         self.assertNotIn("fetchWeather", request)
 
@@ -83,7 +83,7 @@ class RemoteWeatherPreviewContractTests(unittest.TestCase):
     def test_fixed_tls_endpoint_and_retired_capabilities_cannot_run(self):
         fetch = braced_block(MANAGER, "bool fetchWeather(")
         self.assertIn('https://api.seniverse.com/v3/weather/now.json', fetch)
-        self.assertIn('time(nullptr)<1577836800', fetch)
+        self.assertIn('time(nullptr)>=1577836800', fetch)
         self.assertIn('setCACertBundle', fetch)
         self.assertNotIn('source["url"]', fetch)
         self.assertNotIn('authHeader', fetch)

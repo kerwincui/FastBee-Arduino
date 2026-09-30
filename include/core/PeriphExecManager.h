@@ -132,6 +132,12 @@ public:
     PeriphExecRule* getRule(const String& id);
     bool getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const;
     std::vector<PeriphExecRule> getAllRules() const;
+    // Fail closed on lock/load failure; callers must acquire this snapshot
+    // before taking the remote-resource configuration lock.
+    // reserve=true also freezes config mutations until release. Release only
+    // after dropping the remote lock; rule execution and observations continue.
+    bool getWeatherRuleReferences(std::vector<String>& references, bool reserve = false) const;
+    void releaseWeatherRuleReferences();
     bool enableRule(const String& id);
     bool disableRule(const String& id);
     bool enableRuleAndSave(const String& id, String& errorMsg);
@@ -431,8 +437,10 @@ private:
     bool writeConfigurationLocked(const RuleMap& sourceRules, const String& irKeys);
     bool _configurationRestartPending = false;
     bool _configurationLoadFailed = false;
+    mutable bool _weatherReferenceLease = false;
     const char* configurationWriteError() const {
-        return _configurationRestartPending ? "CONFIG_PENDING_RESTART" :
+        return _weatherReferenceLease ? "WEATHER_MIGRATION_BUSY" :
+               _configurationRestartPending ? "CONFIG_PENDING_RESTART" :
                (_configurationLoadFailed ? "CONFIG_LOAD_FAILED" : nullptr);
     }
 

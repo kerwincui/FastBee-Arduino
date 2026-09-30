@@ -68,6 +68,9 @@ class PointHistoryPersistenceTests(unittest.TestCase):
     def test_capacity_matches_configured_or_restored_sources_and_stays_bounded(self):
         self.scenario('capacity')
 
+    def test_config_conflict_concurrent_writer_and_failed_save_preserve_state(self):
+        self.scenario('config_transaction')
+
 
 if __name__ == '__main__':
     unittest.main()

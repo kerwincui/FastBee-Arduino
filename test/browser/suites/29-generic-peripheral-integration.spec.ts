@@ -32,10 +32,21 @@ test.describe('Generic peripheral published Web integration', () => {
     await expect(authPage.locator('#sp-canvas-size')).toHaveText('逻辑尺寸 320 × 240');
     await expect(authPage.locator('.page-feature-fallback')).toHaveCount(0);
     expect(modules).toEqual(['/js/modules/screen-panel-model.js', '/js/modules/screen-panel.js']);
-    await authPage.locator('.sp-saved-preview > summary').click();
+    await expect(authPage.locator('#sp-config')).toBeVisible();
+    await expect(authPage.locator('#sp-save-config')).toBeVisible();
+    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-width', '320');
+    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-height', '240');
     for (const width of [1280, 390]) {
       await authPage.setViewportSize({ width, height: 844 });
-      await expect(authPage.locator('#sp-preview-frame')).toBeVisible();
+      await expect(authPage.locator('#sp-editor-frame')).toBeVisible();
+      const aspect = await authPage.locator('#sp-editor-canvas').evaluate(node => {
+        const rect = node.getBoundingClientRect(); return rect.width / rect.height;
+      });
+      expect(aspect).toBeCloseTo(320 / 240, 1);
+      await expect(authPage.locator('#sp-editor-canvas')).toBeVisible();
+      await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-width', '320');
+      await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-height', '240');
+      await expect(authPage.locator('#sp-save-config')).toBeVisible();
       await authPage.screenshot({ path: info.outputPath(`published-panel-${width}.png`) });
     }
     await navigateTo('dashboard');

@@ -138,7 +138,6 @@
                 this._updateMqttsMemoryHint(mqtt.tlsSupported, schemeEl.value);
             }
             this._setValue('mqtt-broker', mqtt.server ?? '');
-            this._setValue('mqtt-ota-base-url', mqtt.otaBaseUrl || '');
             this._setValue('mqtt-port', mqtt.port || 1883);
             this._setValue('mqtt-client-id', mqtt.clientId ?? '');
             this._setValue('mqtt-username', mqtt.username || '');

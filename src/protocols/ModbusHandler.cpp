@@ -10,6 +10,7 @@
  */
 
 #include "protocols/ModbusHandler.h"
+#include "protocols/ModbusUartRxMode.h"
 #include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
 #include "utils/StringUtils.h"
@@ -652,6 +653,8 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                     if (dev.baudRateMode == 0) dev.baudRateMode = 1;
                     if (dev.controlProtocol == 0) dev.controlProtocol = 1;
                 }
+                if (const char* error = loadMotorProtocol(d, dev.motorProtocol))
+                    LOG_WARNINGF("Modbus motor %u: %s; control blocked", dev.slaveAddress, error);
                 config.master.deviceCount++;
             }
         }
@@ -761,6 +764,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["pwmResolution"]   = dev.pwmResolution;
         d["pidDecimals"]     = dev.pidDecimals;
         d["motorDecimals"]   = dev.motorDecimals;
+        saveMotorProtocol(d, dev.motorProtocol);
         d["motorMinPosition"] = dev.motorMinPosition;
         d["motorMaxPosition"] = dev.motorMaxPosition;
         d["motorCurrentPosition"] = dev.motorCurrentPosition;
@@ -789,12 +793,23 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
 // ============ 硬件初始化 ============
 
 bool ModbusHandler::initializeSerial() {
-    if (modbusSerial) {
-        modbusSerial->end();
+    if (!modbusSerial) {
+        LOG_ERROR("Modbus: Serial instance is unavailable");
+        return false;
     }
+    modbusSerial->end();
     
     modbusSerial->begin(config.baudRate, SERIAL_8N1, config.rxPin, config.txPin);
+    if (!*modbusSerial) {
+        LOG_ERROR("Modbus: UART driver initialization failed");
+        return false;
+    }
     modbusSerial->setTimeout(config.responseTimeout);
+    if (!FastBee::configureModbusReceiveOnlyPin(config.rxPin, config.txPin)) {
+        modbusSerial->end();
+        LOG_ERROR("Modbus: RX/TX pin configuration is invalid");
+        return false;
+    }
     
     LOG_INFOF("Modbus: Serial initialized on pins RX:%d, TX:%d", config.rxPin, config.txPin);
     return true;
@@ -1611,9 +1626,14 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
                                                 uint16_t startAddress, uint16_t quantity,
                                                 bool isControl, uint16_t timeoutOverride,
                                                 uint8_t retriesOverride,
-                                                String* rawResponseHex) {
+                                                String* rawResponseHex,
+                                                ModbusReadDiagnostics* diagnostics) {
     OneShotResult result;
     if (rawResponseHex) *rawResponseHex = "";
+    if (diagnostics) {
+        diagnostics->reset();
+        diagnostics->reason = "INVALID_REQUEST";
+    }
 
     // 参数校验（读操作特有）
     if (functionCode < 0x01 || functionCode > 0x04) {
@@ -1656,7 +1676,7 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
     result.error = _sendOneShotRequestRaw(
         requestBuffer, sizeof(requestBuffer), slaveAddress,
         rawResponse, sizeof(rawResponse), respLen, exceptionCode,
-        timeoutOverride, retriesOverride, isControl);
+        timeoutOverride, retriesOverride, isControl, diagnostics);
     if (isControl) _controlPending = false;
     result.exceptionCode = exceptionCode;
 
@@ -1691,6 +1711,7 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
     // 功能码匹配
     uint8_t respFC = rawResponse[1];
     if (respFC != functionCode) {
+        if (diagnostics) diagnostics->reason = "FUNCTION_MISMATCH";
         LOG_WARNINGF("[Modbus] OneShot read: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respFC);
         result.error = ONESHOT_CRC_ERROR;
         return result;
@@ -1698,8 +1719,15 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
 
     // 提取寄存器/线圈数据
     if (functionCode == 0x03 || functionCode == 0x04) {
+        // Include the CRC in the exact ADU length: CRC bytes are not data.
+        if (respLen != static_cast<size_t>(5U + quantity * 2U)) {
+            if (diagnostics) diagnostics->reason = "RESPONSE_LENGTH_MISMATCH";
+            result.error = ONESHOT_CRC_ERROR;
+            return result;
+        }
         uint8_t byteCount = rawResponse[2];
         if (byteCount != quantity * 2) {
+            if (diagnostics) diagnostics->reason = "BYTE_COUNT_MISMATCH";
             LOG_WARNINGF("[Modbus] OneShot read: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
             result.error = ONESHOT_CRC_ERROR;
             return result;
@@ -1932,19 +1960,33 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
                                                            uint8_t& exceptionCode,
                                                            uint16_t timeoutOverride,
                                                            uint8_t retriesOverride,
-                                                           bool bypassSlaveBackoff) {
+                                                           bool bypassSlaveBackoff,
+                                                           ModbusReadDiagnostics* diagnostics) {
     OneShotError error = ONESHOT_TIMEOUT;
     rawLen = 0;
     exceptionCode = 0;
+    if (diagnostics) diagnostics->reset();
 
     if (!request || reqLen < 4 || reqLen > Protocols::MODBUS_BUFFER_SIZE ||
         !rawResp || rawCap == 0) {
         exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        if (diagnostics) diagnostics->reason = "INVALID_REQUEST";
         LOG_WARNINGF("[Modbus] OneShot: invalid raw transaction buffers (tx=%u rxCap=%u)",
                      static_cast<unsigned>(reqLen), static_cast<unsigned>(rawCap));
         return ONESHOT_EXCEPTION;
     }
 
+    if (diagnostics) diagnostics->reset(request, reqLen);
+    // HardwareSerial::write reports the requested length even without a driver.
+    const bool uartReady = modbusSerial && static_cast<bool>(*modbusSerial);
+    if (diagnostics) {
+        diagnostics->uartReady = uartReady;
+        diagnostics->uartBaudRate = uartReady ? modbusSerial->baudRate() : 0;
+    }
+    if (!uartReady) {
+        if (diagnostics) diagnostics->reason = "UART_DRIVER_NOT_READY";
+        return ONESHOT_NOT_INITIALIZED;
+    }
     // Only poll/read traffic participates in the per-slave breaker. Standard
     // writes and explicit control traffic always reach the bus.
     const bool enforceSlaveBackoff =
@@ -1952,6 +1994,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         isReadFunctionCode(request[1]);
     if (enforceSlaveBackoff &&
         _shouldDeferSlaveRequest(expectedSlaveAddr, millis())) {
+        if (diagnostics) diagnostics->reason = "SLAVE_BACKOFF";
         return ONESHOT_TIMEOUT;
     }
 
@@ -1980,6 +2023,12 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
     // 重试循环
     for (uint8_t attempt = 0; attempt <= maxRetries; attempt++) {
+        // Finish the current frame, then release the bus to a queued control
+        // instead of holding it through all background polling retries.
+        // Control transactions keep their own retry policy unchanged.
+        if (attempt > 0 && enforceSlaveBackoff && _controlPending) {
+            break;
+        }
         if (attempt > 0) {
             const uint8_t retryShift = attempt > 4 ? 3 : attempt - 1;
             const uint16_t retryBaseMs =
@@ -2000,11 +2049,14 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         while (modbusSerial->available()) modbusSerial->read();
 
         // 发送请求帧
+        if (diagnostics) diagnostics->beginAttempt();
         setTransmitMode(true);
         const size_t written = modbusSerial->write(request, reqLen);
         modbusSerial->flush();
         setTransmitMode(false);
+        if (diagnostics) diagnostics->txWritten = static_cast<uint16_t>(written);
         if (written != reqLen) {
+            if (diagnostics) diagnostics->reason = "SHORT_WRITE";
             LOG_WARNINGF("[Modbus] OneShot: short serial write (%u/%u bytes)",
                          static_cast<unsigned>(written), static_cast<unsigned>(reqLen));
             error = ONESHOT_TIMEOUT;
@@ -2037,11 +2089,16 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
                 timedOut = true;
                 break;
             }
-            yield();
+            // yield() leaves this worker runnable and cannot let a lower-priority
+            // idle task feed its watchdog during repeated slave timeouts.
+            // Block for one RTOS tick; recheck UART/frame-gap deadlines on wake.
+            vTaskDelay(1);
         }
 
         // 超时且无数据
+        if (diagnostics) diagnostics->captureRx(respBuf, respIdx, responseOverflow);
         if (timedOut && respIdx == 0) {
+            if (diagnostics) diagnostics->reason = "NO_RESPONSE_BYTES";
             LOG_WARNINGF("[Modbus] OneShot: timeout (attempt %d, no response)", attempt + 1);
             error = ONESHOT_TIMEOUT;
             continue;
@@ -2049,6 +2106,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
         // 不能把 257+ 字节响应静默截成一个看似有效的 256 字节帧。
         if (responseOverflow) {
+            if (diagnostics) diagnostics->reason = "RX_OVERFLOW";
             LOG_WARNING("[Modbus] OneShot: response exceeds 256-byte RTU frame limit");
             error = ONESHOT_CRC_ERROR;
             continue;
@@ -2056,6 +2114,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
         // 帧过短
         if (respIdx < 4) {
+            if (diagnostics) diagnostics->reason = "FRAME_TOO_SHORT";
             LOG_WARNINGF("[Modbus] OneShot: frame too short (%u bytes)",
                          static_cast<unsigned>(respIdx));
             error = ONESHOT_CRC_ERROR;
@@ -2064,11 +2123,13 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
         // CRC 校验
         if (!validateFrame(respBuf, respIdx)) {
+            if (diagnostics) diagnostics->reason = "CRC_INVALID";
             LOG_WARNING("[Modbus] OneShot: CRC validation failed");
             error = ONESHOT_CRC_ERROR;
             continue;
         }
 
+        if (diagnostics) diagnostics->crcValid = true;
         // 捕获 RX 帧 hex（CRC 校验通过后）—— 低堆时跳过
         if (heapSafe) {
             _lastRxHex = "";
@@ -2082,14 +2143,17 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
 
         // 地址匹配（广播地址 0x00 时跳过，允许任意从站响应）
         if (expectedSlaveAddr != 0 && respBuf[0] != expectedSlaveAddr) {
+            if (diagnostics) diagnostics->reason = "SLAVE_ADDRESS_MISMATCH";
             LOG_WARNINGF("[Modbus] OneShot: address mismatch (expected %d, got %d)", expectedSlaveAddr, respBuf[0]);
             error = ONESHOT_CRC_ERROR;
             continue;
         }
 
+        if (diagnostics) diagnostics->addressMatched = true;
         // CRC 和地址均合法的响应必须先完整交给原始帧调用者。Modbus
         // 异常响应仍是有效 RTU 帧，透传模式需要将其原样回传给平台。
         if (respIdx > rawCap) {
+            if (diagnostics) diagnostics->reason = "RESPONSE_CAPACITY_EXCEEDED";
             exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
             LOG_WARNINGF("[Modbus] OneShot: response buffer too small (%u < %u)",
                          static_cast<unsigned>(rawCap), static_cast<unsigned>(respIdx));
@@ -2103,6 +2167,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         // 异常是确定性协议响应，不重试；保留 ONESHOT_EXCEPTION 语义，
         // 由原始帧上层决定是否转发已捕获的完整异常帧。
         if (respBuf[1] & 0x80) {
+            if (diagnostics) diagnostics->reason = "MODBUS_EXCEPTION";
             error = ONESHOT_EXCEPTION;
             exceptionCode = respBuf[2];
             LOG_WARNINGF("[Modbus] OneShot: exception response 0x%02X", respBuf[2]);
@@ -2110,6 +2175,7 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         }
 
         error = ONESHOT_SUCCESS;
+        if (diagnostics) diagnostics->reason = "FRAME_VALIDATED";
         break;
     }
 
@@ -2205,15 +2271,19 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, size_
                                                      uint8_t& exceptionCode,
                                                      uint16_t timeoutOverride,
                                                      uint8_t retriesOverride,
-                                                     bool bypassSlaveBackoff) {
+                                                     bool bypassSlaveBackoff,
+                                                     ModbusReadDiagnostics* diagnostics) {
     rawLen = 0;
     exceptionCode = 0;
+    if (diagnostics) diagnostics->reset();
 
     // 前置检查
     if (!isInitialized || !modbusSerial) {
+        if (diagnostics) diagnostics->reason = "NOT_INITIALIZED";
         LOG_WARNING("[Modbus] OneShot: not initialized");
         return ONESHOT_NOT_INITIALIZED;
     }
+    if (diagnostics) diagnostics->reason = "BUS_ACQUIRE_FAILED";
     if (isOneShotReading) {
         // 使用信号量等待总线空闲（FreeRTOS 友好）
         if (_oneShotSemaphore) {
@@ -2249,6 +2319,7 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, size_
     }
     if (expectedSlaveAddr > 247) {
         exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
+        if (diagnostics) diagnostics->reason = "INVALID_REQUEST";
         LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
         if (_oneShotSemaphore) {
             xSemaphoreGive(_oneShotSemaphore);
@@ -2263,7 +2334,7 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, size_
     OneShotError error = _executeModbusTransactionRaw(
         request, reqLen, expectedSlaveAddr,
         rawResp, rawCap, rawLen, exceptionCode,
-        timeoutOverride, retriesOverride, bypassSlaveBackoff);
+        timeoutOverride, retriesOverride, bypassSlaveBackoff, diagnostics);
 
     isOneShotReading = false;
     // 释放信号量
@@ -2276,6 +2347,16 @@ OneShotError ModbusHandler::_sendOneShotRequestRaw(const uint8_t* request, size_
 // ============================================================================
 // 控制操作快速通道（高优先级，短超时）
 // ============================================================================
+bool ModbusHandler::getDebugSnapshot(String& tx, String& rx) {
+    if (!_oneShotSemaphore || xSemaphoreTake(_oneShotSemaphore, 0) != pdTRUE) {
+        return false;
+    }
+    tx = _lastTxHex;
+    rx = _lastRxHex;
+    xSemaphoreGive(_oneShotSemaphore);
+    return true;
+}
+
 OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, size_t requestLength,
                                                  uint8_t expectedSlaveAddress,
                                                  uint16_t timeoutOverride,
@@ -2553,12 +2634,11 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
         ? sendControlRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride)
         : sendOneShotRequest(request, 8, slaveAddr, timeoutOverride, retriesOverride);
 
-    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
-        uint8_t respFC = (uint8_t)result.data[1];
-        if (respFC != 0x06) {
-            result.error = ONESHOT_EXCEPTION;
-            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
-        }
+    if (result.error == ONESHOT_SUCCESS) {
+        // FC06 must echo the exact request, not merely the function code.
+        if (result.count != 8) result.error = ONESHOT_CRC_ERROR;
+        else for (size_t i = 0; i < 6; ++i)
+            if (result.data[i] != request[i]) { result.error = ONESHOT_CRC_ERROR; break; }
     }
     return result;
 }
@@ -2567,16 +2647,26 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
 // FC 0x10 写多个寄存器（阻塞）
 // ============================================================================
 OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                                         uint16_t quantity, const uint16_t* values, bool isControl) {
+                                                         uint16_t quantity, const uint16_t* values, bool isControl,
+                                                         uint16_t timeoutOverride, uint8_t retriesOverride) {
     OneShotResult result;
 
-    if (quantity == 0 || quantity > 123) {
+    if (!values || quantity == 0 || quantity > 123 || static_cast<uint32_t>(startAddr) + quantity > 65536UL) {
         result.error = ONESHOT_EXCEPTION;
         result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
         LOG_WARNINGF("[Modbus] writeMultipleRegistersOnce: invalid quantity %d", quantity);
         return result;
     }
 
+    // FC16 can trigger the same edge-sensitive motion as FC06. Never replay
+    // a range covering a configured start register after an ambiguous reply.
+    for (uint8_t i = 0; i < getSubDeviceCount(); ++i) {
+        const auto& device = getSubDevice(i);
+        if (!device.enabled || device.slaveAddress != slaveAddr || strcmp(device.deviceType, "motor")) continue;
+        const uint32_t end = static_cast<uint32_t>(startAddr) + quantity;
+        for (unsigned action = 0; action < 2; ++action)
+            if (device.motorRegs[action] >= startAddr && device.motorRegs[action] < end) retriesOverride = 0;
+    }
     LOG_INFOF("[Modbus] writeMultipleRegistersOnce: slave=%d start=%d qty=%d", slaveAddr, startAddr, quantity);
 
     uint8_t byteCount = quantity * 2;
@@ -2607,16 +2697,15 @@ OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint1
     request[7 + byteCount] = crc & 0xFF;
     request[7 + byteCount + 1] = (crc >> 8) & 0xFF;
 
-    result = isControl ? sendControlRequest(request, reqLen, slaveAddr)
-                       : sendOneShotRequest(request, reqLen, slaveAddr);
+    result = isControl ? sendControlRequest(request, reqLen, slaveAddr, timeoutOverride, retriesOverride)
+                       : sendOneShotRequest(request, reqLen, slaveAddr, timeoutOverride, retriesOverride);
 
     // 验证响应：FC 0x10 响应为 [addr, 0x10, startH, startL, qtyH, qtyL, CRC]
-    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
-        uint8_t respFC = (uint8_t)result.data[1];
-        if (respFC != 0x10) {
-            result.error = ONESHOT_EXCEPTION;
-            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
-        }
+    if (result.error == ONESHOT_SUCCESS) {
+        // FC16 acknowledges slave, function, start address and quantity.
+        if (result.count != 8) result.error = ONESHOT_CRC_ERROR;
+        else for (size_t i = 0; i < 6; ++i)
+            if (result.data[i] != request[i]) { result.error = ONESHOT_CRC_ERROR; break; }
     }
     return result;
 }

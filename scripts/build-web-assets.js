@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+const { gzipWebAsset } = require('./web-gzip');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
 const { createWebAssetReport, printWebAssetReport } = require('./web-asset-report');
@@ -58,7 +58,7 @@ function deleteOldGzipAssets() {
     return stats;
 }
 
-function gzipWebAssets() {
+async function gzipWebAssets() {
     const stats = {
         files: 0,
         failed: 0,
@@ -66,24 +66,28 @@ function gzipWebAssets() {
         gzip: 0
     };
 
+    const files = [];
     walkDir(WWW_DIR, (filePath) => {
         if (filePath.endsWith('.gz')) return;
         if (!COMPRESS_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return;
+        files.push(filePath);
+    });
 
+    for (const filePath of files) {
         const raw = fs.readFileSync(filePath);
-        const compressed = zlib.gzipSync(raw, { level: 9 });
+        const compressed = await gzipWebAsset(raw);
         try {
             fs.writeFileSync(`${filePath}.gz`, compressed);
         } catch (error) {
             stats.failed += 1;
             console.warn(`  gzip skipped: ${relFromWww(filePath)} (${error.code || error.message})`);
-            return;
+            continue;
         }
 
         stats.files += 1;
         stats.raw += raw.length;
         stats.gzip += compressed.length;
-    });
+    }
 
     return stats;
 }
@@ -111,7 +115,7 @@ function deleteCompressedOriginals() {
     return stats;
 }
 
-function runBuildUnlocked() {
+async function runBuildUnlocked() {
     console.log('Web publish build');
     console.log('=================');
     const buildResult = buildWebModules();
@@ -127,7 +131,7 @@ function runBuildUnlocked() {
     }
 
     console.log('\nRefreshing gzip assets...');
-    const gzipStats = gzipWebAssets();
+    const gzipStats = await gzipWebAssets();
     const ratio = gzipStats.raw > 0
         ? ((1 - gzipStats.gzip / gzipStats.raw) * 100).toFixed(1)
         : '0.0';
@@ -160,12 +164,10 @@ function runBuild() {
 }
 
 if (require.main === module) {
-    try {
-        runBuild();
-    } catch (error) {
+    Promise.resolve().then(runBuild).catch((error) => {
         console.error(error);
-        process.exit(1);
-    }
+        process.exitCode = 1;
+    });
 }
 
 module.exports = {

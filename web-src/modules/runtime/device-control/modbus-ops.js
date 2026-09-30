@@ -7,21 +7,23 @@
     Object.assign(AppState, {
 
         // ============ SSE 连接管理 ============
-        _setupSSE: function() {
-            this._closeSSE();
+        _setupSSE: function(keepConnection) {
+            this._closeSSE(keepConnection);
             // 使用全局 SSE 连接而非创建独立的 EventSource
-            AppState.connectSSE();  // 确保全局连接已建立
-
             var self = this;
             var generation = this._dcLifecycleGeneration;
+            this._dcLastSensorEventAt = Date.now();
+            this._dcLastModbusEventAt = Date.now();
             // 保存引用以便清理
             this._sseModbusHandler = function(e) {
                 if (!self._dcIsLifecycleActive(generation)) return;
                 try {
                     var data = JSON.parse(e.data);
                     self._handleSSEModbusData(data);
+                    if (Array.isArray(data) && data.length) self._dcLastModbusEventAt = Date.now();
                 } catch (err) {
                     console.warn('[SSE] 数据解析失败:', err);
+                    self._dcScheduleSnapshotRecovery('数据流解析失败，正在恢复');
                 }
             };
             this._sseSensorHandler = function(e) {
@@ -29,16 +31,44 @@
                 try {
                     var data = JSON.parse(e.data);
                     self._handleSSESensorData(data);
+                    if (data && data.key) self._dcLastSensorEventAt = Date.now();
                 } catch (err) {
                     console.warn('[SSE] 传感器数据解析失败:', err);
+                    self._dcScheduleSnapshotRecovery('传感器数据解析失败，正在恢复');
                 }
             };
 
             AppState.onSSEEvent('modbus-data', this._sseModbusHandler);
             AppState.onSSEEvent('sensor-data', this._sseSensorHandler);
+            this._sseResyncHandler = function() {
+                if (self._dcIsLifecycleActive(generation)) self._dcScheduleSnapshotRecovery('连接恢复中，正在核对最新状态');
+            };
+            AppState.onSSEEvent('resync', this._sseResyncHandler);
+            var watch = function() {
+                if (!self._dcIsLifecycleActive(generation)) return;
+                var now = Date.now();
+                var hasLocalSensors = document.querySelector('.dc-monitor-card[data-id^="ai_"]');
+                var hasModbus = self._modbusStatus && (self._modbusStatus.tasks || []).length;
+                if ((hasLocalSensors && now - self._dcLastSensorEventAt > 120000) ||
+                    (hasModbus && now - self._dcLastModbusEventAt > 120000)) {
+                    self._dcScheduleSnapshotRecovery('数据超过有效时限，正在恢复');
+                }
+                self._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 15000);
+            };
+            this._dcAutoRefreshTimers = this._dcAutoRefreshTimers || {};
+            this._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 15000);
+            AppState.connectSSE();
         },
 
-        _closeSSE: function() {
+        _closeSSE: function(keepConnection) {
+            if (this._sseResyncHandler) {
+                AppState.offSSEEvent('resync', this._sseResyncHandler);
+                this._sseResyncHandler = null;
+            }
+            if (this._dcAutoRefreshTimers && this._dcAutoRefreshTimers.dataWatch) {
+                clearTimeout(this._dcAutoRefreshTimers.dataWatch);
+                delete this._dcAutoRefreshTimers.dataWatch;
+            }
             if (this._sseModbusHandler) {
                 AppState.offSSEEvent('modbus-data', this._sseModbusHandler);
                 this._sseModbusHandler = null;
@@ -47,7 +77,7 @@
                 AppState.offSSEEvent('sensor-data', this._sseSensorHandler);
                 this._sseSensorHandler = null;
             }
-            AppState.disconnectSSE();
+            if (!keepConnection) AppState.disconnectSSE();
             if (this._sseDebounceTimer) {
                 clearTimeout(this._sseDebounceTimer);
                 this._sseDebounceTimer = null;
@@ -64,10 +94,16 @@
             // 查找对应的监测卡片并更新数值
             var card = document.querySelector('.dc-monitor-card[data-id="' + data.key + '"]');
             if (card) {
-                var valEl = card.querySelector('.dc-monitor-value');
                 var unitEl = card.querySelector('.dc-monitor-unit');
-                if (valEl) valEl.textContent = data.value || '--';
+                this._dcUpdateMonitorCard(card, data);
                 if (unitEl && data.unit) unitEl.textContent = data.unit;
+            }
+            var rules = this._dcControlRules(this._controlData || {});
+            for (var i = 0; i < rules.length; i++) {
+                var sensors = rules[i].sensors || [];
+                for (var j = 0; j < sensors.length; j++) if (sensors[j].key === data.key) {
+                    Object.assign(sensors[j], data, {valid: data.valid, valueValid: data.valueValid, quality: data.quality});
+                }
             }
         },
 
@@ -131,9 +167,10 @@
             var ncMode = dev.ncMode || false;
             // 修复：SSE 推送的 value 为字符串类型，"0" 在 JS 中是 truthy，
             // 必须先转为数字再判断布尔值
-            var numVal = parseInt(value, 10) || 0;
-            var boolVal = numVal !== 0;
-            var isOn = ncMode ? !boolVal : boolVal;
+            var known = (typeof value === 'number' || typeof value === 'string') &&
+                String(value).trim() !== '' && Number.isFinite(Number(value));
+            var boolVal = known ? Number(value) !== 0 : null;
+            var isOn = known ? (ncMode ? !boolVal : boolVal) : null;
             var onText = 'ON';
             var offText = 'OFF';
 
@@ -149,13 +186,13 @@
             if (!card) return false;
 
             // 更新样式类
-            card.classList.remove('dc-coil-on', 'dc-coil-off');
-            card.classList.add(isOn ? 'dc-coil-on' : 'dc-coil-off');
+            card.classList.remove('dc-coil-on', 'dc-coil-off', 'dc-coil-unknown');
+            card.classList.add(isOn === null ? 'dc-coil-unknown' : isOn ? 'dc-coil-on' : 'dc-coil-off');
 
             // 更新状态文本
             var stEl = card.querySelector('.dc-coil-st');
             if (stEl) {
-                stEl.textContent = isOn ? onText : offText;
+                stEl.textContent = isOn === null ? '--' : isOn ? onText : offText;
             }
 
             return true;
@@ -297,12 +334,13 @@
                     var devIdx = parsedInfo.devIdx;
                     if (devIdx >= 0) {
                         // SSE 收到数据说明设备在线，自动恢复离线状态
-                        if (self._dcDeviceOnline && self._dcDeviceOnline[devIdx] === false) {
+                        var sampleValid = this._dcMonitorValue(item) !== '--';
+                        if (sampleValid && self._dcDeviceOnline && self._dcDeviceOnline[devIdx] !== true) {
                             self._dcUpdatePanelOnlineState(devIdx, true);
                         }
                         var deviceType = parsedInfo.type;
                         if (deviceType === 'relay') {
-                            if (this._updateCoilUIFromSSE(devIdx, parsedInfo.channel, value)) {
+                            if (this._updateCoilUIFromSSE(devIdx, parsedInfo.channel, sampleValid ? value : null)) {
                                 matched = true;
                                 continue;
                             }
@@ -340,17 +378,10 @@
                         var mapping = mappings[mi];
                         if (mapping && mapping.sensorId === sensorId) {
                             matched = true;
-                            if (!task.cachedData) {
-                                task.cachedData = { values: [] };
-                            } else if (!Array.isArray(task.cachedData.values)) {
-                                task.cachedData.values = [];
-                            }
-
-                            var valueNum = Number(value);
-                            var scaleFactor = Number(mapping.scaleFactor || 1);
-                            if (isFinite(valueNum) && scaleFactor) {
-                                task.cachedData.values[mapping.regOffset] = valueNum / scaleFactor;
-                            }
+                            // SSE values are already decoded/scaled. Keep them separate
+                            // from raw register words (especially signed/float32 mappings).
+                            task._dcMappedValues = task._dcMappedValues || {};
+                            task._dcMappedValues[sensorId] = item;
                             break;
                         }
                     }
@@ -361,7 +392,7 @@
 
                 var valueEl = document.querySelector('.dc-monitor-card[data-id="' + sensorId + '"] .dc-monitor-value');
                 if (valueEl) {
-                    valueEl.textContent = value === undefined || value === null || value === '' ? '--' : String(value);
+                    this._dcUpdateMonitorCard(valueEl.closest('.dc-monitor-card'), item);
                     hasMonitorUpdate = true;
                     matched = true;
                 }

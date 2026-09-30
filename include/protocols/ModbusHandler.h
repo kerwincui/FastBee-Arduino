@@ -3,12 +3,15 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include "protocols/ModbusUartHardwareSnapshot.h"
 #include <functional>
 #include <freertos/semphr.h>
 #include "utils/FileUtils.h"
 #include <core/SystemConstants.h>
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include "protocols/MotorProtocol.h"
+#include "protocols/ModbusReadDiagnostics.h"
 
 // Modbus异常码
 enum ModbusException : uint8_t {
@@ -144,6 +147,7 @@ struct ModbusSubDevice {
     uint8_t  pidDecimals;       // PID 小数位
     // Motor 扩展（电机控制器：步进/伺服通用）
     uint16_t motorRegs[5];      // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
+    MotorProtocol motorProtocol;
     uint8_t  motorDecimals;     // 电机参数小数位(速度/脉冲缩放)
     int32_t  motorMinPosition;  // 软限位最小位置（步数）
     int32_t  motorMaxPosition;  // 软限位最大位置（步数，> min 时启用）
@@ -236,6 +240,9 @@ public:
     // 运行时处理
     void handle();
     String getStatus() const;
+    void appendUartHardwareSnapshot(JsonObject out) const {
+        FastBee::appendModbusUartHardwareSnapshot(out, modbusSerial, config.rxPin, config.txPin);
+    }
     bool isRunning() const { return isInitialized; }
     
     // 数据操作
@@ -314,7 +321,8 @@ public:
                                     bool isControl = false,
                                     uint16_t timeoutOverride = 0,
                                     uint8_t retriesOverride = 0xFF,
-                                    String* rawResponseHex = nullptr);
+                                    String* rawResponseHex = nullptr,
+                                    ModbusReadDiagnostics* diagnostics = nullptr);
     
     // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
     // emitCallback: 是否触发 dataCallback 回调（默认 true 保持向后兼容）
@@ -381,7 +389,8 @@ public:
                                     bool isControl = false, uint16_t timeoutOverride = 0,
                                     uint8_t retriesOverride = 0xFF);
     OneShotResult writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                              uint16_t quantity, const uint16_t* values, bool isControl = false);
+                                           uint16_t quantity, const uint16_t* values, bool isControl = false,
+                                           uint16_t timeoutOverride = 0, uint8_t retriesOverride = 255);
 
     // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）。
     // 兼容接口仅返回 OneShotResult 可容纳的响应前缀；平台透传应使用
@@ -405,8 +414,9 @@ public:
                                      uint8_t retriesOverride = 0xFF);
 
     // 调试帧信息（最近一次 OneShot 操作的 TX/RX hex 字符串）
-    const String& getLastTxHex() const { return _lastTxHex; }
-    const String& getLastRxHex() const { return _lastRxHex; }
+    // Nonblocking snapshot: writers own the bus semaphore while mutating both
+    // Strings. Never expose a reference that another transaction can reallocate.
+    bool getDebugSnapshot(String& tx, String& rx);
 
     // 线圈延时任务管理（到期后自动将线圈写为目标值，支持 NC 模式反转）
     bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue = false);
@@ -476,14 +486,16 @@ private:
                                                uint8_t& exceptionCode,
                                                uint16_t timeoutOverride = 0,
                                                uint8_t retriesOverride = 0xFF,
-                                               bool bypassSlaveBackoff = false);
+                                               bool bypassSlaveBackoff = false,
+                                               ModbusReadDiagnostics* diagnostics = nullptr);
     OneShotError _sendOneShotRequestRaw(const uint8_t* request, size_t reqLen,
                                          uint8_t expectedSlaveAddr,
                                          uint8_t* rawResp, size_t rawCap, size_t& rawLen,
                                          uint8_t& exceptionCode,
                                          uint16_t timeoutOverride = 0,
                                          uint8_t retriesOverride = 0xFF,
-                                         bool bypassSlaveBackoff = false);
+                                         bool bypassSlaveBackoff = false,
+                                         ModbusReadDiagnostics* diagnostics = nullptr);
 
     // 合并读专用：范围读并解析到寄存器值缓冲（qty ≤ MODBUS_MAX_REGISTERS_PER_READ）
     OneShotError _readRangeInto(uint8_t slaveAddress, uint8_t functionCode,

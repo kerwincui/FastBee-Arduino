@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { minifyJS } = require('./scripts/minify-js');
+const { minify_sync } = require('terser');
 
 async function probe(minified) {
   const requests = [];
@@ -26,7 +27,11 @@ async function probe(minified) {
           try {
             const file = path.join('web-src/modules/runtime', script.dataset.module + '.js');
             const source = fs.readFileSync(file, 'utf8');
-            vm.runInContext(minified ? minifyJS(source) : source, context, { filename: file });
+            const code = minified === 'terser' ? minify_sync(source, {
+              compress: { passes: 3 }, mangle: true,
+              format: script.dataset.module === 'screen-panel-model' ? { quote_style: 1 } : {}
+            }).code : minified ? minifyJS(source) : source;
+            vm.runInContext(code, context, { filename: file });
             script.onload();
           } catch (error) { throw error; }
         });
@@ -35,6 +40,7 @@ async function probe(minified) {
   };
   sandbox.window = sandbox;
   context = vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync('web-src/js/utils.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('web-src/js/module-loader.js', 'utf8'), context);
   sandbox.AppState.registerModule = (name, methods) => sandbox.ModuleLoader.registerModule(name, methods);
   const beforeNavigation = [...requests];
@@ -111,7 +117,7 @@ async function probe(minified) {
   const executeCard = editor._spCurrentCard();
   const interactionConfig = helpers.normalizeConfig({ settings: { brightnessPercent: 0, touchBeepEnabled: false, controlConfirmIdleSeconds: 15 } });
   const systemPage = helpers.buildPageTemplate('system', interactionConfig, [], { width: 480, height: 480 }, 0, 'system');
-  interactionConfig.pages = [systemPage]; interactionConfig.settings.homePageId = 'system';
+  interactionConfig.pages = [systemPage]; interactionConfig.settings.homePageId = 'system'; interactionConfig.settings.bottomNavPageIds = ['system'];
   const systemWire = helpers.sanitizeConfig(interactionConfig, []);
   const systemValidation = editor._spValidateConfig(interactionConfig);
   const invalidIntervals = [0,14,601,30.5].map(seconds => {
@@ -119,7 +125,14 @@ async function probe(minified) {
     return editor._spValidateConfig(test).errors.some(message => message.includes('15 到 600'));
   });
   const motorConfirmation = helpers.sanitizeConfig({ pages: [{ id: 'motor', cards: [{ id:'m', kind:'control', visualType:'motor', requireConfirmation:false }] }] }).pages[0].cards[0].requireConfirmation;
+  const motorCard = {motorSpeed: 500, motorPulse: 1600};
+  const motorPreviews = {
+    stopped: app._spMotorPreview(motorCard, {value:'stop', motorCommandKnown:true, motorCommandSuccess:true, motorKnown:false}, 1),
+    failed: app._spMotorPreview(motorCard, {value:'reverse', motorCommandKnown:true, motorCommandSuccess:false, error:'Command result unconfirmed', motorKnown:true, motorSpeed:250, motorPulse:800, motorSoftLimitEnabled:true}, 1),
+    zeroPulse: app._spMotorPreview(motorCard, {motorKnown:true, motorSpeed:250, motorPulse:0}, 1)
+  };
   return { requests, beforeNavigation, inputUnchanged: JSON.stringify(input) === original,
+    motorPreviews,
     interaction: { defaults: helpers.defaultConfig().settings, systemWire, systemValidation, invalidIntervals, motorConfirmation },
     templates: { executePage, weatherPage, controlPage, pendingLayout,
       inputUnchanged: JSON.stringify(draft) === originalDraft,
@@ -132,7 +145,7 @@ async function probe(minified) {
     editorRegistered: sandbox.ModuleLoader.isLoaded('screen-panel') };
 }
 (async () => {
-  process.stdout.write(JSON.stringify({ source: await probe(false), minified: await probe(true) }));
+  process.stdout.write(JSON.stringify({ source: await probe(false), minified: await probe(true), terser: await probe('terser') }));
 })().catch(error => { console.error(error); process.exit(1); });
 """
 
@@ -141,9 +154,11 @@ class ScreenPanelWebRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         result = subprocess.run(
-            ["node", "-e", NODE_PROBE], cwd=ROOT, check=True,
-            capture_output=True, text=True, encoding="utf-8", timeout=15,
+            ["node", "-e", NODE_PROBE], cwd=ROOT, check=False,
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
         cls.results = json.loads(result.stdout)
 
     def test_touch_settings_and_system_templates_roundtrip_without_enabling_restart(self):
@@ -229,6 +244,20 @@ class ScreenPanelWebRuntimeTests(unittest.TestCase):
                 self.assertFalse(any(card["kind"] == "weather" for card in templates["weatherPage"]["cards"]))
                 self.assertTrue(all(card["controlRef"] == "" for card in templates["controlPage"]["cards"]))
                 self.assertEqual([], templates["pendingLayout"]["errors"])
+
+    def test_motor_preview_separates_acknowledgement_from_motion_and_draft_from_readback(self):
+        for build, result in self.results.items():
+            with self.subTest(build=build):
+                previews = result['motorPreviews']
+                self.assertIn('已应答，运行状态未确认', previews['stopped'])
+                self.assertIn('读回 --', previews['stopped'])
+                self.assertNotIn('已停止', previews['stopped'])
+                self.assertIn('指令未确认', previews['failed'])
+                self.assertIn('读回 25.0', previews['failed'])
+                self.assertIn('读回 800', previews['failed'])
+                self.assertIn('50.0', previews['failed'])
+                self.assertIn('1600', previews['failed'])
+                self.assertIn('读回 0', previews['zeroPulse'])
 
     def test_add_page_preserves_existing_pages_and_uses_device_limits_not_three_pages(self):
         for build, result in self.results.items():

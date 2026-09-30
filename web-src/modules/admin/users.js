@@ -26,6 +26,9 @@
             [password, confirmPassword].forEach((input) => {
                 if (!input) return;
                 input.required = !isEditMode;
+                input.minLength = this._userPasswordPolicy?.minLength || 6;
+                input.maxLength = this._userPasswordPolicy?.maxLength || 64;
+                input.title = '密码长度 ' + input.minLength + '–' + input.maxLength + ' 位' + (this._userPasswordPolicy?.requireStrong ? '，需包含大小写字母和数字' : '');
             });
             if (password) password.placeholder = isEditMode ? '留空则不修改密码' : '请输入密码';
             if (confirmPassword) {
@@ -63,6 +66,7 @@
             if (this._userModalBound || !document.getElementById('add-user-modal')) return;
             // 关闭用户添加/编辑 modal 时重置状态
             const closeUserModal = () => {
+                this._userEditorSeq = (this._userEditorSeq || 0) + 1;
                 const modal = document.getElementById('add-user-modal');
                 if (modal) {
                     AppState.hideModal(modal);
@@ -108,7 +112,10 @@
                 .then(res => {
                     if (!res || !res.success) throw new Error(res && (res.error || res.message) || 'load failed');
                     const users = (res.data && res.data.users) ? res.data.users : [];
+                    this._userPasswordPolicy = res.data?.passwordPolicy || null;
                     this._renderUsers(users);
+                    const modal = document.getElementById('add-user-modal');
+                    if (modal) this._configureUserPasswordFields(modal.dataset.editMode === 'edit');
                 })
                 .catch((err) => {
                     if (typeof window.isPageAbortError === 'function' && window.isPageAbortError(err)) return;
@@ -210,7 +217,9 @@
 
         // ============ 添加用户 ============
         async showAddUserModal() {
+            const seq = this._userEditorSeq = (this._userEditorSeq || 0) + 1;
             const modal = await this._ensureModalForAction('add-user-modal');
+            if (seq !== this._userEditorSeq || this.currentPage !== 'users') return;
             if (modal) {
                 // 先重置为添加模式，再显示弹窗
                 modal.dataset.editMode = 'add';
@@ -241,7 +250,11 @@
         },
 
         addUser() {
+            if (this._userSavePending) return;
             const modal = document.getElementById('add-user-modal');
+            if (!modal || !modal.isConnected) return;
+            const seq = this._userEditorSeq;
+            const active = () => seq === this._userEditorSeq && this.currentPage === 'users' && document.getElementById('add-user-modal') === modal;
             const isEditMode = modal && modal.dataset.editMode === 'edit';
             const editUsername = modal ? modal.dataset.editUsername : '';
 
@@ -266,12 +279,15 @@
             if (!isEditMode && (!password || !confirmPwd)) return showErr('请输入密码！');
             if (password || confirmPwd) {
                 if (password !== confirmPwd) return showErr('密码与确认密码不一致！');
-                if (password.length < 6) return showErr('密码长度至少6位！');
+                const policy = this._userPasswordPolicy || { minLength: 6, maxLength: 64 };
+                if (password.length < policy.minLength || password.length > policy.maxLength) return showErr('密码长度应为 ' + policy.minLength + '–' + policy.maxLength + ' 位');
+                if (policy.requireStrong && !(/[a-z]/.test(password) && /[A-Z]/.test(password) && /[0-9]/.test(password))) return showErr('密码需包含大小写字母和数字');
             }
             
             AppState.clearInlineError('add-user-error');
 
             const btn = document.getElementById('confirm-add-user-btn');
+            this._userSavePending = true;
             if (btn) { btn.disabled = true; btn.textContent = isEditMode ? '保存中...' : '添加中...'; }
 
             // 根据模式选择 API
@@ -292,6 +308,8 @@
 
             return apiCall
                 .then(res => {
+                    if (res && res.success && typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/users');
+                    if (!active()) return;
                     if (res && res.success) {
                         Notification.success(`${username} ${isEditMode ? '修改' : '创建'}成功`, isEditMode ? '编辑用户' : '添加成功');
                         // 关闭 modal 并重置状态
@@ -309,15 +327,16 @@
                         showErr((res && res.error) || (isEditMode ? '修改用户失败' : '添加用户失败，用户名可能已存在'));
                     }
                 })
-                .catch((err) => this._notifyUserActionError(
+                .catch((err) => active() && this._notifyUserActionError(
                     err,
                     isEditMode ? '修改用户失败' : '添加用户失败',
                     '用户管理'
                 ))
                 .finally(() => {
+                    this._userSavePending = false;
                     if (btn && btn.isConnected) {
                         btn.disabled = false;
-                        btn.textContent = isEditMode ? '保存修改' : '确认添加';
+                        btn.textContent = modal.dataset.editMode === 'edit' ? '保存修改' : '确认添加';
                     }
                 });
         },
@@ -326,7 +345,9 @@
         async showEditUserModal(user) {
 
             // 复用添加用户的 modal
+            const seq = this._userEditorSeq = (this._userEditorSeq || 0) + 1;
             const modal = await this._ensureModalForAction('add-user-modal');
+            if (seq !== this._userEditorSeq || this.currentPage !== 'users') return;
             if (!modal) {
                 console.error('[showEditUserModal] Modal not found!');
                 Notification.info(`编辑用户: ${user.username}`, '编辑用户');

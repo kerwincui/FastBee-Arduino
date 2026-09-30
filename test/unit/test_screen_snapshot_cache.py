@@ -38,10 +38,14 @@ class ScreenSnapshotCacheTests(unittest.TestCase):
         dependencies = (ROOT / 'include/core/PeriphExecManager.h').read_text(encoding='utf-8')
         observation_types = dependencies[dependencies.index('enum class ObservationQuality'):dependencies.index('// 前向声明')]
         (temporary / 'snapshot_observation_types.inc').write_text(observation_types, encoding='utf-8')
+        motor = (ROOT / 'include/core/MotorControlService.h').read_text(encoding='utf-8')
+        (temporary / 'snapshot_motor_types.inc').write_text(
+            definition(motor, 'struct MotorControlState') + ';', encoding='utf-8')
         helpers = [
             definition(manager, 'std::vector<ObservationSnapshot> panelObservationSnapshots('),
             definition(manager, 'class PanelLock') + ';',
             definition(manager, 'template <size_t N>\nvoid copyText'),
+            'template <size_t N>\n' + definition(manager, 'void copyText(std::array<char, N>&'),
             definition(manager, 'template <typename Snapshot>\nbool fillPanelSystemSource'),
             definition(manager, 'const char* panelAsyncExecErrorName('),
             definition(manager, 'bool panelAsyncExecStatusIsTerminal('),
@@ -103,6 +107,9 @@ class ScreenSnapshotCacheTests(unittest.TestCase):
     def test_only_visible_unfinished_operations_copy_recent_results(self):
         self.scenario('operations')
 
+    def test_motor_command_and_parameter_results_survive_cached_refresh(self):
+        self.scenario('motor')
+
     def test_config_revision_output_rebind_and_invalidate_rebuild_safely(self):
         self.scenario('revision')
 
@@ -139,7 +146,7 @@ int main() { UNITY_BEGIN(); test_screen_panel_manager_group(); return UNITY_END(
         result = subprocess.run([str(binary)], capture_output=True, text=True,
                                 env=self.environment, timeout=15)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn('9 Tests 0 Failures 0 Ignored', result.stdout)
+        self.assertIn('10 Tests 0 Failures 0 Ignored', result.stdout)
 
 
 if __name__ == '__main__':

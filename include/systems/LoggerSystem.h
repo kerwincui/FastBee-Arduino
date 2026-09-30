@@ -135,6 +135,7 @@ private:
     // 环形缓冲内部方法
     void logToBuffer(const char* entry, size_t len);
     void flushBufferInternal();  // Consumer only; caller must hold _logMutex.
+    static void flushTask(void* context);
     bool rotateLogFileInternal(const char* newName);  // 调用方必须持有 _logMutex
     size_t bufferedDataSize() const;
     void checkLogFileSize();     // 检查文件大小并轮转
@@ -188,6 +189,13 @@ private:
     // cleanup at the end of a const diagnostic snapshot holding the same lock.
     mutable std::unique_ptr<LogRingBuffer> _ringBuffer;
     SemaphoreHandle_t _logMutex = nullptr;
+    // Temporary PSRAM-board drain task: bit 0 owns the single slot; bit 1
+    // prevents new submissions during destruction. No permanent task stack.
+    static constexpr uint32_t LOG_FLUSH_TASK_ACTIVE = 1;
+    static constexpr uint32_t LOG_FLUSH_TASK_STOPPING = 2;
+    static constexpr uint32_t LOG_FLUSH_TASK_STACK_BYTES = 4096;
+    std::atomic<uint32_t> _flushTaskState{0};
+    uint32_t _flushTaskGeneration = 0;  // Protected by _logMutex.
 
     // ── 诊断用最近日志环形（静态内存，不 flush 到磁盘）──────────────────────
     // 保留最近 RECENT_LOG_LINES 行（每行截断至 RECENT_LOG_LINE_LEN），

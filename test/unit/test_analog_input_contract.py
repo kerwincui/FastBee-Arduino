@@ -61,6 +61,7 @@ class AnalogInputContractTests(unittest.TestCase):
         required_ids = (
             "adc-signal-mode",
             "adc-conversion-enabled",
+            "adc-calibrated-voltage",
             "adc-clamp-enabled",
             "adc-input-min",
             "adc-input-max",
@@ -81,6 +82,7 @@ class AnalogInputContractTests(unittest.TestCase):
         for field in (
             "signalMode",
             "conversionEnabled",
+            "calibratedVoltage",
             "clampEnabled",
             "inputMin",
             "inputMax",
@@ -185,7 +187,8 @@ class AnalogInputContractTests(unittest.TestCase):
                 (params["engineeringMin"], params["engineeringMax"]),
                 engineering_range,
             )
-            self.assertEqual(params["shuntResistance"], 165)
+            self.assertEqual(params["shuntResistance"], 150)
+            self.assertTrue(params["calibratedVoltage"])
             self.assertEqual(params["inputGain"], 1)
             self.assertEqual(params["decimalPlaces"], 1)
 

@@ -1,234 +1,165 @@
 <div id="screen-panel-page" class="page page-layout-flat">
-    <link rel="stylesheet" href="./css/screen-panel.css">
-
-    <div class="fb-card sp-shell">
-        <div class="fb-card-body sp-body">
-            <div class="config-tabs sp-top-tabs" role="tablist" aria-label="设备屏幕">
-                <button id="sp-tab-preview" class="config-tab active" type="button" role="tab"
-                    aria-selected="true" aria-controls="sp-preview" tabindex="0" data-tab="sp-preview">预览</button>
-                <button id="sp-tab-config" class="config-tab" type="button" role="tab"
-                    aria-selected="false" aria-controls="sp-config" tabindex="-1" data-tab="sp-config">配置</button>
-            </div>
-
-            <div id="sp-page-message" class="sp-page-message fb-hidden" role="alert"></div>
-
-            <section id="sp-preview" class="config-content active" role="tabpanel" aria-labelledby="sp-tab-preview">
-                <div class="sp-saved-preview">
-                    <div class="sp-preview-caption"><span id="sp-preview-title">屏幕预览</span><span id="sp-preview-mode">已保存配置</span></div>
-                    <div class="sp-preview-toolbar">
-                    <div id="sp-preview-notice" class="sp-muted" role="status"></div>
-                        <div class="sp-preview-toolbar-actions">
-                            <label class="sp-inline-field" for="sp-preview-source">内容</label>
-                            <select id="sp-preview-source" class="u-select-auto">
-                                <option value="saved">已保存配置</option>
-                                <option value="draft">当前草稿</option>
-                            </select>
-                            <button id="sp-preview-refresh-btn" type="button" class="fb-btn fb-btn-sm">刷新数据</button>
-                        </div>
-                    </div>
-                    <div class="sp-preview-stage">
-                        <div id="sp-preview-frame" class="sp-device-frame" aria-label="已保存设备画面预览">
-                            <div id="sp-preview-canvas" class="sp-render-surface" tabindex="0"></div>
-                        </div>
-                    </div>
-                    <div id="sp-preview-pagination" class="sp-pagination" aria-label="预览页面"></div>
-                    <div id="sp-preview-state-summary" class="sp-preview-state-summary" aria-live="polite"></div>
-                </div>
-                <button type="button" class="fb-btn" id="sp-edit-current">编辑此页</button>
-
-            </section>
-
-            <section id="sp-config" class="config-content" role="tabpanel" aria-labelledby="sp-tab-config" hidden>
-                <section class="sp-config-section" aria-label="页面与内容">
-                    <h3>页面与内容</h3>
-                    <div id="sp-content-list"></div>
-                <div class="sp-page-bar">
-                    <div class="sp-page-selector">
-                        <div id="sp-page-tabs" class="sp-page-tabs" role="tablist" aria-label="屏幕页面"></div>
-                    </div>
-                    <div class="sp-page-actions">
-                        <button id="sp-generate-three-screen" type="button" class="fb-btn fb-btn-sm">生成起始界面</button>
-                        <select id="sp-page-preset" aria-label="新增页面模板">
-                            <option value="blank">空白页面</option>
-                            <option value="weather">天气与时间</option>
-                            <option value="data">采集数据</option>
-                            <option value="motor">电机控制</option><option value="system">系统设置</option><option value="trend">温湿度趋势</option><option value="control">已绑定控制</option>
-                            <option value="execute">执行一次</option>
-                        </select>
-                        <button id="sp-page-add" type="button" class="fb-btn fb-btn-sm fb-btn-primary">添加页面</button>
-                        <button id="sp-page-rename" type="button" class="fb-btn fb-btn-sm">重命名</button>
-                        <button id="sp-page-up" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="页面前移" aria-label="页面前移">↑</button>
-                        <button id="sp-page-down" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="页面后移" aria-label="页面后移">↓</button>
-                        <button id="sp-page-home" type="button" class="fb-btn fb-btn-sm">设为首页</button>
-                        <button id="sp-page-delete" type="button" class="fb-btn fb-btn-sm fb-text-danger">删除</button>
-                    </div>
-                </div>
-
-                <p id="sp-page-limit" class="sp-help" role="status"></p>
-                <details id="sp-layout-editor"><summary>调整布局与更多设置</summary><div class="sp-editor-layout">
-                    <aside class="sp-toolbox" aria-label="组件库">
-                        <div class="sp-toolbox-section">
-                            <h3>布局</h3>
-                            <label class="sp-field-stack" for="sp-layout-template">模板
-                                <select id="sp-layout-template">
-                                    <option value="mixed-grid">混合卡片</option>
-                                    <option value="info-home">信息首页</option>
-                                    <option value="tile-grid">大小磁贴</option>
-                                    <option value="data-detail">信息详情</option>
-                                </select>
-                            </label>
-                            <div class="sp-segmented" role="group" aria-label="排版方式">
-                                <button type="button" data-sp-layout-mode="template" class="is-active">模板排版</button>
-                                <button type="button" data-sp-layout-mode="canvas">自由拖拽</button>
-                            </div>
-                            <button id="sp-apply-template" type="button" class="fb-btn fb-w-full">重新排版</button>
-                        </div>
-
-                        <div class="sp-toolbox-section">
-                            <h3>显示内容</h3>
-                            <div class="sp-component-library">
-                                <button type="button" data-sp-add="data" data-icon="123">数值</button>
-                                <button type="button" data-sp-add="status" data-icon="●">状态</button>
-                                <button type="button" data-sp-add="gauge" data-icon="◔">仪表</button>
-                                <button type="button" data-sp-add="bar" data-icon="▂▅▇">柱状</button>
-                                <button type="button" data-sp-add="line" data-icon="╱╲">10点折线</button>
-                                <button type="button" data-sp-add="clock" data-icon="12:30">时钟</button>
-                                <button type="button" data-sp-add="weather" data-icon="☀">天气</button>
-                                <button type="button" data-sp-add="page-link" data-icon="→">页面入口</button>
-                            </div>
-                        </div>
-
-                        <div class="sp-toolbox-section">
-                            <h3>控制</h3>
-                            <div class="sp-component-library">
-                                <button type="button" data-sp-add="motor" data-icon="↻">电机控制</button>
-                                <button type="button" data-sp-add="control" data-icon="○">开关 / 场景</button>
-                                <button type="button" data-sp-add="execute" data-icon="▶">执行一次</button>
-                                <button type="button" data-sp-add="brightness" data-icon="☼">设置亮度</button>
-                                <button type="button" data-sp-add="sleep-time" data-icon="◷">自动息屏</button>
-                                <button type="button" data-sp-add="sleep" data-icon="◐">立即息屏</button>
-                                <button type="button" data-sp-add="buzzer" data-icon="♪">提示音</button>
-                                <button type="button" data-sp-add="restart" data-icon="↻">重启设备</button>
-                            </div>
-                        </div>
-                    </aside>
-
-                    <main class="sp-canvas-column">
-                        <div class="sp-canvas-toolbar">
-                                <span id="sp-canvas-size">参考尺寸 480 × 480</span>
-                                <button id="sp-undo" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="撤销" aria-label="撤销" disabled>↶</button>
-                                <button id="sp-redo" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="恢复" aria-label="恢复" disabled>↷</button>
-                        </div>
-                        <div id="sp-editor-frame" class="sp-editor-frame">
-                            <div id="sp-editor-canvas" class="sp-render-surface sp-editor-canvas" tabindex="0"
-                                aria-label="设备屏幕布局画布"></div>
-                        </div>
-                        <div id="sp-layout-error" class="sp-layout-error fb-hidden" role="alert"></div>
-                        <div id="sp-mobile-card-list" class="sp-mobile-card-list"></div>
-                    </main>
-
-                    <aside id="sp-inspector" class="sp-inspector" aria-label="组件属性">
-                    </aside>
-                </div>
-
-                </details>
-                </section>
-                <div id="sp-config-locked" class="u-hint-bar u-hint-bar-warning fb-hidden" role="status"></div>
-
-                <section class="sp-config-section sp-runtime-section" aria-labelledby="sp-runtime-heading">
-                    <div class="sp-config-section-heading">
-                        <div>
-                            <h3 id="sp-runtime-heading">运行状态</h3>
-                            <div class="sp-status-line">
-                                <span id="sp-runtime-badge" class="status-badge status-badge-neutral" role="status" aria-live="polite">正在读取状态</span>
-                                <span id="sp-apply-summary" class="sp-header-summary">屏幕配置尚未加载</span>
-                            </div>
-                        </div>
-                        <button id="sp-refresh-btn" type="button" class="fb-btn fb-btn-refresh">刷新</button>
-                    </div>
-                </section>
-
-                <section class="sp-config-section" aria-labelledby="sp-weather-heading">
-                    <div class="sp-config-section-heading"><h3 id="sp-weather-heading">心知天气</h3>
-                        <label class="sp-checkbox"><input id="sp-weather-enabled" type="checkbox">启用</label></div>
-                    <div id="sp-weather-fields" class="sp-config-toolbar-fields">
-                        <label>API Key<input id="sp-weather-key" type="password" maxlength="256" autocomplete="new-password" placeholder="输入心知天气 API Key"></label>
-                        <label>城市<input id="sp-weather-location" type="text" maxlength="80" placeholder="例如 beijing"></label>
-                        <label>自动更新<select id="sp-weather-interval"><option value="900">15 分钟</option><option value="1800">30 分钟</option><option value="3600">60 分钟</option></select></label>
-                    </div>
-                    <label id="sp-weather-migration" class="sp-field-stack fb-hidden">选择保留的天气来源<select id="sp-weather-legacy"></select></label>
-                    <div class="sp-source-actions"><span id="sp-weather-status" role="status">正在读取天气配置</span><button id="sp-weather-refresh" type="button" class="fb-btn fb-btn-sm">更新天气</button></div>
-                </section>
-
-                <section class="sp-config-section" aria-labelledby="sp-display-heading">
-                    <div class="sp-config-section-heading">
-                        <div><h3 id="sp-display-heading">显示与外观</h3></div>
-                        <button type="button" class="fb-btn fb-btn-sm" data-sp-nav="peripheral">显示外设</button>
-                    </div>
-                    <div class="sp-config-toolbar-fields">
-                        <label>显示设备<select id="sp-display-ref"></select></label>
-                        <label>主题<select id="sp-theme-id"><option value="dark">深色</option><option value="light">浅色</option><option value="high-contrast">高对比度</option></select></label>
-                        <label>背景<select id="sp-background-id"><option value="solid">纯色</option><option value="gradient">轻渐变</option><option value="geometry">几何线条</option></select></label>
-                    </div>
-                </section>
-
-                <section class="sp-config-section" aria-labelledby="sp-behavior-heading">
-                    <div class="sp-config-section-heading"><h3 id="sp-behavior-heading">触摸与息屏</h3></div>
-                    <div class="sp-screen-settings-grid">
-                        <label>默认亮度<input id="sp-brightness" type="range" min="0" max="100" value="70"><output id="sp-brightness-output">70%</output><small class="sp-muted">最低档保留 10% 背光</small></label>
-                        <label>自动息屏<select id="sp-idle-sleep"><option value="0">永不</option><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select></label>
-                        <label class="sp-checkbox"><input id="sp-touch-beep" type="checkbox" checked>触摸提示音</label>
-                        <label>闲置后重新确认<input id="sp-confirm-idle" type="number" min="15" max="600" step="1" value="60"><small class="sp-muted">15–600 秒；电机首次确认，停止免确认</small></label>
-                    </div>
-                    <p class="sp-muted">触摸任意位置唤醒，首次触摸不触发动作。</p>
-                </section>
-
-                <section class="sp-config-section" aria-labelledby="sp-permission-heading">
-                    <div class="sp-config-section-heading">
-                        <div><h3 id="sp-permission-heading">屏幕操作</h3></div>
-                        <button type="button" class="fb-btn fb-btn-sm" data-sp-nav="features">功能配置</button>
-                    </div>
-                    <label class="sp-checkbox"><input id="sp-allow-restart" type="checkbox">允许添加重启按钮（需二次确认）</label>
-                    <div id="sp-system-capabilities" class="sp-capability-list" aria-live="polite"></div>
-                </section>
-
-                <section class="sp-config-section sp-history-settings" aria-labelledby="sp-history-heading">
-                    <div class="sp-config-section-heading"><h3 id="sp-history-heading">最近记录</h3></div>
-                    <div class="sp-history-settings-grid">
-                        <label class="sp-checkbox"><input id="sp-history-enabled" type="checkbox">启用数值历史</label>
-                        <label class="sp-field-stack" for="sp-history-sources">记录来源
-                            <select id="sp-history-sources" multiple size="4" aria-describedby="sp-history-status"></select>
-                        </label>
-                        <div class="sp-history-actions">
-                            <span id="sp-history-status" class="sp-muted" role="status"></span>
-                            <button id="sp-history-save" type="button" class="fb-btn fb-btn-sm fb-btn-primary">保存记录设置</button>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="sp-config-section sp-source-links" aria-labelledby="sp-source-heading">
-                    <div class="sp-config-section-heading"><h3 id="sp-source-heading">数据与控制来源</h3></div>
-                    <div class="sp-source-actions">
-                        <button type="button" class="fb-btn" data-sp-nav="periph-exec">采集与执行规则</button>
-                        
-                    </div>
-                </section>
-            </section>
-                <div class="sp-save-bar">
-                    <div>
-                        <strong id="sp-dirty-state">已保存</strong>
-                        <span id="sp-validation-summary" class="sp-muted"></span>
-                    </div>
-                    <div class="sp-save-actions">
-                        <input id="sp-import-file" type="file" accept="application/json,.json" hidden>
-                        <button id="sp-import-config" type="button" class="fb-btn">导入</button>
-                        <button id="sp-export-config" type="button" class="fb-btn">导出</button>
-                        <button id="sp-reset-draft" type="button" class="fb-btn">撤销修改</button>
-                        <button id="sp-save-config" type="button" class="fb-btn fb-btn-primary">保存并应用</button>
-                    </div>
-                </div>
-
-
-        </div>
-    </div>
+<link rel="stylesheet" href="./css/screen-panel.css">
+<div class="sp-shell">
+<div class="sp-body">
+<div id="sp-page-message" class="sp-page-message fb-hidden" role="alert"></div>
+<section id="sp-config" class="config-content active" aria-label="屏幕编辑工作区">
+<div id="sp-draft-recovery" class="sp-page-message fb-hidden">发现布局草稿 <button id="sp-draft-restore" type="button" class="fb-btn fb-btn-sm">恢复</button> <button id="sp-draft-discard" type="button" class="fb-btn fb-btn-sm">丢弃</button></div>
+<header class="sp-editor-heading">
+<div class="sp-heading-main"><strong id="sp-editor-title">设备屏幕</strong><span id="sp-runtime-badge" class="status-badge status-badge-neutral" role="status" aria-live="polite">正在读取状态</span><span id="sp-apply-summary" class="sp-header-summary">屏幕配置尚未加载</span><button id="sp-refresh-btn" type="button" class="fb-btn sp-icon-button" title="重新加载配置" aria-label="重新加载配置">↻</button></div>
+<div class="sp-property-tabs" role="group" aria-label="属性分类"><button id="sp-properties-toggle" type="button" class="fb-btn fb-btn-sm" aria-pressed="true">页面属性</button><button id="sp-component-properties" type="button" class="fb-btn fb-btn-sm" aria-pressed="false">组件属性</button><button id="sp-global-settings" type="button" class="fb-btn fb-btn-sm" aria-pressed="false">全局属性</button><details class="sp-more"><summary class="fb-btn sp-icon-button" title="更多" aria-label="更多">⋯</summary><div id="sp-more-actions"><button id="sp-history-settings" type="button" class="fb-btn">数据记录</button><button id="sp-weather-settings" type="button" class="fb-btn">天气配置</button><button id="sp-export-config" type="button" class="fb-btn">导出布局</button><button id="sp-import-config" type="button" class="fb-btn">导入布局</button></div></details></div>
+</header>
+<div id="sp-layout-editor" class="sp-editor-layout">
+<aside class="sp-toolbox" aria-label="页面与组件库">
+<nav class="sp-toolbox-nav" aria-label="工具分区"><button type="button" data-sp-section="sp-page-tools">页面</button><button type="button" data-sp-section="sp-layout-tools">布局</button><button type="button" data-sp-section="sp-component-tools">组件</button></nav>
+<div class="sp-toolbox-content"><div id="sp-page-tools" class="sp-page-bar"><div class="sp-section-heading"><h3>页面</h3><span id="sp-page-limit" class="sp-help" role="status"></span></div>
+<div id="sp-page-tabs" class="sp-page-tabs" role="tablist" aria-label="屏幕页面"></div>
+<div class="sp-page-add-row">
+<select id="sp-page-preset" aria-label="新增页面模板">
+<option value="blank">空白页面</option>
+<option value="weather">天气与时间</option>
+<option value="data">采集数据</option>
+<option value="motor">电机控制</option><option value="system">系统设置</option><option value="trend">温湿度趋势</option><option value="control">已绑定控制</option>
+<option value="execute">执行一次</option>
+</select>
+<button id="sp-page-add" type="button" class="fb-btn fb-btn-primary sp-icon-button" title="添加页面" aria-label="添加页面">+</button>
+</div>
+<div class="sp-page-actions" role="group" aria-label="管理当前页面">
+<button id="sp-page-rename" type="button" class="fb-btn fb-btn-sm">重命名</button>
+<button id="sp-page-home" type="button" class="fb-btn sp-icon-button" title="设为首页" aria-label="设为首页">⌂</button>
+<button id="sp-page-up" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="页面前移" aria-label="页面前移">↑</button>
+<button id="sp-page-down" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="页面后移" aria-label="页面后移">↓</button>
+<button id="sp-page-delete" type="button" class="fb-btn sp-icon-button fb-text-danger" title="删除页面" aria-label="删除页面">×</button>
+</div>
+<button id="sp-generate-three-screen" type="button" class="fb-btn fb-btn-sm">生成起始界面</button>
+</div>
+<div id="sp-layout-tools" class="sp-toolbox-section">
+<h3>布局</h3>
+<label class="sp-field-stack" for="sp-layout-template">模板
+<select id="sp-layout-template">
+<option value="mixed-grid">混合卡片</option>
+<option value="info-home">信息首页</option>
+<option value="tile-grid">大小磁贴</option>
+<option value="data-detail">信息详情</option>
+</select>
+</label>
+<div class="sp-segmented" role="group" aria-label="排版方式">
+<button type="button" data-sp-layout-mode="template" class="is-active">模板排版</button>
+<button type="button" data-sp-layout-mode="canvas">自由拖拽</button>
+</div>
+<button id="sp-apply-template" type="button" class="fb-btn fb-w-full">重新排版</button>
+</div>
+<div id="sp-component-tools" class="sp-toolbox-section">
+<h3>显示内容</h3>
+<div class="sp-component-library">
+<button type="button" draggable="true" data-sp-add="data" data-icon="123">数值</button>
+<button type="button" draggable="true" data-sp-add="status" data-icon="●">状态</button>
+<button type="button" draggable="true" data-sp-add="gauge" data-icon="◔">仪表</button>
+<button type="button" draggable="true" data-sp-add="bar" data-icon="▂▅▇">柱状</button>
+<button type="button" draggable="true" data-sp-add="line" data-icon="╱╲">10点折线</button>
+<button type="button" draggable="true" data-sp-add="clock" data-icon="◷">时钟</button>
+<button type="button" draggable="true" data-sp-add="weather" data-icon="☀">心知天气</button>
+<button type="button" draggable="true" data-sp-add="page-link" data-icon="→">页面入口</button>
+</div>
+</div>
+<div class="sp-toolbox-section">
+<h3>控制</h3>
+<div class="sp-component-library">
+<button type="button" draggable="true" data-sp-add="motor" data-icon="↻">电机控制</button>
+<button type="button" draggable="true" data-sp-add="control" data-icon="○">开关/场景</button>
+<button type="button" draggable="true" data-sp-add="execute" data-icon="▶">执行一次</button>
+<button type="button" draggable="true" data-sp-add="brightness" data-icon="☼">设置亮度</button>
+<button type="button" draggable="true" data-sp-add="sleep-time" data-icon="◷">自动息屏</button>
+<button type="button" draggable="true" data-sp-add="sleep" data-icon="◐">立即息屏</button>
+<button type="button" draggable="true" data-sp-add="buzzer" data-icon="♪">提示音</button>
+<button type="button" draggable="true" data-sp-add="touch-beep" data-icon="♪">触摸音</button>
+<button type="button" draggable="true" data-sp-add="confirm-idle" data-icon="✓">操作确认</button>
+<button type="button" draggable="true" data-sp-add="restart" data-icon="↻">重启设备</button>
+</div>
+</div>
+</div></aside>
+<main class="sp-canvas-column">
+<div class="sp-canvas-toolbar">
+<span id="sp-canvas-size">参考尺寸 480 × 480</span>
+<button id="sp-preview-refresh-btn" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="刷新数据" aria-label="刷新数据">↻</button>
+<button id="sp-undo" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="撤销" aria-label="撤销" disabled>↶</button>
+<button id="sp-redo" type="button" class="fb-btn fb-btn-sm sp-icon-button" title="恢复" aria-label="恢复" disabled>↷</button>
+</div>
+<div class="sp-canvas-stage"><div id="sp-editor-frame" class="sp-editor-frame">
+<div id="sp-editor-canvas" class="sp-render-surface sp-editor-canvas" tabindex="0"
+aria-label="设备屏幕布局画布"></div>
+</div></div>
+<div id="sp-layout-error" class="sp-layout-error fb-hidden" role="alert"></div>
+</main>
+<aside id="sp-inspector" class="sp-inspector" aria-label="属性"><button id="sp-properties-close" type="button" class="fb-btn fb-btn-sm sp-drawer-close">完成编辑</button><div id="sp-component-inspector"> </div>                <section id="sp-weather-properties" class="sp-config-section fb-hidden" aria-labelledby="sp-weather-heading">
+<div class="sp-config-section-heading"><h3 id="sp-weather-heading">心知天气</h3><small>天气组件共用此配置</small>
+<label class="sp-checkbox"><input id="sp-weather-enabled" type="checkbox">启用</label></div>
+<div id="sp-weather-fields" class="sp-config-toolbar-fields">
+<label>API Key<input id="sp-weather-key" type="password" maxlength="256" autocomplete="new-password" placeholder="输入心知天气 API Key"></label>
+<label class="sp-checkbox"><input id="sp-weather-clear-key" type="checkbox">清除 Key 并停用天气</label><label>城市<input id="sp-weather-location" type="text" maxlength="80" placeholder="例如 beijing"></label>
+<label>自动更新<select id="sp-weather-interval"><option value="900">15 分钟</option><option value="1800">30 分钟</option><option value="3600">60 分钟</option></select></label>
+</div>
+<label id="sp-weather-migration" class="sp-field-stack fb-hidden">选择保留的天气来源<select id="sp-weather-legacy"></select></label>
+<div class="sp-source-actions"><span id="sp-weather-status" role="status">正在读取天气配置</span><button id="sp-weather-refresh" type="button" class="fb-btn fb-btn-sm">更新天气</button></div>
+</section>
+<section id="sp-history-properties" class="sp-config-section sp-history-settings fb-hidden" aria-labelledby="sp-history-heading">
+<div class="sp-config-section-heading"><h3 id="sp-history-heading">最近记录</h3></div>
+<div class="sp-history-settings-grid">
+<label class="sp-checkbox"><input id="sp-history-enabled" type="checkbox">启用数值历史</label>
+<label class="sp-field-stack" for="sp-history-sources">记录来源
+<select id="sp-history-sources" multiple size="4" aria-describedby="sp-history-status"></select>
+</label>
+<div class="sp-history-actions">
+<span id="sp-history-status" class="sp-muted" role="status"></span>
+</div>
+</div>
+</section>
+<section id="sp-page-properties" class="sp-config-section"><h3>页面外观</h3><label class="sp-field-stack">主题<select id="sp-page-theme"><option value="">继承全局</option><option value="dark">深色</option><option value="light">浅色</option><option value="high-contrast">高对比度</option></select></label><label class="sp-field-stack">背景<select id="sp-page-background"><option value="">继承全局</option><option value="solid">纯色</option><option value="gradient">轻渐变</option><option value="geometry">几何线条</option></select></label><p class="sp-help">继承全局外观，独立设置仅影响本页。</p></section><div id="sp-global-properties" class="fb-hidden">                <section class="sp-config-section" aria-labelledby="sp-display-heading">
+<div class="sp-config-section-heading">
+<h3 id="sp-display-heading">显示与外观</h3>
+<button type="button" class="fb-btn fb-btn-sm" data-sp-nav="peripheral">显示外设</button>
+</div>
+<div class="sp-config-toolbar-fields">
+<label>显示设备<select id="sp-display-ref"></select></label>
+<label>主题<select id="sp-theme-id"><option value="dark">深色</option><option value="light">浅色</option><option value="high-contrast">高对比度</option></select></label>
+<label>背景<select id="sp-background-id"><option value="solid">纯色</option><option value="gradient">轻渐变</option><option value="geometry">几何线条</option></select></label>
+</div>
+</section>
+<section class="sp-config-section" aria-labelledby="sp-behavior-heading">
+<div class="sp-config-section-heading"><h3 id="sp-behavior-heading">触摸与息屏</h3></div>
+<div class="sp-screen-settings-grid">
+<label>默认亮度<input id="sp-brightness" type="range" min="0" max="100" value="70"><output id="sp-brightness-output">70%</output><small class="sp-muted">0% 保持可见；息屏关闭背光</small></label>
+<label class="sp-checkbox"><input id="sp-auto-sleep-enabled" type="checkbox" role="switch" aria-controls="sp-idle-sleep">自动息屏</label>
+<label>闲置时长<select id="sp-idle-sleep"><option value="0">关闭</option><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select></label>
+<small id="sp-sleep-capability" class="sp-muted fb-hidden" role="status"></small>
+<label class="sp-checkbox"><input id="sp-touch-beep" type="checkbox" checked>触摸提示音</label><small id="sp-beep-capability" class="sp-muted">触摸时播放短提示音</small>
+<label>闲置后重新确认<input id="sp-confirm-idle" type="number" min="15" max="600" step="1" value="60"><small class="sp-muted">15–600秒，停止免确认</small></label>
+</div>
+<p class="sp-muted">触摸任意位置唤醒，首次触摸不触发动作。</p>
+</section>
+<section class="sp-config-section" aria-labelledby="sp-permission-heading">
+<div class="sp-config-section-heading">
+<h3 id="sp-permission-heading">屏幕操作</h3>
+</div>
+<label class="sp-checkbox"><input id="sp-allow-restart" type="checkbox">允许从屏幕重启设备</label>
+<small class="sp-muted">关闭时禁用屏幕重启组件；开启后仍需在设备上二次确认。</small>
+<div id="sp-system-capabilities" class="sp-capability-list" aria-live="polite"></div>
+</section>
+<label class="sp-field-stack">底栏页面<select id="sp-bottom-nav" multiple size="5"></select><small>保留首页；超过五页显示更多。</small></label></div></aside>
+</div>
+<div id="sp-config-locked" class="u-hint-bar u-hint-bar-warning fb-hidden" role="status"></div>
+<div class="sp-save-bar">
+<div>
+<strong id="sp-dirty-state">已保存</strong>
+<span id="sp-validation-summary" class="sp-muted"></span>
+</div>
+<div class="sp-save-actions">
+<input id="sp-import-file" type="file" accept="application/json,.json" hidden>
+<button id="sp-reset-draft" type="button" class="fb-btn">撤销修改</button>
+<button id="sp-save-config" type="button" class="fb-btn fb-btn-primary">保存并应用</button>
+</div>
+</div>
+</section>
+</div>
+</div>
 </div>

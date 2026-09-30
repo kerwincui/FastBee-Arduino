@@ -16,6 +16,10 @@ enum class ScreenSystemAction : uint8_t {
 // A compiled driver is not enough: the display task and touch wake path must
 // both be operational before these actions are advertised to panel editors.
 struct ScreenSystemActionCapabilities {
+    bool displayReady = false;
+    bool touchConfigured = false;
+    bool touchReady = false;
+    char touchError[64] = {};
     bool brightness = false;
     bool sleep = false;
     bool buzzer = false;

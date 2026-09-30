@@ -88,7 +88,7 @@
             // SSE 实时更新(modbus-ops.js _handleSSESensorData)按 data-id 定位唯一卡片，去重后更新才正确。
             var seenSensorKeys = {};
             // 从 sensor 规则的 sensors[] 数组构建监测卡片
-            var sensorRules = this._filterByActionType(data.sensor, [19]);
+            var sensorRules = this._dcControlRules(data);
             for (var i = 0; i < sensorRules.length; i++) {
                 var rule = sensorRules[i];
                 if (rule.sensors && rule.sensors.length > 0) {
@@ -98,15 +98,15 @@
                         if (seenSensorKeys[cardKey]) {
                             // 同键卡片已存在：若新条目带有真实值而旧条目仍为占位 '--'，则刷新数值
                             var existingCard = seenSensorKeys[cardKey];
-                            if ((!existingCard.value || existingCard.value === '--') && s.value && s.value !== '--') {
-                                existingCard.value = s.value;
+                            if (this._dcMonitorValue(existingCard) === '--' && this._dcMonitorValue(s) !== '--') {
+                                Object.assign(existingCard, {value: s.value, valid: s.valid, valueValid: s.valueValid, quality: s.quality});
                             }
                             continue;
                         }
                         var card = {
                             id: s.key,
                             name: s.label || s.key,
-                            value: s.value || '--',
+                            value: s.value, valid: s.valid, valueValid: s.valueValid, quality: s.quality,
                             unit: s.unit || this._getMonitorUnit(s.label || '')
                         };
                         seenSensorKeys[cardKey] = card;
@@ -114,13 +114,8 @@
                     }
                 }
             }
-            // 合并 Modbus 监测规则（无 Modbus groups 时）
-            if (monitorGroups.length === 0) {
-                var modbusMonitorItems = this._filterByActionType(data.modbus, [18]);
-                for (var i = 0; i < modbusMonitorItems.length; i++) {
-                    sensorCards.push(modbusMonitorItems[i]);
-                }
-            }
+            // Execution-rule names are actions, not sampled measurements. Only
+            // cache-backed protocol mappings and sensor channels become monitor cards.
             var hasMonitor = monitorGroups.length > 0 || sensorCards.length > 0;
             if (!hasMonitor) return '';
             var html = '<div class="dc-monitor-grid" data-dc-sort-key="monitor-data">';
@@ -136,6 +131,65 @@
             return html;
         },
 
+        _dcMonitorValue: function(sample) {
+            if (!sample || sample.valid === false || sample.valueValid === false ||
+                (sample.quality && !['valid', 'good', 'ok'].includes(String(sample.quality).toLowerCase()))) return '--';
+            var value = sample.value;
+            return (typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '' ||
+                !Number.isFinite(Number(value)) ? '--' : String(value);
+        },
+
+        _dcMonitorPresentation: function(sample, id) {
+            var measured = this._dcMonitorValue(sample);
+            var valid = measured !== '--';
+            var soilHumidity = id === 'ai_soil_humidity_soil_humidity' || id === 'ai_soil_humidity';
+            return {value: !valid && soilHumidity ? '0' : measured, valid: valid,
+                placeholder: !valid && soilHumidity,
+                quality: sample.quality || (valid ? 'valid' : 'unavailable')};
+        },
+
+        _dcUpdateMonitorCard: function(card, sample) {
+            var presentation = this._dcMonitorPresentation(sample, card.dataset.id);
+            var value = card.querySelector('.dc-monitor-value');
+            if (value) value.textContent = presentation.value;
+            card.dataset.measurementValid = String(presentation.valid);
+            card.dataset.valuePlaceholder = String(presentation.placeholder);
+            card.dataset.quality = presentation.quality;
+            var status = card.querySelector('.dc-monitor-status');
+            if (status) status.hidden = !presentation.placeholder;
+        },
+
+        _dcMappedRegisterValue: function(task, mapping) {
+            var sensorId = mapping.sensorId;
+            if (task._dcMappedValues && Object.prototype.hasOwnProperty.call(task._dcMappedValues, sensorId)) {
+                return this._dcMonitorValue(task._dcMappedValues[sensorId]);
+            }
+            var cache = task.cachedData;
+            if (!cache || cache.valid === false || task.status && task.status !== 'ok' ||
+                Number(task.lastError || cache.lastError || 0) !== 0) return '--';
+            var words = cache.values, offset = Number(mapping.regOffset ?? 0), type = Number(mapping.dataType ?? 0);
+            var count = type >= 2 && type <= 4 ? 2 : 1;
+            if (!Array.isArray(words) || !Number.isInteger(offset) || offset < 0 || !Number.isInteger(type) || type < 0 || type > 4 ||
+                offset + count > words.length) return '--';
+            var raw = words[offset];
+            if (!Number.isInteger(raw) || raw < 0 || raw > 65535) return '--';
+            if (type === 1 && raw > 32767) raw -= 65536;
+            if (count === 2) {
+                var low = words[offset + 1];
+                if (!Number.isInteger(low) || low < 0 || low > 65535) return '--';
+                raw = raw * 65536 + low;
+                if (type === 3 && raw > 2147483647) raw -= 4294967296;
+                if (type === 4) {
+                    var view = new DataView(new ArrayBuffer(4));
+                    view.setUint32(0, raw); raw = view.getFloat32(0);
+                }
+            }
+            var scale = mapping.scaleFactor === undefined ? 1 : mapping.scaleFactor;
+            if (scale === null || scale === '' || !Number.isFinite(Number(scale))) return '--';
+            var value = raw * Number(scale);
+            return Number.isFinite(value) ? value.toFixed(Math.max(0, Math.min(6, Number(mapping.decimalPlaces) || 0))) : '--';
+        },
+
         _buildMonitorGroupsFromModbus: function() {
             var groups = [];
             if (!this._modbusStatus || !this._modbusStatus.tasks) return groups;
@@ -144,15 +198,12 @@
                 var task = tasks[i];
                 if (!task.enabled || !task.mappings || task.mappings.length === 0) continue;
                 var group = { label: task.name || task.label || ('设备 ' + task.slaveAddress), items: [] };
-                var cachedData = task.cachedData;
-                var hasCache = cachedData && cachedData.values;
                 for (var j = 0; j < task.mappings.length; j++) {
                     var mapping = task.mappings[j];
                     if (!mapping.sensorId) continue;
-                    var item = { id: mapping.sensorId, name: mapping.sensorId, value: '--', unit: mapping.unit || this._getMonitorUnit(mapping.sensorId) };
-                    if (hasCache && mapping.regOffset < cachedData.values.length) {
-                        item.value = (cachedData.values[mapping.regOffset] * (mapping.scaleFactor || 1)).toFixed(mapping.decimalPlaces || 0);
-                    }
+                    var item = { id: mapping.sensorId, name: mapping.sensorId,
+                        value: this._dcMappedRegisterValue(task, mapping),
+                        unit: mapping.unit || this._getMonitorUnit(mapping.sensorId) };
                     group.items.push(item);
                 }
                 if (group.items.length > 0) groups.push(group);
@@ -162,16 +213,19 @@
 
         _renderMonitorCard: function(item, deviceLabel) {
             var name = escapeHtml(item.name || 'Unknown');
-            var value = escapeHtml(item.value || item.lastValue || '--');
+            var presentation = this._dcMonitorPresentation(item, item.id);
+            var value = escapeHtml(presentation.value);
             var unit = escapeHtml(item.unit || '');
             var toneClass = this._getMonitorToneClass(item.name || '');
             var icon = this._getMonitorIcon(item.name || '');
-            var html = '<div class="dc-monitor-card" data-id="' + escapeHtml(item.id) + '">';
+            var html = '<div class="dc-monitor-card" data-id="' + escapeHtml(item.id) + '" data-measurement-valid="' + presentation.valid + '" data-value-placeholder="' + presentation.placeholder + '" data-quality="' + escapeHtml(presentation.quality) + '">';
             html += '<div class="dc-monitor-top"><span class="dc-monitor-label">' + name + '</span><span class="dc-monitor-icon ' + toneClass + '">' + icon + '</span></div>';
             if (deviceLabel) html += '<div class="dc-monitor-device">' + escapeHtml(deviceLabel) + '</div>';
             html += '<div class="dc-monitor-val-row"><span class="dc-monitor-value">' + value + '</span>';
             if (unit) html += '<span class="dc-monitor-unit">' + unit + '</span>';
-            html += '</div></div>';
+            html += '</div>';
+            html += '<div class="dc-monitor-status dc-monitor-device u-text-warning"' + (presentation.placeholder ? '' : ' hidden') + '>无有效数据（占位显示）</div>';
+            html += '</div>';
             return html;
         },
 
@@ -224,18 +278,6 @@
         // ============ 渲染控制操作区 ============
         _renderControlSection: function(data) {
             var html = '';
-            var gpioItems = this._filterByActionType(data.gpio, [0, 1, 2, 3, 4, 5, 13, 14]);
-            var modbusCtrlItems = this._filterByActionType(data.modbus, [16, 17]);
-            var systemItems = this._filterByActionType(data.system, [6, 7, 8, 9, 10, 11, 12]);
-            var scriptItems = this._filterByActionType(data.script, [15]);
-            var sensorReadItems = this._filterByActionType(data.sensor, [19]);
-            var otherItems = data.other || [];
-            gpioItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-            modbusCtrlItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-            systemItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-            scriptItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-            sensorReadItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-            otherItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             var configuredModbusDevices = this._modbusConfiguredDevices || [];
             var hasModbusDevices = this._modbusDevices && this._modbusDevices.length > 0;
             var modbusDeviceList = [];
@@ -249,8 +291,9 @@
                 }
                 modbusDeviceList.sort(function(a, b) { return (typeOrder[a.dev.deviceType || 'relay'] || 0) - (typeOrder[b.dev.deviceType || 'relay'] || 0); });
             }
-            var hasButtonControls = gpioItems.length > 0 || modbusCtrlItems.length > 0 || systemItems.length > 0 || scriptItems.length > 0 || sensorReadItems.length > 0 || otherItems.length > 0;
-            var hasAnyControls = hasButtonControls || modbusDeviceList.length > 0 || configuredModbusDevices.length > 0;
+            var executionGroups = this._dcGroupExecutionRules(data);
+            var hasAnyControls = this._dcControlRules(data).length > 0 || modbusDeviceList.length > 0 ||
+                configuredModbusDevices.length > 0 || this._buildMonitorGroupsFromModbus().length > 0;
             if (hasAnyControls) {
                 html += '<div class="fb-card dc-header-card"><div class="fb-card-header fb-card-header-actions-only dc-header-card-inner">';
                 html += '<div class="dc-header-actions">';
@@ -266,13 +309,13 @@
                 html += '<div class="dc-zoom-wrapper"><div class="dc-control-flow">';
                 html += this._renderMonitorSection(data);
                 if (configuredModbusDevices.length > 0) html += this._renderModbusDeviceInventory(configuredModbusDevices);
-                if (gpioItems.length > 0) html += this._renderGpioGroup(gpioItems);
-                if (modbusCtrlItems.length > 0) html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
-                if (scriptItems.length > 0) html += this._renderControlGroup('Script', scriptItems, 'script', false);
-                if (sensorReadItems.length > 0) html += this._renderControlGroup('Sensor', sensorReadItems, 'sensor', false);
-                if (otherItems.length > 0) html += this._renderControlGroup('Other', otherItems, 'other', false);
-                if (systemItems.length > 0) html += this._renderSystemGroup(systemItems);
-                if (modbusDeviceList.length > 0) html += this._renderModbusDevicePanels(modbusDeviceList);
+                executionGroups.forEach(function(group, key) {
+                    html += this._renderControlGroup(group.title, group.items, key);
+                }, this);
+                for (var di = 0; di < modbusDeviceList.length; di++) {
+                    var entry = modbusDeviceList[di];
+                    html += this._renderSingleModbusPanel(entry.idx, entry.dev);
+                }
                 html += '</div></div>';
             } else {
                 html += '<div class="dc-empty">暂无控制操作</div>';
@@ -386,7 +429,7 @@
 
         _renderDcRelayPanel: function(devIdx, dev) {
             var channelCount = dev.channelCount || 2;
-            var states = this._dcCoilStates[devIdx] || new Array(channelCount).fill(false);
+            var states = this._dcCoilStates[devIdx] || [];
             var ncMode = !!dev.ncMode;
             var html = '<div class="dc-modbus-device-body">';
             html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
@@ -479,7 +522,7 @@
             html += '</div></div><div class="motor-status-grid">';
             html += '<div class="motor-status-item"><span class="motor-status-label">设定速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span></div>';
             html += '<div class="motor-status-item"><span class="motor-status-label">单次脉冲</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">方向</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">最近指令</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
             html += '</div></div>';
             return html;
         },
@@ -488,11 +531,11 @@
             var sf = Math.pow(10, dev.motorDecimals || 0);
             var html = '<div class="motor-params-section">';
             html += '<div class="motor-param-row"><label>设定速度</label>';
-            html += '<input type="number" class="motor-param-input " id="dc-motor-speed-in-' + devIdx + '" value="' + (50 / sf) + '" min="0" max="' + (65535 / sf) + '" step="' + (1 / sf) + '">';
+            html += '<input type="number" class="motor-param-input " id="dc-motor-speed-in-' + devIdx + '" value="" placeholder="未读取" min="0" max="' + (65535 / sf) + '" step="' + (1 / sf) + '">';
             html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'speed', label: '设置速度' });
             html += this._renderSidTag(devIdx, '_spd', '0~65535') + '</div>';
             html += '<div class="motor-param-row"><label>脉冲</label>';
-            html += '<input type="number" class="motor-param-input " id="dc-motor-pulse-in-' + devIdx + '" value="1600" min="0" max="65535">';
+            html += '<input type="number" class="motor-param-input " id="dc-motor-pulse-in-' + devIdx + '" value="" placeholder="未读取" min="0" max="65535">';
             html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'pulse', label: '设置脉冲' });
             html += this._renderSidTag(devIdx, '_pls', '0~65535') + '</div></div>';
             return html;
@@ -567,7 +610,8 @@
             var onText = 'ON';
             var offText = 'OFF';
             for (var ch = 0; ch < channelCount; ch++) {
-                var isOn = ncMode ? !(ch < states.length ? states[ch] : false) : (ch < states.length ? states[ch] : false);
+                var known = typeof states[ch] === 'boolean';
+                var isOn = known ? (ncMode ? !states[ch] : states[ch]) : null;
                 html += this._renderDcCoilCard(devIdx, ch, isOn, onText, offText);
             }
             html += '</div>';
@@ -575,10 +619,10 @@
         },
 
         _renderDcCoilCard: function(devIdx, ch, isOn, onText, offText) {
-            return '<div class="dc-coil-card ' + (isOn ? 'dc-coil-on' : 'dc-coil-off') + '" data-dev="' + devIdx + '" data-ch="' + ch + '">' +
+            return '<div class="dc-coil-card ' + (isOn === null ? 'dc-coil-unknown' : isOn ? 'dc-coil-on' : 'dc-coil-off') + '" data-dev="' + devIdx + '" data-ch="' + ch + '">' +
                 '<div class="dc-coil-icon">' + AppState._DC_POWER_ICON_SVG + '</div>' +
                 '<div class="dc-coil-ch">CH' + ch + '</div>' +
-                '<div class="dc-coil-st">' + escapeHtml(isOn ? onText : offText) + '</div>' +
+                '<div class="dc-coil-st">' + escapeHtml(isOn === null ? '--' : isOn ? onText : offText) + '</div>' +
                 this._renderSidTag(devIdx, '_ch' + ch, '1=\u6253\u5f00, 0=\u5173\u95ed') + '</div>';
         },
 
@@ -640,24 +684,79 @@
             return '<div class="fb-loading-placeholder"><div class="fb-loading-placeholder-icon">&#9203;</div><div class="fb-loading-placeholder-detail">' + escapeHtml(message || 'Loading...') + '</div></div>';
         },
 
-        _renderControlGroup: function(titleKey, items, typeClass, isSystem) {
-            var groupTitleMap = { modbus: 'Modbus 控制', script: '脚本执行', sensor: '传感器读取', other: '其他' };
-                        var title = groupTitleMap[titleKey.toLowerCase()] || titleKey;
-            var html = '<div class="dc-control-group" data-dc-sort-key="' + typeClass + '"><div class="dc-control-group-title">' + title + '</div><div class="dc-control-grid">';
-            for (var i = 0; i < items.length; i++) html += this._renderControlButton(items[i], typeClass, isSystem);
-            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
-            return html;
+        // Keep one entry per execution rule, including disabled automatic triggers.
+        _dcControlRules: function(data) {
+            var rules = new Map();
+            ['gpio', 'modbus', 'system', 'script', 'sensor', 'other'].forEach(function(group) {
+                (Array.isArray(data && data[group]) ? data[group] : []).forEach(function(rule) {
+                    if (rule && !rules.has(rule.id)) rules.set(rule.id, Object.assign({ _dcGroup: group }, rule));
+                });
+            });
+            return Array.from(rules.values());
+        },
+
+        _dcGroupExecutionRules: function(data) {
+            var groups = new Map();
+            var titles = { gpio: 'GPIO 控制', modbus: 'Modbus 执行', system: '系统操作',
+                script: '脚本执行', sensor: '传感器采集', other: '其他外设操作' };
+            var names = new Map();
+            (this._modbusConfiguredDevices || []).forEach(function(d, i) {
+                names.set('modbus:' + (Number.isInteger(d._configIndex) ? d._configIndex : i), d.name);
+            });
+            (this._modbusStatus && this._modbusStatus.tasks || []).forEach(function(t, i) {
+                names.set('modbus-task:' + i, t.name || t.label);
+            });
+            this._dcControlRules(data).forEach(function(rule) {
+                var targets = new Map();
+                var addTarget = function(id, name) { if (id) targets.set(id, names.get(id) || name || targets.get(id) || id); };
+                (rule.targets || []).forEach(function(t) { addTarget(t.id, t.name); });
+                addTarget(rule.targetPeriphId, rule.targetPeriphName);
+                (rule.sensors || []).forEach(function(s) { addTarget(s.periphId); });
+                (rule.pollTaskIndex || []).forEach(function(index) { addTarget('modbus-task:' + index); });
+                var target = targets.size === 1 ? Array.from(targets.keys())[0] : '';
+                var sensorKeys = Array.from(new Set((rule.sensors || []).map(function(s) { return s.key; }).filter(Boolean)));
+                // A combined rule executes as a whole, never silently as a single channel.
+                var combined = targets.size > 1 || (!rule.targets && sensorKeys.length > 1);
+                rule._dcTargetText = Array.from(targets.values()).join('、');
+                // Execution templates stay in peer cards, never inside measurements
+                // or native device controls. Keep existing group keys for saved layouts.
+                var key = combined ? 'combined' : target ? 'peripheral-' + target : rule._dcGroup;
+                var title = combined ? '联合采集与联动' : target ? targets.get(target) : titles[rule._dcGroup];
+                if (!groups.has(key)) groups.set(key, { title: title, items: [] });
+                groups.get(key).items.push(rule);
+            });
+            return groups;
+        },
+
+        _renderDcRuleActions: function(items) {
+            return '<div class="dc-rule-actions">' + items.map(function(item) {
+                return this._renderControlButton(item, item._dcGroup || 'other', item.hasSystemAction || item._dcGroup === 'system');
+            }, this).join('') + '</div>';
+        },
+
+        _renderControlGroup: function(title, items, key) {
+            return '<div class="dc-control-group dc-execution-card" data-dc-sort-key="' + escapeHtml(key) + '">' +
+                '<div class="dc-control-group-title">执行一次 · ' + escapeHtml(title) + '</div>' +
+                this._renderDcRuleActions(items) + '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
         },
 
         _renderControlButton: function(item, typeClass, isSystem) {
             var dataAttrs = 'data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"';
-            if (item && item.hasSetMode) dataAttrs += ' data-has-set-mode="true"';
+            if (item.hasSetMode) dataAttrs += ' data-has-set-mode="true"';
             if (isSystem) dataAttrs += ' data-system="true"';
-            var sidTag = this._renderGenericSidTag(item.id, '');
-            if (sidTag) {
-                return '<span class="dc-action-stack"><button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>' + sidTag + '</span>';
-            }
-            return '<button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>';
+            if (item.unavailableReason) dataAttrs += ' data-unavailable="true" title="' + escapeHtml(item.unavailableReason) + '"';
+            var busy = this._dcRuleRuns && this._dcRuleRuns.has(item.id);
+            if (item.unavailableReason || busy) dataAttrs += ' disabled';
+            var details = [];
+            if (item._dcTargetText) details.push(item._dcTargetText);
+            if (item.actionCount > 1) details.push(item.actionCount + ' 个动作，执行整条规则');
+            if (item.enabled === false) details.push('自动触发已停用，可手动执行');
+            if (item.unavailableReason) details.push(item.unavailableReason);
+            return '<div class="dc-rule-row"><div class="dc-rule-info"><span class="dc-rule-name">' +
+                escapeHtml(item.name || item.id) + '</span><small>' + escapeHtml(details.join(' · ')) +
+                '</small>' + this._renderGenericSidTag(item.id, '') + '</div><button class="dc-ctrl-btn dc-' +
+                typeClass + '" ' + dataAttrs + ' aria-label="' + escapeHtml((item.name || item.id) + '：执行一次') + '">' +
+                (busy ? '提交中...' : '执行一次') + '</button></div>';
         }
     });
 })();

@@ -66,6 +66,54 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-mon
 
 ## 测试矩阵
 
+### COM15 大屏与观察器离线回归
+
+运行 npm run test:com15-recovery，集中验证本会话中的 PM/土壤数据有效性、继电器首轮读回、SSE恢复、独立执行卡片布局及观察报告。测试使用本地 fixture、模拟请求和虚拟时钟，不连接设备、不打开串口、不部署，也不启动真实长时观察。
+
+    npm run test:com15-recovery
+    npm run test:com15-recovery -- --out=artifacts/com15-recovery-local-new
+
+依赖 Node.js 20+、Python 3（需 requests）和 test/browser 已安装的 Playwright/Chromium。入口优先使用 FASTBEE_PYTHON 指定的解释器，否则依次检查用户 PlatformIO虚拟环境、python3和python；均核实 Python 3，指定解释器不可用时明确失败，不自动安装依赖。Python环境不确定时可先设置：
+
+    $env:FASTBEE_PYTHON = 'C:/Users/kerwin/.platformio/penv/Scripts/python.exe'
+
+默认在 artifacts/com15-recovery-offline 下创建独立时间戳目录。指定 --out 必须位于 artifacts 下且从未存在；失败重跑也须使用新目录。各阶段依次执行，保留完整stdout/stderr、浏览器JSON报告、测试计数及本轮输入文件SHA256；任何阶段失败、全部测试未执行、跳过用例或受测文件运行期间变化，汇总均不判PASS。报告中的PASS仅表示离线回归通过。
+
+覆盖边界：
+
+- 响应体截断/解码错误记录为 response_body；HTTP 200不能掩盖正文失败，未知响应头不猜测、不保存凭据值。
+- SSE短暂断流或JSON解析失败即使随后恢复也保留累计计数；重复快照不重复计数，heartbeat不冒充测量更新。
+- PM无响应、缺失/部分/过期数据不能用零补齐；接线恢复后的新有效窗口不能覆盖之前失败。
+- 继电器首屏等待真实读回；刷新期间明确显示待读回，收到完整四路布尔结果后恢复。离页后的迟到结果和事件失效，测试不写输出。
+- 执行一次动作保留独立卡片，传感器和Modbus控制展示保持分开；覆盖桌面/窄屏布局与重复刷新。
+- RUNNING、观察时长不足、覆盖不足均不等于PASS；土壤占位/无效质量不算有效测量，合法且有有效质量证据的0仍可有效。
+
+真实设备观察仍由 test-device-soak.py / test-device-monitor-soak.mjs 的显式设备命令执行，本入口不会调用它们的实机main。不可将离线PASS当作设备部署、物理标定、灯光反馈或八小时稳定性验收。历史 artifacts 内的运行快照和失败报告不可随工作区脚本更新而修改。
+
+### 屏幕编辑器与观察脚本回归
+
+`npm run test:screen-panel-soak` 使用 Node 内置测试框架、虚拟时钟和注入的 HTTP 响应，直接测试 `test-screen-panel-soak.mjs`。不访问设备、不读取串口，也不使用真实登录凭据；已经纳入 `test:contracts`，因此 `npm test` 会自动执行。覆盖身份不符/过期邻居、认证及续期、初始化失败、HTTP 429、触摸未就绪、内存/运行异常、重启、版本与配置变化、天气/历史过期、中断和不足时长等边界。
+
+屏幕浏览器回归在离线 mock 上验证布局、拖拽、即时尺寸、可选数据源、折线、草稿、保存冲突和移动端属性抽屉。`31-screen-panel.spec.ts` 在认证 fixture 前检查 loopback 地址，拒绝把重置/写入测试用于实机；截图使用每个测试独立的 `testInfo.outputPath()`，不再覆盖发布目录的验收图片。
+
+```powershell
+# 按仓库约定持有 firmware-build-lock；不要与其他 Host/Native/Web 构建并行。
+npm run test:screen-panel-soak
+
+# 已发布资源的离线回归；Web 根目录必须是本地已有资源，端口必须空闲。
+$env:OFFLINE_UI_SKIP_BUILD = '1'
+$env:OFFLINE_UI_HOST = '127.0.0.2'
+$env:OFFLINE_UI_PORT = '41763'
+$env:OFFLINE_UI_WEB_ROOT = (Resolve-Path 'artifacts/touch-editor-layout-r4/deployment-web').Path
+node test/browser/node_modules/@playwright/test/cli.js test -c test/browser/playwright.offline-ui.config.ts --project=offline-ui --grep 'WEB-PANEL-'
+```
+
+实机有限观察仍使用 `node scripts/test-screen-panel-soak.mjs --url=http://<device-ip> --expected-mac=<mac> --seconds=60 --interval=15 --deployment=<deployment.json> --out=<new-directory>`。这是设备检查入口，不是离线测试命令。它要求 Windows 主机上的字面 IPv4 地址：先无凭据健康检查，再核对同 IP、预期 MAC、`Reachable` 状态的邻居，认证续期也重新核对；身份未知或不符时不发送登录凭据。只允许列出的 GET 和登录/退出所需 POST，无配置写入、重启、Modbus 探测或外设动作。每次输出必须使用不存在的新目录。
+
+观察脚本自动读取部署报告旁的 `soak-observation-plan.json`，也可通过 `--plan=<path>` 指定。提供计划时严格核对目标、部署报告摘要、固件/Web 摘要和配置 revision/hash；没有计划则锁定本轮初始配置。运行中部署报告或配置变化会终止该窗口。实际部署的 Web 文件仍需由版本对应的 `diagnose-live.mjs` 在窗口前后核对，不能仅凭本地报告哈希证明设备资产一致。
+
+`preflightFailures`、`initializationFailures`、`identityFailures`、`touchFailures`、`transportErrors`、`http429Count` 分别保留；无样本或中断不能算通过。初始化耗时不计入采样窗口，首末实际样本跨度及样本数必须达到覆盖门槛。60 秒内天气没有更新不算失败，长窗口才要求天气和历史序号推进。报告始终保留 `continuous24hStatus=NOT_RUN`、`acceptanceStatus=INCOMPLETE` 及实物触摸/声音/电机等未验证项；有限窗口 PASS 不能替代连续长测或实物验收。
+
 日常代码修改先运行 `npm test`。准备合并或发布时运行 `test-all.ps1` 的默认矩阵；它会复用同一个 `npm test` 清单，再执行 native 与全部固件环境构建。`device-smoke`、`device-soak` 和浏览器真机检查不会使用默认设备地址，必须通过 `-BaseUrl http://<device-sta-ip>` 显式指定 STA 地址，并拒绝 `192.168.4.1`。
 
 `device-api-test-matrix.json` 是设备 API 冒烟和稳定性测试共用的检查清单。新增 API 或改变版本裁剪策略时，应同步维护这个文件。

@@ -17,6 +17,10 @@ public:
     void reset(Entry* entries = nullptr, size_t count = 0) {
         _entries = entries;
         _count = entries ? count : 0;
+        invalidate();
+    }
+
+    void invalidate() {
         for (size_t i = 0; i < _count; ++i) _entries[i].valid = false;
     }
 

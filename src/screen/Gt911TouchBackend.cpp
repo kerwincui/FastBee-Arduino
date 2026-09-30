@@ -118,6 +118,7 @@ public:
     void end() override {
         _ready = false;
         _wasPressed = false;
+        _pollFailing = false;
         if (_leased) {
             if (!I2CBusManager::instance().release(this, 100)) {
                 I2CBusManager::instance().deferRelease(this);
@@ -150,14 +151,15 @@ public:
         }
 
         uint8_t status = 0;
-        if (!readRegister(GT911_REG_STATUS, &status, 1)) { ++_readFailures; return false; }
+        if (!readRegister(GT911_REG_STATUS, &status, 1)) { ++_readFailures; return failedPoll(); }
         _lastStatus = status;
-        if ((status & GT911_STATUS_READY) == 0) return false;
+        if ((status & GT911_STATUS_READY) == 0) { _pollFailing = false; return false; }
         ++_readyReports;
 
         const uint8_t pointCount = status & GT911_STATUS_POINT_MASK;
         if (pointCount == 0) {
-            if (!clearStatus()) { ++_ackFailures; return false; }
+            if (!clearStatus()) { ++_ackFailures; return failedPoll(); }
+            _pollFailing = false;
             if (!_wasPressed) return false;
             point = _lastPoint;
             point.pressed = false;
@@ -170,7 +172,8 @@ public:
         }
         if (pointCount > GT911_MAX_POINTS) {
             ++_invalidReports;
-            if (!clearStatus()) ++_ackFailures;
+            if (!clearStatus()) { ++_ackFailures; return failedPoll(); }
+            _pollFailing = false;
             return false;
         }
 
@@ -179,8 +182,9 @@ public:
             GT911_REG_FIRST_POINT, data, sizeof(data));
         // Do not acknowledge a packet we failed to read; retry the latched
         // coordinates next poll instead of dropping the user's press.
-        if (!readOk) { ++_readFailures; return false; }
-        if (!clearStatus()) { ++_ackFailures; return false; }
+        if (!readOk) { ++_readFailures; return failedPoll(); }
+        if (!clearStatus()) { ++_ackFailures; return failedPoll(); }
+        _pollFailing = false;
 
         const uint16_t rawX = static_cast<uint16_t>(data[1]) |
             (static_cast<uint16_t>(data[2]) << 8U);
@@ -200,6 +204,19 @@ public:
     }
 
 private:
+    bool failedPoll() {
+        const uint32_t now = millis();
+        if (!_pollFailing) {
+            _pollFailing = true;
+            _pollFailureSinceMs = now;
+        } else if (now - _pollFailureSinceMs >= 2000U) {
+            // The owning screen task cancels the gesture and retries startup.
+            // Never fabricate a release: it could execute a stale control tap.
+            _ready = false;
+        }
+        return false;
+    }
+
     bool configureSingleTouch(String& error) {
         // Match SensorLib's setMaxTouchPoint/reloadConfig sequence, while
         // retaining the panel vendor's electrode/timing configuration. Read
@@ -404,6 +421,8 @@ private:
     bool _leased = false;
     bool _ready = false;
     bool _wasPressed = false;
+    bool _pollFailing = false;
+    uint32_t _pollFailureSinceMs = 0;
 };
 
 }  // namespace

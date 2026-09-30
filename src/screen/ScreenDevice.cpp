@@ -62,19 +62,8 @@ bool ScreenDevice::activate(String& error) {
         return false;
     }
 
-    _touch = createTouchBackend(_config, error);
-    if (strcasecmp(_config.touchBackend, "none") != 0) {
-        if (!_touch || !_touch->begin(_config, error)) {
-            if (error.isEmpty()) error = "SCREEN_TOUCH_INIT_FAILED";
-            LOG_WARNINGF("ScreenDevice: touch unavailable (%s); keeping display visible in read-only mode",
-                         error.c_str());
-            if (_touch) _touch->end();
-            _touch.reset();
-            // Touch is optional. A missing/unresponsive controller must not
-            // hide useful data or strand a screen in an unwakeable black state.
-            // ScreenRuntime suppresses idle sleep when no touch backend exists.
-        }
-    }
+    _lastTouchAttemptMs = millis();
+    initializeTouch();
 
     if (!_display->setBrightness(_config.brightness)) {
         LOG_WARNING("ScreenDevice: configured brightness could not be applied");
@@ -89,6 +78,34 @@ bool ScreenDevice::activate(String& error) {
 #endif
 }
 
+bool ScreenDevice::initializeTouch() {
+    _touchError = "";
+    if (strcasecmp(_config.touchBackend, "none") == 0) return false;
+    _touch = createTouchBackend(_config, _touchError);
+    if (_touch && _touch->begin(_config, _touchError)) return true;
+    if (_touchError.isEmpty()) _touchError = "SCREEN_TOUCH_INIT_FAILED";
+    LOG_WARNINGF("ScreenDevice: touch unavailable (%s); keeping display visible; retry in 5s",
+                 _touchError.c_str());
+    if (_touch) _touch->end();
+    _touch.reset();
+    return false;
+}
+
+bool ScreenDevice::serviceTouch(uint32_t nowMs) {
+    if (!_active || strcasecmp(_config.touchBackend, "none") == 0 ||
+        (_touch && _touch->ready())) return false;
+    const bool lost = static_cast<bool>(_touch);
+    if (lost) {
+        _touchError = "SCREEN_TOUCH_COMMUNICATION_FAILED";
+        _touch->end();
+        _touch.reset();
+    }
+    if (nowMs - _lastTouchAttemptMs < 5000U) return lost;
+    _lastTouchAttemptMs = nowMs;
+    if (initializeTouch()) LOG_INFOF("ScreenDevice: touch recovered");
+    return true;
+}
+
 void ScreenDevice::deactivate() {
     if (_touch) {
         _touch->end();
@@ -100,6 +117,7 @@ void ScreenDevice::deactivate() {
         _display.reset();
     }
     _active = false;
+    _touchError = "";
 }
 
 DisplayCapabilities ScreenDevice::capabilities() const {

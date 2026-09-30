@@ -17,6 +17,10 @@ const {
     validateResourceManifest
 } = require('./web-quality-gate');
 const { PAGE_BUNDLES } = require('./web-asset-report');
+assert.strictEqual(CAPABILITY_WEB_ASSET_BUDGETS.screenPanel.lazyGzip -
+    CAPABILITY_WEB_ASSET_BUDGETS.screenPanel.reallocatedBaseGzip, 35.5 * 1024,
+    'Panel allocation must not increase the combined publish allowance');
+assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.runtimeBundleGzip, 16 * 1024);
 
 [
     'js/modules/periph-exec.js',
@@ -90,13 +94,14 @@ const panelManifest = {
 };
 const panelBudgets = resolveWebAssetBudgets(panelManifest);
 assert.strictEqual(panelBudgets.totalGzip,
-    DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.lazyGzip + panelAllocation.sharedGzip);
+    DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.lazyGzip + panelAllocation.sharedGzip - panelAllocation.reallocatedBaseGzip);
+assert.strictEqual(panelBudgets.totalGzip, 317 * 1024, 'combined ceiling includes only the bounded recovery reserve');
 assert.strictEqual(panelBudgets.gzipFiles, 57);
 assert.strictEqual(panelBudgets.staticHtmlNodesTotal, 3320);
 ['bootGzip', 'singleAssetGzip', 'runtimeBundleGzip', 'singleHtmlNodes'].forEach((key) => {
     assert.strictEqual(panelBudgets[key], DEFAULT_WEB_ASSET_BUDGETS[key], `${key} must not be relaxed`);
 });
-assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.totalGzip, 279 * 1024, 'base limits remain immutable');
+assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.totalGzip, 281 * 1024, 'base ceiling includes exactly 2 KiB for recovery');
 [
     null,
     { ...panelManifest, compiledCapabilities: { screenPanel: false } },
@@ -114,7 +119,7 @@ assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.totalGzip, 279 * 1024, 'base limits
     assert.deepStrictEqual(budgets.capabilityAllocations, []);
 });
 
-function panelReport({ baseGzip = DEFAULT_WEB_ASSET_BUDGETS.totalGzip,
+function panelReport({ baseGzip = DEFAULT_WEB_ASSET_BUDGETS.totalGzip - panelAllocation.reallocatedBaseGzip,
     baseFiles = DEFAULT_WEB_ASSET_BUDGETS.gzipFiles,
     sizes = [16 * 1024, 4 * 1024, 4 * 1024, 4 * 1024] } = {}) {
     const base = Array.from({ length: baseFiles }, (_, index) => ({
@@ -132,7 +137,7 @@ function panelReport({ baseGzip = DEFAULT_WEB_ASSET_BUDGETS.totalGzip,
     });
 }
 const boundaryReport = panelReport({
-    baseGzip: DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.sharedGzip
+    baseGzip: DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.sharedGzip - panelAllocation.reallocatedBaseGzip
 });
 assert.deepStrictEqual(evaluateWebAssetReport(boundaryReport, panelBudgets), []);
 assert.ok(evaluateWebAssetReport(boundaryReport).some((issue) => issue.includes('total gzip')),
@@ -143,7 +148,7 @@ assert.ok(evaluateWebAssetReport(panelReport({
 }), panelBudgets).some((issue) => issue.includes('screenPanel lazy gzip')),
     'lazy resources cannot spend unused base space');
 assert.ok(evaluateWebAssetReport(panelReport({
-    baseGzip: DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.sharedGzip + 1,
+    baseGzip: DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.sharedGzip - panelAllocation.reallocatedBaseGzip + 1,
     sizes: [1000, 1000, 1000, 1000]
 }), panelBudgets).some((issue) => issue.includes('base/shared gzip')),
     'base growth cannot spend unused lazy-page space');

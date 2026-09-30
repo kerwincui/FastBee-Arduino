@@ -1,5 +1,6 @@
 #pragma once
 #include "core/FeatureFlags.h"
+#include "protocols/WeatherSchedule.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
@@ -39,6 +40,8 @@ private:
         uint32_t lastManualRequestMs = 0;
         uint8_t failures = 0;
         String error;
+        WeatherSchedule::Reason reason = WeatherSchedule::Reason::None;
+        WeatherSchedule::Diagnostics memory;
         bool requested = false, known = false, manualRequestSeen = false;
         bool manualRequestPending = false;
     };

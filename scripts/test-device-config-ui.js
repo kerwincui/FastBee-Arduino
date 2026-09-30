@@ -87,7 +87,8 @@ assert(stateJs.includes("this._loadModule('device-config', syncNtp)"),
 const ntpSaveStart = deviceJs.indexOf('        saveDeviceNTP() {');
 const ntpSaveEnd = deviceJs.indexOf('saveSecurityPolicy()', ntpSaveStart);
 assert(ntpSaveStart >= 0 && ntpSaveEnd > ntpSaveStart
-    && deviceJs.slice(ntpSaveStart, ntpSaveEnd).includes("apiInvalidateCache('/api/device/config')"),
+    && deviceJs.slice(ntpSaveStart, ntpSaveEnd).includes("this._saveDeviceConfigPatch('device-ntp-form'")
+    && deviceJs.slice(deviceJs.indexOf("        _saveDeviceConfigPatch("), deviceJs.indexOf("        setupDeviceConfigEvents()")).includes("apiInvalidateCache('/api/device/config')"),
     'saving NTP settings must invalidate the device config cache');
 assert(deviceJs.includes('btn.disabled = false;'),
     'NTP refresh button must be restored to an enabled state');
@@ -114,7 +115,7 @@ assert(otaJs.includes('const capabilityReady =')
     && otaJs.includes('caps.ota === true')
     && otaJs.includes('.catch(() => false)')
     && otaJs.includes('capabilityReady.then(supported =>')
-    && otaJs.includes('if (supported) this._loadOtaStatus();'),
+    && /if \(supported(?: && this\._otaActive\(epoch\))?\)\s*\{\s*this\._loadOtaStatus\(\)/.test(otaJs),
     'OTA status must be requested only after the firmware capability is known');
 
 ['device-ota-container', 'dev-sys-chip', 'dev-sys-flash', 'dev-time-refresh-btn',

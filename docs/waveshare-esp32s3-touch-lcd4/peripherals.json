@@ -2,7 +2,7 @@
   "peripherals": [
     {
       "id": "panel_i2c",
-      "name": "LCD4 Rev4 shared I2C",
+      "name": "触控屏共享 I²C 总线",
       "type": 2,
       "enabled": true,
       "pins": [15, 7],
@@ -10,7 +10,7 @@
     },
     {
       "id": "sht30",
-      "name": "SHT30 temperature and humidity",
+      "name": "SHT30 温湿度传感器",
       "type": 38,
       "enabled": true,
       "pins": [],
@@ -26,7 +26,7 @@
     },
     {
       "id": "rs485",
-      "name": "LCD4 Rev4 RS485 9600",
+      "name": "RS485 通信（9600 波特）",
       "type": 1,
       "enabled": true,
       "pins": [43, 44],
@@ -34,7 +34,7 @@
     },
     {
       "id": "panel_display",
-      "name": "Waveshare Touch LCD4 Rev4 RGB display",
+      "name": "微雪 LCD4 Rev4 触控屏",
       "type": 56,
       "enabled": true,
       "pins": [],
@@ -42,7 +42,7 @@
         "backend": "rgb", "driver": "st7701", "rgbInitProfile": "st7701_type1",
         "touchBackend": "gt911", "width": 480, "height": 480, "rotation": 2,
         "colorDepth": 16, "bufferLines": 16, "brightness": 70,
-        "backlightChannel": 0, "backlightActiveHigh": true, "touchBuzzerDurationMs": 30,
+        "backlightChannel": 0, "backlightActiveHigh": false, "touchBuzzerDurationMs": 30,
         "spiFrequency": 40000000, "i2cFrequency": 100000, "rgbFrequency": 12000000,
         "hsyncFrontPorch": 10, "hsyncPulseWidth": 8, "hsyncBackPorch": 50,
         "vsyncFrontPorch": 10, "vsyncPulseWidth": 8, "vsyncBackPorch": 20,

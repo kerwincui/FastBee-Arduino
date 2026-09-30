@@ -19,8 +19,13 @@ inline void convertFromJson(JsonVariantConst value, String& output) {
     output = value.as<std::string>();
 }
 #include "snapshot_observation_types.inc"
-struct MotorControlState { bool known=false, pending=false; uint16_t speed=0,pulse=0;uint8_t precision=0;uint32_t updatedMs=0; char error[64]{},lastAction[16]{}; };
-struct MotorControlService { static MotorControlService& instance(){ static MotorControlService s;return s; } bool state(const String&,MotorControlState&){return false;} };
+#include "snapshot_motor_types.inc"
+struct MotorControlService {
+    bool available = false;
+    MotorControlState live;
+    static MotorControlService& instance() { static MotorControlService s; return s; }
+    bool state(const String&, MotorControlState& out) { out = live; return available; }
+};
 
 
 static unsigned poolAllocations = 0;
@@ -218,17 +223,25 @@ static void weather() {
     Fixture f; f.hidden(); auto& manager = FastBee::RemoteResourceManager::instance();
     assert(f.out->cards[2].hasWeatherTemperature);
     assert(strcmp(f.out->cards[2].weatherCity, "Shanghai") == 0);
+    manager.values["weather.city"]["reason"] = "memory_unavailable"; f.refresh();
+    assert(strcmp(f.out->cards[2].weatherReason, "memory_unavailable") == 0);
+    assert(f.out->cards[2].hasWeatherTemperature);
+    manager.values["weather.city"]["reason"] = "none"; f.refresh();
+    assert(strcmp(f.out->cards[2].weatherReason, "none") == 0);
     manager.values["remote.lamp"]["pending"] = true; manager.values["remote.lamp"]["quality"] = "stale"; f.refresh();
     assert(f.out->cards[4].pending && f.out->cards[4].quality == ScreenValueQuality::STALE);
     manager.values["weather.city"].clear(); manager.values["weather.city"]["quality"] = "error";
     manager.values["weather.city"]["error"] = "timeout";
+    manager.values["weather.city"]["reason"] = "transport_failed";
     manager.values["remote.lamp"]["pending"] = false; f.refresh();
     const auto& out = f.out->cards[2];
     assert(!out.hasWeatherTemperature && !out.weatherCity[0] && !out.value[0]);
+    assert(strcmp(out.weatherReason, "transport_failed") == 0);
     assert(out.quality == ScreenValueQuality::ERROR);
     assert(!f.out->cards[4].pending);
     manager.values.erase("weather.city"); f.refresh();
     assert(f.out->cards[2].quality == ScreenValueQuality::UNKNOWN && !f.out->cards[2].error[0]);
+    assert(!f.out->cards[2].weatherReason[0]);
 }
 
 static void history() {
@@ -262,6 +275,40 @@ static void operations() {
     SystemRebooter::scheduled = false; f.manager._restartSaveFailed = true; f.refresh();
     assert(exec.resultReads == beforeRestart && !f.out->cards[5].pending);
     assert(strcmp(f.out->cards[5].error, "history_save_failed") == 0);
+}
+
+static void motor() {
+    Fixture f;
+    auto card = f.layout["pages"][0]["cards"][0];
+    card["kind"] = "control"; card["visualType"] = "motor";
+    card["controlRef"] = "motor.8.fixture"; card["sourceRef"] = "";
+    f.publish();
+    auto& service = MotorControlService::instance(); service.available = true;
+    auto& state = service.live;
+    state.known = true; state.speed = 50; state.pulse = 1600;
+    state.operationId = 17; state.pending = true;
+    strcpy(state.lastAction, "stop");
+    f.refresh();
+    assert(f.out->cards[0].operationId == 17 && f.out->cards[0].pending);
+    state.pending = false; state.commandKnown = true; state.commandSuccess = true;
+    state.commandUpdatedMs = 100; state.known = false;
+    strcpy(state.readError, "speed s247 FC04 r65535 EXCEPTION(0x02); pulse s247 FC04 r65534 EXCEPTION(0x02)"); f.refresh();
+    const auto& out = f.out->cards[0];
+    assert(out.operationId == 17 && out.motorCommandKnown && out.motorCommandSuccess);
+    assert(out.motorCommandUpdatedMs == 100 && !out.pending && !out.motorKnown);
+    assert(!out.error[0] && strcmp(out.value, "stop") == 0 && !strcmp(out.motorReadError, state.readError));
+    state.operationId = 18; state.commandSuccess = false;
+    strcpy(state.lastAction, "reverse"); strcpy(state.error, "Motor parameters unconfirmed; start blocked");
+    state.known = true; state.readError[0] = 0; state.softLimitEnabled = true; f.refresh();
+    assert(out.operationId == 18 && out.motorCommandKnown && !out.motorCommandSuccess);
+    assert(out.motorKnown && out.motorSoftLimitEnabled && !out.motorReadError[0]);
+    assert(strcmp(out.value, "reverse") == 0 && out.error[0]);
+    std::unique_ptr<ScreenPanelSnapshot> full(new ScreenPanelSnapshot);
+    assert(f.manager.getSnapshot(*full));
+    assert(memcmp(&full->cards[0], &out, sizeof(out)) == 0);
+    assert(f.cache.rebuildCount() == 1);
+    service.available = false; f.refresh();
+    assert(!out.operationId && !out.motorCommandKnown && !out.motorReadError[0]);
 }
 
 static void revision() {
@@ -334,7 +381,7 @@ int main(int argc, char** argv) {
     assert(argc == 2);
     const std::map<std::string, void(*)()> scenarios = {
         {"reuse", reuse}, {"pages", pages}, {"sensor", sensor}, {"weather", weather},
-        {"history", history}, {"operations", operations}, {"revision", revision},
+        {"history", history}, {"operations", operations}, {"motor", motor}, {"revision", revision},
         {"failure", failure}, {"web", web}, {"consistent", consistent}
     };
     scenarios.at(argv[1])();

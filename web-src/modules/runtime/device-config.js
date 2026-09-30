@@ -52,8 +52,74 @@
 
     AppState.registerModule('device-config', {
 
+        _deviceConfigActive(epoch) {
+            return epoch === (this._deviceConfigEpoch || 0) && (!this.currentPage || this.currentPage === 'device');
+        },
+
+        _deviceConfigButtons() {
+            const root = document.getElementById('device-page');
+            if (!root) return;
+            root.querySelectorAll('#device-basic-form button[type=submit], #device-ntp-form button[type=submit], #device-security-form button[type=submit], [data-action="saveCacheDuration"]').forEach(btn => {
+                btn.disabled = !this._deviceConfigReady || !!this._deviceConfigSavePending;
+            });
+        },
+
+        _deviceConfigStatus(message) {
+            const el = document.getElementById('device-config-load-status');
+            if (el) el.textContent = message;
+        },
+
+        _deviceConfigSelect(id, value) {
+            const el = document.getElementById(id);
+            if (el && el.options && !Array.from(el.options).some(o => o.value === String(value))) {
+                el.add(new Option(String(value), String(value)));
+            }
+            this._setValue(id, String(value));
+        },
+
+        _saveDeviceConfigPatch(formId, config, message, onSuccess) {
+            if (!this._deviceConfigReady) {
+                Notification.warning('配置尚未成功加载，请重新加载后再保存');
+                return Promise.resolve(false);
+            }
+            if (this._deviceConfigSavePending) return Promise.resolve(false);
+            const form = document.getElementById(formId);
+            if (form && !form.reportValidity()) return Promise.resolve(false);
+            const epoch = this._deviceConfigEpoch || 0;
+            if (!this._deviceConfigActive(epoch)) return Promise.resolve(false);
+            this._deviceConfigSavePending = true;
+            this._deviceConfigButtons();
+            return apiPut('/api/device/config', config).then(res => {
+                if (!res || !res.success) throw new Error(res?.error || '保存失败');
+                if (typeof window.apiInvalidateCache === 'function') {
+                    window.apiInvalidateCache('/api/device/config');
+                    if ('minPasswordLength' in config) window.apiInvalidateCache('/api/users');
+                }
+                if (!this._deviceConfigActive(epoch)) return false;
+                if (onSuccess) onSuccess(res);
+                Notification.success(message);
+                return true;
+            }).catch(err => {
+                if (this._deviceConfigActive(epoch) && !isExpectedAbort(err)) Notification.error(err.message || '保存失败');
+                return false;
+            }).finally(() => {
+                this._deviceConfigSavePending = false;
+                this._deviceConfigButtons();
+            });
+        },
+
         // ============ 事件绑定 ============
         setupDeviceConfigEvents() {
+            const root = document.getElementById('device-page');
+            if (root && root._deviceConfigBound) return;
+            if (root) root._deviceConfigBound = true;
+            if (typeof this.onPageHide === 'function') this.onPageHide('device-config', function() {
+                this._deviceConfigEpoch = (this._deviceConfigEpoch || 0) + 1;
+                this._deviceConfigReady = false;
+                clearTimeout(this._deviceHardwareTimer);
+                this._deviceConfigButtons();
+            });
+            this._deviceConfigButtons();
             // 设备基本信息表单提交
             const deviceBasicForm = document.getElementById('device-basic-form');
             if (deviceBasicForm) {
@@ -153,11 +219,21 @@
                 batchGetter = apiBatchGet;
             }
             var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+            const epoch = this._deviceConfigEpoch || 0;
+            const sequence = this._deviceConfigLoadSequence = (this._deviceConfigLoadSequence || 0) + 1;
+            this._deviceConfigReady = false;
+            this._deviceConfigButtons();
+            this._deviceConfigStatus('正在加载设备配置…');
+            clearTimeout(this._deviceHardwareTimer);
+            this._deviceHardwareTimer = setTimeout(() => {
+                if (this._deviceConfigActive(epoch)) this._loadDeviceHardwareInfo({ noCache: options.noCache === true });
+            }, options.deferHardware === false ? 0 : 120);
             var configRequest = getter('/api/device/config');
-            configRequest
+            return configRequest
                 .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
+                    if (!this._deviceConfigActive(epoch) || sequence !== this._deviceConfigLoadSequence) return;
+                    if (!res || !res.success || !res.data) throw new Error(res?.error || '读取配置失败');
+                    const d = res.data;
                     this._setValue('dev-id', d.deviceId || '');
                     this._setValue('dev-product-number', d.productNumber !== undefined ? String(d.productNumber) : '0');
                     this._setValue('dev-user-id', d.userId || '');
@@ -167,9 +243,9 @@
                     this._setValue('dev-ntp-enable', this._toBoolean(d.enableNTP, true) ? '1' : '0');
                     this._setValue('dev-ntp-server1', d.ntpServer1 || DEFAULT_NTP_SERVER1);
                     this._setValue('dev-ntp-server2', d.ntpServer2 || DEFAULT_NTP_SERVER2);
-                    this._setValue('dev-timezone', d.timezone || 'CST-8');
+                    this._deviceConfigSelect('dev-timezone', d.timezone || 'CST-8');
                     this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
-                    this._setValue('dev-cache-duration', d.cacheDuration !== undefined ? String(d.cacheDuration) : '86400');
+                    this._deviceConfigSelect('dev-cache-duration', d.cacheDuration !== undefined ? d.cacheDuration : 86400);
                     this._setValue('dev-log-level', d.logLevel || 'INFO');
                     this.setDeveloperModeState(d.developerModeEnabled !== false);
                     this._renderDeveloperModeState();
@@ -178,11 +254,14 @@
                     this._setValue('dev-sec-lockout-time', d.loginLockoutTime !== undefined ? String(Math.round(d.loginLockoutTime / 1000)) : '300');
                     this._setValue('dev-sec-min-pwd-len', d.minPasswordLength !== undefined ? String(d.minPasswordLength) : '6');
                     this._setValue('dev-sec-require-strong', d.requireStrongPasswords ? '1' : '0');
+                    this._deviceConfigReady = true;
+                    this._deviceConfigStatus('配置已加载');
                 })
-                .catch(err => console.error('Load device config failed:', err));
-            setTimeout(function() {
-                self._loadDeviceHardwareInfo({ noCache: options.noCache === true });
-            }, options.deferHardware === false ? 0 : 120);
+                .catch(err => {
+                    if (this._deviceConfigActive(epoch) && sequence === this._deviceConfigLoadSequence && !isExpectedAbort(err)) {
+                        this._deviceConfigStatus('加载失败：' + (err.message || err) + '，请点击重新加载');
+                    }
+                }).finally(() => this._deviceConfigButtons());
         },
 
         _loadDeviceHardwareInfo(options) {
@@ -195,9 +274,11 @@
                 batchGetter = apiBatchGet;
             }
             var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+            const epoch = this._deviceConfigEpoch || 0;
             var infoRequest = getter('/api/system/info');
             infoRequest
                 .then(res => {
+                    if (!this._deviceConfigActive(epoch)) return;
                     if (!res) {
                         console.warn('[device-config] /api/system/info empty response');
                         return;
@@ -228,53 +309,30 @@
 
         saveDeviceBasic() {
             const deviceIdInput = document.getElementById('dev-id');
-            let deviceId = deviceIdInput?.value?.trim() || '';
-
-            const productNumberVal = document.getElementById('dev-product-number')?.value;
-            const config = {
-                deviceId: deviceId,
+            const productNumber = Number(document.getElementById('dev-product-number')?.value || 0);
+            if (!Number.isInteger(productNumber) || productNumber < 0 || productNumber > 2147483647) {
+                Notification.warning('产品编号应为 0 至 2147483647 的整数');
+                return;
+            }
+            return this._saveDeviceConfigPatch('device-basic-form', {
+                deviceId: deviceIdInput?.value?.trim() || '',
                 deviceName: document.getElementById('dev-name')?.value || '',
-                productNumber: productNumberVal !== undefined && productNumberVal !== '' ? parseInt(productNumberVal, 10) : 0,
+                productNumber,
                 userId: document.getElementById('dev-user-id')?.value || '',
                 description: document.getElementById('dev-description')?.value || '',
-                ntpServer1: document.getElementById('dev-ntp-server1')?.value || DEFAULT_NTP_SERVER1,
-                ntpServer2: document.getElementById('dev-ntp-server2')?.value || DEFAULT_NTP_SERVER2,
-                timezone: document.getElementById('dev-timezone')?.value || 'CST-8',
-                enableNTP: document.getElementById('dev-ntp-enable')?.value || '1',
-                syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
-                cacheDuration: parseInt(document.getElementById('dev-cache-duration')?.value || '86400'),
-                logLevel: document.getElementById('dev-log-level')?.value || 'INFO',
-            };
-            apiPut('/api/device/config', config)
-                .then(res => {
-                    if (res && res.success) {
-                        // 后端可能自动生成了新的 deviceId（FBE+MAC），立即回填输入框
-                        if (res.data && res.data.deviceId && deviceIdInput) {
-                            deviceIdInput.value = res.data.deviceId;
-                        }
-                        if (typeof window.apiInvalidateCache === 'function') {
-                            window.apiInvalidateCache('/api/device/config');
-                        }
-                        this._showMessage('dev-basic-success', true);
-                        Notification.success(t('dc-save-success', '设备信息保存成功'), t('dc-label-device', '设备信息'));
-                    } else {
-                        Notification.error(res?.error || t('common-save-fail', '保存失败'), t('dc-label-device', '设备信息'));
-                    }
-                })
-                .catch(() => Notification.error(t('common-save-fail', '保存失败'), t('dc-label-device', '设备信息')));
+                logLevel: document.getElementById('dev-log-level')?.value || 'INFO'
+            }, '设备信息保存成功', res => {
+                if (res.data?.deviceId && deviceIdInput) deviceIdInput.value = res.data.deviceId;
+            });
         },
 
         saveCacheDuration() {
-            const duration = parseInt(document.getElementById('dev-cache-duration')?.value || '86400');
-            apiPut('/api/device/config', { cacheDuration: duration })
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(t('dc-cache-save-success', '缓存时间设置已保存'));
-                    } else {
-                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
-                    }
-                })
-                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
+            const duration = Number(document.getElementById('dev-cache-duration')?.value);
+            if (!Number.isInteger(duration) || duration < 0 || duration > 31536000) {
+                Notification.warning('缓存时间超出有效范围');
+                return;
+            }
+            return this._saveDeviceConfigPatch('', { cacheDuration: duration }, '缓存时间设置已保存');
         },
 
         clearBrowserCache: function() {
@@ -341,54 +399,38 @@
         },
 
         saveDeviceNTP() {
+            const syncInterval = Number(document.getElementById('dev-sync-interval')?.value);
+            if (!Number.isInteger(syncInterval) || syncInterval < 60 || syncInterval > 86400) {
+                Notification.warning('同步间隔应为 60 至 86400 秒的整数');
+                return;
+            }
             const config = {
                 ntpServer1: document.getElementById('dev-ntp-server1')?.value || DEFAULT_NTP_SERVER1,
                 ntpServer2: document.getElementById('dev-ntp-server2')?.value || DEFAULT_NTP_SERVER2,
                 timezone: document.getElementById('dev-timezone')?.value || 'CST-8',
-                enableNTP: document.getElementById('dev-ntp-enable')?.value || '1',
-                syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
+                enableNTP: document.getElementById('dev-ntp-enable')?.value === '1',
+                syncInterval
             };
-            apiPut('/api/device/config', config)
-                .then(res => {
-                    if (res && res.success) {
-                        if (typeof window.apiInvalidateCache === 'function') {
-                            window.apiInvalidateCache('/api/device/config');
-                        }
-                        this._showMessage('dev-ntp-success', true);
-                        Notification.success(t('dc-ntp-save-success', 'NTP配置保存成功'));
-                        if (config.enableNTP === '1' || config.enableNTP === true) {
-                            this.syncDeviceTime({ silent: true });
-                        } else {
-                            this.loadDeviceTime({ noCache: true });
-                        }
-                    } else {
-                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
-                    }
-                })
-                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
+            return this._saveDeviceConfigPatch('device-ntp-form', config, 'NTP配置保存成功', () => {
+                if (config.enableNTP) this.syncDeviceTime({ silent: true });
+                else this.loadDeviceTime({ noCache: true });
+            });
         },
 
         saveSecurityPolicy() {
-            const lockoutSeconds = parseInt(document.getElementById('dev-sec-lockout-time')?.value || '300');
-            const config = {
-                maxLoginAttempts: parseInt(document.getElementById('dev-sec-max-attempts')?.value || '5'),
-                loginLockoutTime: lockoutSeconds * 1000,
-                minPasswordLength: parseInt(document.getElementById('dev-sec-min-pwd-len')?.value || '6'),
-                requireStrongPasswords: document.getElementById('dev-sec-require-strong')?.value === '1',
-            };
-            apiPut('/api/device/config', config)
-                .then(res => {
-                    if (res && res.success) {
-                        if (typeof window.apiInvalidateCache === 'function') {
-                            window.apiInvalidateCache('/api/device/config');
-                        }
-                        this._showMessage('dev-sec-success', true);
-                        Notification.success(t('dc-security-save-success', '安全策略保存成功'), t('dc-label-device', '设备信息'));
-                    } else {
-                        Notification.error(res?.error || t('common-save-fail', '保存失败'));
-                    }
-                })
-                .catch(() => Notification.error(t('common-save-fail', '保存失败')));
+            const attempts = Number(document.getElementById('dev-sec-max-attempts')?.value);
+            const seconds = Number(document.getElementById('dev-sec-lockout-time')?.value);
+            const length = Number(document.getElementById('dev-sec-min-pwd-len')?.value);
+            if (!Number.isInteger(attempts) || attempts < 1 || attempts > 10 ||
+                !Number.isInteger(seconds) || seconds < 60 || seconds > 3600 ||
+                !Number.isInteger(length) || length < 4 || length > 32) {
+                Notification.warning('安全策略参数超出有效范围');
+                return;
+            }
+            return this._saveDeviceConfigPatch('device-security-form', {
+                maxLoginAttempts: attempts, loginLockoutTime: seconds * 1000, minPasswordLength: length,
+                requireStrongPasswords: document.getElementById('dev-sec-require-strong')?.value === '1'
+            }, '安全策略保存成功');
         },
 
         loadDeviceTime(options) {
@@ -521,12 +563,14 @@
         },
 
         restartDevice() {
+            if (this._deviceCommandPending) return;
             const delay = document.getElementById('dev-restart-delay')?.value || '3';
             const btn = document.getElementById('dev-restart-btn');
             if (!confirm(t('dc-reboot-confirm', '确定要重启设备？将在') + ' ' + delay + ' ' + t('dc-reboot-confirm-suffix', '秒后重启。'))) return;
             if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
-            apiRestart({ delay })
+            this._deviceCommandPending = true;
+            return apiRestart({ delay })
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(t('dc-reboot-scheduled', '设备将在') + delay + t('dc-reboot-scheduled-suffix', '秒后重启，请稍后刷新页面。'), t('dc-reboot-title', '设备重启'));
@@ -545,15 +589,19 @@
                     if (isTimeout) {
                         Notification.warning(t('dc-reboot-timeout', '重启请求超时，设备可能正在重启也可能未收到指令，请等待 30 秒后刷新页面'), t('dc-reboot-timeout-title', '重启超时'));
                     } else if (isConnectionClosed) {
-                        Notification.success(t('dc-reboot-scheduled', '设备将在') + delay + t('dc-reboot-scheduled-suffix', '秒后重启，请稍后刷新页面。'), t('dc-reboot-title', '设备重启'));
+                        Notification.warning('连接已断开，无法确认设备是否收到指令；请核对设备状态后再操作');
                     } else {
                         if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reboot-now', '立即重启'); }
                         Notification.error(t('dc-reboot-fail', '重启指令发送失败'), t('dc-reboot-title', '设备重启'));
                     }
+                }).finally(() => {
+                    this._deviceCommandPending = false;
+                    if (btn) { btn.disabled = false; btn.textContent = '立即重启'; }
                 });
         },
 
         factoryReset() {
+            if (this._deviceCommandPending) return;
             const confirmInput = document.getElementById('dev-factory-confirm');
             const passwordInput = document.getElementById('dev-factory-password');
             const btn = document.getElementById('dev-factory-btn');
@@ -579,7 +627,8 @@
 
             if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
-            apiFactoryReset({ confirm: 'RESET', password: password })
+            this._deviceCommandPending = true;
+            return apiFactoryReset({ confirm: 'RESET', password: password })
                 .then(res => {
                     if (passwordInput) passwordInput.value = '';
                     if (res && res.success) {
@@ -600,11 +649,14 @@
                     if (isTimeout) {
                         Notification.warning(t('dc-reset-timeout', '恢复出厂请求超时，设备可能正在重启也可能未收到指令，请等待 30 秒后刷新页面'), t('dc-reset-timeout-title', '恢复出厂超时'));
                     } else if (isConnectionClosed) {
-                        Notification.success(t('dc-reset-success', '恢复出厂设置成功，设备正在重启...'), t('dc-reset-btn', '恢复出厂设置'));
+                        Notification.warning('连接已断开，无法确认设备是否收到指令；请核对设备状态后再操作');
                     } else {
                         if (btn) { btn.disabled = false; btn.innerHTML = t('dc-reset-btn', '恢复出厂设置'); }
                         Notification.error(t('dc-reset-fail', '恢复出厂设置失败'), t('dc-reset-btn', '恢复出厂设置'));
                     }
+                }).finally(() => {
+                    this._deviceCommandPending = false;
+                    if (btn) { btn.disabled = false; btn.textContent = '恢复出厂设置'; }
                 });
         },
 
@@ -626,6 +678,7 @@
         },
 
         toggleDeveloperMode() {
+            if (this._deviceCommandPending) return;
             const enabled = this.isDeveloperModeEnabled();
             const passwordInput = document.getElementById('dev-mode-password');
             const btn = document.getElementById('dev-mode-toggle-btn');
@@ -644,7 +697,8 @@
                 btn.disabled = true;
                 btn.innerHTML = '<span>' + t('common-processing', '处理中...') + '</span>';
             }
-            apiPost('/api/device/developer-mode', {
+            this._deviceCommandPending = true;
+            return apiPost('/api/device/developer-mode', {
                 enabled: enabled ? 'false' : 'true',
                 password: password
             }).then((res) => {
@@ -667,6 +721,8 @@
                     Notification.error(t('dc-dev-mode-fail', '开发环境设置失败'), t('dc-dev-mode-title', '开发环境功能'));
                 }
             }).finally(() => {
+                this._deviceCommandPending = false;
+                if (passwordInput) passwordInput.value = '';
                 if (btn) {
                     btn.disabled = false;
                     this._renderDeveloperModeState();
@@ -1200,7 +1256,9 @@
                         AppState.setupDeviceOta();
                     }
                 });
-            })).finally(function() {
+            })).catch(function() {
+                // PageLoader retains the visible retry affordance.
+            }).finally(function() {
                 self._otaFragmentLoading = false;
             });
 

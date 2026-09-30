@@ -447,10 +447,9 @@ bool buildControlItemJson(
     PeripheralManager& peripheralManager,
     const std::map<String, PeriphExecManager::SensorReadCache>& sensorCache,
     String& itemJson) {
-    if (rule.actions.empty()) return false;
-
-    const ExecAction& firstAction = rule.actions[0];
-    const int actionType = firstAction.actionType;
+    const ExecAction emptyAction;
+    const ExecAction& firstAction = rule.actions.empty() ? emptyAction : rule.actions[0];
+    const int actionType = rule.actions.empty() ? -1 : firstAction.actionType;
     String peripheralName;
     if (!firstAction.targetPeriphId.isEmpty()) {
         PeripheralConfig peripheral;
@@ -471,6 +470,59 @@ bool buildControlItemJson(
     writer.appendQuoted(rule.name);
     writer.append(",\"actionType\":");
     writer.append(actionType);
+    writer.append(",\"enabled\":");
+    writer.append(rule.enabled);
+    writer.append(",\"actionCount\":");
+    writer.append(static_cast<int>(rule.actions.size()));
+
+    // Expose the entire rule's targets without copying scripts/action payloads.
+    // Manual runOnce also accepts rules whose automatic triggers are disabled.
+    bool hasSensorRead = false;
+    bool hasSystemAction = false;
+    const char* unavailableReason = rule.actions.empty() ? "无执行动作" : "";
+    writer.append(",\"targets\":[");
+    bool firstTarget = true;
+    auto appendTarget = [&](const String& id) {
+        if (id.isEmpty()) return;
+        if (!firstTarget) writer.append(',');
+        firstTarget = false;
+        writer.append("{\"id\":");
+        writer.appendQuoted(id);
+        PeripheralConfig target;
+        if (peripheralManager.getPeripheralSnapshot(id, target)) {
+            writer.append(",\"name\":");
+            writer.appendQuoted(target.name);
+        }
+        writer.append('}');
+    };
+    for (const auto& action : rule.actions) {
+        hasSensorRead |= action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ);
+        hasSystemAction |= controlGroupForAction(action.actionType) == ControlGroup::SYSTEM;
+#if !FASTBEE_ENABLE_OTA
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA))
+            unavailableReason = "当前固件未启用 OTA";
+#endif
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) &&
+            !FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript"))
+            unavailableReason = "命令脚本功能未启用";
+        appendTarget(action.targetPeriphId);
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) &&
+            !action.actionValue.isEmpty()) {
+            JsonDocument actionDocument;
+            if (!deserializeJson(actionDocument, action.actionValue) && actionDocument["ctrl"].is<JsonArray>()) {
+                for (JsonObject control : actionDocument["ctrl"].as<JsonArray>()) {
+                    if (control["d"].is<int>() && control["d"].as<int>() >= 0)
+                        appendTarget(String("modbus:") + String(control["d"].as<int>()));
+                }
+            }
+        }
+    }
+    writer.append("],\"hasSystemAction\":");
+    writer.append(hasSystemAction);
+    if (unavailableReason[0]) {
+        writer.append(",\"unavailableReason\":");
+        writer.appendQuoted(String(unavailableReason));
+    }
 
     bool hasSetMode = false;
     for (const auto& trigger : rule.triggers) {
@@ -491,23 +543,25 @@ bool buildControlItemJson(
         }
     }
 
-    if (actionType == static_cast<int>(ExecActionType::ACTION_MODBUS_POLL) &&
-        !firstAction.actionValue.isEmpty()) {
+    writer.append(",\"pollTaskIndex\":[");
+    bool firstPoll = true;
+    for (const auto& action : rule.actions) {
+        if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            action.actionValue.isEmpty()) continue;
         JsonDocument pollDocument;
-        const DeserializationError error = deserializeJson(pollDocument, firstAction.actionValue);
+        const DeserializationError error = deserializeJson(pollDocument, action.actionValue);
         if (!error && pollDocument["poll"].is<JsonArray>()) {
-            writer.append(",\"pollTaskIndex\":[");
-            bool firstPoll = true;
             for (JsonVariant value : pollDocument["poll"].as<JsonArray>()) {
+                if (!value.is<int>() || value.as<int>() < 0) continue;
                 if (!firstPoll) writer.append(',');
                 firstPoll = false;
                 writer.append(value.as<int>());
             }
-            writer.append(']');
         }
     }
+    writer.append(']');
 
-    if (actionType == static_cast<int>(ExecActionType::ACTION_SENSOR_READ)) {
+    if (hasSensorRead) {
         writer.append(",\"sensors\":[");
         bool firstSensor = true;
         for (const auto& action : rule.actions) {
@@ -537,6 +591,8 @@ bool buildControlItemJson(
             firstSensor = false;
             writer.append("{\"key\":");
             writer.appendQuoted(cacheKey);
+            writer.append(",\"periphId\":");
+            writer.appendQuoted(sensorPeriphId);
             writer.append(",\"label\":");
             writer.appendQuoted(label);
             writer.append(",\"unit\":");
@@ -2094,12 +2150,13 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         }
         for (const auto& pair : mgr.getRules()) {
             const auto& rule = pair.second;
-            if (rule.enabled && !rule.actions.empty() &&
-                rule.actions[0].actionType ==
-                    static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
-                needsSensorCache = true;
-                break;
+            for (const auto& action : rule.actions) {
+                if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+                    needsSensorCache = true;
+                    break;
+                }
             }
+            if (needsSensorCache) break;
         }
     }
 
@@ -2114,8 +2171,6 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 
     std::vector<GroupedControlItem> items;
     bool buildFailed = false;
-    const bool commandScriptEnabled =
-        FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript");
     {
         MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(50));
         if (!lock.isLocked()) {
@@ -2131,16 +2186,7 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         for (uint8_t group = 0; group < CONTROL_GROUP_COUNT && !buildFailed; ++group) {
             for (const auto& pair : ruleMap) {
                 const auto& rule = pair.second;
-                if (!rule.enabled || rule.actions.empty()) continue;
-
-                const int actionType = rule.actions[0].actionType;
-#if !FASTBEE_ENABLE_OTA
-                if (actionType == static_cast<int>(ExecActionType::ACTION_SYS_OTA)) continue;
-#endif
-                if (actionType == static_cast<int>(ExecActionType::ACTION_SCRIPT) &&
-                    !commandScriptEnabled) {
-                    continue;
-                }
+                const int actionType = rule.actions.empty() ? -1 : rule.actions[0].actionType;
                 if (static_cast<uint8_t>(controlGroupForAction(actionType)) != group) continue;
 
                 GroupedControlItem item;

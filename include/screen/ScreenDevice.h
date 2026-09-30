@@ -28,16 +28,22 @@ public:
     IDisplayBackend* display() { return _display.get(); }
     ITouchBackend* touch() { return _touch.get(); }
     DisplayCapabilities capabilities() const;
+    // Screen-task only: retry a failed touch controller without restarting the display.
+    bool serviceTouch(uint32_t nowMs);
+    const String& touchError() const { return _touchError; }
 
 private:
     ScreenDevice() = default;
     ScreenDevice(const ScreenDevice&) = delete;
     ScreenDevice& operator=(const ScreenDevice&) = delete;
+    bool initializeTouch();
 
     bool _configured = false;
     bool _active = false;
     String _peripheralId;
     DisplayConfigParams _config{};
+    String _touchError;
+    uint32_t _lastTouchAttemptMs = 0;
     std::unique_ptr<IDisplayBackend> _display;
     std::unique_ptr<ITouchBackend> _touch;
 };

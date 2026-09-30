@@ -86,7 +86,7 @@ class ScreenRendererRasterTests(unittest.TestCase):
             "-fdata-sections", "-Wl,--gc-sections", f"-I{library}",
             f"-I{ROOT / 'include'}", f"-I{ROOT / 'test/mocks'}", str(cpp),
             *[str(library / name) for name in names], "-o", str(cls.executable)
-        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
             env=cls.environment)
         if build.returncode:
             raise AssertionError(build.stdout + build.stderr)
@@ -124,6 +124,12 @@ class ScreenRendererRasterTests(unittest.TestCase):
     def test_refined_home_and_motor_composition(self):
         self.run_group("preview")
 
+    def test_navigation_menu_and_history_discontinuities(self):
+        self.run_group("navigation-history")
+
+    def test_real_control_targets_and_local_pressed_pixels(self):
+        self.run_group("control-targets")
+
 
 HARNESS = r'''
 #include <algorithm>
@@ -138,6 +144,7 @@ HARNESS = r'''
 #include <map>
 #include <string>
 #include <vector>
+#include "screen/ScreenBacklight.h"
 #include <Arduino.h>
 #undef malloc
 #undef free
@@ -146,6 +153,7 @@ HARNESS = r'''
 #include "screen/ScreenInteraction.h"
 #include "screen/StripeChangeCache.h"
 #include "screen/ScreenWorkerIsolation.h"
+#include "screen/WeatherStatusText.h"
 using namespace FastBee::Screen;
 using std::isfinite;
 
@@ -235,7 +243,7 @@ public:
 
 template<class Renderer>
 std::vector<uint16_t> raster(const ScreenPanelSnapshot& snapshot, int lines,
-                             const char* confirmation = "") {
+                             const char* confirmation = "", bool menu = false) {
     const size_t allocationsBefore = allocations.size();
     MemoryDisplay display;
     {
@@ -245,6 +253,7 @@ std::vector<uint16_t> raster(const ScreenPanelSnapshot& snapshot, int lines,
         Renderer renderer;
         String error;
         assert(renderer.begin(&display, config, error));
+        if (menu) renderer.toggleNavigation();
         if (lines > 255) {
             // Visibility-only test seam: full-frame oracle, same render loop.
             heap_caps_free(renderer._buffer);
@@ -359,6 +368,17 @@ void visuals() {
 }
 
 void weather() {
+    assert(std::strcmp(weatherStatusText("memory_unavailable", true, false), u8"内存不足，显示缓存") == 0);
+    assert(std::strcmp(weatherStatusText("memory_unavailable", false, false), u8"内存不足，等待恢复") == 0);
+    assert(std::strcmp(weatherStatusText("authentication", false, false), u8"请检查天气密钥") == 0);
+    assert(std::strcmp(weatherStatusText("none", true, true), u8"天气已过期，重试中") == 0);
+    assert(std::strcmp(weatherStatusText("transport_failed", true, false), u8"更新失败，显示缓存") == 0);
+    for (bool cached : {false, true}) {
+        auto snapshot = scene(ScreenVisualType::WEATHER, 132, 127);
+        std::strcpy(snapshot.cards[0].weatherReason, "memory_unavailable");
+        snapshot.cards[0].hasWeatherTemperature = cached;
+        compare(snapshot, cached ? "weather-memory-cached" : "weather-memory-no-cache");
+    }
     for (const char* condition : {"sunny", "clear-night", "cloudy", "overcast", "rain",
                                  "snow", "thunderstorm", "fog", "wind", "cold", "hot", "unknown"}) {
         auto snapshot = scene(ScreenVisualType::WEATHER, 132, 127);
@@ -561,11 +581,212 @@ void bars() {
     }
 }
 
+void navigationHistory() {
+    auto snapshot = scene(ScreenVisualType::LINE, 300);
+    snapshot.pageCount = 8;
+    for (unsigned i=0;i<8;++i) {
+        std::snprintf(snapshot.pages[i].id,sizeof(snapshot.pages[i].id),"page%u",i);
+        std::snprintf(snapshot.pages[i].title,sizeof(snapshot.pages[i].title),"Page %u",i);
+    }
+    snapshot.bottomNavCount=5;
+    const unsigned order[]={0,3,1,5,7};
+    for(unsigned i=0;i<5;++i) std::strcpy(snapshot.bottomNavPageIds[i].data(),snapshot.pages[order[i]].id);
+    MemoryDisplay display; optimized::StripeRenderer renderer; DisplayConfigParams config{};config.bufferLines=16;String error;
+    assert(renderer.begin(&display,config,error));
+    assert(renderer.navigationCount(snapshot)==5 && renderer.navigationPageIndex(snapshot,1)==3);
+    assert(renderer.navigationPageIndex(snapshot,4)==-2);
+    renderer.toggleNavigation();
+    for(unsigned i=0;i<8;++i){auto r=renderer.pageMenuRect(i);
+        assert(r.h>=44 && r.y+r.h<=renderer.contentHeight());
+        assert(renderer.pageMenuHit(snapshot,r.x+r.w/2,r.y+r.h/2)==int(i));
+        assert(renderer.hitTest(snapshot,r.x+r.w/2,r.y+r.h/2)==-1);
+    }
+    const auto menu=raster<unculled::StripeRenderer>(snapshot,480,"",true);
+    for(int lines:{1,7,16,31}) equalPixels(menu,raster<optimized::StripeRenderer>(snapshot,lines,"",true),"more-menu",lines);
+    auto& card=snapshot.cards[0]; card.historyCount=4;
+    for(unsigned i=0;i<4;++i){card.history[i].sequence=i+1;card.history[i].uptimeMs=1000U+i*1000U;card.history[i].value=i*10;}
+    const auto continuous=raster<optimized::StripeRenderer>(snapshot,16);
+    for(unsigned i=0;i<4;++i) card.history[i].sequence=1+i*7;
+    equalPixels(continuous,raster<optimized::StripeRenderer>(snapshot,16),"interleaved-sources-connect",16);
+    compare(snapshot,"global-sequence-gaps");
+    const auto bounds=renderer.cardBounds(snapshot,card);
+    const auto accent=optimized::paletteFor("dark").accent;
+    auto chartPixels=[&](const std::vector<uint16_t>& pixels){
+        size_t count=0;
+        for(int y=bounds.y+35;y<=bounds.y+bounds.h-56;++y)
+            for(int x=bounds.x+48;x<=bounds.x+bounds.w-14;++x)
+                if(pixels[y*480+x]==accent)++count;
+        return count;
+    };
+    for(unsigned i=0;i<4;++i) card.history[i].restored=true;
+    const auto dots=raster<optimized::StripeRenderer>(snapshot,16);
+    assert(chartPixels(continuous)>chartPixels(dots)+100);
+    for(unsigned i=0;i<4;++i) std::strcpy(card.history[i].bootId,"previous-boot");
+    assert(chartPixels(raster<optimized::StripeRenderer>(snapshot,16))==chartPixels(continuous));
+    compare(snapshot,"restored-same-boot-lines");
+    std::strcpy(card.history[2].bootId,"next-boot");
+    std::strcpy(card.history[3].bootId,"next-boot");
+    assert(chartPixels(raster<optimized::StripeRenderer>(snapshot,16))<chartPixels(continuous));
+    compare(snapshot,"restored-boot-boundary");
+    for(unsigned i=0;i<4;++i) card.history[i].bootId[0]=0;
+    for(unsigned i=0;i<4;++i) card.history[i].restored=false;
+    for(unsigned i=0;i<4;++i) card.history[i].sequence=i+1;
+    card.history[2].uptimeMs=100000;card.history[3].uptimeMs=101000;
+    assert(chartPixels(raster<optimized::StripeRenderer>(snapshot,16))<chartPixels(continuous));
+    compare(snapshot,"time-gap");
+    for(unsigned i=0;i<4;++i){card.history[i].epochMs=1609459140000ULL+i*60000ULL;}
+    compare(snapshot,"cross-day");
+    card.history[2].restored=true;card.history[2].epochMs=0;card.history[3].epochMs=0;
+    compare(snapshot,"mixed-clock-domains");
+}
+
+void controlTargets() {
+    for (const auto& bounds : std::vector<ScreenPixelRect>{{0,0,240,280},{12,8,456,360},{8,16,320,440}}) {
+        ScreenMotorLayout layout{bounds}; assert(layout.valid());
+        const auto forward=layout.direction(0), stop=layout.stop(), reverse=layout.direction(1);
+        assert(forward.y==stop.y && stop.y==reverse.y);
+        assert(forward.h==64 && stop.h==64 && reverse.h==64);
+        assert(forward.w>=64 && forward.w==stop.w && stop.w==reverse.w);
+        assert(forward.x+forward.w+10==stop.x && stop.x+stop.w+10==reverse.x);
+        assert(forward.x>=bounds.x+12 && reverse.x+reverse.w<=bounds.x+bounds.w-12);
+        assert(stop.y+stop.h<=bounds.y+bounds.h-18);
+        const auto parameter=layout.parameter(1);
+        assert(parameter.y+parameter.h+10<=stop.y);
+        for(unsigned row=0;row<2;++row)for(unsigned col=0;col<3;++col){
+            const auto adjust=layout.adjust(row,col);
+            assert(adjust.y+adjust.h<stop.y);
+        }
+    }
+    MemoryDisplay display; optimized::StripeRenderer renderer;
+    DisplayConfigParams config{}; config.bufferLines=16; String error;
+    assert(renderer.begin(&display,config,error));
+    for (auto visual : {ScreenVisualType::MOTOR_CONTROL, ScreenVisualType::ACTION,
+                        ScreenVisualType::SWITCH, ScreenVisualType::SELECT,
+                        ScreenVisualType::NAVIGATION}) {
+        auto snapshot=scene(visual,448,16);
+        auto& card=snapshot.cards[0];card.rect={16,16,448,448};card.pending=false;
+        card.kind=visual==ScreenVisualType::NAVIGATION?ScreenCardKind::PAGE_LINK:
+                  visual==ScreenVisualType::MOTOR_CONTROL||visual==ScreenVisualType::ACTION?ScreenCardKind::CONTROL:ScreenCardKind::SYSTEM;
+        const auto bounds=renderer.cardBounds(snapshot,card);
+        std::vector<ScreenPixelRect> controls;
+        if(visual==ScreenVisualType::MOTOR_CONTROL){
+            ScreenMotorLayout layout{bounds};assert(layout.valid());
+            controls={layout.direction(0),layout.direction(1),layout.stop()};
+            const auto stop=layout.stop();
+            assert(renderer.tapTarget(snapshot,stop.x+stop.w/2,stop.y+stop.h/2,"")==4);
+            for(unsigned column=0;column<2;++column){
+                const auto button=layout.direction(column);
+                assert(renderer.tapTarget(snapshot,button.x+button.w/2,button.y+button.h/2,"")==2+int(column));
+                const int gapX=column==0?button.x+button.w+5:stop.x+stop.w+5;
+                assert(renderer.hitTest(snapshot,gapX,stop.y+stop.h/2)==-1);
+                assert(renderer.tapTarget(snapshot,gapX,stop.y+stop.h/2,"")==0);
+            }
+            card.pending=true;card.motorKnown=false;
+            assert(renderer.tapTarget(snapshot,stop.x+stop.w/2,stop.y+stop.h/2,"")==4);
+            card.pending=false;card.motorKnown=true;card.motorPulse=100;
+            card.motorSpeedDirty=false;card.motorPulseDirty=false;
+            for(unsigned column=0;column<3;++column){
+                const auto button=layout.command(column);
+                const int expected=column==0?2:column==1?4:3;
+                assert(renderer.tapTarget(snapshot,button.x+button.w/2,button.y+2,"")==expected);
+                assert(renderer.tapTarget(snapshot,button.x+button.w/2,button.y+button.h-2,"")==expected);
+            }
+            for(unsigned row=0;row<2;++row)for(unsigned col=0;col<3;++col)controls.push_back(layout.adjust(row,col));
+        } else if(visual==ScreenVisualType::SELECT) {
+            controls={screenSelectButton(bounds,false),screenSelectButton(bounds,true)};
+        } else if(visual==ScreenVisualType::SWITCH) {
+            controls={{static_cast<int16_t>(bounds.x+bounds.w-64),static_cast<int16_t>(bounds.y+bounds.h/2-4),54,26}};
+        } else if(visual==ScreenVisualType::NAVIGATION) {
+            controls={renderer.navigationButton(bounds)};
+        } else {
+            controls={{static_cast<int16_t>(bounds.x+10),static_cast<int16_t>(bounds.y+std::max<int>(34,bounds.h/2-1)),static_cast<int16_t>(bounds.w-20),44}};
+        }
+        renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+        const auto baseline=display.pixels;
+        if(visual==ScreenVisualType::MOTOR_CONTROL){
+            ScreenMotorLayout layout{bounds};
+            const uint16_t colors[]={optimized::rgb565(24,116,70),optimized::rgb565(168,56,66),optimized::rgb565(32,91,174)};
+            for(unsigned column=0;column<3;++column){
+                const auto button=layout.command(column);
+                assert(baseline[1+(button.y+8)*480+button.x+button.w/2]==colors[column]);
+            }
+            const auto ready=card;
+            for(unsigned state=0;state<6;++state){
+                card=ready;
+                if(state==0)card.pending=true;
+                if(state==1)card.motorKnown=false;
+                if(state==2)card.motorPulse=0;
+                if(state==3)card.motorSpeedDirty=true;
+                if(state==4)card.motorPulseDirty=true;
+                if(state==5){card.motorCommandKnown=true;card.motorCommandSuccess=false;}
+                renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+                const auto idle=display.pixels;
+                for(unsigned column=0;column<3;++column){
+                    const auto button=layout.command(column);
+                    const auto sample=1+(button.y+8)*480+button.x+button.w/2;
+                    assert(idle[sample]==colors[column]);
+                    renderer.setPressed(card.id,button.x+button.w/2,button.y+button.h/2);
+                    assert(renderer.render(snapshot,"",error));
+                    assert(display.pixels[sample]==optimized::blend565(colors[column],optimized::paletteFor(snapshot.themeId).card,185));
+                    renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+                    assert(display.pixels==idle);
+                }
+            }
+            card=ready;renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+            assert(display.pixels==baseline);
+        }
+        // Parent card border, title and padding never act as controls and
+        // even a forced pressed-card ID cannot recolor their pixels.
+        for(auto point:std::vector<std::pair<int,int>>{{bounds.x+1,bounds.y+1},{bounds.x+25,bounds.y+20},{bounds.x+1,bounds.y+bounds.h/2}}){
+            assert(renderer.hitTest(snapshot,point.first,point.second)==-1);
+            assert(renderer.tapTarget(snapshot,point.first,point.second,"")==0);
+            assert(!renderer.feedbackHitTest(snapshot,point.first,point.second));
+            renderer.setPressed(card.id,point.first,point.second);assert(renderer.render(snapshot,"",error));
+            assert(display.pixels==baseline);
+        }
+        std::vector<int> targets;
+        for(const auto& button:controls){
+            const int x=button.x+button.w/2,y=button.y+button.h/2;
+            assert(renderer.hitTest(snapshot,x,y)==0);
+            int target=renderer.tapTarget(snapshot,x,y,"");assert(target>0);
+            assert(std::find(targets.begin(),targets.end(),target)==targets.end());targets.push_back(target);
+            renderer.setPressed(card.id,x,y);assert(renderer.render(snapshot,"",error));
+            size_t changed=0;
+            for(size_t i=1;i+1<display.pixels.size();++i)if(display.pixels[i]!=baseline[i]){
+                ++changed;assert(screenRectContains(button,(i-1)%480,(i-1)/480));
+            }
+            assert(changed>0);
+            renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));assert(display.pixels==baseline);
+        }
+        card.interactive=false;
+        const auto button=controls.front();
+        assert(renderer.hitTest(snapshot,button.x+button.w/2,button.y+button.h/2)==-1);
+        assert(renderer.tapTarget(snapshot,button.x+button.w/2,button.y+button.h/2,"")==0);
+        assert(!renderer.feedbackHitTest(snapshot,button.x+button.w/2,button.y+button.h/2));
+    }
+    // One or two real pages occupy the whole footer without phantom tabs.
+    for(unsigned count:{1,2}){
+        auto snapshot=scene(ScreenVisualType::ACTION);snapshot.pages[0]=snapshot.pages[1];
+        snapshot.pageCount=count;snapshot.activePageIndex=0;
+        std::strcpy(snapshot.pages[0].id,"home");std::strcpy(snapshot.pages[1].id,"second");
+        assert(renderer.navigationCount(snapshot)==count);
+        for(int x=0;x<480;++x){
+            int expected=x*count/480;
+            assert(renderer.pageNavigationHit(snapshot,x,440)==expected);
+            assert(renderer.navigationPageIndex(snapshot,expected)==expected);
+            assert(renderer.tapTarget(snapshot,x,440,"")==0x1000+expected);
+        }
+        assert(renderer.navigationPageIndex(snapshot,count)==-1);
+    }
+}
+
 void preview() {
     auto snapshot = scene(ScreenVisualType::CLOCK);
-    snapshot.pageCount = 1; snapshot.activePageIndex = 0; snapshot.cardCount = 4;
+    snapshot.pageCount = 5; snapshot.activePageIndex = 0; snapshot.cardCount = 4;
     snapshot.pages[0] = snapshot.pages[1]; snapshot.pages[0].firstCard = 0; snapshot.pages[0].cardCount = 4;
     std::strcpy(snapshot.pages[0].title, u8"首页");
+    const char* pageTitles[]={u8"首页",u8"趋势",u8"控制",u8"天气",u8"系统"};
+    for(unsigned i=0;i<5;++i){std::snprintf(snapshot.pages[i].id,sizeof(snapshot.pages[i].id),"page%u",i);std::strcpy(snapshot.pages[i].title,pageTitles[i]);}
     auto& clock = snapshot.cards[0]; clock.kind=ScreenCardKind::CLOCK; clock.visualType=ScreenVisualType::CLOCK;
     std::strcpy(snapshot.backgroundPresetId,"solid");
     clock.rect={12,8,456,112};std::strcpy(clock.title,u8"日期与时间");clock.iconId[0]=0;
@@ -582,11 +803,11 @@ void preview() {
         for(uint16_t pixel:raster<optimized::StripeRenderer>(snapshot,16)){unsigned char rgb[3]={static_cast<unsigned char>(((pixel>>11)&31)*255/31),static_cast<unsigned char>(((pixel>>5)&63)*255/63),static_cast<unsigned char>((pixel&31)*255/31)};assert(std::fwrite(rgb,1,3,output)==3);}std::fclose(output);
     };
     save("screen-home");
-    snapshot.cardCount=1;snapshot.pages[0].cardCount=1;std::strcpy(snapshot.pages[0].title,u8"电机控制");
+    snapshot.cardCount=1;snapshot.pages[2]=snapshot.pages[0];snapshot.pages[2].cardCount=1;snapshot.activePageIndex=2;std::strcpy(snapshot.pages[2].title,u8"控制");
     auto& motor=snapshot.cards[0];motor={};motor.rect={12,8,456,464};motor.kind=ScreenCardKind::CONTROL;motor.visualType=ScreenVisualType::MOTOR_CONTROL;
     std::strcpy(motor.id,"motor");std::strcpy(motor.title,u8"传送电机");motor.motorKnown=true;motor.motorSpeed=500;motor.motorSpeedInput=500;motor.motorPrecision=1;motor.motorPulse=1600;motor.motorPulseInput=1600;
     compare(snapshot,"refined-motor");save("screen-motor");
-    snapshot.cardCount=5;snapshot.pages[0].cardCount=5;std::strcpy(snapshot.pages[0].title,u8"系统设置");
+    snapshot.cardCount=5;snapshot.pages[4]=snapshot.pages[0];snapshot.pages[4].cardCount=5;snapshot.activePageIndex=4;std::strcpy(snapshot.pages[4].title,u8"系统");
     const char* ids[]={"brightness","sleep-time","touch-beep","confirm-idle","sleep"};
     const char* titles[]={u8"屏幕亮度",u8"自动息屏",u8"触摸提示音",u8"操作确认间隔",u8"立即息屏"};
     const ScreenVisualType visuals[]={ScreenVisualType::SLIDER,ScreenVisualType::SELECT,ScreenVisualType::SWITCH,ScreenVisualType::SELECT,ScreenVisualType::ACTION};
@@ -611,6 +832,8 @@ int main(int argc, char** argv) {
     else if (group == "themes") themes();
     else if (group == "bars") bars();
     else if (group == "preview") preview();
+    else if (group == "navigation-history") navigationHistory();
+    else if (group == "control-targets") controlTargets();
     else return 3;
     assert(allocations.empty());
     std::printf("%s raster comparisons passed (%zu pixel comparisons)\n", group.c_str(), comparisons);

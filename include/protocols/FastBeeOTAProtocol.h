@@ -20,25 +20,83 @@ struct Command {
 inline bool hasUnsafeUrlCharacter(const String& value) {
     for (size_t i = 0; i < value.length(); ++i) {
         const uint8_t c = static_cast<uint8_t>(value.charAt(i));
-        if (c <= 0x20U || c == 0x7FU) return true;
+        if (c <= 0x20U || c == 0x7FU || c == '\\') return true;
     }
     return false;
 }
 
-inline bool isValidHttpsUrl(const String& value) {
-    if (!value.startsWith("https://") || value.length() <= 8U ||
+inline bool isHttpsUrl(const String& value) {
+    return value.startsWith("https://");
+}
+
+inline bool isValidFirmwareUrl(const String& value) {
+    const size_t authorityStart = isHttpsUrl(value) ? 8U :
+        (value.startsWith("http://") ? 7U : 0U);
+    if (!authorityStart || value.length() <= authorityStart || value.length() > 768U ||
         hasUnsafeUrlCharacter(value) || value.indexOf('#') >= 0) {
         return false;
     }
     size_t authorityEnd = value.length();
-    for (size_t i = 8; i < value.length(); ++i) {
+    for (size_t i = authorityStart; i < value.length(); ++i) {
         const char c = value.charAt(i);
         if (c == '/' || c == '?' || c == '#') {
             authorityEnd = i;
             break;
         }
     }
-    return authorityEnd > 8U;
+    const String authority = value.substring(authorityStart, authorityEnd);
+    if (authority.isEmpty() || authority.indexOf('@') >= 0) return false;
+    String host = authority;
+    String port;
+    if (authority.startsWith("[")) {
+        const int close = authority.indexOf(']');
+        if (close <= 1 || authority.indexOf(':') < 0) return false;
+        host = authority.substring(1, close);
+        const String suffix = authority.substring(close + 1);
+        if (!suffix.isEmpty()) {
+            if (!suffix.startsWith(":") || suffix.length() == 1U) return false;
+            port = suffix.substring(1);
+        }
+    } else {
+        const int colon = authority.indexOf(':');
+        if (colon >= 0) {
+            host = authority.substring(0, colon);
+            port = authority.substring(colon + 1);
+            if (port.isEmpty()) return false;
+        }
+        if (host.isEmpty()) return false;
+        for (size_t i = 0; i < host.length(); ++i) {
+            const char c = host.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
+        }
+    }
+    if (!port.isEmpty()) {
+        uint32_t number = 0;
+        for (size_t i = 0; i < port.length(); ++i) {
+            const char c = port.charAt(i);
+            if (c < '0' || c > '9') return false;
+            number = number * 10U + static_cast<uint32_t>(c - '0');
+            if (number > 65535U) return false;
+        }
+        if (!number) return false;
+    }
+    return true;
+}
+
+inline bool isValidHttpsUrl(const String& value) {
+    return isHttpsUrl(value) && isValidFirmwareUrl(value);
+}
+
+inline bool validateBaseUrl(const String& value, String& error) {
+    error = "";
+    if (value.isEmpty()) return true;
+    if (value.length() > 512U || !isValidFirmwareUrl(value) ||
+        value.indexOf('?') >= 0 || value.indexOf('#') >= 0) {
+        error = "OTA base URL must use http:// or https:// with a valid host, no credentials, query or fragment (max 512 characters)";
+        return false;
+    }
+    return true;
 }
 
 inline bool isInteger(JsonVariantConst value) {
@@ -137,9 +195,9 @@ inline bool resolveFirmwareUrl(const String& requestedUrl,
 
     String path = requestedUrl;
     path.trim();
-    if (path.startsWith("https://")) {
-        if (!isValidHttpsUrl(path)) {
-            error = "OTA HTTPS URL is invalid";
+    if (path.startsWith("https://") || path.startsWith("http://")) {
+        if (!isValidFirmwareUrl(path)) {
+            error = "OTA HTTP/HTTPS URL is invalid";
             return false;
         }
         resolvedUrl = path;
@@ -147,7 +205,7 @@ inline bool resolveFirmwareUrl(const String& requestedUrl,
     }
     if (path.isEmpty() || path.startsWith("//") || path.indexOf("://") >= 0 ||
         path.indexOf('#') >= 0 || hasUnsafeUrlCharacter(path)) {
-        error = "OTA URL must be HTTPS or a relative path";
+        error = "OTA URL must be HTTP/HTTPS or a relative path";
         return false;
     }
 
@@ -181,9 +239,7 @@ inline bool resolveFirmwareUrl(const String& requestedUrl,
         base = "https://" + host;
     }
 
-    if (!isValidHttpsUrl(base) || base.indexOf('?') >= 0 ||
-        base.indexOf('#') >= 0) {
-        error = "OTA HTTPS base URL must use https://";
+    if (!validateBaseUrl(base, error)) {
         return false;
     }
     while (base.endsWith("/") && base.length() > 8U) {

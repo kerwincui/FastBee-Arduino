@@ -254,7 +254,8 @@ function verifyCase({ environment, expected, buildFlags, expectedRequestConcurre
         `${environment}: diagnostics code must stay in an on-demand module`);
     assert.ok(peripheralSave.includes("registerModule('peripheral-save'") && peripheralSave.includes('/api/peripherals/preflight'),
         `${environment}: peripheral save/preflight module contract`);
-    assert.ok(peripheralIo.includes("registerModule('peripheral-io'") && peripheralIo.includes("loadFragment('','peripheral-io')"),
+    assert.ok(/registerModule\(["']peripheral-io["']\s*,/.test(peripheralIo) &&
+        /loadFragment\(["']["']\s*,\s*["']peripheral-io["']\)/.test(peripheralIo),
         `${environment}: peripheral diagnostics module contract`);
 
     const modalsHtml = readGzipText('pages/modals.html');

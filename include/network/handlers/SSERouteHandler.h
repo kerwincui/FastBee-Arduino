@@ -52,7 +52,7 @@ public:
 
     // 最大 SSE 客户端数：统一引用 ResourceProfile::TCP_SSE_BUDGET（单一真相来源）
     static constexpr size_t MAX_SSE_CLIENTS = FastBee::ResourceProfile::TCP_SSE_BUDGET;
-    // 单次消息最大字节数，超过则截断
+    // 单次消息最大字节数，超长数组按完整记录分包，禁止截断 JSON
     static constexpr size_t MAX_SSE_MESSAGE_SIZE = 512;
     // 心跳间隔（毫秒）
     static constexpr unsigned long HEARTBEAT_INTERVAL_MS = 60000;
@@ -89,6 +89,7 @@ private:
     void trackClient(AsyncEventSourceClient* client, unsigned long now);
     /// 从跟踪槽位移除断开的客户端
     void untrackClient(AsyncEventSourceClient* client);
+    void noteClientAck(AsyncEventSourceClient* client, size_t length);
     /// 低内存时是否应跳过 SSE 推送
     bool shouldSkipBroadcast();
     void setReason(char* dest, size_t destSize, const char* reason) const;

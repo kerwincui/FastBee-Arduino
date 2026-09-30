@@ -245,22 +245,42 @@
                     </div>
                     <!-- Motor 扩展（步进电机/伺服电机） -->
                     <div id="mdev-edit-motor-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">
+                        <div class="fb-form-group">
+                            <label for="mdev-edit-motor-profile">寄存器协议</label>
+                            <select id="mdev-edit-motor-profile" data-change-action="_onMotorProtocolPreset">
+                                <option value="custom">自定义 16 位寄存器</option>
+                                <option value="legacy">兼容原有配置（FC03 / FC06）</option>
+                                <option value="yf53">载入 YF-53 预设</option>
+                            </select>
+                        </div>
                         <div class="fb-grid-3">
                             <div class="fb-form-group"><label>正转寄存器</label><input type="number" id="mdev-edit-motor-fwd" class="" min="0" max="65535" value="0"></div>
                             <div class="fb-form-group"><label>反转寄存器</label><input type="number" id="mdev-edit-motor-rev" class="" min="0" max="65535" value="1"></div>
                             <div class="fb-form-group"><label>停止寄存器</label><input type="number" id="mdev-edit-motor-stop" class="" min="0" max="65535" value="2"></div>
-                            <div class="fb-form-group"><label>速度寄存器</label><input type="number" id="mdev-edit-motor-speed" class="" min="0" max="65535" value="5"></div>
-                            <div class="fb-form-group"><label>脉冲数寄存器</label><input type="number" id="mdev-edit-motor-pulse" class="" min="0" max="65535" value="7"></div>
+                            <div class="fb-form-group"><label>速度写入地址</label><input type="number" id="mdev-edit-motor-speed" class="" min="0" max="65535" value="5"></div>
+                            <div class="fb-form-group"><label>脉冲数写入地址</label><input type="number" id="mdev-edit-motor-pulse" class="" min="0" max="65535" value="7"></div>
                             <div class="fb-form-group"><label>小数位</label><select id="mdev-edit-motor-decimals" class=""><option value="0" selected>0位</option><option value="1">1位</option><option value="2">2位</option></select></div>
                         </div>
+                        <div id="mdev-edit-motor-protocol-fields" class="fb-mt-1">
+                            <div class="fb-grid-3">
+                                <div class="fb-form-group"><label for="mdev-edit-motor-read-fc">读回功能码</label><select id="mdev-edit-motor-read-fc"><option value="3">03 保持寄存器</option><option value="4">04 输入寄存器</option></select></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-write-fc">写入功能码</label><select id="mdev-edit-motor-write-fc"><option value="6">06 单寄存器</option><option value="16">16 (0x10)</option></select></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-read-speed">速度读回地址</label><input id="mdev-edit-motor-read-speed" type="number" min="0" max="65535"></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-read-pulse">脉冲数读回地址</label><input id="mdev-edit-motor-read-pulse" type="number" min="0" max="65535"></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-fwd-value">正转写入值</label><input id="mdev-edit-motor-fwd-value" type="number" min="0" max="65535"></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-rev-value">反转写入值</label><input id="mdev-edit-motor-rev-value" type="number" min="0" max="65535"></div>
+                                <div class="fb-form-group"><label for="mdev-edit-motor-stop-value">停止写入值</label><input id="mdev-edit-motor-stop-value" type="number" min="0" max="65535"></div>
+                            </div>
+                            <label class="fb-flex-inline"><input type="checkbox" id="mdev-edit-motor-finite"><span>已确认控制器按脉冲数执行有限行程</span></label>
+                        </div>
                         <div class="fb-grid-3 fb-mt-1">
-                            <div class="fb-form-group"><label>最小位置</label><input type="number" id="mdev-edit-motor-min-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
-                            <div class="fb-form-group"><label>最大位置</label><input type="number" id="mdev-edit-motor-max-pos" class="" min="-2147483648" max="2147483647" value="10000"></div>
-                            <div class="fb-form-group"><label>当前位置</label><input type="number" id="mdev-edit-motor-cur-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
-                            <div class="fb-form-group"><label>移动步长</label><input type="number" id="mdev-edit-motor-move-step" class="" min="0" max="2147483647" value="100"></div>
+                            <div class="fb-form-group"><label>最小位置（脉冲）</label><input type="number" id="mdev-edit-motor-min-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label>最大位置（脉冲）</label><input type="number" id="mdev-edit-motor-max-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label>估算位置（脉冲）</label><input type="number" id="mdev-edit-motor-cur-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label>移动步长</label><input type="number" id="mdev-edit-motor-move-step" class="" min="0" max="2147483647" value="0"></div>
                             <div class="fb-form-group"><label>上次脉冲数</label><input type="number" id="mdev-edit-motor-last-pulse" class="" min="0" max="65535" value="0"></div>
                         </div>
-                        <small class="field-hint">寄存器地址参考设备说明书，默认值兼容YF-53步进电机控制器</small>
+                        <small class="field-hint">寄存器以设备协议为准。位置单位是脉冲，不是毫米；上下界相等时关闭软限位。须核实位移换算、原点及两端余量。位置仅按指令估算，断电、失步或提前停止后不能据此保证不撞端，不替代独立限位保护。</small>
                     </div>
                 </div>
             </div>
@@ -351,7 +371,7 @@
                                 <span class="motor-status-value"><span id="motor-cur-pulse">--</span> <span class="motor-status-unit">个</span></span>
                             </div>
                             <div class="motor-status-item">
-                                <span class="motor-status-label">方向</span>
+                                <span class="motor-status-label">最近指令</span>
                                 <span class="motor-status-value" id="motor-cur-direction">--</span>
                             </div>
                             <div class="motor-status-item">
@@ -364,12 +384,12 @@
                     <div class="motor-params-section">
                         <div class="motor-param-row">
                             <label>速度</label>
-                            <input type="number" id="modbus-ctrl-motor-speed" class="motor-param-input" min="0" max="65535" value="50">
+                            <input type="number" id="modbus-ctrl-motor-speed" class="motor-param-input" min="0" max="65535" value="" placeholder="未读取">
                             <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary" data-action="setMotorSpeed">设置速度</button>
                         </div>
                         <div class="motor-param-row">
                             <label>脉冲数</label>
-                            <input type="number" id="modbus-ctrl-motor-pulse" class="motor-param-input" min="0" max="65535" value="1600">
+                            <input type="number" id="modbus-ctrl-motor-pulse" class="motor-param-input" min="0" max="65535" value="" placeholder="未读取">
                             <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary" data-action="setMotorPulse">设置脉冲</button>
                         </div>
                     </div>

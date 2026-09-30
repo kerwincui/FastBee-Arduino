@@ -18,6 +18,7 @@
 #include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
 #include "core/MemoryBudget.h"
+#include "network/TlsMemory.h"
 #include "core/FastBeeFramework.h"
 #include "network/WebConfigManager.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
@@ -53,8 +54,6 @@ namespace {
 extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
-constexpr size_t MQTTS_MBEDTLS_PSRAM_MIN_ALLOC = 256U;
-constexpr size_t MQTTS_MBEDTLS_PSRAM_RESERVE = 64U * 1024U;
 constexpr const char* FASTBEE_OTA_REPLY_TOPIC = "/{deviceNum}/http/upgrade/reply";
 constexpr const char* FASTBEE_OTA_COMMAND_TOPIC = "/{deviceNum}/http/upgrade/set";
 constexpr const char* FASTBEE_OTA_REPLY_LEGACY = "/http/upgrade/reply";
@@ -130,7 +129,6 @@ void ensureFastBeeOtaSubscribeTopic(std::vector<MqttSubscribeTopic>& topics) {
 // 512 字节 × 4 槽 = 2KB DRAM 预分配，与 MqttSlot.payload 尺寸对齐
 FastBee::StringBufferPool<512, 4> g_mqttPublishPool;
 
-bool g_mqttsMbedtlsAllocatorInstalled = false;
 
 // Keep the SSE payload self-describing.  The REST status route has the same
 // mapping, but MQTTClient is also the producer for asynchronous status events;
@@ -201,11 +199,7 @@ NetworkType getActiveMqttNetworkType() {
 // TLS 大缓冲是否可路由到 PSRAM：无 PSRAM 时 mbedTLS 全部落内部 DRAM，
 // 握手准入必须使用 MemoryBudget 的无 PSRAM 严格门槛
 bool mqttsTlsUsesPsram() {
-#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
-    return psramFound();
-#else
-    return false;
-#endif
+    return FastBee::TlsMemory::usesPsram();
 }
 
 // 深度暂停决策：前台 Web 请求活跃时不应“跳过暂停继续握手”（历史 panic
@@ -240,66 +234,8 @@ MqttsWebPauseDecision decideWebPauseForMqtts(uint32_t dramFree, uint32_t largest
     return MqttsWebPauseDecision::PAUSE;
 }
 
-void* fastbeeMbedtlsCalloc(size_t n, size_t size) {
-    if (size != 0 && n > (static_cast<size_t>(-1) / size)) {
-        return nullptr;
-    }
-
-    const size_t bytes = n * size;
-    void* ptr = nullptr;
-
-#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
-    if (bytes >= MQTTS_MBEDTLS_PSRAM_MIN_ALLOC) {
-        const size_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        if (psramFree > bytes + MQTTS_MBEDTLS_PSRAM_RESERVE) {
-            ptr = heap_caps_calloc_prefer(
-                n,
-                size,
-                2,
-                MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM,
-                MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL);
-        }
-    }
-#endif
-
-    if (!ptr) {
-#if defined(BOARD_HAS_PSRAM) && defined(MALLOC_CAP_SPIRAM)
-        ptr = heap_caps_calloc_prefer(
-            n,
-            size,
-            2,
-            MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL,
-            MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM);
-#else
-        ptr = heap_caps_calloc(n, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-#endif
-    }
-
-    if (!ptr) {
-        ptr = heap_caps_calloc(n, size, MALLOC_CAP_8BIT);
-    }
-    return ptr;
-}
-
-void fastbeeMbedtlsFree(void* ptr) {
-    heap_caps_free(ptr);
-}
-
 void ensureMbedtlsAllocatorForMqtts() {
-#if defined(MBEDTLS_PLATFORM_MEMORY)
-    if (g_mqttsMbedtlsAllocatorInstalled) {
-        return;
-    }
-    int rc = mbedtls_platform_set_calloc_free(fastbeeMbedtlsCalloc, fastbeeMbedtlsFree);
-    if (rc == 0) {
-        g_mqttsMbedtlsAllocatorInstalled = true;
-        ets_printf("[MQTT] mbedTLS allocator installed (psram_min=%u reserve=%u)\n",
-                   (unsigned)MQTTS_MBEDTLS_PSRAM_MIN_ALLOC,
-                   (unsigned)MQTTS_MBEDTLS_PSRAM_RESERVE);
-    } else {
-        LOG_WARNINGF("[MQTT] mbedTLS allocator install failed rc=%d", rc);
-    }
-#endif
+    (void)FastBee::TlsMemory::ensureAllocator();
 }
 
 }  // namespace

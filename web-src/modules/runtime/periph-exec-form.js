@@ -1428,7 +1428,11 @@
         },
 
         savePeriphExecRule() {
-            if (!this.guardDeveloperModeAction()) return;
+            if (!this.guardDeveloperModeAction() || this._peSavePending) return;
+            if (this._peEditorDataReady !== true) {
+                this.showInlineError('periph-exec-error', '配置数据尚未加载成功，请关闭后重试');
+                return;
+            }
             const errEl = document.getElementById('periph-exec-error');
             this.clearInlineError(errEl);
             const originalId = document.getElementById('periph-exec-original-id').value;
@@ -1595,8 +1599,18 @@
 
             if (isEdit) ruleData.id = originalId;
             const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
-            apiPostJson(url, ruleData)
+            const seq = this._peEditLoadSeq;
+            const generation = this._getPeriphExecPageGeneration();
+            const active = () => this._isPeriphExecEditLoadActive(seq, generation);
+            const button = document.getElementById('save-periph-exec-btn');
+            this._peSavePending = true;
+            if (button) button.disabled = true;
+            return apiPostJson(url, ruleData)
                 .then(res => {
+                    if (!active()) {
+                        if (res && res.success && this._invalidatePeriphExecRuntimeCaches) this._invalidatePeriphExecRuntimeCaches();
+                        return;
+                    }
                     if (res && res.success) {
                         if (typeof this._invalidatePeriphExecRuntimeCaches === 'function') {
                             this._invalidatePeriphExecRuntimeCaches();
@@ -1609,6 +1623,7 @@
                     }
                 })
                 .catch(err => {
+                    if (!active()) return;
                     console.error('Save periph exec rule failed:', err);
                     if (err?.data?.error || err?.data?.message) {
                         this.showInlineError(errEl, err.data.error || err.data.message);
@@ -1623,6 +1638,10 @@
                         ))
                     );
                     this.showInlineError(errEl, isNetworkError ? t('pef-err-offline', '设备离线或不可达，请检查网络连接') : t('pef-err-save-failed', '保存失败'));
+                }).finally(() => {
+                    this._peSavePending = false;
+                    const currentButton = document.getElementById('save-periph-exec-btn');
+                    if (currentButton) currentButton.disabled = this._peEditorDataReady !== true;
                 });
         }
 

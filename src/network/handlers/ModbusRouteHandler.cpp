@@ -12,6 +12,36 @@
 #include "core/MotorControlService.h"
 #include "utils/PsramJsonDocument.h"
 #include <ArduinoJson.h>
+#include <new>
+#include <freertos/task.h>
+
+static void addModbusReadDiagnostics(JsonDocument& doc, const ModbusReadDiagnostics& trace) {
+    JsonObject out = doc["diagnostic"].to<JsonObject>();
+    out["scope"] = "request:lastAttempt";
+    out["reason"] = trace.reason;
+    out["attempts"] = trace.attempts;
+    out["txLength"] = trace.txLength;
+    out["txWrittenLastAttempt"] = trace.txWritten;
+    out["rxBufferedLastAttempt"] = trace.rxBuffered;
+    out["totalRxBuffered"] = trace.totalRxBuffered;
+    out["uartReady"] = trace.uartReady;
+    out["uartBaudRate"] = trace.uartBaudRate;
+    out["rxOverflow"] = trace.rxOverflow;
+    out["crcValid"] = trace.crcValid;
+    out["addressMatched"] = trace.addressMatched;
+    out["txPrefixTruncated"] = trace.txLength > trace.txPrefixLength;
+    out["rxPrefixTruncated"] = trace.rxOverflow || trace.rxBuffered > trace.rxPrefixLength;
+    char hex[sizeof(trace.rxPrefix) * 3]{};
+    size_t used = 0;
+    for (uint8_t i = 0; i < trace.txPrefixLength; ++i)
+        used += snprintf(hex + used, sizeof(hex) - used, i ? " %02X" : "%02X", trace.txPrefix[i]);
+    out["txPrefix"] = hex;
+    used = 0;
+    hex[0] = '\0';
+    for (uint8_t i = 0; i < trace.rxPrefixLength; ++i)
+        used += snprintf(hex + used, sizeof(hex) - used, i ? " %02X" : "%02X", trace.rxPrefix[i]);
+    out["rxPrefix"] = hex;
+}
 
 // ============================================================================
 // Modbus 閫氱敤鎺у埗 API 杈呭姪鍑芥暟
@@ -19,9 +49,11 @@
 
 // 灏?OneShotError 杞崲涓?HTTP 閿欒鍝嶅簲
 static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* request,
-                              const OneShotResult& result) {
+                              const OneShotResult& result,
+                              const ModbusReadDiagnostics* diagnostics = nullptr) {
     JsonDocument doc;
     doc["success"] = false;
+    if (diagnostics) addModbusReadDiagnostics(doc, *diagnostics);
     
     const char* errorCode = "UNKNOWN";
     const char* errorMsg = "Unknown error";
@@ -52,8 +84,9 @@ static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* requ
             doc["error"] = msgBuf;
             doc["errorCode"] = errorCode;
             doc["exceptionCode"] = result.exceptionCode;
-            HandlerUtils::sendJsonStream(request, doc);
-            // set httpCode on response manually not possible with stream, use workaround
+            String out;
+            serializeJson(doc, out);
+            request->send(httpCode, "application/json", out);
             return;
         }
         case ONESHOT_NOT_INITIALIZED:
@@ -167,9 +200,11 @@ static bool rejectModbusCriticalControl(AsyncWebServerRequest* request,
 
 // 杈呭姪锛氬皢 Modbus TX/RX 璋冭瘯甯ф坊鍔犲埌 JSON 鍝嶅簲
 static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
+    String tx, rx;
+    if (!modbus->getDebugSnapshot(tx, rx)) return;
     JsonObject debug = doc["debug"].to<JsonObject>();
-    debug["tx"] = modbus->getLastTxHex();
-    debug["rx"] = modbus->getLastRxHex();
+    debug["tx"] = tx;
+    debug["rx"] = rx;
 }
 
 // 杈呭姪锛氶€氳繃 slaveAddress 鏌ユ壘瀛愯澶囩储寮曪紙闆舵嫹璐濓紝閬垮厤 3.4KB ModbusConfig 鏍堝垎閰嶏級
@@ -313,6 +348,85 @@ ModbusRouteHandler::ModbusRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
 }
 
+namespace {
+bool validRelayChannel(int slave, int channel, int base) {
+    return slave >= 1 && slave <= 247 && channel >= 0 &&
+           channel < Protocols::MODBUS_MAX_WRITE_COILS &&
+           base >= 0 && base <= 65535 && channel <= 65535 - base;
+}
+// Match the S3 execution-worker floor for the same transaction/logger chain.
+// This is a transient internal-DRAM stack; validate RELAY_METRICS on hardware.
+constexpr uint32_t RELAY_TASK_STACK_BYTES = 7168U;
+constexpr uint32_t RELAY_TASK_ALLOCATOR_OVERHEAD_BYTES = 256U;
+constexpr uint32_t RELAY_TASK_DRAM_RESERVE_BYTES = 12288U;
+SemaphoreHandle_t relayRequestSlot() {
+    static SemaphoreHandle_t slot = xSemaphoreCreateCounting(1, 1);
+    return slot;
+}
+}
+
+struct ModbusRouteHandler::RelayJob {
+    ModbusRouteHandler* owner;
+    RelayHandler handler;
+    AsyncWebServerRequestPtr request;
+    SemaphoreHandle_t slot;
+};
+
+void ModbusRouteHandler::relayTask(void* argument) {
+    auto* job = static_cast<RelayJob*>(argument);
+    // Create before pause, then hand off ownership with a notification, as in
+    // AuthRouteHandler. Failed creation must never leave a paused request.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    {
+        auto request = job->request.lock();
+        if (request && request->client() && request->client()->connected()) {
+            // Hold a strong reference throughout the handler; disconnect cannot
+            // free its parameters while a transaction is in progress.
+            (job->owner->*(job->handler))(request.get());
+        }
+    }
+    xSemaphoreGive(job->slot);
+    delete job;
+    Serial.printf("[RELAY_METRICS] stack=%lu free=%lu bytes\n",
+                  static_cast<unsigned long>(RELAY_TASK_STACK_BYTES),
+                  static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    vTaskDelete(nullptr);
+}
+
+void ModbusRouteHandler::dispatchRelayRequest(AsyncWebServerRequest* request,
+                                             RelayHandler handler) {
+    if (!ctx->requireAuth(request)) return;
+    const auto slot = relayRequestSlot();
+    if (!slot || xSemaphoreTake(slot, 0) != pdTRUE) {
+        HandlerUtils::sendJsonError(request, 503, "Relay request already running; refresh state before retrying", 1);
+        return;
+    }
+    const uint32_t requiredBlock = RELAY_TASK_STACK_BYTES + RELAY_TASK_ALLOCATOR_OVERHEAD_BYTES;
+    if (FastBee::MemoryBudget::dram8Largest() < requiredBlock ||
+        FastBee::MemoryBudget::dram8Free() < requiredBlock + RELAY_TASK_DRAM_RESERVE_BYTES) {
+        xSemaphoreGive(slot);
+        HandlerUtils::sendJsonError(request, 503, "Insufficient memory for relay request", 3);
+        return;
+    }
+    auto* job = new (std::nothrow) RelayJob{this, handler, {}, slot};
+    if (!job) {
+        xSemaphoreGive(slot);
+        HandlerUtils::sendJsonError(request, 503, "Unable to allocate relay request", 3);
+        return;
+    }
+    TaskHandle_t task = nullptr;
+    const BaseType_t created = xTaskCreate(relayTask, "fb_relay", RELAY_TASK_STACK_BYTES,
+                                          job, 1, &task);
+    if (created != pdPASS) {
+        delete job;
+        xSemaphoreGive(slot);
+        HandlerUtils::sendJsonError(request, 503, "Unable to start relay request", 3);
+        return;
+    }
+    job->request = request->pause();
+    xTaskNotifyGive(task);
+}
+
 // ============================================================================
 // 璺敱娉ㄥ唽
 // ============================================================================
@@ -332,22 +446,22 @@ void ModbusRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Modbus 閫氱敤鎺у埗 API锛堢嚎鍦堛€佸瘎瀛樺櫒璇诲啓锛岃澶囧弬鏁帮級
     server->on("/api/modbus/coil/control", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        handleModbusCoilControl(request);
+        dispatchRelayRequest(request, &ModbusRouteHandler::handleModbusCoilControl);
     });
 
     server->on("/api/modbus/coil/batch", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        handleModbusCoilBatch(request);
+        dispatchRelayRequest(request, &ModbusRouteHandler::handleModbusCoilBatch);
     });
 
     server->on("/api/modbus/coil/delay", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        handleModbusCoilDelay(request);
+        dispatchRelayRequest(request, &ModbusRouteHandler::handleModbusCoilDelay);
     });
 
     server->on("/api/modbus/coil/status", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        handleModbusCoilStatus(request);
+        dispatchRelayRequest(request, &ModbusRouteHandler::handleModbusCoilStatus);
     });
 
     server->on("/api/modbus/device/address", HTTP_POST,
@@ -383,6 +497,10 @@ void ModbusRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     // Modbus 鐢垫満鎺у埗 API
     server->on("/api/modbus/motor/control", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusMotorControl(request);
+    });
+    server->on("/api/modbus/motor/state", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         handleModbusMotorControl(request);
     });
@@ -592,6 +710,12 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
         }
     }
 
+    if (request->hasParam("hardware") && request->getParam("hardware")->value() == "1") {
+        JsonObject hardware = data["uartHardware"].to<JsonObject>();
+        if (modbus) modbus->appendUartHardwareSnapshot(hardware);
+        else { hardware["supported"] = false; hardware["error"] = "MODBUS_NOT_RUNNING"; }
+    }
+
     health["warningCount"] = warnings.size();
 
     _statusCache.valid = false;
@@ -656,9 +780,12 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
-    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    const int slaveInput = ctx->getParamInt(request, "slaveAddress", 1);
+    uint8_t slaveAddr = static_cast<uint8_t>(slaveInput);
+    const int channelInput = ctx->getParamInt(request, "channel", 0);
+    uint16_t channel = static_cast<uint16_t>(channelInput);
+    const int baseInput = ctx->getParamInt(request, "coilBase", 0);
+    uint16_t coilBase = static_cast<uint16_t>(baseInput);
     String action = ctx->getParamValue(request, "action", "toggle");
     String mode = ctx->getParamValue(request, "mode", "coil");
 
@@ -668,11 +795,20 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
 
     if (rejectModbusCriticalControl(request, "Modbus relay control", 6144)) return;
 
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+    if (!validRelayChannel(slaveInput, channelInput, baseInput)) {
+        ctx->sendBadRequest(request, "Invalid relay address, channel or base");
         return;
     }
     
+    if (mode != "coil" && mode != "register") {
+        ctx->sendBadRequest(request, "Invalid mode (coil/register)");
+        return;
+    }
+    const int configuredIndex = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (configuredIndex >= 0 && channel >= modbus->getSubDevice(configuredIndex).channelCount) {
+        ctx->sendBadRequest(request, "Channel exceeds configured device");
+        return;
+    }
     uint16_t coilAddr = coilBase + channel;
     OneShotResult result;
     bool newState = false;  // 鐢ㄤ簬璁板綍鎿嶄綔鍚庣殑鐘舵€?
@@ -689,7 +825,8 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         } else if (action == "toggle") {
             // 鍏堣褰撳墠鍊煎啀鍙嶈浆
             OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1, true);  // isControl=true
-            if (readR.error != ONESHOT_SUCCESS) {
+            if (readR.error != ONESHOT_SUCCESS || readR.count < 1) {
+                if (readR.error == ONESHOT_SUCCESS) readR.error = ONESHOT_CRC_ERROR;
                 sendOneShotError(ctx, request, readR);
                 return;
             }
@@ -711,12 +848,13 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
             if (result.error == ONESHOT_SUCCESS) newState = false;
         } else if (action == "toggle") {
             // toggle 鏃犳硶浠庡啓鍏ュ€兼帹瀵肩粨鏋滐紝闇€瑕佸厛璇诲彇褰撳墠鐘舵€?
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8, true);  // isControl=true
-            if (readR.error != ONESHOT_SUCCESS) {
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilAddr, 1, true);  // isControl=true
+            if (readR.error != ONESHOT_SUCCESS || readR.count < 1) {
+                if (readR.error == ONESHOT_SUCCESS) readR.error = ONESHOT_CRC_ERROR;
                 sendOneShotError(ctx, request, readR);
                 return;
             }
-            bool currentState = (readR.data[channel] != 0);
+            bool currentState = (readR.data[0] != 0);
             result = modbus->writeCoilOnce(slaveAddr, coilAddr, !currentState, true);  // isControl=true
             if (result.error == ONESHOT_SUCCESS) newState = !currentState;
         } else {
@@ -1001,12 +1139,15 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
+    const int slaveInput = ctx->getParamInt(request, "slaveAddress", 1);
+    uint8_t slaveAddr = static_cast<uint8_t>(slaveInput);
+    const int channelInput = ctx->getParamInt(request, "channel", 0);
+    uint16_t channel = static_cast<uint16_t>(channelInput);
     uint16_t delayBase = (uint16_t)ctx->getParamInt(request, "delayBase", 0x0200);
     uint16_t delayUnits = (uint16_t)ctx->getParamInt(request, "delayUnits", 50);
     bool ncMode = ctx->getParamBool(request, "ncMode", false);
-    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    const int baseInput = ctx->getParamInt(request, "coilBase", 0);
+    uint16_t coilBase = static_cast<uint16_t>(baseInput);
     String mode = ctx->getParamValue(request, "mode", "coil");
     // delayMode: 0=FC05闂紑(榛樿), 1=杞欢寤舵椂, 2=纭欢瀵勫瓨鍣ㄥ欢鏃?
     uint8_t delayMode = (uint8_t)ctx->getParamInt(request, "delayMode", 0);
@@ -1022,8 +1163,8 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
 
     if (rejectModbusHeavyRequest(request, "Modbus delayed control", 8192)) return;
 
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+    if (!validRelayChannel(slaveInput, channelInput, baseInput)) {
+        ctx->sendBadRequest(request, "Invalid relay address, channel or base");
         return;
     }
     if (delayUnits == 0 || delayUnits > 255) {
@@ -1181,48 +1322,49 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
 
 void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
+
     auto modbusLease = getModbusMaster(ctx, request);
     ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
-    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
-    String mode = ctx->getParamValue(request, "mode", "coil");
 
-    if (rejectModbusHeavyRequest(request, "Modbus coil status", 8192)) return;
-    
-    // 楠岃瘉 mode 鍙傛暟
+    // Validate before narrowing; wrapping an HTTP parameter can address another slave.
+    const int slaveInput = ctx->getParamInt(request, "slaveAddress", 1);
+    const int countInput = ctx->getParamInt(request, "channelCount", 8);
+    const int baseInput = ctx->getParamInt(request, "coilBase", 0);
+    const String mode = ctx->getParamValue(request, "mode", "coil");
     if (mode != "coil" && mode != "register") {
         ctx->sendBadRequest(request, "Invalid mode (must be 'coil' or 'register')");
         return;
     }
-    
-    if (slaveAddr < 1 || slaveAddr > 247) {
+    if (slaveInput < 1 || slaveInput > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
     }
-    if (channelCount == 0 || channelCount > Protocols::MODBUS_MAX_WRITE_COILS) {
+    if (countInput < 1 || countInput > Protocols::MODBUS_MAX_WRITE_COILS) {
         ctx->sendBadRequest(request, "Invalid channel count (1-32)");
         return;
     }
-    
-    OneShotResult result;
-    if (mode == "register") {
-        // 瀵勫瓨鍣ㄦā寮忥細FC03 璇讳繚鎸佸瘎瀛樺櫒锛屾瘡閫氶亾涓€涓瘎瀛樺櫒锛屽€?!=0 涓?ON
-        result = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
-    } else {
-        // 绾垮湀妯″紡锛欶C01 璇荤嚎鍦堬紝鍚戜笂鍙栨暣鍒?8 鐨勫€嶆暟
-        uint16_t readQty = ((channelCount + 7) / 8) * 8;
-        if (readQty < 8) readQty = 8;
-        result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);  // isControl=true
+    if (baseInput < 0 || baseInput > 65535 || countInput - 1 > 65535 - baseInput) {
+        ctx->sendBadRequest(request, "Relay address range exceeds 0-65535");
+        return;
+    }
+    if (rejectModbusHeavyRequest(request, "Modbus coil status", 8192)) return;
+
+    const uint8_t slaveAddr = static_cast<uint8_t>(slaveInput);
+    const uint16_t channelCount = static_cast<uint16_t>(countInput);
+    const uint16_t coilBase = static_cast<uint16_t>(baseInput);
+    // FC01 quantity counts coils, not response bytes. Padding a four-channel
+    // device to eight coils can read nonexistent addresses and falsely mark it offline.
+    OneShotResult result = modbus->readRegistersOnce(
+        slaveAddr, mode == "register" ? 0x03 : 0x01, coilBase, channelCount, true);
+    if (result.error == ONESHOT_SUCCESS && result.count != channelCount) {
+        result.error = ONESHOT_CRC_ERROR;
     }
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
     }
-    
+
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
@@ -1230,16 +1372,8 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     data["coilBase"] = coilBase;
     data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
-    // 闃插尽鎬ф鏌ワ細纭繚涓嶈秴鍑?result.count 杈圭晫
-    for (uint16_t i = 0; i < channelCount; i++) {
-        if (i < result.count) {
-            states.add(result.data[i] != 0);
-        } else {
-            states.add(false);  // 瓒呭嚭鑼冨洿鐨勯€氶亾榛樿涓?off
-        }
-    }
+    for (uint16_t i = 0; i < channelCount; i++) states.add(result.data[i] != 0);
     addModbusDebug(doc, modbus);
-    
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -1479,10 +1613,10 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
     ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
     
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
-    uint16_t quantity = (uint16_t)ctx->getParamInt(request, "quantity", 1);
-    uint8_t fc = (uint8_t)ctx->getParamInt(request, "functionCode", 3);
+    const int slaveAddr = ctx->getParamInt(request, "slaveAddress", 1);
+    const int startAddr = ctx->getParamInt(request, "startAddress", 0);
+    const int quantity = ctx->getParamInt(request, "quantity", 1);
+    const int fc = ctx->getParamInt(request, "functionCode", 3);
 
     if (rejectModbusHeavyRequest(request, "Modbus register read", 12288)) return;
     
@@ -1490,8 +1624,12 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
     }
-    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
-        ctx->sendBadRequest(request, "Invalid quantity (1-125)");
+    if (quantity < 1 || quantity > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
+        ctx->sendBadRequest(request, "Invalid quantity (1-32)");
+        return;
+    }
+    if (startAddr < 0 || startAddr > 65535 || quantity > 65536 - startAddr) {
+        ctx->sendBadRequest(request, "Invalid register range (0-65535)");
         return;
     }
     if (fc != 0x03 && fc != 0x04) {
@@ -1499,9 +1637,11 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
         return;
     }
     
-    OneShotResult result = modbus->readRegistersOnce(slaveAddr, fc, startAddr, quantity, true);  // isControl=true
+    ModbusReadDiagnostics diagnostics;
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, fc, startAddr, quantity,
+                                                    true, 0, 0xFF, nullptr, &diagnostics);
     if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
+        sendOneShotError(ctx, request, result, &diagnostics);
         return;
     }
     
@@ -1515,6 +1655,7 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
         values.add(result.data[i]);
     }
     addModbusDebug(doc, modbus);
+    addModbusReadDiagnostics(doc, diagnostics);
     
     HandlerUtils::sendJsonStream(request, doc);
 }
@@ -1678,12 +1819,34 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
 void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     auto& motors = MotorControlService::instance();
-    const String action = ctx->getParamValue(request, "action", "");
+    const String action = request->method() == HTTP_GET ? String("state") : ctx->getParamValue(request, "action", "");
     JsonDocument response;
     JsonObject data = response["data"].to<JsonObject>();
-    if (action == "operation") {
+    if (action == "state") {
+        const int slave = ctx->getParamInt(request, "slaveAddress", 0);
+        String ref = ctx->getParamValue(request, "motorRef", "");
+        if (ref.isEmpty() && slave >= 1 && slave <= 247) ref = motors.referenceForSlave(static_cast<uint8_t>(slave));
+        if (ref.isEmpty() || !motors.validReference(ref)) {
+            ctx->sendError(request, 404, "Motor unavailable or configuration changed"); return;
+        }
+        MotorControlState state;
+        motors.state(ref, state);
+        data["motorRef"] = ref; data["motionKnown"] = false;
+        data["parametersKnown"] = state.known; data["pending"] = state.pending;
+        data["precision"] = state.precision; data["updatedMs"] = state.updatedMs;
+        if (state.known) { data["speed"] = state.speed; data["pulse"] = state.pulse; }
+        data["lastAction"] = state.lastAction; data["commandKnown"] = state.commandKnown;
+        data["commandSuccess"] = state.commandSuccess; data["commandUpdatedMs"] = state.commandUpdatedMs;
+        data["lastAcknowledgedAction"] = state.lastAcknowledgedAction; data["acknowledgedMs"] = state.acknowledgedMs;
+        data["error"] = state.error; data["readError"] = state.readError;
+        data["softLimitEnabled"] = state.softLimitEnabled; data["positionFeedback"] = false;
+        data["minPosition"] = state.minPosition; data["maxPosition"] = state.maxPosition;
+        data["estimatedPosition"] = state.estimatedPosition;
+    } else if (action == "operation") {
         const int id = ctx->getParamInt(request, "operationId", 0);
-        if (id <= 0 || !motors.operation(static_cast<uint32_t>(id), data)) {
+        bool busy = false;
+        if (id <= 0 || !motors.operation(static_cast<uint32_t>(id), data, &busy)) {
+            if (busy) { ctx->sendError(request, 503, "Motor result temporarily busy"); return; }
             ctx->sendError(request, 404, "Motor operation not found"); return;
         }
     } else {
@@ -1696,7 +1859,12 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         if (!motors.submit(ref, action, ctx->getParamInt(request, "value", 0), requestId, operationId, error)) {
             ctx->sendBadRequest(request, error); return;
         }
-        motors.operation(operationId, data);
+        // Acceptance is durable even if the immediate result lock is busy.
+        // Return the ID so the client polls it instead of resubmitting motion.
+        if (!motors.operation(operationId, data)) {
+            data["operationId"] = operationId; data["pending"] = true;
+            data["action"] = action; data["motionKnown"] = false;
+        }
         data["accepted"] = true;
     }
     response["success"] = true;

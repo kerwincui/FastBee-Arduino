@@ -91,7 +91,8 @@
                     const select = document.getElementById('log-file-select');
                     if (!select) return;
                     const current = select.value || 'system.log';
-                    const files = res && res.success && Array.isArray(res.data) ? res.data : [];
+                    if (!res || !res.success || !Array.isArray(res.data)) throw new Error(res && res.error || '日志文件列表加载失败');
+                    const files = res.data;
                     this._logFileCount = files.length;
                     select.innerHTML = '';
                     if (!files.length) {

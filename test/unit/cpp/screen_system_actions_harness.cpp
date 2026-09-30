@@ -72,6 +72,8 @@ struct Snapshot {
 
 struct FakeRenderer {
     size_t bytes = 3072;
+    unsigned invalidations = 0;
+    void invalidate() { ++invalidations; }
     size_t bufferBytes() const { return bytes; }
 };
 
@@ -82,6 +84,7 @@ struct HarnessState {
     Snapshot snapshot;
     FakeRenderer renderer;
     bool sleeping = false;
+    bool forceRender = false;
     uint8_t appliedBrightness = 255;
     bool brightnessOverridden = false;
     uint32_t brightnessOverrideRevision = 0;
@@ -232,16 +235,53 @@ void testStopCleanupAttemptsAtMostThreeWrites() {
 
     delayCalls = delayedMs = 0;
     HarnessState stillFailing;
+    stillFailing.displayBackend.caps.buzzer = true;
     stillFailing.displayBackend.buzzerResults = {false, false, false, true};
     runStopCleanup(stillFailing);
     assert(stillFailing.displayBackend.buzzerCalls.size() == 3);
     assert(delayCalls == 3 && delayedMs == 6);
+    assert(stillFailing.warningCount == 1);
 
     delayCalls = delayedMs = 0;
     HarnessState immediate;
     runStopCleanup(immediate);
     assert(immediate.displayBackend.buzzerCalls.size() == 1);
     assert(delayCalls == 0 && delayedMs == 0);
+}
+
+void testSleepOffFailureKeepsRecoveryAndRejectsNewOn() {
+    HarnessState state;
+    state.displayBackend.caps.sleep = true;
+    state.displayBackend.caps.buzzer = true;
+    assert(runSystemAction(state, ScreenSystemAction::BUZZER, 0, 1000));
+    state.displayBackend.buzzerCalls.clear();
+    state.displayBackend.buzzerResults = {false, false, true};
+    assert(runSystemAction(state, ScreenSystemAction::SLEEP, 0, 1020));
+    assert(state.sleeping && state.buzzerNeedsOff && state.buzzerOffAtMs == 1120);
+    assert(!runSystemAction(state, ScreenSystemAction::BUZZER, 0, 1040));
+    assert(state.displayBackend.buzzerCalls.size() == 1);
+    runBuzzerAutoOff(state, 1120);
+    assert(state.sleeping && state.buzzerNeedsOff && state.buzzerOffAtMs == 1220);
+    runBuzzerAutoOff(state, 1220);
+    assert(state.sleeping && !state.buzzerNeedsOff);
+    for (bool on : state.displayBackend.buzzerCalls) assert(!on);
+
+    HarnessState startup;
+    startup.displayBackend.caps.buzzer = true;
+    startup.buzzerNeedsOff = true; // Production worker starts with a pending OFF.
+    startup.displayBackend.buzzerResults = {false, true};
+    runBuzzerAutoOff(startup, 0);
+    assert(!runSystemAction(startup, ScreenSystemAction::BUZZER, 0, 50));
+    runBuzzerAutoOff(startup, 100);
+    assert(!startup.buzzerNeedsOff);
+    assert(runSystemAction(startup, ScreenSystemAction::BUZZER, 0, 110));
+
+    HarnessState staleLatch;
+    staleLatch.displayBackend.caps.buzzer = true;
+    staleLatch.displayBackend.buzzerResults = {false};
+    assert(!runSystemAction(staleLatch, ScreenSystemAction::BUZZER, 0, 200));
+    assert(staleLatch.buzzerNeedsOff && staleLatch.displayBackend.buzzerCalls.size() == 1);
+    assert(!staleLatch.displayBackend.buzzerCalls[0]);
 }
 
 int main() {
@@ -251,6 +291,7 @@ int main() {
     testBuzzerDeadlineSurvivesMillisWrap();
     testFailedBuzzerOnStillSchedulesOff();
     testStopCleanupAttemptsAtMostThreeWrites();
+    testSleepOffFailureKeepsRecoveryAndRejectsNewOn();
     std::cout << "screen-system-actions: ok\n";
     return 0;
 }

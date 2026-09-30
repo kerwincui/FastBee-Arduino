@@ -22,6 +22,7 @@
 #endif
 #if FASTBEE_ENABLE_OTA
 #include "network/OTAManager.h"
+#include "network/OtaConfigStorage.h"
 #endif
 #include "systems/SystemRebooter.h"
 #include "utils/StringUtils.h"
@@ -718,9 +719,21 @@ void ProtocolManager::handleFastBeeOtaCommand(const String& message,
     return;
 #else
     const MQTTConfig& mqttConfig = mqttClient->getConfig();
+    // Read the saved base at command time: changing only OTA settings must
+    // take effect without rebuilding the MQTT connection or rebooting.
+    String otaBaseUrl;
+    if (!command.url.startsWith("http://") && !command.url.startsWith("https://")) {
+        JsonDocument otaConfig;
+        if (!FastBee::OtaConfigStorage::load(otaConfig, error)) {
+            queueFastBeeOtaReply(command.taskId, command.version,
+                                 FastBeeOtaProtocol::STATUS_FAILED, 0, error);
+            return;
+        }
+        otaBaseUrl = otaConfig["mqtt"]["otaBaseUrl"] | "";
+    }
     String firmwareUrl;
     if (!FastBeeOtaProtocol::resolveFirmwareUrl(
-            command.url, mqttConfig.otaBaseUrl, mqttConfig.server,
+            command.url, otaBaseUrl, mqttConfig.server,
             firmwareUrl, error)) {
         LOG_WARNINGF("FastBee OTA: URL rejected (%s)", error.c_str());
         queueFastBeeOtaReply(command.taskId, command.version,
@@ -1561,6 +1574,8 @@ ModbusRestartResult ProtocolManager::restartModbus() {
                     for (int i = 0; i < 5 && i < (int)mr.size(); i++)
                         dev.motorRegs[i] = mr[i] | (uint16_t)0;
                 }
+                if (const char* error = loadMotorProtocol(d, dev.motorProtocol))
+                    LOG_WARNINGF("Modbus motor %u: %s; control blocked", dev.slaveAddress, error);
                 modbusConfig.master.deviceCount++;
             }
         }

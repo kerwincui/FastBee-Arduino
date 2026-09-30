@@ -31,6 +31,7 @@
             }
             var controls = modal.querySelectorAll('.modal-body input, .modal-body select, .modal-body textarea, .modal-body button');
             controls.forEach(function(el) {
+                if (el.getAttribute('data-action') === 'motorStop' || el.getAttribute('data-action') === 'refreshMotorStatus') return;
                 if (isOffline) {
                     if (!el.disabled) el.dataset.modbusOfflineDisabled = '1';
                     el.disabled = true;
@@ -88,6 +89,9 @@
                 }
             }
             this._activeDeviceIdx = idx;
+            this._modbusCtrlGeneration = (this._modbusCtrlGeneration || 0) + 1;
+            if (this._protocolMotorSyncTimer) clearTimeout(this._protocolMotorSyncTimer);
+            this._protocolMotorAcknowledged = '';
             localStorage.setItem('modbus_active_device', String(idx));
             var dev = this._modbusDevices[idx];
             var type = dev.deviceType || 'relay';
@@ -129,7 +133,13 @@
                     if (!deviceOffline) this.refreshPidStatus();
                 }
             } else if (type === 'motor') {
-                if (!deviceOffline) this.refreshMotorStatus();
+                ['speed', 'pulse'].forEach(function(param) {
+                    var input = document.getElementById('modbus-ctrl-motor-' + param);
+                    if (!input) return;
+                    input.value = ''; input.dataset.dirty = 'false';
+                    input.oninput = function() { input.dataset.dirty = 'true'; };
+                });
+                this._applyProtocolMotorState({ parametersKnown: false, lastAcknowledgedAction: '' });
             } else {
                 if (this._deviceCoilCache[newCacheKey]) {
                     this._coilStates = this._deviceCoilCache[newCacheKey].slice();
@@ -141,12 +151,16 @@
                 }
             }
             AppState.showModal(modal);
+            if (type === 'motor' && !deviceOffline) this._startProtocolMotorSync();
             if (deviceOffline) {
                 this._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             }
         },
 
         _closeCtrlModal() {
+            this._modbusCtrlGeneration = (this._modbusCtrlGeneration || 0) + 1;
+            if (this._protocolMotorSyncTimer) clearTimeout(this._protocolMotorSyncTimer);
+            this._protocolMotorSyncTimer = null;
             if (typeof this._stopCoilAutoRefresh === 'function') this._stopCoilAutoRefresh();
             if (typeof this._stopPidAutoRefresh === 'function') this._stopPidAutoRefresh();
             var autoEl = document.getElementById('modbus-ctrl-auto-refresh');

@@ -113,7 +113,7 @@ test.describe('Suite-27: Web security and lifecycle', () => {
 
     await navigateTo('network');
     await authPage.waitForFunction(() =>
-      typeof (window as any).AppState?.saveNetworkConfig === 'function'
+      typeof (window as any).AppState?.saveNetworkConfig === 'function' && (window as any).AppState._networkConfigLoaded === true
     );
     await authPage.evaluate((payload) => {
       (window as any).__fastbeeXss = false;

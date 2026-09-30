@@ -80,6 +80,7 @@ public:
     // ============ 认证辅助方法 ============
     bool       requiresAuth(AsyncWebServerRequest* request);
     AuthResult authenticateRequest(AsyncWebServerRequest* request);
+    void       renewSessionCookie(AsyncWebServerRequest* request);
     String     getClientIP(AsyncWebServerRequest* request);
     String     getUserAgent(AsyncWebServerRequest* request);
     bool       requireAuth(AsyncWebServerRequest* request);

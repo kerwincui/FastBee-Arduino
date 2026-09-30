@@ -470,6 +470,7 @@
                                             <div class="fb-form-group">
                                                 <label for="adc-vref">ADC 参考电压 (V)</label>
                                                 <input type="number" id="adc-vref" step="any" min="0" value="0">
+                                                <label><input type="checkbox" id="adc-calibrated-voltage"> 使用芯片校准电压</label>
                                             </div>
                                             <div class="fb-form-group">
                                                 <label for="adc-voltage-ratio">电压分压还原倍数</label>
@@ -1064,12 +1065,13 @@
                         </div>
                         <label class="fb-checkbox pe-rule-enabled"><input type="checkbox" id="periph-exec-enabled" checked><span>启用规则</span></label>
                     </div>
-                    <div class="pe-rule-options" aria-label="规则附加选项">
+                    <div class="pe-rule-options" aria-label="数据与屏幕">
                         <label class="fb-checkbox" title="执行完成后向平台上报设备数据"><input type="checkbox" id="periph-exec-report" checked><span>执行后上报数据</span></label>
-                        <label class="fb-checkbox" title="用于设备屏幕的数值趋势；添加采集或读取动作后可开启"><input type="checkbox" id="periph-exec-record-history" disabled><span>保留最近 10 条记录</span></label>
+                        <label class="fb-checkbox" title="添加采集或读取动作后可开启，用于数值趋势"><input type="checkbox" id="periph-exec-record-history" disabled><span>保留最近 10 条记录</span></label>
                         <label class="fb-checkbox" title="允许设备屏幕调用此规则中支持的安全动作"><input type="checkbox" id="periph-exec-panel-control"><span>允许设备屏幕控制</span></label>
-                        <button id="periph-exec-history-settings-link" type="button" class="fb-btn fb-btn-sm fb-hidden" title="打开设备屏幕的记录设置，当前编辑内容会保留">配置最近记录 ↗</button>
+                        <button id="periph-exec-history-settings-link" type="button" class="fb-btn fb-btn-sm fb-btn-link" title="在新标签页管理记录，保留当前编辑内容">管理最近记录 ↗</button>
                     </div>
+                    <p class="u-help">记录用于数值趋势；屏幕控制仅开放规则支持的动作。管理记录会打开新标签页，保留当前编辑。</p>
 
                     <!-- 第二部分：触发配置 (动态多组) -->
                     <div id="periph-exec-risk-note" class="u-note-card u-note-card-warning u-mb-15 is-hidden"></div>

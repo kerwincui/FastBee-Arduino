@@ -615,6 +615,10 @@ void FBNetworkManager::launchBootStaRetryConnection() {
 }
 
 void FBNetworkManager::startBootStaRetryScan() {
+    // Arduino MODE_NULL destroys the STA/AP esp_netif objects. Release mDNS
+    // while those objects are still alive; a later restart otherwise tears
+    // down PCBs referencing freed netifs (COM16 reconnect panic, 2026-09-30).
+    if (dnsManager) dnsManager->stopMDNS();
     // Rebuild the driver as cooperative settle states. The old timeout path
     // used delay(250)+delay(500) here, which made one network_update call block
     // for ~750ms before the scan even started.
@@ -1980,10 +1984,10 @@ bool FBNetworkManager::connectToWiFiBlocking() {
 }
 
 void FBNetworkManager::disconnectWiFi() {
+    if (dnsManager) dnsManager->stopMDNS();
     wifiManager->disconnectWiFi();
     connecting = false;
     
-    dnsManager->stopMDNS();
     statusInfo.status = NetworkStatus::DISCONNECTED;
     
     LOG_INFO("NetworkManager: WiFi disconnected");
@@ -2109,6 +2113,7 @@ void FBNetworkManager::attemptReconnect() {
         LOG_WARNING("NetworkManager: Max reconnect attempts reached; switching to AP mode");
         
         // 断开当前 STA 连接
+        if (dnsManager) dnsManager->stopMDNS();
         wifiManager->disconnectWiFi();
         
         // 启动纯 AP 模式（不使用 AP+STA，避免模式切换导致栈溢出）
@@ -2560,6 +2565,7 @@ bool FBNetworkManager::connectToNetwork(const String& ssid, const String& passwo
 }
 
 void FBNetworkManager::disconnectNetwork() {
+    if (dnsManager) dnsManager->stopMDNS();
     wifiManager->disconnectWiFi();
 }
 

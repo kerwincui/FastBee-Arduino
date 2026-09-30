@@ -35,6 +35,7 @@ FastBee::PointHistory& resetHistory(bool enabled = true) {
     history._firstDirtyAt = 0;
     history._postSnapshotDirtyAt = 0;
     history._generation = 0;
+    history._configRevision = 0;
     history._sequence = 0;
     history._bootId = "native-boot";
     history._sourceAllowlist.clear();
@@ -121,6 +122,49 @@ void test_point_history_uninitialized_flush_is_a_noop_success() {
     TEST_ASSERT_TRUE(history.flushNow());
 }
 
+void test_point_history_config_revision_rejects_stale_writer() {
+    auto& history = resetHistory();
+    String error;
+    const uint32_t revision = 0;
+    TEST_ASSERT_TRUE(history.configure(true, {"sensor.temp"}, error, true, &revision));
+    TEST_ASSERT_EQUAL_UINT32(1, history._configRevision);
+    TEST_ASSERT_TRUE(history.recordSample("sensor.temp", 21.0, "C", "v1", 1, 100));
+    TEST_ASSERT_FALSE(history.configure(false, {}, error, true, &revision));
+    TEST_ASSERT_EQUAL_STRING("History configuration revision conflict", error.c_str());
+    TEST_ASSERT_TRUE(history.isEnabled());
+    TEST_ASSERT_EQUAL_UINT32(1, history.sourceCount());
+    JsonDocument saved;
+    TEST_ASSERT_FALSE(deserializeJson(saved, g_mockFiles[FastBee::PointHistory::CONFIG_FILE]));
+    TEST_ASSERT_EQUAL_UINT32(1, saved["revision"].as<uint32_t>());
+    TEST_ASSERT_TRUE(saved["enabled"].as<bool>());
+    history._configRevision = 0;
+    TEST_ASSERT_TRUE(history.loadConfig());
+    TEST_ASSERT_EQUAL_UINT32(1, history._configRevision);
+}
+
+void test_point_history_reserved_writer_blocks_competing_changes() {
+    auto& history = resetHistory();
+    history._configWriteInProgress = true;
+    String error;
+    TEST_ASSERT_FALSE(history.configure(false, {}, error, false));
+    TEST_ASSERT_FALSE(history.recordSample("sensor.temp", 21.0, "C", "v1", 1, 100));
+    TEST_ASSERT_TRUE(history.isEnabled());
+    TEST_ASSERT_EQUAL_UINT32(0, history._configRevision);
+    history._configWriteInProgress = false;
+}
+
+void test_point_history_legacy_config_defaults_revision() {
+    auto& history = resetHistory();
+    g_mockFiles[FastBee::PointHistory::CONFIG_FILE] =
+        "{\"schemaVersion\":1,\"enabled\":true,\"sourceAllowlist\":[\"sensor.temp\"]}";
+    TEST_ASSERT_TRUE(history.loadConfig());
+    TEST_ASSERT_EQUAL_UINT32(0, history._configRevision);
+    String error;
+    const uint32_t revision = 0;
+    TEST_ASSERT_TRUE(history.configure(true, {"sensor.temp", "sensor.humidity"}, error, false, &revision));
+    TEST_ASSERT_EQUAL_UINT32(1, history._configRevision);
+}
+
 }  // namespace
 
 #endif  // UNIT_TEST
@@ -132,5 +176,8 @@ void test_point_history_group() {
     RUN_TEST(test_point_history_marks_removed_source_stale_and_clears_on_revision_change);
     RUN_TEST(test_point_history_pause_blocks_samples_and_reset_resume_clears_state);
     RUN_TEST(test_point_history_uninitialized_flush_is_a_noop_success);
+    RUN_TEST(test_point_history_config_revision_rejects_stale_writer);
+    RUN_TEST(test_point_history_reserved_writer_blocks_competing_changes);
+    RUN_TEST(test_point_history_legacy_config_defaults_revision);
 #endif
 }

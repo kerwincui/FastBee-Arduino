@@ -33,8 +33,9 @@ private:
 // labels never become command targets, including on smaller legacy layouts.
 struct ScreenMotorLayout {
     ScreenPixelRect bounds;
+    static constexpr int commandHeight = 64;
     bool valid() const { return bounds.w >= 240 && bounds.h >= 280; }
-    int rowHeight() const { return (bounds.h - 174) / 2; }
+    int rowHeight() const { return (bounds.h - commandHeight - 76) / 2; }
     ScreenPixelRect parameter(unsigned row) const {
         return {static_cast<int16_t>(bounds.x + 12),
                 static_cast<int16_t>(bounds.y + 56 + row * rowHeight()),
@@ -47,16 +48,14 @@ struct ScreenMotorLayout {
                 static_cast<int16_t>(p.y + std::max(0, (p.h - 44) / 2)),
                 static_cast<int16_t>(width), static_cast<int16_t>(std::min(44, static_cast<int>(p.h)))};
     }
-    ScreenPixelRect direction(unsigned column) const {
-        const int width = (bounds.w - 34) / 2;
+    ScreenPixelRect command(unsigned column) const {
+        const int width = (bounds.w - 44) / 3;
         return {static_cast<int16_t>(bounds.x + 12 + column * (width + 10)),
-                static_cast<int16_t>(bounds.y + bounds.h - 116),
-                static_cast<int16_t>(width), 44};
+                static_cast<int16_t>(bounds.y + bounds.h - commandHeight - 18),
+                static_cast<int16_t>(width), commandHeight};
     }
-    ScreenPixelRect stop() const {
-        return {static_cast<int16_t>(bounds.x + 12), static_cast<int16_t>(bounds.y + bounds.h - 62),
-                static_cast<int16_t>(bounds.w - 24), 44};
-    }
+    ScreenPixelRect direction(unsigned column) const { return command(column * 2); }
+    ScreenPixelRect stop() const { return command(1); }
 };
 
 inline ScreenPixelRect screenSelectButton(const ScreenPixelRect& bounds, bool next) {

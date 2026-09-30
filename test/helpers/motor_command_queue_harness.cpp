@@ -53,6 +53,55 @@ int main() {
     fifo.commands[stopA].phase = Phase::DONE;
     assert(fifo.selectNext() == stopB);
 
+    // Reads coalesce but cannot prevent a user command from entering the
+    // queue. Controls take priority over queued reads; stop outranks both.
+    Queue polling;
+    int read = submit(polling, "motor.a", "readStatus", "read");
+    assert(read >= 0 && submit(polling, "motor.a", "readStatus", "read-again") == -2);
+    int control = submit(polling, "motor.a", "forward", "control");
+    assert(control >= 0 && polling.selectNext() == control);
+    assert(submit(polling, "motor.a", "reverse", "double-control") == -1);
+    int otherRead = submit(polling, "motor.b", "readStatus", "other-read");
+    assert(otherRead >= 0);
+    int otherStop = submit(polling, "motor.b", "stop", "other-stop");
+    assert(otherStop >= 16 && polling.selectNext() == otherStop);
+    assert(polling.commands[otherRead].phase == Phase::DONE);
+    polling.commands[otherStop].phase = Phase::DONE;
+    assert(polling.selectNext() == control);
+    polling.commands[control].phase = Phase::DONE;
+    assert(polling.selectNext() == read);
+    polling.commands[read].phase = Phase::RUNNING;
+    int afterRead = submit(polling, "motor.a", "setPulse", "while-reading", 10, 100);
+    assert(afterRead >= 0 && polling.selectNext() == afterRead);
+    assert(submit(polling, "motor.a", "setSpeed", "conflicting-control") == -1);
+    assert(submit(polling, "motor.c", "forward", "other-control") >= 0);
+    assert(submit(polling, "motor.c", "readStatus", "no-poll-during-control") == -1);
+
+    // A slow HTTP poll must still retrieve a completed read after the next
+    // touchscreen refresh. Retained reads must not consume control slots.
+    Queue history;
+    int firstRead = submit(history, "motor.a", "readStatus", "slow-read");
+    history.commands[firstRead].phase = Phase::DONE;
+    history.commands[firstRead].finishedMs = 10;
+    const uint32_t readId = history.commands[firstRead].id;
+    int laterRead = submit(history, "motor.a", "readStatus", "next-read", 5010);
+    assert(laterRead >= 0 && laterRead != firstRead);
+    assert(history.commands[firstRead].id == readId);
+    history.commands[laterRead].phase = Phase::DONE;
+    for (size_t n = 2; n < Queue::readSlots; ++n) {
+        char request[24]; std::snprintf(request, sizeof(request), "poll-%zu", n);
+        int s = submit(history, "motor.a", "readStatus", request, 5010);
+        assert(s >= 0 && static_cast<size_t>(s) >= Queue::readBegin);
+        history.commands[s].phase = Phase::DONE; history.commands[s].finishedMs = 5010;
+    }
+    assert(submit(history, "motor.a", "readStatus", "over-read", 5010) == -1);
+    assert(submit(history, "motor.a", "forward", "control-after-reads", 5010) >= 0);
+    assert(submit(history, "motor.a", "stop", "stop-after-reads", 5010) >= 0);
+    assert(history.commands[firstRead].id == readId);
+    int expiredSlot; uint32_t retained; const char* expiredError = nullptr;
+    assert(history.reserve("motor.b", "readStatus", 0, "expire", 30010, expiredSlot, retained, expiredError));
+    assert(history.commands[firstRead].phase == Phase::EMPTY);
+
     Queue wrap;
     wrap.nextOrder = UINT32_MAX - 1;
     int w1 = submit(wrap, "one", "forward", "one");

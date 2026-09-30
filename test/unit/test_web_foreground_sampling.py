@@ -20,7 +20,8 @@ class WebForegroundSamplingTests(unittest.TestCase):
 #include <cstdint>
 #include <cstring>
 #include "core/MemoryBudget.h"
-uint32_t nowMs=1000, freeBytes=39000, largestBytes=18000;
+// Captured COM15 steady state while status requests are active.
+uint32_t nowMs=1000, freeBytes=30552, largestBytes=16372;
 bool psram=true;
 unsigned long millis(){return nowMs;}
 namespace FastBee { bool psramAvailableForJson(){return psram;} }
@@ -67,8 +68,8 @@ int main(){
  assert(timerTicks==12 && fw.task.disables==0 && context.config.requests==41);
  assert(fw.protocol.mqtt.yields==41); // MQTT foreground yielding is retained
  // Real internal shortage must pause even with plenty of external memory.
- freeBytes=30719;context.noteWebRequestActivity();assert(!fw.task.timer);
- freeBytes=39000;largestBytes=8191;context.noteWebRequestActivity();assert(!fw.task.timer);
+ freeBytes=14999;context.noteWebRequestActivity();assert(!fw.task.timer);
+ freeBytes=30552;largestBytes=4095;context.noteWebRequestActivity();assert(!fw.task.timer);
  largestBytes=18000;fw.monitor.severe=true;context.noteWebRequestActivity();assert(!fw.task.timer);
  fw.monitor.severe=false;context.noteWebRequestActivity();assert(fw.task.timer);
  assert(fw.task.enables==1); // recover during continuous polling, not only idle

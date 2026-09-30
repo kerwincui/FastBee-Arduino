@@ -30,7 +30,7 @@ A1 水分、A2 温度按当前传感器线序配置：黄色水分信号接 A1�
 
 - 温度：`−40 + (I_mA − 4) × 120 / 16`。
 - 水分：`(I_mA − 4) × 100 / 16`，单位 `%`。
-- 模拟前端沿用 `shuntResistance=165`、`inputGain=1`、`inputOffset=0`、`vRef=3.3`；仍需与板上电路及标准电流源校准结果核对。
+- 模拟前端按 ECM50-A 厂家采集示例使用 `shuntResistance=150`、`inputGain=1`、`inputOffset=0`、`vRef=3.3`；启用 calibratedVoltage 芯片校准曲线，从同一份 ADC 原始值得到电压；vRef 不再参与线性估算。150 ohm 与厂家手册示例一致，最终精度仍需实物标准点核验。
 - 每次 16 次均值采样，`clampEnabled=false`；异常输入保留质量状态，不钳位为正常端点数据。
 
 SHT30 不在本次现场清单中。沿用用户当前配置，SHT30 外设和 `s3_optional_sht30` 规则已删除，保留的 `i2c_sht30_bus` 禁用。
@@ -69,7 +69,9 @@ PM2.5 地址 `0x0000`、PM10 地址 `0x0001` 由用户提供；IVG-TH 参数依�
 
 ## MQTT 与灯控
 
-本板输出初始化值为 0，保留 `s3_platform_do1`、`s3_platform_do2` 平台控制规则，并启用 `s3_photoelectric_relay_toggle`：灯接 DO1 时，有物体经过触发一次翻转，继电器当前为开则关、为关则开。Modbus 继电器通道 1 使用 FC06 写保持寄存器 `0x0000`；`ncMode=true` 表示平台“开”对应继电器线圈释放、NC 端导通，平台“关”对应线圈吸合、NC 端断开。若灯接 DO2，需要把联动规则目标改为 `do2`。
+板载继电器1 `do1`（GPIO15）灯接 NC+COM，初始化值为 **1 / HIGH**，按本板驱动极性使线圈吸合、NC 断开；继电器2 `do2`（GPIO16）仍为 0。保留 `s3_platform_do1`、`s3_platform_do2` 平台控制规则，并启用 `s3_photoelectric_relay_toggle`：DI1 检测到物体时翻转板载 `do1`，不控制外接 Modbus 继电器。板载 GPIO 页显示的是驱动高低电平，HIGH 不等于 NC 接点上的灯亮。软件初始化前 NC 仍可能导通，不能保证冷上电瞬间完全不亮。若需要线圈未吸合时灯也保持断电，应断电后评估 COM+NO 接线并匹配相应控制极性。
+
+外接 Modbus 继电器通道 1 使用 FC06 写保持寄存器 `0x0000`；其 `ncMode=true` 是另一套负载语义：平台“开”对应线圈释放、NC 导通，平台“关”对应线圈吸合、NC 断开。外接设备的启动规则不能修复板载 `do1` 的初始电平。若灯改接板载 DO2，需要同时核对该输出的初始值和光电规则目标。
 
 MQTT 接入信息由用户后续填写并启用。模板预置 `/property/post`（属性）、`/event/post`（设备事件，`topicType=4`）和 `/function/get`（控制）主题，`autoPrefix=true`，按设备身份生成主题前缀。平台物模型需包含 `break_down` 事件。MQTT 未配置期间不能宣称平台已经收到故障事件。
 
@@ -125,3 +127,20 @@ AI 转换和质量字段见[工业接口字段参考](../industrial-io-guide.md)
 r3b 网页更新完成，写入校验和固件保留校验均通过，全部现有配置原样保留。更新引起一次受控重启，不计入上述连续观察窗口。新浏览器直接登录后进入 Modbus 页，两轮均正常显示 `RS485 UART1` 和六条设备数据，无 HTTP 或 JavaScript 错误；重启后五个采集任务再次读到数据，配置仍为五采集一控制。补充证据：`artifacts/com15-web-deployment-20260922-r3b.json`、`artifacts/com15-readonly-acceptance-20260922/modbus-direct-entry-fixed-report.json`、`artifacts/com15-final-after-web-20260922-r3b.json`。
 
 r3b 完整页面复测最终通过，两轮导航、诊断说明和分页检查均成功，HTTP/401/JavaScript 错误均为 0，报告为 `artifacts/com15-readonly-acceptance-r3b-final-20260922/report.json`。此前补测保留了一次原因未确定的登录请求取消，以及一次诊断模块超过测试默认 5 秒等待的记录；最终脚本显式等待启动完成，并将页面断言等待统一为 45 秒，没有据此宣称页面始终快速响应。
+
+
+## 2026-09-24 设备大屏布局及现场配置更新
+
+本次仅更新 COM15 的 LittleFS，固件保持 r3。设备 MAC 为 `14:C1:9F:C1:52:D8`，本次联网地址为 `192.168.5.19`（DHCP 地址可能变化）。文件系统写入和 MD5 校验通过；保留网络、身份、认证及 MQTT 设置。
+
+“设备大屏”的重置布局按钮位于 `device-control` 页面。问题是 Modbus 设备清单卡宽 695px，旧排版却只占用一列 340px，导致越界或重叠。修复按卡片实际宽度分配列数，默认布局与重置共用该逻辑。发布以已部署 r3b 网页为基线，解压内容仅控制视图脚本及入口/Service Worker 缓存版本变化；不是将另一“设备屏幕”编辑器的改动混入此次发布。Web 57 文件，312.4/315 KiB 门禁通过。
+
+外设与执行规则名称已改为中文，继电器配置回读为地址 6、9600、4 通道、寄存器基址 0、FC06、NC 反向语义。NC 接点在线圈释放时导通，吸合时断开。光电联动仍是本板 DO1/继电器1。
+
+本地布局浏览器回归 17/17、继电器配置回归 3/3 通过。设备新脚本与发布包解压字节一致。最终实机在1440px和1920px两种窗口下，默认/重置/页面返回共6项几何检查全部通过，HTTP、批量子请求和JavaScript错误均为0。完整实机结果以 `artifacts/com15-layout-final-20260924/report.json` 为准；写入报告为 `artifacts/com15-layout-config-deployed-20260924.json`，配置与总线实测为 `artifacts/com15-layout-config-acceptance-20260924.json`。
+
+外接硬件本轮尚未通过：部署前五个 Modbus 从站已全部超时，部署后地址1、5读取及地址6 FC06开/关和FC03回读均超时；A1/A2原始值均为0，DI1/DI2同为高。需要现场确认外接12V供电及线路，不据此断言所有设备损坏，也不能宣称继电器实际动作成功。MQTT仍未验收。首轮启动后协议接口有连接超时，后续回读成功；短测不替代长期稳定性。
+
+
+<!-- MODBUS_RELAY_BOOT_OFF_20260928 -->
+外接Modbus通道一保留ncMode=true；s3_modbus_relay_boot_off在system_ready后发送其逻辑off，其他通道不变。该规则不控制板载灯。用户已明确灯接板载继电器1的NC+COM，现为do1/GPIO15单独持久化initialState=1，两次软件重启及规则动作链读回通过。软件初始化不保证冷上电瞬间全程灭灯，物理灯光仍待现场确认。详见../com15-onboard-relay-nc-startup-20260928.md。

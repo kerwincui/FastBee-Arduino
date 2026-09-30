@@ -141,7 +141,7 @@
             "visualType": "action",
             "title": "采集一次",
             "controlRef": "rule.collect_sht30",
-            "bindingFingerprint": "5275bb90",
+            "bindingFingerprint": "58b72d38",
             "rect": {
               "x": 16,
               "y": 16,

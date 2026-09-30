@@ -35,7 +35,10 @@ class RetiredRemoteRuleBehaviorTests(unittest.TestCase):
         if not json_headers:
             self.skipTest("Existing ArduinoJson headers required")
         source = (ROOT / "src/core/PeriphExecManager.cpp").read_text(encoding="utf-8")
+        source += "\n" + (ROOT / "src/core/PeriphExecRuleQueries.cpp").read_text(encoding="utf-8")
+        source += "\n" + (ROOT / "include/core/PeriphExecRemoteBindings.h").read_text(encoding="utf-8")
         production = "\n".join(method(source, signature) for signature in (
+            "bool hasRetiredRemoteSource(",
             "bool PeriphExecManager::sanitizeRuleForSafety(",
             "bool PeriphExecManager::getRuleSnapshot(",
             "bool PeriphExecManager::enableRule(",
@@ -77,6 +80,7 @@ struct AsyncExecResult {
     AsyncExecStatus status=AsyncExecStatus::PENDING;
     AsyncExecError errorCode=AsyncExecError::NONE;
 };
+bool configError(String& error,const char* issue) { error=issue; return false; }
 struct PeriphExecManager;
 struct AsyncExecContext {
     PeriphExecRule ruleCopy; String receivedValue; PeriphExecManager* manager=nullptr;
@@ -103,6 +107,7 @@ struct PeriphExecManager {
     Pool _contextPool; PeriphExecWorkerPool* _workerPool=nullptr;
     int executions=0,admissions=0,refreshes=0;
     std::vector<String> matched;
+    const char* configurationWriteError() const { return nullptr; }
     bool ruleHasPollCollectionAction(const PeriphExecRule&) const { return false; }
     bool ruleNeedsModbus(const PeriphExecRule&) const { return false; }
     bool sanitizeTriggerForSafety(ExecTrigger&,bool,const String&) const { return false; }

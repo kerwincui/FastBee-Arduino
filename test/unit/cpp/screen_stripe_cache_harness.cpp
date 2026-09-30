@@ -6,9 +6,12 @@
 #include <string>
 #include <vector>
 #include "screen/StripeChangeCache.h"
+#include "screen/ScreenInteraction.h"
+#include "screen/WeatherStatusText.h"
 
 using namespace FastBee::Screen;
 using String = std::string;
+#include "production_blend.inc"
 static int allocationAttempt = 0, failAllocation = 0, liveAllocations = 0;
 void* allocatePreferred(size_t bytes) {
     if (++allocationAttempt == failAllocation) return nullptr;
@@ -27,7 +30,7 @@ struct IDisplayBackend {
 };
 struct Palette {
     uint16_t background=1, backgroundAlt=2, muted=3, cardBorder=4, accent=5,
-             success=6, text=7, danger=8;
+             success=6, text=7, danger=8, card=9;
 };
 Palette paletteFor(const char*) { return {}; }
 struct ScreenPanelPageSnapshot { char themeId[16] = {}, backgroundPresetId[16] = {}; };
@@ -37,18 +40,20 @@ struct ScreenPanelSnapshot {
     char themeId[16] = {}, backgroundPresetId[16] = {};
 };
 enum class ScreenCardKind { CONTROL, SYSTEM };
-enum class ScreenValueQuality { UNKNOWN, GOOD };
+enum class ScreenValueQuality { UNKNOWN, GOOD, STALE };
 struct ScreenPanelCardSnapshot {
+    char id[41] = "test-card";
+    bool interactive = true;
     ScreenCardKind kind = ScreenCardKind::CONTROL;
     ScreenValueQuality quality = ScreenValueQuality::UNKNOWN;
     char systemActionId[17] = {}, title[65] = {};
     char controlRef[32] = {}, sourceRef[32] = {}, value[16] = {}, unit[8] = {},
-         weatherCondition[16] = {}, weatherCity[16] = {}, error[32] = {};
+         weatherCondition[16] = {}, weatherReason[32] = {}, weatherCity[16] = {}, error[32] = {};
     bool pending = false, hasWeatherTemperature = false;
     float weatherTemperature = 0;
 };
 const char* qualityText(ScreenValueQuality) { return "unknown"; }
-struct PixelRect { int16_t x=0, y=0, w=240, h=180; };
+using PixelRect = ScreenPixelRect;
 static std::vector<uint16_t> desired(480*480, 1);
 struct StripeCanvas {
     uint16_t* pixels;
@@ -56,22 +61,26 @@ struct StripeCanvas {
     std::vector<std::string> labels;
     std::string weatherIcon;
     uint16_t buttonColor = 0;
+    uint16_t buttonBorder = 0;
     StripeCanvas(uint16_t* p, uint16_t w, uint16_t, uint16_t y, uint16_t h)
         : pixels(p), width(w), row(y), height(h) {}
     void clear(uint16_t v) { std::fill_n(pixels, width*height, v); }
     void gradient(uint16_t a, uint16_t) { clear(a); }
     void paint() { std::copy_n(desired.data()+row*width, width*height, pixels); }
-    void roundedRect(int,int,int,int,int,uint16_t color,uint16_t) { buttonColor=color; }
+    void roundedRect(int,int,int,int,int,uint16_t color,uint16_t border) { buttonColor=color; buttonBorder=border; }
     void circle(int,int,int,uint16_t,bool) {}
     void text(int,int,const char* s,uint16_t,int,int) { labels.emplace_back(s); }
 };
 struct StripeRenderer {
+    char _pressedCard[41]{};uint16_t _pressedX=0,_pressedY=0;
     IDisplayBackend* _display = nullptr;
     uint16_t* _buffer = nullptr;
     StripeChangeCache _stripeCache;
     StripeChangeCache::Entry* _stripeEntries = nullptr;
     uint16_t _width=0, _height=0, _lines=0;
     size_t _bufferBytes=0;
+    bool _navigationOpen = false;
+    void drawPageMenu(StripeCanvas& c, const ScreenPanelSnapshot&, const Palette&) { c.paint(); }
     void drawBackgroundDecoration(StripeCanvas&, const char*, const Palette&) {}
     void drawPage(StripeCanvas& c, const ScreenPanelSnapshot&, const ScreenPanelPageSnapshot&, const Palette&) { c.paint(); }
     void drawEmpty(StripeCanvas& c, const Palette&) { c.paint(); }
@@ -97,6 +106,12 @@ int main() {
     ScreenPanelSnapshot snapshot; String error;
     assert(renderer.begin(&d,cfg,error));
     assert(renderer._bufferBytes == 480*16*2+30*sizeof(StripeChangeCache::Entry));
+    assert(renderer.render(snapshot,"",error) && d.rows.size()==30 && d.frame==desired);
+    d.rows.clear();
+    assert(renderer.render(snapshot,"",error) && d.rows.empty());
+    // Wake/config refresh must restore a lost frame even when data is unchanged.
+    std::fill(d.frame.begin(), d.frame.end(), 0);
+    renderer.invalidate();
     assert(renderer.render(snapshot,"",error) && d.rows.size()==30 && d.frame==desired);
     d.rows.clear();
     assert(renderer.render(snapshot,"",error) && d.rows.empty());
@@ -132,14 +147,14 @@ int main() {
     renderer.end(); assert(liveAllocations==0);
     // Production card methods: defaults are usable placeholders, never fabricated data.
     uint16_t pixels[480] = {}; StripeCanvas canvas(pixels,480,480,0,1);
-    ScreenPanelCardSnapshot card; Palette palette; PixelRect rect;
+    ScreenPanelCardSnapshot card; Palette palette; PixelRect rect{0,0,240,180};
     renderer.drawAction(canvas,card,rect,palette);
     assert(canvas.labels.back()==u8"待配置" && canvas.buttonColor==palette.cardBorder);
     renderer.drawSwitch(canvas,card,rect,palette);
     assert(canvas.labels.back()==u8"待配置" && canvas.buttonColor==palette.cardBorder);
     std::strcpy(card.controlRef,"execution.once");
     renderer.drawAction(canvas,card,rect,palette);
-    assert(canvas.labels.back()==u8"执行一次" && canvas.buttonColor==palette.accent);
+    assert(canvas.labels.back()==u8"执行一次" && canvas.buttonColor==palette.backgroundAlt && canvas.buttonBorder==palette.accent);
     card.pending=true; renderer.drawAction(canvas,card,rect,palette);
     assert(canvas.labels.back()==u8"执行中"); card.pending=false;
     canvas.labels.clear(); card.hasWeatherTemperature=true; card.weatherTemperature=23.5;

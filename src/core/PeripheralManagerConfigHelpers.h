@@ -51,6 +51,7 @@ inline void initializeAdcDefaults(PeripheralConfig& config) {
     config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
     config.params.adc.conversionEnabled = false;
     config.params.adc.clampEnabled = false;
+    config.params.adc.calibratedVoltage = false;
     config.params.adc.decimalPlaces = 2;
     config.params.adc.inputMin = 0.0f;
     config.params.adc.inputMax = 0.0f;

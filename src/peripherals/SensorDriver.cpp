@@ -14,6 +14,10 @@
 #include <freertos/semphr.h>
 #include <atomic>
 #include <math.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp32-hal-rmt.h>
+#include <driver/gpio.h>
+#endif
 
 // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DHT 导致内存泄漏
 static inline bool sensor_pin_valid(uint8_t pin) {
@@ -59,8 +63,8 @@ static constexpr uint32_t DHT_STALE_CACHE_WINDOW_MS = 10000;
 static constexpr uint32_t SENSOR_FAILURE_BACKOFF_INITIAL_MS = 5000;
 static constexpr uint32_t SENSOR_FAILURE_BACKOFF_MAX_MS = 60000;
 #if defined(ARDUINO_ARCH_ESP32)
-// pulseIn() keeps interrupts enabled on the ESP32 Arduino core. Bound each
-// edge and the complete transaction so a disconnected/stuck DHT line cannot
+// Keep interrupts enabled and bound each edge and the complete transaction
+// so a disconnected/stuck DHT line cannot
 // enter the Adafruit library's long InterruptLock polling loop.
 static constexpr uint32_t DHT_EDGE_TIMEOUT_US = 1500;
 static constexpr uint32_t DHT_START_EDGE_TIMEOUT_US = 3000;
@@ -137,17 +141,52 @@ static inline float dht_cached_field(const SensorReadResult& reading,
 }
 
 #if defined(ARDUINO_ARCH_ESP32)
+// Allocation-free failure evidence. Populate only after pulse capture stops;
+// logging or extra GPIO reads inside the timing loops would perturb the frame.
+struct DhtReadDiagnostic {
+    const char* phase = "ok";
+    int bit = -1;
+    unsigned long lowUs = 0;
+    unsigned long highUs = 0;
+    uint32_t elapsedUs = 0;
+    int finalLevel = -1;
+};
+#if SOC_RMT_SUPPORTED
+#include "DhtRmtCapture.h"
+#endif
+
 // Read one DHT frame without the Adafruit DHT library's InterruptLock. The
 // protocol is simple pulse-width coding: every bit starts with a ~50us low
-// pulse, followed by a short (0) or long (1) high pulse. pulseIn() provides a
-// hardware-cycle timeout while allowing the WiFi/idle tasks to keep running.
+// pulse, followed by a short (0) or long (1) high pulse. Consume the current
+// pulse: Arduino pulseIn() first discards an already active pulse, which skips
+// the response preamble and subsequent bits when used for this continuous frame.
 static bool readDhtBounded(uint8_t pin, SensorDriverType type,
-                           float& humidity, float& temperature) {
+                           float& humidity, float& temperature,
+                           DhtReadDiagnostic* diagnostic = nullptr) {
+    if (diagnostic != nullptr) *diagnostic = DhtReadDiagnostic{};
+    const uint32_t transactionStartedUs = micros();
+    auto fail = [&](const char* phase, int bit = -1,
+                    unsigned long lowUs = 0, unsigned long highUs = 0) -> bool {
+        pinMode(pin, INPUT_PULLUP);
+        if (diagnostic != nullptr) {
+            diagnostic->phase = phase;
+            diagnostic->bit = bit;
+            diagnostic->lowUs = lowUs;
+            diagnostic->highUs = highUs;
+            diagnostic->elapsedUs = static_cast<uint32_t>(micros() - transactionStartedUs);
+            diagnostic->finalLevel = digitalRead(pin);
+        }
+        return false;
+    };
+#if SOC_RMT_SUPPORTED
+    uint8_t data[5] = {0, 0, 0, 0, 0};
+    if (!readDhtRmtFrame(pin, type == SensorDriverType::DHT11, data, diagnostic)) return false;
+#else
     // A held-low line is a common short/disconnected failure and can be
     // rejected before driving the start pulse.
     pinMode(pin, INPUT_PULLUP);
     if (digitalRead(pin) != HIGH) {
-        return false;
+        return fail("idle_low");
     }
 
     pinMode(pin, OUTPUT);
@@ -161,10 +200,6 @@ static bool readDhtBounded(uint8_t pin, SensorDriverType type,
     delayMicroseconds(40);
 
     const uint32_t startUs = micros();
-    auto abortRead = [&]() -> bool {
-        pinMode(pin, INPUT_PULLUP);
-        return false;
-    };
     auto boundedPulse = [&](uint8_t state, uint32_t edgeTimeoutUs) -> unsigned long {
         const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startUs);
         if (elapsedUs >= DHT_TRANSACTION_TIMEOUT_US) {
@@ -174,14 +209,29 @@ static bool readDhtBounded(uint8_t pin, SensorDriverType type,
         if (edgeTimeoutUs > remainingUs) {
             edgeTimeoutUs = remainingUs;
         }
-        return edgeTimeoutUs == 0 ? 0 : pulseIn(pin, state, edgeTimeoutUs);
+        if (edgeTimeoutUs == 0) {
+            return 0;
+        }
+        const uint32_t waitStartUs = micros();
+        while (digitalRead(pin) != state) {
+            if (static_cast<uint32_t>(micros() - waitStartUs) >= edgeTimeoutUs) {
+                return 0;
+            }
+        }
+        const uint32_t pulseStartUs = micros();
+        while (digitalRead(pin) == state) {
+            if (static_cast<uint32_t>(micros() - waitStartUs) >= edgeTimeoutUs) {
+                return 0;
+            }
+        }
+        return static_cast<uint32_t>(micros() - pulseStartUs);
     };
 
     // Sensor response preamble: low ~80us, high ~80us.
-    if (boundedPulse(LOW, DHT_START_EDGE_TIMEOUT_US) == 0 ||
-        boundedPulse(HIGH, DHT_START_EDGE_TIMEOUT_US) == 0) {
-        return abortRead();
-    }
+    const unsigned long responseLowUs = boundedPulse(LOW, DHT_START_EDGE_TIMEOUT_US);
+    if (responseLowUs == 0) return fail("response_low");
+    const unsigned long responseHighUs = boundedPulse(HIGH, DHT_START_EDGE_TIMEOUT_US);
+    if (responseHighUs == 0) return fail("response_high", -1, responseLowUs);
 
     uint8_t data[5] = {0, 0, 0, 0, 0};
     for (uint8_t bit = 0; bit < 40; ++bit) {
@@ -190,7 +240,7 @@ static bool readDhtBounded(uint8_t pin, SensorDriverType type,
         // Reject missing/implausible pulses instead of decoding line noise as
         // a valid frame. A healthy DHT low/high pulse is well below 150us.
         if (lowUs == 0 || highUs == 0 || lowUs > 500 || highUs > 500) {
-            return abortRead();
+            return fail("bit_pulse", bit, lowUs, highUs);
         }
         data[bit / 8] <<= 1;
         if (highUs > lowUs) {
@@ -198,9 +248,10 @@ static bool readDhtBounded(uint8_t pin, SensorDriverType type,
         }
     }
 
+#endif
     pinMode(pin, INPUT_PULLUP);
     if (data[4] != static_cast<uint8_t>((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
-        return false;
+        return fail("checksum");
     }
 
     if (type == SensorDriverType::DHT11) {
@@ -225,10 +276,11 @@ static bool readDhtBounded(uint8_t pin, SensorDriverType type,
 
     // Basic frame sanity checks protect the cache and downstream actions from
     // electrically plausible but invalid noise frames.
-    return !isnan(humidity) && !isinf(humidity) &&
-           !isnan(temperature) && !isinf(temperature) &&
-           humidity >= 0.0f && humidity <= 100.0f &&
-           temperature >= -40.0f && temperature <= 125.0f;
+    if (isnan(humidity) || isinf(humidity) || isnan(temperature) || isinf(temperature) ||
+        humidity < 0.0f || humidity > 100.0f || temperature < -40.0f || temperature > 125.0f) {
+        return fail("range");
+    }
+    return true;
 }
 #endif
 
@@ -313,13 +365,14 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
         return dht_cached_field(inst.lastRead, field);
     }
 
-    // 执行实际读取。ESP32 使用有界 pulseIn 采集，避免 Adafruit DHT 库
+    // 执行实际读取。ESP32 使用有界连续脉冲采集，避免 Adafruit DHT 库
     // 在异常线路上进入长时间 InterruptLock；其他 Arduino 平台保留原库路径。
     float humidity = NAN;
     float temperature = NAN;
 #if defined(ARDUINO_ARCH_ESP32)
     (void)dht; // The object still owns begin()/lifetime compatibility.
-    const bool boundedReadOk = readDhtBounded(pin, type, humidity, temperature);
+    DhtReadDiagnostic diagnostic;
+    const bool boundedReadOk = readDhtBounded(pin, type, humidity, temperature, &diagnostic);
     if (!boundedReadOk) {
         humidity = NAN;
         temperature = NAN;
@@ -332,7 +385,13 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 #endif
 
     if (isnan(humidity) || isnan(temperature)) {
+#if defined(ARDUINO_ARCH_ESP32)
+        LOGGER.warningf("[SensorDriver] DHT read failed on pin %d phase=%s bit=%d lowUs=%lu highUs=%lu elapsedUs=%lu line=%d",
+                        pin, diagnostic.phase, diagnostic.bit, diagnostic.lowUs, diagnostic.highUs,
+                        static_cast<unsigned long>(diagnostic.elapsedUs), diagnostic.finalLevel);
+#else
         LOGGER.warningf("[SensorDriver] DHT read failed on pin %d", pin);
+#endif
         const bool hasStaleValue =
             inst.lastRead.success &&
             (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS;

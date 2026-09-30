@@ -579,16 +579,43 @@
             }
             document.getElementById('mdev-edit-motor-decimals').value = String(dev ? (dev.motorDecimals || 0) : 0);
             document.getElementById('mdev-edit-motor-min-pos').value = dev ? (dev.motorMinPosition || 0) : 0;
-            document.getElementById('mdev-edit-motor-max-pos').value = dev ? (dev.motorMaxPosition || 10000) : 10000;
+            document.getElementById('mdev-edit-motor-max-pos').value = dev ? (dev.motorMaxPosition || 0) : 0;
             document.getElementById('mdev-edit-motor-cur-pos').value = dev ? (dev.motorCurrentPosition || 0) : 0;
-            document.getElementById('mdev-edit-motor-move-step').value = dev ? (dev.motorMoveStep || 100) : 100;
+            document.getElementById('mdev-edit-motor-move-step').value = dev ? (dev.motorMoveStep || 0) : 0;
             document.getElementById('mdev-edit-motor-last-pulse').value = dev ? (dev.motorLastPulse || 0) : 0;
+            var profile = dev && dev.motorProtocol;
+            document.getElementById('mdev-edit-motor-profile').value = profile || !dev ? 'custom' : 'legacy';
+            var protocolDefaults = { 'read-fc': 3, 'write-fc': 6, 'read-speed': motorRegs[3], 'read-pulse': motorRegs[4],
+                'fwd-value': 1, 'rev-value': 1, 'stop-value': 1 };
+            var protocolKeys = { 'read-fc':'readFunction', 'write-fc':'writeFunction', 'read-speed':'speedReadRegister',
+                'read-pulse':'pulseReadRegister', 'fwd-value':'forwardValue', 'rev-value':'reverseValue', 'stop-value':'stopValue' };
+            Object.keys(protocolDefaults).forEach(function(key) {
+                document.getElementById('mdev-edit-motor-' + key).value = profile ? profile[protocolKeys[key]] : protocolDefaults[key];
+            });
+            document.getElementById('mdev-edit-motor-finite').checked = profile ? profile.finitePulseMove === true : !!dev;
+            this._onMotorProtocolPreset();
             this._onEditTypeChange();
             var title = document.getElementById('modbus-edit-modal-title');
             if (title) title.textContent = (idx >= 0)
                 ? '编辑子设备'
                 : '添加设备';
             AppState.showModal(modal);
+        },
+
+        _onMotorProtocolPreset() {
+            var preset = document.getElementById('mdev-edit-motor-profile').value;
+            if (preset === 'yf53') {
+                var fields = { fwd:0, rev:1, stop:2, speed:5, pulse:7, decimals:0,
+                    'read-fc':3, 'write-fc':6, 'read-speed':5, 'read-pulse':7,
+                    'fwd-value':1, 'rev-value':1, 'stop-value':1 };
+                Object.keys(fields).forEach(function(key) { document.getElementById('mdev-edit-motor-' + key).value = fields[key]; });
+                document.getElementById('mdev-edit-motor-finite').checked = false;
+                // Presets only fill the local form. Bus settings, identity and
+                // travel limits are never changed by selecting a model.
+                document.getElementById('mdev-edit-motor-profile').value = 'custom';
+            }
+            var section = document.getElementById('mdev-edit-motor-protocol-fields');
+            if (section) AppState.toggleVisible(section, preset !== 'legacy');
         },
 
         _onEditTypeChange() {
@@ -615,6 +642,60 @@
 
         _saveEditModal() {
             if (!this.guardDeveloperModeAction()) return;
+            var motorValues = null;
+            if (document.getElementById('mdev-edit-type').value === 'motor') {
+                var invalidMotor = false;
+                var motorInteger = function(field, min, max) {
+                    var raw = String(document.getElementById('mdev-edit-motor-' + field).value).trim();
+                    var value = Number(raw);
+                    if (!raw || !Number.isInteger(value) || value < min || value > max) invalidMotor = true;
+                    return value;
+                };
+                motorValues = {
+                    motorRegs: ['fwd','rev','stop','speed','pulse'].map(function(field) { return motorInteger(field, 0, 65535); }),
+                    motorDecimals: motorInteger('decimals', 0, 6),
+                    motorMinPosition: motorInteger('min-pos', -2147483648, 2147483647),
+                    motorMaxPosition: motorInteger('max-pos', -2147483648, 2147483647),
+                    motorCurrentPosition: motorInteger('cur-pos', -2147483648, 2147483647),
+                    motorMoveStep: motorInteger('move-step', 0, 2147483647),
+                    motorLastPulse: motorInteger('last-pulse', 0, 65535)
+                };
+                if (invalidMotor) { Notification.warning('请填写有效的电机寄存器、位置和步数整数'); return; }
+                if (document.getElementById('mdev-edit-motor-profile').value !== 'legacy') {
+                    var profile = { version:1, readFunction:motorInteger('read-fc', 3, 4),
+                        writeFunction:motorInteger('write-fc', 6, 16),
+                        speedReadRegister:motorInteger('read-speed', 0, 65535),
+                        pulseReadRegister:motorInteger('read-pulse', 0, 65535),
+                        forwardValue:motorInteger('fwd-value', 0, 65535),
+                        reverseValue:motorInteger('rev-value', 0, 65535),
+                        stopValue:motorInteger('stop-value', 0, 65535),
+                        finitePulseMove:document.getElementById('mdev-edit-motor-finite').checked };
+                    if (invalidMotor || [6,16].indexOf(profile.writeFunction) < 0) {
+                        Notification.warning('请核对协议功能码、读回地址和动作值'); return;
+                    }
+                    var actionValues = [profile.forwardValue, profile.reverseValue, profile.stopValue];
+                    var regs = motorValues.motorRegs;
+                    for (var a = 0; a < 3; a++) {
+                        for (var b = a + 1; b < 3; b++) {
+                            if (regs[a] === regs[b] && actionValues[a] === actionValues[b]) {
+                                Notification.warning('共用控制寄存器时，正转、反转和停止值必须不同'); return;
+                            }
+                        }
+                        if (regs[a] === regs[3] || regs[a] === regs[4]) {
+                            Notification.warning('参数寄存器不能与动作寄存器重复'); return;
+                        }
+                    }
+                    if (regs[3] === regs[4]) { Notification.warning('速度和脉冲数的写入地址不能相同'); return; }
+                    motorValues.motorProtocol = profile;
+                }
+                if (motorValues.motorMaxPosition < motorValues.motorMinPosition) {
+                    Notification.warning('最大位置不能小于最小位置；两者相等表示关闭软限位'); return;
+                }
+                if (motorValues.motorMaxPosition > motorValues.motorMinPosition &&
+                    (motorValues.motorCurrentPosition < motorValues.motorMinPosition || motorValues.motorCurrentPosition > motorValues.motorMaxPosition)) {
+                    Notification.warning('估算位置必须在软限位范围内，请先核对实际原点'); return;
+                }
+            }
             var idx = this._editingDeviceIdx;
             var isNew = (idx < 0);
             if (isNew) {
@@ -652,17 +733,10 @@
                 dev.pidAddrs.push(parseInt(document.getElementById('mdev-edit-pid-' + pidFields[pi]).value) || pi);
             }
             dev.pidDecimals = parseInt(document.getElementById('mdev-edit-pid-decimals').value) || 1;
-            dev.motorRegs = [];
-            var motorFields = ['fwd','rev','stop','speed','pulse'];
-            for (var mi = 0; mi < motorFields.length; mi++) {
-                dev.motorRegs.push(parseInt(document.getElementById('mdev-edit-motor-' + motorFields[mi]).value) || [0,1,2,5,7][mi]);
+            if (motorValues) {
+                Object.assign(dev, motorValues);
+                if (!motorValues.motorProtocol) delete dev.motorProtocol;
             }
-            dev.motorDecimals = parseInt(document.getElementById('mdev-edit-motor-decimals').value) || 0;
-            dev.motorMinPosition = parseInt(document.getElementById('mdev-edit-motor-min-pos').value) || 0;
-            dev.motorMaxPosition = parseInt(document.getElementById('mdev-edit-motor-max-pos').value) || 10000;
-            dev.motorCurrentPosition = parseInt(document.getElementById('mdev-edit-motor-cur-pos').value) || 0;
-            dev.motorMoveStep = parseInt(document.getElementById('mdev-edit-motor-move-step').value) || 100;
-            dev.motorLastPulse = parseInt(document.getElementById('mdev-edit-motor-last-pulse').value) || 0;
             this._renderAllDevices();
             this._closeEditModal();
         },

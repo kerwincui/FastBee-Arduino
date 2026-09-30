@@ -97,6 +97,8 @@
         },
 
         _dcClearRuntimeState: function() {
+            this._dcCoilReads = {};
+            this._dcCoilRetryDelays = {};
             this._controlData = null;
             this._modbusStatus = null;
             this._modbusConfiguredDevices = [];
@@ -107,6 +109,7 @@
             this._dcPwmStates = {};
             this._dcPidValues = {};
             this._dcDeviceOnline = {};
+            this._dcMotorAcknowledgements = {};
             this._dcDragEl = null;
             this._dcDragOffset = null;
             this._dcResizeEl = null;
@@ -118,11 +121,21 @@
         },
 
         _dcApplyProtocolDevices: function(protoRes) {
-            this._modbusConfiguredDevices = [];
-            this._modbusDevices = [];
             if (!protoRes || !protoRes.success || !protoRes.data) return false;
             var rtu = protoRes.data.modbusRtu;
+            if (protoRes.degraded === true || protoRes.data.degraded === true || (rtu && rtu.degraded === true)) return false;
+            this._modbusConfiguredDevices = [];
+            this._modbusDevices = [];
             if (!rtu || !rtu.enabled || !rtu.master || !Array.isArray(rtu.master.devices)) return true;
+            // Keep configured cards pending until live samples arrive.
+            var tasks = this._modbusStatus && this._modbusStatus.tasks;
+            if ((!Array.isArray(tasks) || !tasks.length) && Array.isArray(rtu.master.tasks)) {
+                this._modbusStatus = Object.assign({}, this._modbusStatus || {}, {
+                    tasks: rtu.master.tasks.map(function(task) {
+                        return Object.assign({}, task, { status: 'pending', cachedData: null, _dcMappedValues: null });
+                    })
+                });
+            }
             this._modbusConfiguredDevices = rtu.master.devices.map(function(device, configIndex) {
                 return Object.assign({}, device || {}, { _configIndex: configIndex });
             });
@@ -262,7 +275,7 @@
                     if (e.target.closest('#dc-zoom-reset-btn')) { self._dcZoomReset(); return; }
                     if (e.target.closest('#dc-zoom-in-btn')) { self._dcZoomIn(); return; }
                     var btn = e.target.closest('.dc-ctrl-btn');
-                    if (!btn) return;
+                    if (!btn || btn.disabled) return;
                     var ruleId = btn.getAttribute('data-id');
                     var isSystem = btn.getAttribute('data-system') === 'true';
                     var ruleName = btn.getAttribute('data-name') || '';
@@ -493,6 +506,59 @@
             });
         },
 
+        _dcMarkSnapshotStale: function(message) {
+            var content = document.getElementById('dc-content');
+            if (!content) return;
+            // API responses may be shared with the read cache. Invalidate only
+            // this dashboard's snapshot, never another consumer's cached data.
+            if (this._controlData) this._controlData = JSON.parse(JSON.stringify(this._controlData));
+            if (this._modbusStatus) this._modbusStatus = JSON.parse(JSON.stringify(this._modbusStatus));
+            content.querySelectorAll('.dc-monitor-card').forEach(function(card) {
+                if (typeof this._dcUpdateMonitorCard === 'function') {
+                    this._dcUpdateMonitorCard(card, { value: null, valid: false, valueValid: false, quality: 'stale' });
+                }
+            }.bind(this));
+            if (typeof this._dcControlRules === 'function') {
+                this._dcControlRules(this._controlData || {}).forEach(function(rule) {
+                    (rule.sensors || []).forEach(function(sensor) {
+                        sensor.valid = false; sensor.valueValid = false; sensor.quality = 'stale';
+                    });
+                });
+            }
+            ((this._modbusStatus || {}).tasks || []).forEach(function(task) {
+                task.cachedData = null; task._dcMappedValues = null; task.status = 'pending';
+            });
+            (this._modbusDevices || []).forEach(function(device, index) {
+                if ((device.deviceType || 'relay') !== 'relay') return;
+                this._dcCoilStates[index] = new Array(device.channelCount || 2).fill(null);
+                if (typeof this._dcUpdateAllCoilUI === 'function') this._dcUpdateAllCoilUI(index);
+            }.bind(this));
+            var notice = content.querySelector('.dc-recovery-notice');
+            if (!notice) {
+                notice = document.createElement('div');
+                notice.className = 'dc-recovery-notice';
+                notice.setAttribute('role', 'status');
+                content.prepend(notice);
+            }
+            notice.textContent = message || '数据已过期，正在恢复连接';
+        },
+
+        _dcScheduleSnapshotRecovery: function(message) {
+            var generation = this._dcLifecycleGeneration;
+            if (!this._dcIsLifecycleActive(generation)) return;
+            if (message) this._dcMarkSnapshotStale(message);
+            var timers = this._dcAutoRefreshTimers || (this._dcAutoRefreshTimers = {});
+            if (timers.snapshotRecovery) return;
+            var delay = this._dcRecoveryDelay || 2000;
+            this._dcRecoveryDelay = Math.min(delay * 2, 60000);
+            timers.snapshotRecovery = setTimeout(function() {
+                delete timers.snapshotRecovery;
+                if (!this._dcIsLifecycleActive(generation)) return;
+                if (this._dcPageLoadPromise) { this._dcScheduleSnapshotRecovery(); return; }
+                this.loadDeviceControlPage({ noCache: true });
+            }.bind(this), delay);
+        },
+
         // ============ 加载控制面板 ============
         _setDeviceControlRefreshLoading: function(isLoading) {
             var btn = document.getElementById('dc-refresh-btn');
@@ -516,12 +582,17 @@
                 return Promise.resolve(false);
             }
 
+            var hadSnapshot = !!this._controlData && !!content.querySelector('.dc-monitor-card, .dc-modbus-device-panel');
             this._dcCancelPendingDelays();
             this._dcCancelInit(false);
-            this._dcStopAllAutoRefresh();
-            this._dcClearRuntimeState();
+            var keepSse = hadSnapshot && !!this._sseSource;
+            this._dcStopAllAutoRefresh(keepSse);
+            if (!hadSnapshot) this._dcClearRuntimeState();
             var loadGeneration = ++this._dcLifecycleGeneration;
-            this._setContentState(content, 'loading');
+            if (hadSnapshot) this._dcMarkSnapshotStale('正在刷新，显示值暂不可用');
+            else this._setContentState(content, 'loading');
+            // Rebind to the new lifecycle without closing a recovered stream.
+            if (keepSse) this._setupSSE(true);
             var self = this;
             var controlsRes = null;
             var modbusRes = null;
@@ -534,15 +605,30 @@
             };
             var controlsGetter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var silentGetter = (options.noCache === true && typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : apiGetSilent;
+            // A degraded 200 contains empty groups, not an empty configuration.
+            // Retry with fresh reads and bounded backoff before rendering it.
+            var requestControls = function(attempt) {
+                ensureActive();
+                var getter = attempt > 0 && typeof apiGetFresh === 'function' ? apiGetFresh : controlsGetter;
+                return getter('/api/periph-exec/controls').then(function(response) {
+                    ensureActive();
+                    if (!response || response.degraded !== true) return response;
+                    if (attempt >= 3) throw new Error('设备暂忙，监测配置尚未加载，请稍后刷新');
+                    return self._dcDelay(1000 * Math.pow(2, attempt), loadGeneration).then(function() {
+                        ensureActive();
+                        return requestControls(attempt + 1);
+                    });
+                });
+            };
             var runtimeReady = this._ensureDeviceControlRuntime();
             this._setDeviceControlRefreshLoading(true);
             var loadPromise = this._fetchDeviceInfo(options, loadGeneration).then(function() {
                 ensureActive();
-                return controlsGetter('/api/periph-exec/controls');
+                return requestControls(0);
             }).then(function(response) {
                 ensureActive();
                 controlsRes = response;
-                return silentGetter('/api/modbus/status?compact=1').catch(function() { return null; });
+                return silentGetter('/api/modbus/status?full=1').catch(function() { return null; });
             }).then(function(response) {
                 ensureActive();
                 modbusRes = response;
@@ -550,41 +636,54 @@
             }).then(function(protoRes) {
                 ensureActive();
                 return runtimeReady.then(function() { return protoRes; });
-            }).then(function(protoRes) {
+            }).then(async function(protoRes) {
                 ensureActive();
                 var res = controlsRes;
                 if (modbusRes && modbusRes.success && modbusRes.data) self._modbusStatus = modbusRes.data;
                 else self._modbusStatus = null;
                 protocolConfigLoaded = self._dcApplyProtocolDevices(protoRes);
-                if (!res) { self._setContentState(content, 'empty'); return; }
-                if (res.success === false) { self._setContentState(content, 'error', res.error || res.message || '请求失败'); return; }
+                if (!res) throw new Error('监测配置暂不可用');
+                if (res.success === false) throw new Error(res.error || res.message || '请求失败');
                 var data = res.data || res;
-                if (!data || typeof data !== 'object') { self._setContentState(content, 'empty'); return; }
+                if (!data || typeof data !== 'object') throw new Error('监测配置响应无效');
                 self._controlData = data;
+                // Finish the first real readback before exposing control cards.
+                // Failed reads retain unknown states and their existing retries.
+                await self._dcInitModbusDeviceStates(true);
+                ensureActive();
                 try {
                     var html = self._renderControlPanel(data);
                     content.innerHTML = html;
+                    self._dcRecoveryDelay = 2000;
                     self._dcApplyZoom();
                     self._dcApplyLayout();
                     self._dcInitFreeLayout();
-                    self._dcInitModbusDeviceStates();
-                    if (self._dcIsLifecycleActive(loadGeneration, content)) self._setupSSE();
+                    if (self._dcIsLifecycleActive(loadGeneration, content)) {
+                        self._setupSSE(keepSse);
+                        if (typeof self._dcStartMotorSync === 'function') self._dcStartMotorSync();
+                    }
                     if (!protocolConfigLoaded) {
-                        self._dcAutoRefreshTimers.protocolRetry = setTimeout(function() {
+                        var retryProtocol = function(attempt) {
+                          self._dcAutoRefreshTimers.protocolRetry = setTimeout(function() {
                             delete self._dcAutoRefreshTimers.protocolRetry;
                             if (!self._dcIsLifecycleActive(loadGeneration, content)) return;
                             silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).then(function(retryRes) {
                                 if (!self._dcIsLifecycleActive(loadGeneration, content)) return;
-                                if (!retryRes || !retryRes.success || !retryRes.data) return;
                                 if (self._dcApplyProtocolDevices(retryRes)) {
-                                    self.loadDeviceControlPage(options.noCache === true ? { noCache: true } : undefined);
+                                    self.loadDeviceControlPage({ noCache: true });
+                                } else if (attempt < 3) {
+                                    retryProtocol(attempt + 1);
                                 }
-                            }).catch(function() {});
-                        }, 2000);
+                            }).catch(function() {
+                                if (self._dcIsLifecycleActive(loadGeneration, content) && attempt < 3) retryProtocol(attempt + 1);
+                            });
+                          }, 2000 * Math.pow(2, attempt));
+                        };
+                        retryProtocol(0);
                     }
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
-                    self._setContentState(content, 'error', renderErr.message || renderErr);
+                    throw renderErr;
                 }
             }).catch(function(err) {
                 if (!self._dcIsLifecycleActive(loadGeneration, content) ||
@@ -595,7 +694,11 @@
                 var errMsg = '请求失败';
                 if (err && err.data && err.data.error) errMsg = err.data.error;
                 else if (err && err.message) errMsg = err.message;
-                self._setContentState(content, 'error', errMsg);
+                if (hadSnapshot) {
+                    self._dcMarkSnapshotStale('通信失败：' + errMsg + '，正在重试');
+                    self._setupSSE(keepSse);
+                } else self._setContentState(content, 'error', errMsg);
+                self._dcScheduleSnapshotRecovery();
                 return false;
             }).finally(function() {
                 controlsRes = null;
@@ -622,43 +725,46 @@
         },
 
         // ============ 执行规则 ============
+        _dcSetRuleBusy: function(ruleId, busy) {
+            document.querySelectorAll('#dc-content .dc-ctrl-btn').forEach(function(button) {
+                if (button.getAttribute('data-id') !== ruleId) return;
+                button.disabled = busy || button.getAttribute('data-unavailable') === 'true';
+                button.classList.toggle('dc-loading', busy);
+                button.textContent = busy ? '提交中...' : '执行一次';
+            });
+        },
+
         _executeRule: function(ruleId, btn) {
-            if (!ruleId) return;
+            if (!ruleId || !btn || btn.disabled) return Promise.resolve();
+            if (!this._dcRuleRuns) this._dcRuleRuns = new Map();
+            if (this._dcRuleRuns.has(ruleId)) return Promise.resolve();
             var self = this;
             var generation = this._dcLifecycleGeneration;
-            var hasSetMode = btn && btn.getAttribute('data-has-set-mode') === 'true';
-            var ruleName = btn ? (btn.getAttribute('data-name') || btn.textContent || '') : '';
-            var doRun = function(value) {
-                if (!self._dcIsLifecycleActive(generation)) return;
-                var originalText = btn.textContent;
-                btn.textContent = '执行中...';
-                btn.disabled = true;
-                btn.classList.add('dc-loading');
+            var token = {};
+            this._dcRuleRuns.set(ruleId, token);
+            this._dcSetRuleBusy(ruleId, true);
+            return Promise.resolve().then(function() {
+                return btn.getAttribute('data-has-set-mode') === 'true'
+                    ? self.promptPeriphExecRunValue({ ruleName: btn.getAttribute('data-name') || '' }) : '';
+            }).then(function(value) {
+                if (value === null || !self._dcIsLifecycleActive(generation)) return;
                 var payload = { id: ruleId };
                 if (value !== undefined && value !== '') payload.value = value;
-                apiPost('/api/periph-exec/run', payload).then(function(res) {
+                return apiPost('/api/periph-exec/run', payload).then(function(res) {
                     if (!self._dcIsLifecycleActive(generation)) return;
-                    if (res && res.success) Notification.success('执行成功');
-                    else Notification.error((res && (res.error || res.message)) || '执行失败');
-                }).catch(function() {
-                    if (!self._dcIsLifecycleActive(generation)) return;
-                    Notification.error('执行失败');
-                }).then(function() {
-                    if (self._dcIsLifecycleActive(generation) && btn && btn.isConnected) {
-                        btn.textContent = originalText;
-                        btn.disabled = false;
-                        btn.classList.remove('dc-loading');
-                    }
+                    var failed = res && ['failed', 'rejected', 'cancelled', 'timed_out'].includes(res.state);
+                    if (!res || !res.success || failed) Notification.error(res && (res.error || res.message || res.reason) || '执行失败');
+                    else Notification.success(res.state === 'success' ? '执行成功' : '执行已提交');
                 });
-            };
-            if (hasSetMode) {
-                this.promptPeriphExecRunValue({ ruleName: ruleName || '' }).then(function(inputValue) {
-                    if (inputValue === null || !self._dcIsLifecycleActive(generation)) return;
-                    doRun(inputValue);
-                });
-            } else {
-                doRun('');
-            }
+            }).catch(function(err) {
+                if (!self._dcIsLifecycleActive(generation)) return;
+                Notification.error(err && err.data && (err.data.error || err.data.message) || err && err.message || '执行失败');
+            }).finally(function() {
+                if (self._dcRuleRuns.get(ruleId) === token) {
+                    self._dcRuleRuns.delete(ruleId);
+                    self._dcSetRuleBusy(ruleId, false);
+                }
+            });
         },
 
         // ============ Modbus 设备初始化 ============
@@ -674,7 +780,7 @@
             }
         },
 
-        _dcInitModbusDeviceStates: async function() {
+        _dcInitModbusDeviceStates: async function(immediate) {
             if (this._dcModbusInitRunning && !this._dcInitCancelled) return;
             var initGeneration = ++this._dcModbusInitGeneration;
             var lifecycleGeneration = this._dcLifecycleGeneration;
@@ -683,7 +789,7 @@
             var devices = this._modbusDevices || [];
             try {
                 // 等待页面主请求完成后再开始Modbus轮询，让 Governor 缓冲区排空
-                if (!await this._dcDelay(1500, lifecycleGeneration)) return;
+                if (!immediate && !await this._dcDelay(1500, lifecycleGeneration)) return;
                 for (var i = 0; i < devices.length; i++) {
                     if (!this._dcIsLifecycleActive(lifecycleGeneration) ||
                         this._dcInitCancelled || initGeneration !== this._dcModbusInitGeneration) break;
@@ -707,9 +813,10 @@
             }
         },
 
-        _dcStopAllAutoRefresh: function() {
+        _dcStopAllAutoRefresh: function(keepSse) {
+            this._dcMotorSyncToken = (this._dcMotorSyncToken || 0) + 1;
             var timers = this._dcAutoRefreshTimers || {};
-            if (typeof this._closeSSE === 'function') this._closeSSE();
+            if (typeof this._closeSSE === 'function') this._closeSSE(keepSse);
             for (var key in timers) {
                 if (timers.hasOwnProperty(key) && timers[key]) {
                     clearInterval(timers[key]);

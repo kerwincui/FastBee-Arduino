@@ -273,10 +273,11 @@ void UserManager::updateUserLastModified(const String& username) {
 
 // ============ 用户管理方法 ============
 
-bool UserManager::addUser(const String& username, const String& password) {
+bool UserManager::addUser(const String& username, const String& password, const String& description) {
 #if FASTBEE_SINGLE_ADMIN_MODE
     (void)username;
     (void)password;
+    (void)description;
     return false;
 #else
     UsersLock lk(_usersMutex);
@@ -290,6 +291,7 @@ bool UserManager::addUser(const String& username, const String& password) {
 
     User newUser;
     newUser.username     = username;
+    newUser.description  = description.substring(0, 64);
     newUser.salt         = generateSalt();
     newUser.passwordHash = hashPasswordPbkdf2(password);
     newUser.enabled      = true;
@@ -297,7 +299,9 @@ bool UserManager::addUser(const String& username, const String& password) {
     newUser.lastModified = millis();
 
     users[username] = newUser;
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    users.erase(username);
+    return false;
 #endif
 }
 
@@ -317,14 +321,19 @@ bool UserManager::deleteUser(const String& username) {
         return false;
     }
     
+    const User previous = it->second;
     users.erase(it);
+    if (!saveUsersToStorage()) {
+        users[username] = previous;
+        return false;
+    }
     loginAttempts.erase(username);
-    return saveUsersToStorage();
+    return true;
 #endif
 }
 
 bool UserManager::updateUser(const String& username, const String& newPassword,
-                           bool enabled) {
+                           bool enabled, const String* description) {
     UsersLock lk(_usersMutex);
     auto it = users.find(username);
     if (it == users.end()) {
@@ -332,6 +341,7 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
     }
     
     User& user = it->second;
+    const User previous = user;
     
     // 更新密码
     if (!newPassword.isEmpty()) {
@@ -350,8 +360,11 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
     user.enabled = true;
 #endif
     
+    if (description) user.description = description->substring(0, 64);
     user.lastModified = millis();
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    user = previous;
+    return false;
 }
 
 bool UserManager::changePassword(const String& username, const String& oldPassword,
@@ -363,6 +376,7 @@ bool UserManager::changePassword(const String& username, const String& oldPasswo
     }
     
     User& user = it->second;
+    const User previous = user;
     
     if (!verifyPassword(oldPassword, user.passwordHash, user.salt)) {
         return false;
@@ -376,7 +390,9 @@ bool UserManager::changePassword(const String& username, const String& oldPasswo
     user.passwordHash = hashPasswordPbkdf2(newPassword);
     user.lastModified = millis();
     
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    user = previous;
+    return false;
 }
 
 bool UserManager::resetPassword(const String& username, const String& newPassword) {
@@ -391,11 +407,14 @@ bool UserManager::resetPassword(const String& username, const String& newPasswor
     }
     
     User& user = it->second;
+    const User previous = user;
     user.salt = generateSalt();
     user.passwordHash = hashPasswordPbkdf2(newPassword);
     user.lastModified = millis();
     
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    user = previous;
+    return false;
 }
 
 // ============ 用户查询方法 ============
@@ -697,6 +716,7 @@ bool UserManager::loadConfig() {
 bool UserManager::updateSecurityConfig(uint32_t sessionTimeout, uint32_t sessionCleanupInterval,
                                        bool enableSessionPersistence, const String& cookieName,
                                        uint32_t cookieMaxAge, bool cookieHttpOnly, bool cookieSecure) {
+    const auto previous = config;
     config.sessionTimeout = sessionTimeout;
     config.sessionCleanupInterval = sessionCleanupInterval;
     config.enableSessionPersistence = enableSessionPersistence;
@@ -704,16 +724,23 @@ bool UserManager::updateSecurityConfig(uint32_t sessionTimeout, uint32_t session
     config.cookieMaxAge = cookieMaxAge;
     config.cookieHttpOnly = cookieHttpOnly;
     config.cookieSecure = cookieSecure;
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    config = previous;
+    return false;
 }
 
-void UserManager::updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+bool UserManager::updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
                                        uint8_t minPwdLen, bool requireStrong) {
+    if (maxAttempts < 1 || maxAttempts > 10 || lockoutTime < 60000 || lockoutTime > 3600000 ||
+        minPwdLen < 4 || minPwdLen > 32) return false;
+    const auto previous = config;
     config.maxLoginAttempts       = maxAttempts;
     config.loginLockoutTime       = lockoutTime;
     config.minPasswordLength      = minPwdLen;
     config.requireStrongPasswords = requireStrong;
-    saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    config = previous;
+    return false;
 }
 
 // ============ 静态工具方法 ============
@@ -752,9 +779,12 @@ bool UserManager::setUserDescription(const String& username, const String& descr
     if (it == users.end()) return false;
 
     // 截断为最大64字符
+    const User previous = it->second;
     it->second.description = description.substring(0, 64);
     it->second.lastModified = millis();
-    return saveUsersToStorage();
+    if (saveUsersToStorage()) return true;
+    it->second = previous;
+    return false;
 }
 
 bool UserManager::updatePassword(const String& username, const String& newPassword) {

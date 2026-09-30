@@ -1,5 +1,6 @@
 #include "./network/handlers/SSERouteHandler.h"
 #include "./network/WebHandlerContext.h"
+#include "network/SseJsonChunks.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
 #include <esp_heap_caps.h>
@@ -34,9 +35,12 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
         reportClientCount();
     });
 
-    _events.authorizeConnect([this](AsyncWebServerRequest* request) {
+    // authorizeConnect maps every false result to 401, overwriting resource
+    // rejection responses. Middleware preserves 503 without bypassing auth.
+    _events.addMiddleware([this](AsyncWebServerRequest* request, ArMiddlewareNext next) {
         if (!ctx || !request) {
-            return false;
+            if (request) request->send(503, "text/plain", "SSE unavailable");
+            return;
         }
         // 内存门控：largestBlock < 16KB 或 MEMGUARD >= SEVERE 时拒绝新 SSE
         // 避免浏览器多 tab 自动重连持续吃堆，让系统有恢复窗口
@@ -48,7 +52,7 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
             LOG_WARNINGF("[SSE] Connection rejected: low memory (largestBlock=%lu < %u)",
                          (unsigned long)largestBlock, (unsigned)LOW_MEMORY_THRESHOLD);
             request->send(503, "text/plain", "Server low memory, retry later");
-            return false;
+            return;
         }
 #if FASTBEE_ENABLE_HEALTH_MONITOR
         HealthMonitor* hm = getHealthMonitor();
@@ -58,7 +62,7 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
             setReason(_stats.lastRejectReason, sizeof(_stats.lastRejectReason), "guard_active");
             LOG_WARNING("[SSE] Connection rejected: MEMGUARD SEVERE/CRITICAL active");
             request->send(503, "text/plain", "Server memory guard active, retry later");
-            return false;
+            return;
         }
 #endif
         // 并发连接限制：所有槽位被活跃连接占满时拒绝（503 语义）
@@ -75,16 +79,20 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
             LOG_WARNINGF("[SSE] Connection rejected: %u/%u slots occupied",
                          activeCount, (unsigned)MAX_SSE_CLIENTS);
             request->send(503, "text/plain", "Too many SSE connections");
-            return false;
+            return;
         }
         // 认证检查
         if (ctx->authManager) {
             if (ctx->requiresAuth(request)) {
                 AuthResult authResult = ctx->authenticateRequest(request);
-                return authResult.success;
+                if (!authResult.success) {
+                    request->send(401, "text/plain", "Unauthorized");
+                    return;
+                }
             }
         }
-        return true;
+        ctx->noteWebRequestActivity();
+        next();
     });
 
     server->addHandler(&_events);
@@ -94,11 +102,18 @@ void SSERouteHandler::broadcastModbusData(const String& data) {
     if (_events.count() == 0 || shouldSkipBroadcast()) {
         return;
     }
-    // 限制消息大小，避免大数据包阻塞 async_tcp
+    // Retain the memory budget without ever truncating a JSON record.
     if (data.length() > MAX_SSE_MESSAGE_SIZE) {
-        LOG_WARNING("SSE: modbus-data message too large, truncated");
-        String truncated = data.substring(0, MAX_SSE_MESSAGE_SIZE);
-        _events.send(truncated.c_str(), "modbus-data", _messageId++);
+        const auto result = FastBee::sendSseObjectArray<MAX_SSE_MESSAGE_SIZE>(
+            data.c_str(), data.length(), [this](const char* chunk) {
+                return _events.send(chunk, "modbus-data", _messageId++) == AsyncEventSource::ENQUEUED;
+            });
+        if (result != FastBee::SseChunkResult::Ok) {
+            _stats.lastSkipBroadcastAtMs = millis();
+            setReason(_stats.lastSkipReason, sizeof(_stats.lastSkipReason), "modbus_chunk_failed");
+            LOG_WARNING("SSE: incomplete Modbus publication; requesting snapshot recovery");
+            _events.send("{\"reason\":\"modbus_chunk_failed\"}", "resync", _messageId++);
+        }
         return;
     }
     _events.send(data.c_str(), "modbus-data", _messageId++);
@@ -160,10 +175,8 @@ void SSERouteHandler::performMaintenance() {
         _lastHeartbeatMs = now;
         if (_events.count() > 0) {
             _events.send("ping", "heartbeat", _messageId++);
-            // 不再无条件刷新所有客户端的 lastActiveMs：全局心跳广播无法确认
-            // 每个客户端是否实际收到（TCP 缓冲可能已满）。客户端活跃时间仅由
-            // trackClient（新连接）和实际数据事件驱动，cleanupStaleConnections
-            // 会在 CLIENT_TIMEOUT_MS 后关闭真正无响应的客户端。
+            // Only positive TCP ACKs update activity. Queueing a heartbeat
+            // must not keep a blocked peer alive.
         }
         reportClientCount();
     }
@@ -205,6 +218,12 @@ void SSERouteHandler::cleanupStaleConnections(unsigned long now) {
 }
 
 void SSERouteHandler::trackClient(AsyncEventSourceClient* client, unsigned long now) {
+    if (!client || !client->client()) return;
+    // Keep ESPAsyncWebServer's ACK bookkeeping when adding liveness tracking.
+    client->client()->onAck([this, client](void*, AsyncClient*, size_t length, uint32_t time) {
+        noteClientAck(client, length);
+        client->_onAck(length, time);
+    }, nullptr);
     // 先找空槽
     for (auto& s : _slots) {
         if (!s.client || !s.client->connected()) {
@@ -230,6 +249,16 @@ void SSERouteHandler::trackClient(AsyncEventSourceClient* client, unsigned long 
     _slots[oldest].client = client;
     _slots[oldest].connectTime = now;
     _slots[oldest].lastActiveMs = now;
+}
+
+void SSERouteHandler::noteClientAck(AsyncEventSourceClient* client, size_t length) {
+    if (length == 0) return;
+    for (auto& slot : _slots) {
+        if (slot.client == client) {
+            slot.lastActiveMs = millis();
+            return;
+        }
+    }
 }
 
 void SSERouteHandler::untrackClient(AsyncEventSourceClient* client) {

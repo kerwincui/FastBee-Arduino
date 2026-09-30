@@ -169,6 +169,7 @@ bool WebConfigManager::initialize() {
         uint32_t retryAfterSec = 1;
         if (checkIpRateLimit(request, retryAfterSec)) {
             next();
+            if (ctx) ctx->renewSessionCookie(request);
             return;
         }
         // 超限：429 + Retry-After（JSON 体与 sendError 格式对齐）

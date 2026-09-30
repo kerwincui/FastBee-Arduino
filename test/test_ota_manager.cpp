@@ -226,22 +226,36 @@ static void test_fastbee_ota_resolves_https_and_relative_urls() {
     TEST_ASSERT_EQUAL_STRING("https://mqtt.fastbee.cn/profile/iot/1/fw.bin", resolved.c_str());
 }
 
-static void test_fastbee_ota_rejects_non_https_urls() {
+static void test_fastbee_ota_accepts_http_and_rejects_invalid_urls() {
     String resolved;
     String error;
 
-    TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::resolveFirmwareUrl(
         "http://fastbee.cn/fw.bin", "https://fastbee.cn", "mqtt.fastbee.cn",
         resolved, error));
-    TEST_ASSERT_TRUE(error.indexOf("HTTPS") >= 0);
+    TEST_ASSERT_EQUAL_STRING("http://fastbee.cn/fw.bin", resolved.c_str());
 
-    TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
-        "/fw.bin", "http://fastbee.cn", "mqtt.fastbee.cn", resolved, error));
-    TEST_ASSERT_TRUE(error.indexOf("https://") >= 0);
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::resolveFirmwareUrl(
+        "/fw.bin", "http://fastbee.cn:8080/releases/", "mqtt.fastbee.cn", resolved, error));
+    TEST_ASSERT_EQUAL_STRING("http://fastbee.cn:8080/releases/fw.bin", resolved.c_str());
 
     TEST_ASSERT_FALSE(FastBeeOtaProtocol::resolveFirmwareUrl(
         "//untrusted.example/fw.bin", "https://fastbee.cn", "mqtt.fastbee.cn",
         resolved, error));
+    const char* invalidUrls[] = {
+        "ftp://host/fw.bin", "http:///fw.bin", "https://", "http://:80/fw.bin",
+        "https://user:password@host/fw.bin", "http://host:0/fw.bin",
+        "http://host:65536/fw.bin", "http://host:abc/fw.bin",
+        "http://host/fw.bin#fragment", "https://host/ fw.bin", "http://host/\\fw.bin"
+    };
+    for (const char* value : invalidUrls) {
+        TEST_ASSERT_FALSE_MESSAGE(FastBeeOtaProtocol::isValidFirmwareUrl(value), value);
+    }
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::isValidFirmwareUrl("http://[::1]:8080/fw.bin"));
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::isValidFirmwareUrl("https://host/fw.bin?token=abc"));
+    TEST_ASSERT_FALSE(FastBeeOtaProtocol::validateBaseUrl("http://host/base?token=abc", error));
+    TEST_ASSERT_FALSE(FastBeeOtaProtocol::validateBaseUrl("https://host/base#fragment", error));
+    TEST_ASSERT_TRUE(FastBeeOtaProtocol::validateBaseUrl("", error));
 }
 
 static void test_fastbee_ota_reply_matches_platform_schema() {
@@ -283,6 +297,6 @@ void test_ota_manager_group() {
     RUN_TEST(test_fastbee_ota_parses_https_upgrade_command);
     RUN_TEST(test_fastbee_ota_rejects_invalid_commands);
     RUN_TEST(test_fastbee_ota_resolves_https_and_relative_urls);
-    RUN_TEST(test_fastbee_ota_rejects_non_https_urls);
+    RUN_TEST(test_fastbee_ota_accepts_http_and_rejects_invalid_urls);
     RUN_TEST(test_fastbee_ota_reply_matches_platform_schema);
 }

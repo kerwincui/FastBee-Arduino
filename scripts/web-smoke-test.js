@@ -211,7 +211,7 @@ function checkUiRegressionGuards(files, manifest) {
         'peripheral diagnostics module must be loaded on demand');
     assert(peripheralSave.includes('/api/peripherals/preflight'),
         'peripheral save module preflight API coverage missing');
-    assert(peripheralIo.includes("loadFragment('','peripheral-io')"),
+    assert(/loadFragment\(["']["']\s*,\s*["']peripheral-io["']\)/.test(peripheralIo),
         'peripheral diagnostics fragment must be loaded on demand');
     // Config transfer multi-select modal logic
     if (configTransferCompiled) {
@@ -724,7 +724,7 @@ function checkDeveloperModeAndModalEventBinding() {
     const periphExecJs = read('web-src/modules/runtime/periph-exec.js');
     assert(periphExecJs.includes('_bindPeriphExecModalEvents'),
         'periph-exec.js must have _bindPeriphExecModalEvents method for modal events');
-    assert(periphExecJs.includes("_registerModalBinder('periph-exec'"),
+    assert(/_registerModalBinder\(["']periph-exec["']\s*,/.test(periphExecJs),
         'periph-exec.js must register modal binder via _registerModalBinder');
 
     // 4. rule-script.js 必须将模态窗事件分离并通过 binder 注册

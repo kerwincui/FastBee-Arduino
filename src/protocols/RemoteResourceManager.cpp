@@ -8,6 +8,7 @@
 #include "network/NetworkManager.h"
 #include "network/OTAManager.h"
 #include "network/ProtocolSecret.h"
+#include "network/TlsMemory.h"
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <WiFiClientSecure.h>
@@ -26,28 +27,9 @@ public:
     explicit Guard(SemaphoreHandle_t m) : mutex_(m) { if (mutex_) xSemaphoreTakeRecursive(mutex_,portMAX_DELAY); }
     ~Guard() { if (mutex_) xSemaphoreGiveRecursive(mutex_); }
 };
-bool due(uint32_t now,uint32_t deadline) { return !deadline || static_cast<int32_t>(now-deadline)>=0; }
-constexpr size_t WEATHER_WORKER_MIN_INTERNAL_BYTES=24000U;
-constexpr uint32_t WEATHER_TRANSIENT_RETRY_MIN_MS=30000U;
-constexpr uint32_t WEATHER_TRANSIENT_RETRY_MAX_MS=300000U;
-
-bool weatherWorkerEligible(bool networkConnected,bool workerActive,bool hasSources,
-                           bool otaInProgress,bool ready,size_t internalFree) {
-    return networkConnected && !workerActive && hasSources && !otaInProgress &&
-           ready && internalFree>=WEATHER_WORKER_MIN_INTERNAL_BYTES;
-}
-
-uint32_t weatherFailureDelayMs(uint8_t failures,bool transientTransportFailure,
-                               uint32_t configuredIntervalMs) {
-    const uint8_t attempts=failures ? failures : 1U;
-    if (transientTransportFailure) {
-        const uint8_t shift=std::min<uint8_t>(attempts-1U,4U);
-        return std::min<uint32_t>(WEATHER_TRANSIENT_RETRY_MIN_MS<<shift,
-                                  WEATHER_TRANSIENT_RETRY_MAX_MS);
-    }
-    const uint8_t shift=std::min<uint8_t>(attempts,6U);
-    return std::max<uint32_t>(configuredIntervalMs,60000U<<shift);
-}
+using FastBee::WeatherSchedule::Reason;
+using FastBee::WeatherSchedule::due;
+using namespace FastBee::WeatherSchedule;
 
 bool weatherNetworkConnected() {
     auto* fw=FastBeeFramework::getInstance();
@@ -89,48 +71,65 @@ public:
     int peek() override { return -1; }
     void flush() override {}
 };
-bool fetchWeather(JsonObjectConst source,JsonDocument& normalized,String& error) {
+bool fetchWeather(JsonObjectConst source,JsonDocument& normalized,Reason& reason,Diagnostics& memory) {
+    auto fail=[&](Reason value) { reason=value; return false; };
     auto* fw=FastBeeFramework::getInstance();
     auto* network=fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
-    if (!network || !network->isNetworkConnected()) { error="Network offline"; return false; }
-    if (network->getNetworkType()==NetworkType::NET_4G) { error="Weather HTTP transport is unavailable on cellular"; return false; }
+    const bool tlsPsram=FastBee::TlsMemory::usesPsram();
+    memory.sampledAtMs=millis(); memory.phase="worker_admission";
+    memory.workerFree=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    memory.workerLargest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    memory.requiredFree=requiredFree(false,tlsPsram);
+    memory.requiredLargest=requiredLargest(false,tlsPsram);
+    reason=admission(network && network->isNetworkConnected(), time(nullptr)>=1577836800,
+        otaBusy(), memory.workerFree, memory.workerLargest,
+        network && network->getNetworkType()==NetworkType::NET_4G, false, tlsPsram);
+    if (reason!=Reason::None) { memory.phase="worker_blocked"; return false; }
     // Fixed HTTPS endpoint: imported configuration can never redirect credentials.
     String url="https://api.seniverse.com/v3/weather/now.json";
-    if (time(nullptr)<1577836800) { error="等待系统时间同步，联网后自动更新"; return false; }
-    if (otaBusy()) { error="Paused during OTA"; return false; }
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<65000U) { error="Insufficient memory for weather request"; return false; }
     url+="?key="+escaped(source["apiKey"] | "");
     url+="&location="+escaped(source["location"] | "beijing")+"&language=zh-Hans&unit=c";
     WiFiClientSecure secure;
     HTTPClient http;
     {
         const size_t caSize=x509_crt_bundle_end-x509_crt_bundle_start;
-        if (!caSize) { error="CA bundle unavailable"; return false; }
+        if (!caSize) return fail(Reason::TlsConfiguration);
         secure.setCACertBundle(x509_crt_bundle_start,caSize);
         secure.setHandshakeTimeout(10);
     }
-    if (!http.begin(static_cast<NetworkClient&>(secure),url)) { error="Cannot open weather request"; return false; }
+    if (!http.begin(static_cast<NetworkClient&>(secure),url)) return fail(Reason::Transport);
     http.setConnectTimeout(5000);
     http.setTimeout(8000);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setReuse(false);
     http.addHeader("Accept","application/json");
     const int status=http.GET();
-    if (status!=200) {
-        error=status==401 || status==403 ? "Weather authentication or permission denied" : status==429 ? "Weather rate limit reached" : status<0 ? "Weather network request failed" : String("Weather HTTP status ")+status;
+    memory.phase="request_completed"; memory.sampledAtMs=millis();
+    memory.requestFree=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    memory.requestLargest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    if (status<=0) {
+        http.end(); return fail(Reason::Transport);
+    }
+    const Reason httpReason=status==401 || status==403 ? Reason::Authentication :
+        status==429 ? Reason::RateLimit : status!=200 ? Reason::Provider : Reason::None;
+    if (status>=300 && status<400) {
+        reason=Reason::Provider;
         http.end(); return false;
     }
-    if (http.getSize()>static_cast<int>(FastBee::RemoteResourceModel::MAX_BODY)) { error="Weather response exceeds 8 KiB"; http.end(); return false; }
+    if (http.getSize()>static_cast<int>(FastBee::RemoteResourceModel::MAX_BODY)) { http.end(); return fail(Reason::Response); }
     BoundedResponse response;
     const int received=http.writeToStream(&response);
     http.end();
-    if (received<0 || response.exceeded || !response.body.length()) { error="Weather response incomplete or too large"; return false; }
+    if (received<0 || response.exceeded || !response.body.length()) return fail(Reason::Response);
     JsonDocument parsed;
     auto e=deserializeJson(parsed,response.body,DeserializationOption::NestingLimit(12));
-    if (e) { error="Weather response is invalid JSON"; return false; }
+    if (e) return fail(httpReason==Reason::None ? Reason::Response : httpReason);
+    reason=FastBee::RemoteResourceModel::providerFailure(parsed.as<JsonVariantConst>());
+    if (reason!=Reason::None) return false;
+    if (httpReason!=Reason::None) return fail(httpReason);
     std::string parseError;
     bool ok=FastBee::RemoteResourceModel::parseWeather(source,parsed.as<JsonVariantConst>(),normalized.to<JsonObject>(),parseError);
-    error=parseError.c_str(); return ok;
+    reason=ok ? Reason::None : Reason::Response; return ok;
 }
 }
 
@@ -192,6 +191,18 @@ void RemoteResourceManager::getScreenWeather(JsonObject out) {
 
 bool RemoteResourceManager::saveScreenWeather(JsonVariantConst submitted, String& error) {
     if (!mutex_) { error = "Weather settings unavailable"; return false; }
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    // Never invert the rule-manager -> remote-resource lock order. A failed
+    // snapshot is not an empty ruleset and cannot authorize source removal.
+    std::vector<String> weatherReferences;
+    const bool referencesAvailable=PeriphExecManager::getInstance().getWeatherRuleReferences(weatherReferences, true);
+    if (!referencesAvailable) { error="Weather rule references unavailable"; return false; }
+    // Reserve mutations without retaining the rule mutex across remote I/O.
+    // Declared before Guard so the remote lock is released before the lease.
+    struct ReferenceLease {
+        ~ReferenceLease() { PeriphExecManager::getInstance().releaseWeatherRuleReferences(); }
+    } referenceLease;
+#endif
     Guard lock(mutex_);
     JsonDocument legacy;
     if ((weatherMigration_["required"] | false) &&
@@ -203,6 +214,17 @@ bool RemoteResourceManager::saveScreenWeather(JsonVariantConst submitted, String
     if (!RemoteResourceModel::prepareScreenWeather(submitted,config_["weatherSources"][0],
             legacy.as<JsonVariantConst>(),weatherMigration_["required"] | false,
             weatherRevision_,next.to<JsonObject>(),validation)) { error=validation.c_str(); return false; }
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    if (weatherMigration_["required"] | false) {
+        if (!referencesAvailable) { error="Weather rule references unavailable"; return false; }
+        const String selected=String("weather.")+(next["weatherSources"][0]["id"] | "local");
+        for (const auto& reference : weatherReferences) {
+            if (reference!=selected && !reference.startsWith(selected+".")) {
+                error="Weather migration would remove a referenced source"; return false;
+            }
+        }
+    }
+#endif
     next["expectedWeatherRevision"] = weatherRevision_;
     if (!saveConfig(next.as<JsonVariantConst>(),error)) return false;
     weatherMigration_["required"] = false; weatherMigration_.remove("candidates"); return true;
@@ -353,9 +375,11 @@ bool RemoteResourceManager::getValue(const String& ref,JsonObject out) {
         JsonObjectConst cfg;
         for (JsonObjectConst w:config_["weatherSources"].as<JsonArrayConst>()) if (s.id==w["id"].as<String>()) { cfg=w; break; }
         out["sourceRef"]=ref; out["updatedMs"]=s.updatedMs; out["error"]=s.error;
+        out["reason"]=code(s.reason);
         out["quality"]=!s.known ? "unknown" : now-s.updatedMs>(cfg["staleAfterSeconds"] | 7200U)*1000U ? "stale" : "good";
         if (ref==base) {
             out["weather"]=s.value.as<JsonVariantConst>();
+            out["unit"]=s.value["unit"];
         } else {
             String fieldName=ref.substring(base.length()+1);
             if (fieldName!="temperature" && fieldName!="humidity") return false;
@@ -395,9 +419,9 @@ bool RemoteResourceManager::requestRead(const String& id,String& error) {
     Guard lock(mutex_);
     for (auto& s:weather_) if (s.id==id || String("weather.")+s.id==id) {
         const uint32_t now=millis();
-        if ((s.updatedMs && now-s.updatedMs<300000U) ||
-            (s.manualRequestSeen && now-s.lastManualRequestMs<300000U)) {
-            error="Weather minimum refresh interval is 5 minutes";
+        if (workerActive_) { error="天气正在更新，请稍候"; return false; }
+        if (s.manualRequestPending || manualRemaining(now,s.known,s.updatedMs,s.manualRequestSeen,s.lastManualRequestMs)) {
+            error="手动刷新间隔至少 5 分钟";
             return false;
         }
         s.requested=true;
@@ -407,7 +431,7 @@ bool RemoteResourceManager::requestRead(const String& id,String& error) {
         error="";
         return true;
     }
-    error="Weather source unavailable"; return false;
+    error="天气未启用或来源不可用"; return false;
 }
 
 bool RemoteResourceManager::getWeatherTestStatus(const String& id,JsonObject out) {
@@ -420,22 +444,30 @@ bool RemoteResourceManager::getWeatherTestStatus(const String& id,JsonObject out
         }
         out["sourceId"]=s.id;
         out["label"]=source["label"] | "";
-        out["status"]=s.manualRequestPending ? "pending" :
+        out["status"]=s.manualRequestPending || workerActive_ ? "pending" :
             (s.error.length() ? "error" : (s.known ? "ready" : "idle"));
-        out["pending"]=s.manualRequestPending;
+        out["pending"]=s.manualRequestPending || workerActive_;
         out["updatedMs"]=s.updatedMs;
-        uint32_t retryAfterMs=0;
-        if (s.error.length()) {
-            // Transient errors (NTP, network, memory) should retry soon
-            retryAfterMs = 30000U; // 30 seconds
-        } else {
-            for (uint32_t stamp:{s.updatedMs,s.manualRequestSeen ? s.lastManualRequestMs : 0U}) {
-                if (!stamp) continue;
-                const uint32_t elapsed=now-stamp;
-                if (elapsed<300000U) retryAfterMs=std::max(retryAfterMs,300000U-elapsed);
-            }
-        }
-        out["retryAfterMs"]=retryAfterMs;
+        const uint32_t manualWait=manualRemaining(now,s.known,s.updatedMs,s.manualRequestSeen,s.lastManualRequestMs);
+        out["reason"]=code(s.reason);
+        out["tlsUsesPsram"]=FastBee::TlsMemory::usesPsram();
+        JsonObject memory=out["memory"].to<JsonObject>();
+        memory["lastAdmissionPhase"]=s.memory.phase;
+        memory["sampledAtMs"]=s.memory.sampledAtMs;
+        memory["tickFree"]=s.memory.tickFree; memory["tickLargest"]=s.memory.tickLargest;
+        memory["workerFree"]=s.memory.workerFree; memory["workerLargest"]=s.memory.workerLargest;
+        memory["requestFree"]=s.memory.requestFree; memory["requestLargest"]=s.memory.requestLargest;
+        memory["releasedFree"]=s.memory.releasedFree; memory["releasedLargest"]=s.memory.releasedLargest;
+        memory["requiredFree"]=s.memory.requiredFree; memory["requiredLargest"]=s.memory.requiredLargest;
+        memory["workerStackHighWaterBytes"]=s.memory.workerStackHighWaterBytes;
+        out["blocked"]=admissionBlocked(s.reason);
+        out["manualRetryAfterMs"]=manualWait;
+        out["retryAfterMs"]=manualWait; // Legacy clients use this to enable manual refresh.
+        if (admissionBlocked(s.reason) || workerActive_) out["automaticRetryAfterMs"]=nullptr;
+        else out["automaticRetryAfterMs"]=s.requested ? 0U : remaining(now,s.nextMs);
+        out["ageMs"]=s.known ? now-s.updatedMs : 0U;
+        out["staleAfterMs"]=(source["staleAfterSeconds"] | 3600U)*1000U;
+        out["stale"]=s.known && now-s.updatedMs>(source["staleAfterSeconds"] | 3600U)*1000U;
         if (s.error.length()) out["error"]=s.error;
         RemoteResourceModel::copyWeatherPreview(s.value.as<JsonVariantConst>(),out["preview"].to<JsonObject>());
         return true;
@@ -445,22 +477,55 @@ bool RemoteResourceManager::getWeatherTestStatus(const String& id,JsonObject out
 
 void RemoteResourceManager::tick() {
     if (!mutex_) return;
-    // Keep a due source due while offline. A disconnect after this admission
-    // check is handled by the bounded transient retry in collectWeather().
+    (void)FastBee::TlsMemory::ensureAllocator();
     const bool networkConnected=weatherNetworkConnected();
+    auto* fw=FastBeeFramework::getInstance();
+    auto* network=fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
     Guard lock(mutex_);
-    uint32_t now=millis(); bool ready=false;
+    if (workerActive_ || weather_.empty()) return;
+    const uint32_t now=millis();
+    // Check prerequisites before allocating the worker/TLS buffers. Blocked sources
+    // remain due and recover on the next tick, including NTP success without reboot.
+    const uint32_t internalFree=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    const uint32_t largest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    const bool tlsPsram=FastBee::TlsMemory::usesPsram();
+    const Reason blocked=admission(networkConnected,time(nullptr)>=1577836800,otaBusy(),
+        internalFree,largest,network && network->getNetworkType()==NetworkType::NET_4G,true,tlsPsram);
+    bool ready=false;
     for (auto& s:weather_) {
-        for (JsonObjectConst w:config_["weatherSources"].as<JsonArrayConst>()) if (s.id==w["id"].as<String>()) {
-            if (s.requested || due(now,s.nextMs)) ready=true;
+        // A worker can fragment/consume DRAM after the preflight. If its own
+        // admission failed, keep the bounded retry deadline instead of creating
+        // and destroying a fresh stack on every protocol tick.
+        const bool recovering=admissionBlocked(s.reason) &&
+            (s.reason!=Reason::Memory || due(now,s.nextMs));
+        if (!s.requested && !due(now,s.nextMs) && !recovering) continue;
+        s.memory=Diagnostics{};
+        s.memory.phase=blocked==Reason::None ? "worker_queued" : "tick_blocked";
+        s.memory.sampledAtMs=now;
+        s.memory.tickFree=internalFree; s.memory.tickLargest=largest;
+        s.memory.requiredFree=requiredFree(true,tlsPsram);
+        s.memory.requiredLargest=requiredLargest(true,tlsPsram);
+        if (blocked!=Reason::None) {
+            s.reason=blocked; s.error=message(blocked);
+            // A manual request has completed its admission check. Keep its queued
+            // work for recovery but do not leave the UI polling forever.
+            s.manualRequestPending=false;
+            continue;
+        }
+        if (recovering) { s.reason=Reason::None; s.error=""; s.nextMs=now; }
+        ready=true;
+    }
+    if (!ready) return;
+    workerActive_=true;
+    if (xTaskCreate(weatherTask,"weather_read",WORKER_STACK_BYTES,this,0,nullptr)!=pdPASS) {
+        workerActive_=false;
+        for (auto& s:weather_) if (s.requested || due(now,s.nextMs)) {
+            s.reason=Reason::WorkerUnavailable; s.error=message(s.reason);
+            s.memory.phase="worker_create_failed";
+            s.nextMs=now+failureDelay(1,s.reason,30000U);
+            s.requested=false; s.manualRequestPending=false;
         }
     }
-    const size_t internalFree=ready
-        ? heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT) : 0U;
-    if (!weatherWorkerEligible(networkConnected,workerActive_,!weather_.empty(),
-                               otaBusy(),ready,internalFree)) return;
-    workerActive_=true;
-    if (xTaskCreate(weatherTask,"weather_read",8192,this,0,nullptr)!=pdPASS) workerActive_=false;
 }
 
 void RemoteResourceManager::weatherTask(void* arg) {
@@ -472,6 +537,7 @@ void RemoteResourceManager::weatherTask(void* arg) {
 
 void RemoteResourceManager::collectWeather() {
     JsonDocument source; String id; bool manual=false; uint32_t generation=0;
+    Diagnostics memory;
     {
         Guard lock(mutex_); const uint32_t now=millis();
         // A user-triggered test must not wait behind an unrelated periodic
@@ -483,7 +549,7 @@ void RemoteResourceManager::collectWeather() {
                 for (JsonObjectConst w:config_["weatherSources"].as<JsonArrayConst>()) if (s.id==w["id"].as<String>()) {
                     bool current=s.requested || due(now,s.nextMs);
                     if (current) {
-                        source.set(w); id=s.id; manual=s.requested;
+                        source.set(w); id=s.id; manual=s.requested; memory=s.memory;
                         generation=generation_; s.requested=false; break;
                     }
                 }
@@ -492,27 +558,31 @@ void RemoteResourceManager::collectWeather() {
         }
     }
     if (!id.length()) return;
-    JsonDocument parsed; String error;
-    bool ok=fetchWeather(source.as<JsonObjectConst>(),parsed,error);
+    JsonDocument parsed; Reason reason=Reason::None;
+    bool ok=fetchWeather(source.as<JsonObjectConst>(),parsed,reason,memory);
+    // HTTP/TLS local objects have been destroyed; the worker stack still exists.
+    memory.releasedFree=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    memory.releasedLargest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    // ESP-IDF reports the minimum unused task stack in bytes, not words.
+    memory.workerStackHighWaterBytes=uxTaskGetStackHighWaterMark(nullptr);
+    memory.sampledAtMs=millis();
     bool observed=false; uint32_t sampledAt=0;
     {
     Guard lock(mutex_);
     if (generation!=generation_) return;
     for (auto& s:weather_) if (s.id==id) {
+        s.memory=memory;
         uint32_t now=millis();
         uint32_t interval=(source["intervalSeconds"] | 1800U)*1000U;
         if (ok) {
             s.value.set(parsed.as<JsonVariantConst>());
-            s.updatedMs=now; s.known=true; s.error="";
+            s.updatedMs=now; s.known=true; s.error=""; s.reason=Reason::None;
             observed=true; sampledAt=now;
             s.failures=0;
         } else {
-            s.error=error;
+            s.reason=reason; s.error=message(reason);
             s.failures=std::min<uint8_t>(s.failures+1,6);
-            const bool transientTransportFailure=
-                error=="Network offline" || error=="Weather network request failed";
-            interval=weatherFailureDelayMs(s.failures,transientTransportFailure,
-                                           interval);
+            interval=failureDelay(s.failures,reason,interval);
         }
         s.nextMs=now+interval;
         if (manual) s.manualRequestPending=false;

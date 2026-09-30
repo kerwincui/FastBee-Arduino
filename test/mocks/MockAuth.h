@@ -166,13 +166,14 @@ public:
     }
 
     // 密码策略配置
-    void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+    bool updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
                               uint8_t minPwdLen, bool requireStrong) {
         _maxLoginAttempts = maxAttempts;
         _loginLockoutTime = lockoutTime;
         _minPasswordLength = minPwdLen;
         _requireStrongPasswords = requireStrong;
         _policyUpdated = true;
+        return true;
     }
 
     uint8_t getMaxLoginAttempts() const { return _maxLoginAttempts; }

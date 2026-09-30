@@ -26,7 +26,7 @@ public:
      * @param password 密码
      * @return 是否添加成功
      */
-    virtual bool addUser(const String& username, const String& password) = 0;
+    virtual bool addUser(const String& username, const String& password, const String& description = "") = 0;
     
     /**
      * @brief 删除用户
@@ -123,7 +123,7 @@ public:
      * @param enabled 是否启用
      * @return 是否成功
      */
-    virtual bool updateUser(const String& username, const String& newPassword = "", bool enabled = true) = 0;
+    virtual bool updateUser(const String& username, const String& newPassword = "", bool enabled = true, const String* description = nullptr) = 0;
     
     /**
      * @brief 设置用户描述
@@ -138,11 +138,14 @@ public:
      * @return 用户数量
      */
     virtual size_t getUserCount() = 0;
+    virtual uint8_t getMinPasswordLength() const = 0;
+    virtual uint8_t getMaxPasswordLength() const = 0;
+    virtual bool requiresStrongPasswords() const = 0;
 
     /**
      * @brief 更新密码策略配置（4个UI可配置字段）
      */
-    virtual void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+    virtual bool updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
                                       uint8_t minPwdLen, bool requireStrong) = 0;
 };
 

@@ -25,6 +25,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <new>
+#include <freertos/task.h>
 #include <core/SystemConstants.h>
 
 #if FASTBEE_ENABLE_LOGGER
@@ -145,6 +146,10 @@ LoggerSystem::LoggerSystem()
       logFileSizeLimit(CHIP_DEFAULT_LOG_FILE_SIZE_LIMIT) {}
 
 LoggerSystem::~LoggerSystem() {
+#if FASTBEE_USE_PSRAM
+    // Close admission before joining: even a queued task still owns this object.
+    _flushTaskState.fetch_or(LOG_FLUSH_TASK_STOPPING);
+#endif
     // 关机前 flush 缓冲数据
     flushBuffer();
     if (_logMutex) {
@@ -494,6 +499,11 @@ void LoggerSystem::flushBufferInternal() {
 }
 
 void LoggerSystem::flushBuffer() {
+#if FASTBEE_USE_PSRAM
+    // Explicit shutdown/file-management flush must include a queued drain and
+    // must not destroy its mutex or buffer while LittleFS still uses them.
+    while (_flushTaskState.load() & LOG_FLUSH_TASK_ACTIVE) delay(1);
+#endif
     if (!_logMutex) return;
     if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         flushBufferInternal();
@@ -507,11 +517,53 @@ void LoggerSystem::flushBufferIfDue() {
         if (_ringBuffer && isFileLoggingEnabled() &&
             (bufferedDataSize() >= LOG_FLUSH_THRESHOLD ||
              millis() - _ringBuffer->lastFlushMs >= LOG_FLUSH_INTERVAL_MS)) {
+#if FASTBEE_USE_PSRAM
+            // Reserve internal RAM for the stack/TCB plus the existing VFS
+            // low-memory guard. Failure retains data; never write on loopTask.
+            if (bufferedDataSize() != 0 &&
+                FastBee::MemoryBudget::dram8Free() >= LOG_FLUSH_TASK_STACK_BYTES + 16384U &&
+                FastBee::MemoryBudget::dram8Largest() >= LOG_FLUSH_TASK_STACK_BYTES + 1024U) {
+                uint32_t idle = 0;
+                if (_flushTaskState.compare_exchange_strong(idle, LOG_FLUSH_TASK_ACTIVE)) {
+                    _flushTaskGeneration = fileLoggingState.load();
+                    if (xTaskCreate(flushTask, "log_flush", LOG_FLUSH_TASK_STACK_BYTES,
+                                    this, 0, nullptr) != pdPASS) {
+                        _flushTaskState.fetch_and(~LOG_FLUSH_TASK_ACTIVE);
+                    }
+                }
+            }
+#else
             flushBufferInternal();
+#endif
         }
         unlockLogFiles();
     }
 }
+
+#if FASTBEE_USE_PSRAM
+void LoggerSystem::flushTask(void* context) {
+    auto* logger = static_cast<LoggerSystem*>(context);
+    const unsigned long started = millis();
+    bool attempted = false;
+    if (xSemaphoreTake(logger->_logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // A disable/re-enable cancels old work even when it was still queued.
+        if (logger->fileLoggingState.load() == logger->_flushTaskGeneration &&
+            logger->isFileLoggingEnabled() && logger->bufferedDataSize() != 0) {
+            attempted = true;
+            logger->flushBufferInternal();
+        }
+        logger->unlockLogFiles();
+    }
+    if (attempted) {
+        Serial.printf("[LOG_FLUSH_METRICS] elapsed=%lu stackFree=%lu\n",
+                      millis() - started,
+                      static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    }
+    // Last access to the object: its destructor may continue after this store.
+    logger->_flushTaskState.fetch_and(~LOG_FLUSH_TASK_ACTIVE);
+    vTaskDelete(nullptr);
+}
+#endif
 
 // ── 诊断最近日志环形实现 ─────────────────────────────────────────
 

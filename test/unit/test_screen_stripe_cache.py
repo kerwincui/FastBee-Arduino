@@ -22,6 +22,9 @@ class ScreenStripeCacheTests(unittest.TestCase):
         runtime = (ROOT / "src/screen/ScreenRuntime.cpp").read_text(encoding="utf-8")
         renderer = runtime[runtime.index("class StripeRenderer"):]
         signatures = [
+            "void invalidate()",
+            "void setPressed(const char* cardId, uint16_t x = 0, uint16_t y = 0)",
+            "bool controlPressed(const ScreenPanelCardSnapshot& card, const PixelRect& bounds) const",
             "bool begin(IDisplayBackend* display, const DisplayConfigParams& config,\n               String& error)",
             "void end()",
             "bool render(const ScreenPanelSnapshot& snapshot,\n                const char* confirmationCardId, String& error)",
@@ -34,6 +37,13 @@ class ScreenStripeCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="fastbee-stripe-cache-") as directory:
             temporary = pathlib.Path(directory)
             (temporary / "production_stripe_renderer.inc").write_text(methods, encoding="utf-8")
+            rgb_start = runtime.index("constexpr uint16_t rgb565(")
+            rgb_signature = runtime[rgb_start:runtime.index("{", rgb_start)].strip()
+            start = runtime.index("uint16_t blend565(")
+            blend_signature = runtime[start:runtime.index("{", start)].strip()
+            (temporary / "production_blend.inc").write_text(
+                rgb_signature + " {" + braced_block(runtime, rgb_signature) + "}\n" +
+                blend_signature + " {" + braced_block(runtime, blend_signature) + "}", encoding="utf-8")
             executable = temporary / ("stripe.exe" if os.name == "nt" else "stripe")
             env = dict(os.environ)
             env["PATH"] = str(pathlib.Path(compiler).parent) + os.pathsep + env.get("PATH", "")

@@ -32,6 +32,10 @@ public:
 
 private:
     WebHandlerContext* ctx;
+    using RelayHandler = void (ModbusRouteHandler::*)(AsyncWebServerRequest*);
+    struct RelayJob;
+    void dispatchRelayRequest(AsyncWebServerRequest* request, RelayHandler handler);
+    static void relayTask(void* argument);
 
     // 状态响应缓存（避免每次重建复杂 JSON）
     struct ResponseCache {

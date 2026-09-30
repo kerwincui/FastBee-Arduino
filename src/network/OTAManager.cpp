@@ -12,6 +12,7 @@
 #include "core/FeatureFlags.h"
 #include "core/FastBeeFramework.h"
 #include "network/NetworkManager.h"
+#include "protocols/FastBeeOTAProtocol.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
 #endif
@@ -22,12 +23,14 @@
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
 #include <HTTPClient.h>
+#include <NetworkClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <new>
+#include <memory>
 #include <time.h>
 
 #if FASTBEE_ENABLE_OTA
@@ -482,11 +485,12 @@ void OTAManager::handleOTACancel(AsyncWebServerRequest *request) {
 bool OTAManager::startOTA(const String& url,
                           ProgressCallback progressCallback,
                           bool rebootOnSuccess) {
-    if (!url.startsWith("https://")) {
-        otaErrorMessage = "OTA URL must use HTTPS";
+    if (!FastBeeOtaProtocol::isValidFirmwareUrl(url)) {
+        otaErrorMessage = "OTA URL must be a valid HTTP/HTTPS address";
         otaStatus = OTA_FAILED;
         return false;
     }
+    const bool useTls = FastBeeOtaProtocol::isHttpsUrl(url);
     // URL OTA 支持 WiFi 和以太网当前活动链路。4G 需要独立 TLS Client；
     // 现有 CellularAdapter 的安全 Client 同时被 MQTT 持有，不能并发复用。
     FastBeeFramework* framework = FastBeeFramework::getInstance();
@@ -504,18 +508,16 @@ bool OTAManager::startOTA(const String& url,
     }
 #if FASTBEE_ENABLE_CELLULAR
     if (networkManager && networkManager->getNetworkType() == NetworkType::NET_4G) {
-        otaErrorMessage = "HTTPS OTA over cellular requires a dedicated TLS client";
+        otaErrorMessage = "URL OTA over cellular requires a dedicated transport client";
         LOG_WARNING("OTAManager: " + otaErrorMessage);
         otaStatus = OTA_FAILED;
         return false;
     }
 #endif
 
-    // Certificate validity cannot be checked safely before the clock has been
-    // synchronized. Refuse URL OTA instead of silently weakening TLS.
-    if (time(nullptr) < 1577836800) {  // 2020-01-01 UTC
-        otaErrorMessage = "System time is not synchronized for TLS validation";
-        LOG_WARNING("OTAManager: " + otaErrorMessage);
+    // Check admission before allocating a client/starting a TLS handshake.
+    // beginOTA also rechecks after connection establishment before flash writes.
+    if (!checkMemoryGate(&otaErrorMessage)) {
         otaStatus = OTA_FAILED;
         return false;
     }
@@ -523,22 +525,44 @@ bool OTAManager::startOTA(const String& url,
     LOG_INFO("OTAManager: Starting OTA from URL: " + url);
     otaFirmwareUrl = url;
 
-    WiFiClientSecure client;
-    const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
-    if (caBundleSize == 0) {
-        otaErrorMessage = "Built-in CA certificate bundle is unavailable";
+    // Construct only the selected client. Plain HTTP needs neither TLS buffers
+    // nor a synchronized clock; HTTPS never falls back to an insecure client.
+    std::unique_ptr<NetworkClient> client;
+    if (useTls) {
+        if (time(nullptr) < 1577836800) {  // 2020-01-01 UTC
+            otaErrorMessage = "System time is not synchronized for TLS validation";
+            otaStatus = OTA_FAILED;
+            return false;
+        }
+        const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
+        if (caBundleSize == 0) {
+            otaErrorMessage = "Built-in CA certificate bundle is unavailable";
+            otaStatus = OTA_FAILED;
+            return false;
+        }
+        auto secureClient = new (std::nothrow) WiFiClientSecure;
+        if (secureClient) {
+            secureClient->setCACertBundle(x509_crt_bundle_start, caBundleSize);
+            secureClient->setHandshakeTimeout(30);
+        }
+        client.reset(secureClient);
+    } else {
+        client.reset(new (std::nothrow) NetworkClient);
+    }
+    if (!client) {
+        otaErrorMessage = "Insufficient memory for OTA download client";
         otaStatus = OTA_FAILED;
         return false;
     }
-    client.setCACertBundle(x509_crt_bundle_start, caBundleSize);
-    client.setHandshakeTimeout(30);
     HTTPClient http;
 
-    if (!http.begin(client, url)) {
-        otaErrorMessage = "Failed to initialize HTTPS client";
+    if (!http.begin(*client, url)) {
+        otaErrorMessage = "Failed to initialize OTA HTTP/HTTPS client";
         otaStatus = OTA_FAILED;
         return false;
     }
+    // HTTPClient::setURL accepts only the current protocol on redirects.
+    // In particular an HTTPS endpoint cannot redirect this session to HTTP.
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setTimeout(30000);  // 30秒超时
 

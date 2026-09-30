@@ -24,7 +24,8 @@
         "engineeringOffset": 0,
         "vRef": 3.3,
         "voltageRatio": 0,
-        "shuntResistance": 165,
+        "shuntResistance": 150,
+        "calibratedVoltage": true,
         "inputGain": 1,
         "inputOffset": 0,
         "rawMin": 0,
@@ -55,7 +56,8 @@
         "engineeringOffset": 0,
         "vRef": 3.3,
         "voltageRatio": 0,
-        "shuntResistance": 165,
+        "shuntResistance": 150,
+        "calibratedVoltage": true,
         "inputGain": 1,
         "inputOffset": 0,
         "rawMin": 0,
@@ -113,7 +115,7 @@
         15
       ],
       "params": {
-        "initialState": 0,
+        "initialState": 1,
         "pwmChannel": 0,
         "pwmFrequency": 1000,
         "pwmResolution": 8,

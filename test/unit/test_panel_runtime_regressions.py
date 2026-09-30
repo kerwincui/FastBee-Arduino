@@ -119,7 +119,10 @@ class StripeRenderer {
 public:
  NumericControlHit numericHit=NumericControlHit::NONE;
  bool confirmVisible=false,confirmAnswer=false,stopHit=false,lastWasMotor=false;
- int pageNavigationHit(uint16_t x,uint16_t y)const{return y>=436 ? std::min<int>(4, x/96) : -1;}
+ bool navigationOpen()const{return false;} void toggleNavigation(){} void closeNavigation(){}
+ int pageMenuHit(const ScreenPanelSnapshot&,uint16_t,uint16_t)const{return -1;}
+ int navigationPageIndex(const ScreenPanelSnapshot& s,uint8_t i)const{return i<s.pageCount?i:-1;}
+ int pageNavigationHit(const ScreenPanelSnapshot&,uint16_t x,uint16_t y)const{return y>=436 ? std::min<int>(4, x/96) : -1;}
  bool confirmationStopHit(uint16_t,uint16_t)const{return stopHit;}
  bool homeHitTest(uint16_t x,uint16_t y)const{return x<96&&y>=436&&y<480;}
  int hitTest(const ScreenPanelSnapshot&,uint16_t,uint16_t)const{return 0;}
@@ -333,7 +336,7 @@ void earlyReturn(){FastBee::RoutePsramScope scope;return;}
 int main(){
  earlyReturn();
 #if FASTBEE_USE_PSRAM
- assert((thresholds==std::vector<size_t>{32,256}));
+ assert((thresholds==std::vector<size_t>{0,256}));
 #else
  assert(thresholds.empty());
 #endif

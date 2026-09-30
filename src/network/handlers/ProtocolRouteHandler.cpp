@@ -17,6 +17,9 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./network/ProtocolSecret.h"
+#include "network/OtaConfigStorage.h"
+#include "protocols/FastBeeOTAProtocol.h"
+#include "protocols/MotorProtocol.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
 #include "protocols/RemoteResourceManager.h"
 #endif
@@ -72,6 +75,13 @@ bool validateModbusArrayUpdate(WebHandlerContext* ctx, AsyncWebServerRequest* re
     for (JsonVariantConst item : next) {
         if (!item.is<JsonObjectConst>()) {
             ctx->sendError(request, 400, "Each Modbus task/device must be an object");
+            return false;
+        }
+    }
+    if (!tasks) for (JsonObjectConst device : next) {
+        MotorProtocol profile;
+        if (const char* error = loadMotorProtocol(device, profile)) {
+            ctx->sendError(request, 400, error);
             return false;
         }
     }
@@ -218,36 +228,7 @@ void disableUnsupportedBinaryOtaTopics(JsonObject mqtt) {
 }
 
 bool validateOtaBaseUrl(const String& value, String& error) {
-    error = "";
-    if (value.isEmpty()) return true;
-    if (!value.startsWith("https://")) {
-        error = "MQTT OTA HTTPS base URL must start with https://";
-        return false;
-    }
-    if (value.indexOf('?') >= 0 || value.indexOf('#') >= 0) {
-        error = "MQTT OTA HTTPS base URL must not contain a query or fragment";
-        return false;
-    }
-    if (value.length() > 512U) {
-        error = "MQTT OTA HTTPS base URL is too long";
-        return false;
-    }
-
-    const int authorityStart = 8;
-    int authorityEnd = value.indexOf('/', authorityStart);
-    if (authorityEnd < 0) authorityEnd = value.length();
-    String authority = value.substring(authorityStart, authorityEnd);
-    if (authority.isEmpty() || authority.indexOf('@') >= 0) {
-        error = "MQTT OTA HTTPS base URL must include a valid host";
-        return false;
-    }
-    for (size_t i = 0; i < value.length(); ++i) {
-        if (value.charAt(i) <= ' ') {
-            error = "MQTT OTA HTTPS base URL must not contain whitespace";
-            return false;
-        }
-    }
-    return true;
+    return FastBeeOtaProtocol::validateBaseUrl(value, error);
 }
 
 void normalizeProtocolConfig(JsonDocument& doc) {
@@ -449,6 +430,7 @@ void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
     copyJsonMember(out, in, "pidDecimals");
     // 电机参数透传
     copyJsonMember(out, in, "motorDecimals");
+    copyJsonMember(out, in, "motorProtocol");
     copyJsonMember(out, in, "motorMinPosition");
     copyJsonMember(out, in, "motorMaxPosition");
     copyJsonMember(out, in, "motorCurrentPosition");
@@ -547,6 +529,7 @@ void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool e
         deviceOut["pidDecimals"] = device.pidDecimals;
         // 电机参数透传
         deviceOut["motorDecimals"] = device.motorDecimals;
+        saveMotorProtocol(deviceOut, device.motorProtocol);
         deviceOut["motorMinPosition"] = device.motorMinPosition;
         deviceOut["motorMaxPosition"] = device.motorMaxPosition;
         deviceOut["motorCurrentPosition"] = device.motorCurrentPosition;
@@ -718,6 +701,19 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
 
     String section = ctx->getParamValue(request, "section", "");
     bool compact = ctx->getParamBool(request, "compact", false);
+    if (compact && section == "ota") {
+        if (HandlerUtils::checkLowMemory(request, 4096)) return;
+        auto source = FastBee::makeJsonDocument();
+        String error;
+        if (!FastBee::OtaConfigStorage::load(source, error)) {
+            ctx->sendError(request, 500, error);
+            return;
+        }
+        JsonDocument data;
+        data["otaBaseUrl"] = source["mqtt"]["otaBaseUrl"] | "";
+        ctx->sendSuccess(request, data);
+        return;
+    }
     if (compact && section == "mqtt") {
         if (HandlerUtils::checkLowMemory(request, 4096)) return;
         sendCompactMqttConfigFromFile(request);
@@ -791,15 +787,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         }
         DeserializationError loadErr = deserializeJson(doc, f);
         f.close();
-        if (loadErr) {
+        if (loadErr || !doc.is<JsonObject>()) {
             LOG_ERRORF("Protocol config save aborted: existing config unreadable (%s)", loadErr.c_str());
             ctx->sendError(request, 500, "Existing protocol config unreadable, save aborted");
             return;
         }
     }
-    normalizeProtocolConfig(doc);
-    doc["version"] = PROTOCOL_CONFIG_VERSION;
-
     #define GP(key, def) ctx->getParamValue(request, key, def)
     #define GPI(key, def) GP(key, def).toInt()
 
@@ -813,7 +806,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
                       hasProtocolParam(request, "mqtt_scheme") ||
                       hasProtocolParam(request, "mqtt_server") ||
-                      hasProtocolParam(request, "mqtt_otaBaseUrl") ||
                       hasProtocolParam(request, "mqtt_port") ||
                       hasProtocolParam(request, "mqtt_clientId") ||
                       hasProtocolParam(request, "mqtt_username") ||
@@ -834,6 +826,23 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                       hasProtocolParam(request, "mqtt_summary") ||
                       hasProtocolParam(request, "mqtt_publishTopics") ||
                       hasProtocolParam(request, "mqtt_subscribeTopics");
+    const bool updateOtaBase = hasProtocolParam(request, "mqtt_otaBaseUrl");
+    // OTA-only saves must preserve every other protocol member, including
+    // legacy topics and disabled transports. They do not restart MQTT/Modbus.
+    if (updateMqtt || updateModbusRtu || !updateOtaBase) {
+        normalizeProtocolConfig(doc);
+        doc["version"] = PROTOCOL_CONFIG_VERSION;
+    }
+    if (updateOtaBase) {
+        String otaBaseUrl = GP("mqtt_otaBaseUrl", "");
+        otaBaseUrl.trim();
+        String otaBaseUrlError;
+        if (!validateOtaBaseUrl(otaBaseUrl, otaBaseUrlError)) {
+            ctx->sendError(request, 400, otaBaseUrlError);
+            return;
+        }
+        doc["mqtt"]["otaBaseUrl"] = otaBaseUrl;
+    }
     bool clientIdGenerated = false;
     String clientId = doc["mqtt"]["clientId"] | "";
 
@@ -951,6 +960,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 }
                 // 电机参数
                 devObj["motorDecimals"] = dv["motorDecimals"] | 0;
+                if (dv.containsKey("motorProtocol")) devObj["motorProtocol"].set(dv["motorProtocol"]);
                 devObj["motorMinPosition"] = dv["motorMinPosition"] | 0;
                 devObj["motorMaxPosition"] = dv["motorMaxPosition"] | 0;
                 devObj["motorCurrentPosition"] = dv["motorCurrentPosition"] | 0;
@@ -973,16 +983,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     String requestedScheme = GP("mqtt_scheme", "mqtt");
     doc["mqtt"]["scheme"] = requestedScheme;
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
-    if (hasProtocolParam(request, "mqtt_otaBaseUrl")) {
-        String otaBaseUrl = GP("mqtt_otaBaseUrl", "");
-        otaBaseUrl.trim();
-        String otaBaseUrlError;
-        if (!validateOtaBaseUrl(otaBaseUrl, otaBaseUrlError)) {
-            ctx->sendError(request, 400, otaBaseUrlError);
-            return;
-        }
-        doc["mqtt"]["otaBaseUrl"] = otaBaseUrl;
-    }
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 
     // Any successful Web save is an explicit user decision.  Do not leave
@@ -1150,7 +1150,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     // 用户显式保存配置后，删除测试连接的 MQTT 备份文件
     // （测试连接的自动恢复机制不应覆盖用户显式保存的配置）
-    if (LittleFS.exists("/config/mqtt-backup.json")) {
+    if (updateMqtt && LittleFS.exists("/config/mqtt-backup.json")) {
         LittleFS.remove("/config/mqtt-backup.json");
     }
 

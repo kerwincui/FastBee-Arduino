@@ -1,0 +1,300 @@
+{
+  "status": {
+    "compact": false,
+    "health": {
+      "warnings": [
+        "Many polling tasks are enabled; watch bus load and Web response time."
+      ],
+      "riskLevel": "medium",
+      "enabledTaskCount": 5,
+      "minPollInterval": 30,
+      "maxPollInterval": 30,
+      "responseTimeout": 1000,
+      "maxRetries": 2,
+      "interPollDelay": 100,
+      "lastPollAgeSec": 24,
+      "successRate": 100,
+      "failureRate": 0,
+      "timeoutRate": 0,
+      "warningCount": 1
+    },
+    "mode": "master",
+    "workMode": 1,
+    "status": "Master - Addr:1, Baud:9600, Pins:TX17/RX18, DE:14, Tasks:5, Devices:1",
+    "taskCount": 5,
+    "totalPolls": 905,
+    "successPolls": 905,
+    "failedPolls": 0,
+    "timeoutPolls": 0,
+    "tasks": [
+      {
+        "slaveAddress": 1,
+        "functionCode": 4,
+        "startAddress": 0,
+        "quantity": 1,
+        "pollInterval": 30,
+        "enabled": true,
+        "name": "漏水控制器",
+        "status": "ok",
+        "cacheAgeSec": 24,
+        "staleAfterSec": 90,
+        "lastError": 0,
+        "mappings": [
+          {
+            "regOffset": 0,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "water_leak"
+          }
+        ],
+        "cachedData": {
+          "timestamp": 1963396,
+          "ageSec": 24,
+          "lastError": 0,
+          "values": [
+            0
+          ]
+        }
+      },
+      {
+        "slaveAddress": 2,
+        "functionCode": 3,
+        "startAddress": 0,
+        "quantity": 1,
+        "pollInterval": 30,
+        "enabled": true,
+        "name": "TVOC传感器",
+        "status": "ok",
+        "cacheAgeSec": 25,
+        "staleAfterSec": 90,
+        "lastError": 0,
+        "mappings": [
+          {
+            "regOffset": 0,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "modbus_tvoc",
+            "unit": "ppb"
+          }
+        ],
+        "cachedData": {
+          "timestamp": 1962343,
+          "ageSec": 25,
+          "lastError": 0,
+          "values": [
+            134
+          ]
+        }
+      },
+      {
+        "slaveAddress": 3,
+        "functionCode": 3,
+        "startAddress": 0,
+        "quantity": 1,
+        "pollInterval": 30,
+        "enabled": true,
+        "name": "甲醛传感器",
+        "status": "ok",
+        "cacheAgeSec": 24,
+        "staleAfterSec": 90,
+        "lastError": 0,
+        "mappings": [
+          {
+            "regOffset": 0,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "modbus_hcho",
+            "unit": "ppm"
+          }
+        ],
+        "cachedData": {
+          "timestamp": 1963039,
+          "ageSec": 24,
+          "lastError": 0,
+          "values": [
+            1
+          ]
+        }
+      },
+      {
+        "slaveAddress": 4,
+        "functionCode": 4,
+        "startAddress": 0,
+        "quantity": 2,
+        "pollInterval": 30,
+        "enabled": true,
+        "name": "空气质量：",
+        "status": "ok",
+        "cacheAgeSec": 24,
+        "staleAfterSec": 90,
+        "lastError": 0,
+        "mappings": [
+          {
+            "regOffset": 0,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "pm25",
+            "unit": "ugm3"
+          },
+          {
+            "regOffset": 1,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "pm10",
+            "unit": "ugm3"
+          }
+        ],
+        "cachedData": {
+          "timestamp": 1963172,
+          "ageSec": 24,
+          "lastError": 0,
+          "values": [
+            45,
+            51
+          ]
+        }
+      },
+      {
+        "slaveAddress": 5,
+        "functionCode": 4,
+        "startAddress": 0,
+        "quantity": 2,
+        "pollInterval": 30,
+        "enabled": true,
+        "name": "空气温湿度",
+        "status": "ok",
+        "cacheAgeSec": 24,
+        "staleAfterSec": 90,
+        "lastError": 0,
+        "mappings": [
+          {
+            "regOffset": 0,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "modbus_temp",
+            "unit": "C"
+          },
+          {
+            "regOffset": 1,
+            "dataType": 0,
+            "scaleFactor": 1,
+            "decimalPlaces": 1,
+            "sensorId": "modbus_humidity",
+            "unit": "%RH"
+          }
+        ],
+        "cachedData": {
+          "timestamp": 1963327,
+          "ageSec": 24,
+          "lastError": 0,
+          "values": [
+            242,
+            524
+          ]
+        }
+      }
+    ]
+  },
+  "controls": {
+    "gpio": [],
+    "modbus": [
+      {
+        "id": "s3_modbus_environment",
+        "name": "采集TVOC、甲醛、PM2.5、PM10、温湿度",
+        "actionType": 18,
+        "hasSetMode": false,
+        "targetPeriphId": "modbus-task:1",
+        "pollTaskIndex": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "id": "s3_modbus_relay",
+        "name": "Modbus继电器通道1开启模板",
+        "actionType": 18,
+        "hasSetMode": false,
+        "targetPeriphId": "modbus:0",
+        "targetPeriphName": "Modbus继电器"
+      },
+      {
+        "id": "s3_modbus_relay_off",
+        "name": "Modbus继电器通道1关闭模板",
+        "actionType": 18,
+        "hasSetMode": false,
+        "targetPeriphId": "modbus:0",
+        "targetPeriphName": "Modbus继电器"
+      },
+      {
+        "id": "s3_modbus_water_leak",
+        "name": "采集漏水控制器",
+        "actionType": 18,
+        "hasSetMode": false,
+        "targetPeriphId": "modbus-task:0",
+        "pollTaskIndex": [
+          0
+        ]
+      }
+    ],
+    "system": [
+      {
+        "id": "s3_platform_do1",
+        "name": "平台控制继电器1",
+        "actionType": 10,
+        "hasSetMode": true,
+        "targetPeriphId": "do1",
+        "targetPeriphName": "继电器1（灯控）"
+      },
+      {
+        "id": "s3_platform_do2",
+        "name": "平台控制继电器2",
+        "actionType": 10,
+        "hasSetMode": true,
+        "targetPeriphId": "do2",
+        "targetPeriphName": "继电器2"
+      }
+    ],
+    "script": [],
+    "sensor": [
+      {
+        "id": "s3_collect_inputs",
+        "name": "采集土壤温度和水分",
+        "actionType": 19,
+        "hasSetMode": false,
+        "targetPeriphId": "ai_soil_temp",
+        "targetPeriphName": "A2 土壤温度（-40-80℃）",
+        "sensors": [
+          {
+            "key": "ai_soil_temp_soil_temperature",
+            "label": "soil_temperature",
+            "unit": "C",
+            "value": "11.8"
+          },
+          {
+            "key": "ai_soil_humidity_soil_humidity",
+            "label": "soil_humidity",
+            "unit": "%"
+          }
+        ]
+      }
+    ],
+    "other": [
+      {
+        "id": "s3_photoelectric_relay_toggle",
+        "name": "光电有物体时翻转继电器1",
+        "actionType": 30,
+        "hasSetMode": false,
+        "targetPeriphId": "do1",
+        "targetPeriphName": "继电器1（灯控）"
+      }
+    ]
+  }
+}

@@ -90,16 +90,51 @@ bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
 }
 
 AuthResult WebHandlerContext::authenticateRequest(AsyncWebServerRequest* request) {
-    if (!authManager) {
+    if (!authManager || !request) {
         return AuthResult();
     }
 
-    String sessionId = AuthManager::extractSessionIdFromRequest(request);
+    const SecurityConfig config = static_cast<AuthManager*>(authManager)->getSecurityConfig();
+    String sessionId = AuthManager::extractSessionIdFromRequest(request, config.cookieName);
     if (sessionId.isEmpty()) {
         return AuthResult();
     }
 
-    return authManager->verifySession(sessionId, true);
+    AuthResult result = authManager->verifySession(sessionId, true);
+    if (result.success) request->setAttribute("fb-session-verified", true);
+    return result;
+}
+
+void WebHandlerContext::renewSessionCookie(AsyncWebServerRequest* request) {
+    // Called after synchronous handlers, before ESPAsyncWebServer serializes
+    // the response. Server sessions already slide on authenticated activity;
+    // the HttpOnly cookie must slide too, or clients drop it after one hour.
+    if (!request || !authManager ||
+        !request->getAttribute("fb-session-verified", false)) return;
+    AsyncWebServerResponse* response = request->getResponse();
+    if (!response || response->_started() || response->code() < 200 || response->code() >= 400 ||
+        response->getHeader("Set-Cookie")) return;
+
+    // Login owns its cookie; logout/password changes must never reissue one,
+    // including a concurrently revoked session. Do not turn bearer-only API
+    // authentication into a persistent browser credential.
+    const String path = request->url();
+    if (path == "/api/auth/login" || path == "/api/auth/logout" ||
+        path == "/api/auth/change-password") return;
+    SecurityConfig securityConfig = static_cast<AuthManager*>(authManager)->getSecurityConfig();
+    if (securityConfig.cookieName.isEmpty()) securityConfig.cookieName = "sessionId";
+    const String sessionId = AuthManager::extractSessionIdFromCookie(request, securityConfig.cookieName);
+    if (sessionId.isEmpty() ||
+        sessionId != AuthManager::extractSessionIdFromRequest(request, securityConfig.cookieName) ||
+        !authManager->verifySession(sessionId, false).success) return;
+
+    String cookie = securityConfig.cookieName + "=" + sessionId +
+                    "; Path=/; Max-Age=" + String(securityConfig.cookieMaxAge) +
+                    "; SameSite=Strict";
+    if (securityConfig.cookieHttpOnly) cookie += "; HttpOnly";
+    if (securityConfig.cookieSecure) cookie += "; Secure";
+    response->addHeader("Set-Cookie", cookie);
+    response->addHeader("Cache-Control", "no-store");
 }
 
 String WebHandlerContext::getClientIP(AsyncWebServerRequest* request) {
@@ -970,10 +1005,12 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
     // devices with internal headroom, leave timer admission to the existing
     // scheduler/worker memory guards. Re-evaluate during an active hold too,
     // so transient pressure can recover without closing the preview page.
+    // Use the existing execution floor, not the global warning watermark:
+    // COM15 is healthy near 30KB and continuous reads otherwise starve timers.
     HealthMonitor* monitor = framework ? framework->getHealthMonitor() : nullptr;
     const bool allowBackgroundSampling = FastBee::psramAvailableForJson() &&
-        FastBee::MemoryBudget::dram8Free() >= FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE &&
-        FastBee::MemoryBudget::dram8Largest() >= FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK &&
+        FastBee::MemoryBudget::dram8Free() >= FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM &&
+        FastBee::MemoryBudget::dram8Largest() >= FastBee::MemoryBudget::PERIPH_EXEC_MIN_LARGEST &&
         (!monitor || !monitor->isMemorySevere());
     if (webForegroundModeActive) {
         if (allowBackgroundSampling) taskManager->enableTask("periph_exec_timer");

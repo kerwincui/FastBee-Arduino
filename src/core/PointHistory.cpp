@@ -91,7 +91,8 @@ bool PointHistory::isAllowedSource(const String& sourceRef) const {
 }
 
 bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllowlist,
-                             String& error, bool persist) {
+                             String& error, bool persist,
+                             const uint32_t* expectedRevision) {
     error = "";
     if (!_initialized && !initialize()) {
         error = "Point history is unavailable";
@@ -121,34 +122,59 @@ bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllo
         }
     }
 
-    if (!enabled && _dirty && !flushNow()) {
-        error = "Unable to flush point history before disabling";
-        return false;
-    }
-
-    bool oldEnabled;
-    std::vector<String> oldAllowlist;
+    // Prepare allocations before committing bytes. Publishing the persisted
+    // allowlist must not allocate and fail halfway through a revision change.
+    std::vector<String> preparedAllowlist(sourceAllowlist);
+    uint32_t nextRevision;
     {
         HistoryLock lock(_mutex);
-        if (!lock.locked()) {
+        if (!lock.locked() || _writesPaused || _configWriteInProgress) {
             error = "Point history is busy";
             return false;
         }
-        oldEnabled = _enabled;
-        oldAllowlist = _sourceAllowlist;
+        if (expectedRevision && *expectedRevision != _configRevision) {
+            error = "History configuration revision conflict";
+            return false;
+        }
+        nextRevision = _configRevision + 1;
+        if (enabled && _series.capacity() < sourceAllowlist.size()) {
+            _series.reserve(sourceAllowlist.size());
+        }
+        _configWriteInProgress = true;
+    }
+
+    // Reserve the configuration writer before flushing/staging. Samples and
+    // other writers cannot change the old state until this commit completes.
+    bool success = enabled || flushNow();
+    if (!success) error = "Unable to flush point history before disabling";
+    if (success && persist) {
+        JsonDocument doc;
+        doc["schemaVersion"] = 1;
+        doc["revision"] = nextRevision;
+        doc["enabled"] = enabled;
+        JsonArray sources = doc["sourceAllowlist"].to<JsonArray>();
+        for (const auto& source : sourceAllowlist) sources.add(source);
+        success = atomicWriteJsonWithBackup(CONFIG_FILE, doc);
+        if (!success) error = "Failed to persist history configuration";
+    }
+    {
+        // A persisted commit must publish its matching runtime revision before
+        // releasing the writer reservation, even under brief reader contention.
+        HistoryLock lock(_mutex, portMAX_DELAY);
+        if (!lock.locked()) { error = "Point history is busy"; return false; }
+        _configWriteInProgress = false;
+        if (!success) return false;
+        _configRevision = nextRevision;
         _enabled = enabled;
-        _sourceAllowlist = sourceAllowlist;
+        _sourceAllowlist.swap(preparedAllowlist);
         if (enabled) {
             // An empty allowlist means accept any source, not preallocate all
             // 24 series (each embeds ten samples). Keep existing history when
             // changing the allowlist, and reserve only the configured demand.
-            const size_t capacity = _series.size() > sourceAllowlist.size()
-                ? _series.size() : sourceAllowlist.size();
-            if (_series.capacity() > capacity) _series.shrink_to_fit();
-            if (_series.capacity() < capacity) _series.reserve(capacity);
+            // Capacity was prepared before the disk commit. Retaining bounded
+            // spare capacity avoids a second allocation on the commit path.
         } else {
-            _series.clear();
-            _series.shrink_to_fit();
+            std::vector<Series>().swap(_series);
             _restored = false;
             _dirty = false;
             _firstDirtyAt = 0;
@@ -156,15 +182,6 @@ bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllo
         }
     }
 
-    if (persist && !saveConfig()) {
-        HistoryLock lock(_mutex);
-        if (lock.locked()) {
-            _enabled = oldEnabled;
-            _sourceAllowlist = std::move(oldAllowlist);
-        }
-        error = "Failed to persist history configuration";
-        return false;
-    }
     return true;
 }
 
@@ -178,7 +195,7 @@ bool PointHistory::recordSample(const String& sourceRef, double value,
 
     const uint32_t now = uptimeMs ? uptimeMs : millis();
     HistoryLock lock(_mutex);
-    if (!lock.locked() || _writesPaused || !_enabled ||
+    if (!lock.locked() || _writesPaused || _configWriteInProgress || !_enabled ||
         !isAllowedSource(sourceRef)) return false;
 
     Series* series = nullptr;
@@ -335,6 +352,7 @@ void PointHistory::appendConfigJson(JsonObject out) const {
     HistoryLock lock(_mutex);
     if (!lock.locked()) return;
     out["enabled"] = _enabled;
+    out["revision"] = _configRevision;
     out["writesPaused"] = _writesPaused;
     out["maxSources"] = MAX_SOURCES;
     out["maxSamplesPerSource"] = MAX_SAMPLES_PER_SOURCE;
@@ -392,7 +410,7 @@ bool PointHistory::flushNow(uint32_t timeoutMs) {
     const bool success = writeHistorySnapshot(snapshot, sequence);
     const uint32_t finishedAt = millis();
     {
-        HistoryLock lock(_mutex);
+        HistoryLock lock(_mutex, portMAX_DELAY);
         if (!lock.locked()) return false;
         _flushInProgress = false;
         _lastFlushSucceeded = success;
@@ -448,6 +466,7 @@ bool PointHistory::resumeWrites(bool resetRuntimeState) {
         _firstDirtyAt = 0;
         _postSnapshotDirtyAt = 0;
         _sequence = 0;
+        ++_configRevision;
         ++_generation;
         _sourceAllowlist.clear();
         _series.clear();
@@ -457,8 +476,19 @@ bool PointHistory::resumeWrites(bool resetRuntimeState) {
 }
 
 bool PointHistory::loadConfig() {
-    if (!LittleFS.exists(CONFIG_FILE)) return true;
-    File file = LittleFS.open(CONFIG_FILE, FILE_READ);
+    const String backup = String(CONFIG_FILE) + ".bak";
+    if (!LittleFS.exists(CONFIG_FILE) && !LittleFS.exists(backup)) return true;
+    // A reset between primary->backup and temporary->primary must retain the
+    // last committed configuration. A leftover temporary file is not committed.
+    if (loadConfigFile(CONFIG_FILE)) return true;
+    if (!loadConfigFile(backup)) return false;
+    if (LittleFS.exists(CONFIG_FILE)) LittleFS.remove(CONFIG_FILE);
+    LittleFS.rename(backup, CONFIG_FILE);
+    return true;
+}
+
+bool PointHistory::loadConfigFile(const String& path) {
+    File file = LittleFS.open(path, FILE_READ);
     if (!file || file.size() > 4096) {
         if (file) file.close();
         return false;
@@ -467,7 +497,8 @@ bool PointHistory::loadConfig() {
     const DeserializationError parseError = deserializeJson(doc, file);
     file.close();
     if (parseError || !doc.is<JsonObjectConst>() || doc["schemaVersion"] != 1 ||
-        !doc["enabled"].is<bool>() || !doc["sourceAllowlist"].is<JsonArrayConst>()) return false;
+        !doc["enabled"].is<bool>() || !doc["sourceAllowlist"].is<JsonArrayConst>() ||
+        (!doc["revision"].isNull() && !doc["revision"].is<uint32_t>())) return false;
 
     std::vector<String> allowlist;
     JsonArrayConst sources = doc["sourceAllowlist"].as<JsonArrayConst>();
@@ -481,32 +512,12 @@ bool PointHistory::loadConfig() {
         allowlist.push_back(source);
     }
     _enabled = doc["enabled"].as<bool>();
+    _configRevision = doc["revision"] | 0U;
     _sourceAllowlist = std::move(allowlist);
     if (_enabled) {
         _series.reserve(_sourceAllowlist.size());
     }
     return true;
-}
-
-bool PointHistory::saveConfig() {
-    JsonDocument doc;
-    doc["schemaVersion"] = 1;
-    {
-        HistoryLock lock(_mutex);
-        if (!lock.locked() || _writesPaused || _configWriteInProgress) {
-            return false;
-        }
-        _configWriteInProgress = true;
-        doc["enabled"] = _enabled;
-        JsonArray sources = doc["sourceAllowlist"].to<JsonArray>();
-        for (const auto& source : _sourceAllowlist) sources.add(source);
-    }
-    const bool success = atomicWriteJsonWithBackup(CONFIG_FILE, doc);
-    {
-        HistoryLock lock(_mutex);
-        if (lock.locked()) _configWriteInProgress = false;
-    }
-    return success;
 }
 
 bool PointHistory::loadHistoryFile(const String& path, std::vector<Series>& restored,
@@ -625,6 +636,9 @@ bool PointHistory::writeHistorySnapshot(const std::vector<Series>& snapshot,
 }
 
 bool PointHistory::atomicWriteJsonWithBackup(const String& path, JsonDocument& doc) {
+    // Allocation pressure can leave a syntactically valid but incomplete JSON
+    // document. Never commit that as a successful configuration revision.
+    if (doc.overflowed()) return false;
     const int slash = path.lastIndexOf('/');
     if (slash > 0) {
         const String parent = path.substring(0, slash);
@@ -654,7 +668,10 @@ bool PointHistory::atomicWriteJsonWithBackup(const String& path, JsonDocument& d
     }
 
     const bool hadPrimary = LittleFS.exists(path);
-    if (LittleFS.exists(backup) && !LittleFS.remove(backup)) {
+    // If recovery could read the backup but could not restore its filename,
+    // it is still the only committed generation. Keep it until a new primary
+    // is installed; a failed tmp->primary rename must not erase that fallback.
+    if (hadPrimary && LittleFS.exists(backup) && !LittleFS.remove(backup)) {
         LittleFS.remove(tmp);
         return false;
     }

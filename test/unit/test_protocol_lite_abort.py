@@ -45,10 +45,10 @@ const vm = require('vm');
 
 const sourcePath = process.argv[1];
 const source = fs.readFileSync(sourcePath, 'utf8');
-const oldBase = { id: 'mqtt-ota-base-url', className: '', type: 'url', value: 'https://edited.example.com' };
-const newBase = { id: 'mqtt-ota-base-url', className: '', type: 'url', value: 'https://server.example.com' };
-const oldForm = { querySelectorAll: () => [oldBase] };
-const newForm = { querySelectorAll: () => [newBase] };
+const oldBroker = { id: 'mqtt-broker', className: '', type: 'text', value: 'edited.example.com' };
+const newBroker = { id: 'mqtt-broker', className: '', type: 'text', value: 'server.example.com' };
+const oldForm = { querySelectorAll: () => [oldBroker] };
+const newForm = { querySelectorAll: () => [newBroker] };
 const oldPublish = { innerHTML: '<div>edited-publish</div>' };
 const oldSubscribe = { innerHTML: '<div>edited-subscribe</div>' };
 const newPublish = { innerHTML: '<div>server-publish</div>' };
@@ -75,7 +75,7 @@ sandbox.AppState._loadFullProtocolConfig = () => {
   sandbox.AppState.saveProtocolConfig = formId => {
     observed = {
       formId,
-      otaBaseUrl: newBase.value,
+      broker: newBroker.value,
       publishHtml: newPublish.innerHTML,
       subscribeHtml: newSubscribe.innerHTML,
     };
@@ -254,7 +254,7 @@ class ProtocolLiteAbortTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["formId"], "mqtt-form")
-        self.assertEqual(payload["otaBaseUrl"], "https://edited.example.com")
+        self.assertEqual(payload["broker"], "edited.example.com")
         self.assertEqual(payload["publishHtml"], "<div>edited-publish</div>")
         self.assertEqual(payload["subscribeHtml"], "<div>edited-subscribe</div>")
 

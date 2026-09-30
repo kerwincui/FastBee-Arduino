@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "protocols/WeatherSchedule.h"
 
 // Shared by firmware and native tests. Paths are data selectors, never expressions.
 namespace FastBee { namespace RemoteResourceModel {
@@ -304,10 +305,27 @@ inline void copyWeatherPreview(JsonVariantConst normalized, JsonObject out) {
     }
     copyText(out, "city", normalized["city"], 80);
     copyText(out, "description", normalized["description"], 80);
+    copyText(out, "providerUpdatedAt", normalized["providerUpdatedAt"], 64);
     const char* weatherCondition = normalized["condition"] | "";
     if (*weatherCondition) out["condition"] = conditionValid(weatherCondition) ? weatherCondition : "unknown";
     if (number(normalized["humidity"], value) && value >= 0 && value <= 100) out["humidity"] = value;
 
+}
+
+inline WeatherSchedule::Reason providerFailure(JsonVariantConst body) {
+    using WeatherSchedule::Reason;
+    if (!body.is<JsonObjectConst>()) return Reason::Response;
+    if (body["status_code"].isNull() && body["error"].isNull()) return Reason::None;
+    const char* code = body["status_code"] | "";
+    // https://docs.seniverse.com/api/start/error.html
+    if (!strcmp(code,"AP010002") || !strcmp(code,"AP010003") || !strcmp(code,"AP010004") ||
+        !strcmp(code,"AP010006") || !strcmp(code,"AP010008") || !strcmp(code,"AP010009") ||
+        !strcmp(code,"AP010012"))
+        return Reason::Authentication;
+    if (!strcmp(code,"AP010010") || !strcmp(code,"AP010011") || !strcmp(code,"AP010017")) return Reason::Location;
+    if (!strcmp(code,"AP010013") || !strcmp(code,"AP010014")) return Reason::RateLimit;
+    // Never echo the provider's error body: it may contain request credentials.
+    return Reason::Provider;
 }
 
 inline bool parseWeather(JsonObjectConst source, JsonVariantConst body, JsonObject out, std::string& error, bool forecast = false) {

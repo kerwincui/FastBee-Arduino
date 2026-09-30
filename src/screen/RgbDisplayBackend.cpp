@@ -86,10 +86,6 @@ public:
             return false;
         }
         const size_t frameBytes = static_cast<size_t>(config.width) * config.height * 2;
-        if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < frameBytes + 4096) {
-            error = "SCREEN_RGB_PSRAM_REQUIRED";
-            return false;
-        }
         _config = config;
         _width = (config.rotation & 1) ? config.height : config.width;
         _height = (config.rotation & 1) ? config.width : config.height;
@@ -151,6 +147,12 @@ public:
                 }
             }
             delay(200);
+        }
+        // Clear the external output latch even when framebuffer admission
+        // fails after an MCU-only reset. Cleanup retains the configured bus
+        // long enough to retry OFF before relinquishing it.
+        if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < frameBytes + 4096) {
+            error = "SCREEN_RGB_PSRAM_REQUIRED"; end(); return false;
         }
         for (int8_t pin : commandPins) pinMode(pin, OUTPUT);
         digitalWrite(config.cs, HIGH);
@@ -307,7 +309,12 @@ public:
     void end() override {
         // The active-high buzzer can remain latched across an MCU reset.
         // Clear it before giving up the shared CH32 lease.
-        if (_controlLease && _ch32 && _config.controlBuzzerMask) setBuzzer(false);
+        if (_controlLease && _ch32 && _config.controlBuzzerMask) {
+            for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+                if (setBuzzer(false)) break;
+                delay(2);
+            }
+        }
         if (_ready || _controlLease || _backlightAttached) applyBrightness(_brightness, true);
         _ready = false;
         if (_panel) {
@@ -344,7 +351,9 @@ public:
         caps.sleep = caps.brightness;
         caps.brightnessContinuous = _config.backlight >= 0 || _ch32;
         caps.minVisibleBrightnessPercent = MIN_VISIBLE_BRIGHTNESS_PERCENT;
-        caps.touchWake = _config.touch >= 0;
+        // Wake availability belongs to the successfully initialized touch
+        // backend and is composed by ScreenRuntime, not guessed from display pins.
+        caps.touchWake = false;
         caps.buzzer = _ch32 && _controlLease && _config.controlBuzzerMask != 0;
         return caps;
     }

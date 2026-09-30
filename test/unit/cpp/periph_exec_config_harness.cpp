@@ -59,7 +59,7 @@ public:
     String _irKeysJson;
     std::set<String> _buttonEventCache, _dataSourceCache;
     int _rulesMutex = 1;
-    bool _configurationRestartPending = false, _configurationLoadFailed = false;
+    bool _configurationRestartPending = false, _configurationLoadFailed = false, _weatherReferenceLease = false;
     const char* configurationWriteError() const;
     bool saveConfiguration(); bool saveConfigurationLocked();
     bool writeConfigurationLocked(const RuleMap&, const String&);
@@ -68,6 +68,10 @@ public:
     bool importConfigurationFile(const char*, String&);
     bool setIrKeysJson(const String&);
     bool removeRuleLocked(const String&, String&);
+    bool addRuleLocked(const PeriphExecRule&, String&, String* = nullptr);
+    bool updateRuleLocked(const String&, const PeriphExecRule&, String&);
+    String generateUniqueId() const { return "generated"; }
+    bool validateRuleActionsLocked(const PeriphExecRule&, String&) const { return true; }
     bool setRuleEnabledLocked(const String&, bool, String&);
     bool sanitizeRuleForSafety(PeriphExecRule&) const;
     bool sanitizeTriggerForSafety(ExecTrigger&, bool, const String&) const;
@@ -242,6 +246,16 @@ int main(int argc, char** argv) {
     reset(m, config(rule("old")));
     const auto original = LittleFS.files.at(PERIPH_EXEC_CONFIG_FILE);
     LittleFS.files["/config/staged.tmp"] = config();
+    m._weatherReferenceLease = true;
+    CHECK(!m.importConfigurationFile("/config/staged.tmp", error)); CHECK(error == "WEATHER_MIGRATION_BUSY");
+    CHECK(!m.saveConfiguration() && !m.loadConfiguration() && !m.setIrKeysJson("[]"));
+    CHECK(!m.removeRuleLocked("old", error) && error == "WEATHER_MIGRATION_BUSY");
+    PeriphExecRule incoming = m.rules.at("old"); incoming.id = "added";
+    CHECK(!m.addRuleLocked(incoming, error) && error == "WEATHER_MIGRATION_BUSY");
+    CHECK(!m.updateRuleLocked("old", incoming, error) && error == "WEATHER_MIGRATION_BUSY");
+    CHECK(!m.setRuleEnabledLocked("old", false, error) && error == "WEATHER_MIGRATION_BUSY");
+    CHECK(m.rules.at("old").enabled && LittleFS.files.at(PERIPH_EXEC_CONFIG_FILE) == original);
+    m._weatherReferenceLease = false;
     CHECK(m.importConfigurationFile("/config/staged.tmp", error));
     CHECK(m._configurationRestartPending && m.rules.count("old"));
     const auto imported = LittleFS.files.at(PERIPH_EXEC_CONFIG_FILE);

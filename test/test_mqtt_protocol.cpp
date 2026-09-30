@@ -3922,25 +3922,27 @@ void test_mqtts_mbedtls_allocator_uses_psram() {
     std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
 
+    const std::string allocator = readProjectFile("include/network/TlsMemory.h");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("TlsMemory::ensureAllocator()") != std::string::npos, "MQTTS must reuse the shared TLS allocator");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("mbedtls_platform_set_calloc_free") != std::string::npos,
+        allocator.find("mbedtls_platform_set_calloc_free") != std::string::npos,
         "MQTTS must install a runtime mbedTLS allocator");
     TestLog::step("Runtime mbedTLS allocator install found");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("fastbeeMbedtlsCalloc") != std::string::npos &&
-        content.find("fastbeeMbedtlsFree") != std::string::npos,
+        allocator.find("inline void* calloc(") != std::string::npos &&
+        allocator.find("inline void free(") != std::string::npos,
         "MQTTS must provide matching calloc/free callbacks");
     TestLog::step("Custom calloc/free callbacks found");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("MALLOC_CAP_SPIRAM") != std::string::npos &&
-        content.find("MALLOC_CAP_INTERNAL") != std::string::npos,
-        "Allocator must prefer PSRAM for TLS payloads and fall back to internal DRAM");
+        allocator.find("MALLOC_CAP_SPIRAM") != std::string::npos &&
+        allocator.find("MALLOC_CAP_INTERNAL") != std::string::npos,
+        "Allocator must keep TLS payloads in PSRAM and small control allocations internal");
     TestLog::step("PSRAM preference and internal fallback found");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("MQTTS_MBEDTLS_PSRAM_MIN_ALLOC = 256U") != std::string::npos,
+        allocator.find("PSRAM_MIN_ALLOC = 256U") != std::string::npos,
         "Allocator threshold must cover RSA/BIGNUM buffers around 256 bytes");
     TestLog::step("256B PSRAM threshold found");
 

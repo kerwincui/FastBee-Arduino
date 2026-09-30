@@ -136,6 +136,12 @@ int main(){
    wire.failAck=false;assert(t->poll(p) && !p.pressed);
    wire.failRead=0x814e;assert(!t->poll(p));wire.failRead=0;
    now+=30000;assert(!t->poll(p)); // bounded diagnostics do not fabricate input
+   // Sustained I2C failure relinquishes readiness, never a synthetic tap.
+   report(0x81,200,300);assert(t->poll(p) && p.pressed);
+   wire.failRead=0x814e;assert(!t->poll(p) && t->ready());
+   now+=1999;assert(!t->poll(p) && t->ready());
+   ++now;assert(!t->poll(p) && !t->ready());
+   wire.failRead=0;assert(!t->poll(p));
    t->end();assert(!FastBee::I2CBusManager::instance().owner && !t->ready());
  }
  wire.present=0x5d;String error;auto t=createTouchBackend(c,error);
@@ -196,7 +202,7 @@ int main(){
             cpp = base / "test.cpp"
             cpp.write_text(source, encoding="utf-8")
             exe = base / ("test.exe" if os.name == "nt" else "test")
-            result = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DFASTBEE_ENABLE_SCREEN_UI=1", "-DARDUINO_ARCH_ESP32=1", f"-I{base}", f"-I{ROOT / 'src/screen'}", str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=40)
+            result = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DFASTBEE_ENABLE_SCREEN_UI=1", "-DARDUINO_ARCH_ESP32=1", f"-I{base}", f"-I{ROOT / 'include'}", f"-I{ROOT / 'src/screen'}", str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -260,7 +260,7 @@ void AuthRouteHandler::handleLogout(AsyncWebServerRequest* request) {
         return;
     }
 
-    String sessionId = AuthManager::extractSessionIdFromRequest(request);
+    String sessionId = authResult.sessionId;
 
     if (sessionId.isEmpty()) {
         ctx->sendError(request, 400, "No session found");

@@ -421,7 +421,15 @@ int main() {
         assert(backend->_ch32Output==asserted);
         assert(display->setBuzzer(false) && !(wire.registers[3]&0x40));
         assert(display->setBuzzer(true));
+        wire.failWriteAttempt=wire.writeAttempts+1;
         display->end();assert(!(wire.registers[3]&0x40) && !manager.owner);
+        wire.failWriteAttempt=0;
+        // An MCU-only restart with a stale external ON and no framebuffer
+        // memory must still initialize OFF before failing admission.
+        wire.registers[3]|=0x40;psramBytes=0;
+        assert(!display->begin(config,error) && error=="SCREEN_RGB_PSRAM_REQUIRED");
+        assert(!(wire.registers[3]&0x40) && !manager.owner);
+        psramBytes=8*1024*1024;
         strcpy(config.controlBackend,"tca9554");
         assert(!display->begin(config,error) &&
                error=="SCREEN_RGB_BUZZER_CONTROL_UNSUPPORTED");

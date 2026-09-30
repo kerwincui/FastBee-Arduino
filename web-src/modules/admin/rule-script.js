@@ -186,8 +186,13 @@
 
         async openRuleScriptModal(editId) {
             if (!this.guardDeveloperModeAction()) return;
+            const seq = this._rsEditorSeq = (this._rsEditorSeq || 0) + 1;
+            this._rsEditorReady = false;
             const modal = await this._ensureModalForAction('rule-script-modal');
-            if (!modal) return;
+            if (!modal || !this._ruleScriptActive(seq)) return;
+            this._rsEditorReady = !editId;
+            const saveButton = document.getElementById('save-rule-script-btn');
+            if (saveButton) saveButton.disabled = !!editId || !!this._rsSavePending;
             const titleEl = document.getElementById('rule-script-modal-title');
             document.getElementById('rule-script-original-id').value = editId || '';
             this.clearInlineError('rule-script-error');
@@ -202,14 +207,14 @@
                 document.getElementById('rule-script-target-topic').value = '';
             }
             // 绑定协议类型切换事件（仅一次）
-            if (!this._ruleScriptProtocolBound) {
-                var protoSelect = document.getElementById('rule-script-protocol-type');
+            var protoSelect = document.getElementById('rule-script-protocol-type');
+            if (protoSelect && !protoSelect._ruleScriptBound) {
                 if (protoSelect) {
                     protoSelect.addEventListener('change', function() {
                         var topicFields = document.getElementById('rule-script-topic-fields');
                         if (topicFields) topicFields.style.display = (this.value === '0') ? '' : 'none';
                     });
-                    this._ruleScriptProtocolBound = true;
+                    protoSelect._ruleScriptBound = true;
                 }
             }
             // 初始状态：根据当前协议类型显示/隐藏主题字段
@@ -217,14 +222,21 @@
             var topicFields = document.getElementById('rule-script-topic-fields');
             if (topicFields) topicFields.style.display = (protoVal === '0') ? '' : 'none';
             this.showModal(modal);
+            return seq;
+        },
+
+        _ruleScriptActive(seq) {
+            return this._rsEditorSeq === seq && (!this.currentPage || this.currentPage === 'rule-script');
         },
 
         closeRuleScriptModal() {
+            this._rsEditorSeq = (this._rsEditorSeq || 0) + 1;
+            this._rsEditorReady = false;
             this.hideModal('rule-script-modal');
         },
 
         saveRuleScript() {
-            if (!this.guardDeveloperModeAction()) return;
+            if (!this.guardDeveloperModeAction() || this._rsSavePending || !this._rsEditorReady) return;
             this.clearInlineError('rule-script-error');
             const originalId = document.getElementById('rule-script-original-id').value;
             const isEdit = originalId !== '';
@@ -243,7 +255,13 @@
             }
             if (isEdit) ruleData.id = originalId;
             const url = isEdit ? '/api/rule-script/update' : '/api/rule-script';
-            apiPost(url, ruleData).then(res => {
+            const seq = this._rsEditorSeq;
+            const button = document.getElementById('save-rule-script-btn');
+            this._rsSavePending = true;
+            if (button) button.disabled = true;
+            return apiPost(url, ruleData).then(res => {
+                if (res && res.success && typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/rule-script');
+                if (!this._ruleScriptActive(seq)) return;
                 if (res && res.success) {
                     Notification.success(isEdit ? '规则脚本更新成功' : '规则脚本添加成功', '规则脚本');
                     this.closeRuleScriptModal();
@@ -255,18 +273,24 @@
                     this.showInlineError('rule-script-error', res?.error || '保存失败');
                 }
             }).catch(() => {
-                this.showInlineError('rule-script-error', '保存失败');
+                if (this._ruleScriptActive(seq)) this.showInlineError('rule-script-error', '保存失败');
+            }).finally(() => {
+                this._rsSavePending = false;
+                const currentButton = document.getElementById('save-rule-script-btn');
+                if (currentButton) currentButton.disabled = !this._rsEditorReady;
             });
         },
 
-        editRuleScript(id) {
+        async editRuleScript(id) {
             if (!this.guardDeveloperModeAction()) return;
-            this.openRuleScriptModal(id);
+            const seq = await this.openRuleScriptModal(id);
+            if (!seq || !this._ruleScriptActive(seq)) return;
             const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            getter('/api/rule-script').then(res => {
-                if (!res || !res.success || !res.data) return;
+            return getter('/api/rule-script').then(res => {
+                if (!this._ruleScriptActive(seq)) return;
+                if (!res || !res.success || !Array.isArray(res.data)) throw new Error('规则加载失败');
                 const rule = res.data.find(r => r.id === id);
-                if (!rule) return;
+                if (!rule) throw new Error('规则已不存在，请刷新列表');
                 document.getElementById('rule-script-name').value = rule.name || '';
                 document.getElementById('rule-script-enabled').checked = !!rule.enabled;
                 document.getElementById('rule-script-trigger-type').value = String(rule.triggerType);
@@ -278,13 +302,30 @@
                 var protoVal = String(rule.protocolType || 0);
                 var topicFields = document.getElementById('rule-script-topic-fields');
                 if (topicFields) topicFields.style.display = (protoVal === '0') ? '' : 'none';
+                this._rsEditorReady = true;
+                document.getElementById('save-rule-script-btn').disabled = !!this._rsSavePending;
+            }).catch(err => {
+                if (this._ruleScriptActive(seq)) this.showInlineError('rule-script-error', err.message || '规则加载失败，请关闭后重试');
             });
+        },
+
+        _runRuleScriptAction(id, action) {
+            if (!this._rsActions) this._rsActions = new Set();
+            if (this._rsActions.has(id)) return Promise.resolve(null);
+            this._rsActions.add(id);
+            return Promise.resolve().then(action).then(res => {
+                if (!res || !res.success) throw new Error(res && res.error || '操作失败，请重试');
+                return res;
+            }).catch(err => {
+                Notification.error(err.message || '操作失败，请重试', '规则脚本');
+                return null;
+            }).finally(() => this._rsActions.delete(id));
         },
 
         toggleRuleScript(id, enable) {
             if (!this.guardDeveloperModeAction()) return;
             const url = enable ? '/api/rule-script/enable' : '/api/rule-script/disable';
-            apiPost(url, { id: id }).then(res => {
+            return this._runRuleScriptAction(id, () => apiPost(url, { id: id })).then(res => {
                 if (res && res.success) {
                     if (typeof window.apiInvalidateCache === 'function') {
                         window.apiInvalidateCache('/api/rule-script');
@@ -297,7 +338,7 @@
         deleteRuleScript(id) {
             if (!this.guardDeveloperModeAction()) return;
             if (!confirm('确定要删除此规则吗？')) return;
-            apiDelete('/api/rule-script/', { id: id }).then(res => {
+            return this._runRuleScriptAction(id, () => apiDelete('/api/rule-script/', { id: id })).then(res => {
                 if (res && res.success) {
                     Notification.success('规则脚本已删除', '规则脚本');
                     if (typeof window.apiInvalidateCache === 'function') {

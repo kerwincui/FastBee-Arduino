@@ -87,6 +87,7 @@ bool runSystemAction(HarnessState& state, ScreenSystemAction pendingAction,
     const DisplayCapabilities caps = device.display()->capabilities();
     bool applied = false;
     bool& sleeping = state.sleeping;
+    bool& forceRender = state.forceRender;
     uint8_t& appliedBrightness = state.appliedBrightness;
     bool& brightnessOverridden = state.brightnessOverridden;
     uint32_t& brightnessOverrideRevision = state.brightnessOverrideRevision;

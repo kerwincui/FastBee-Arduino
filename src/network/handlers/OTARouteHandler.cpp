@@ -5,6 +5,7 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/OTAManager.h"
+#include "protocols/FastBeeOTAProtocol.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
@@ -127,14 +128,15 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
     String url = ctx->getParamValue(request, "url", "");
+    url.trim();
 
     if (url.isEmpty()) {
         ctx->sendError(request, 400, "Missing firmware URL");
         return;
     }
 
-    if (!url.startsWith("https://")) {
-        ctx->sendError(request, 400, "OTA URL must use HTTPS");
+    if (!FastBeeOtaProtocol::isValidFirmwareUrl(url)) {
+        ctx->sendError(request, 400, "OTA URL must be a valid HTTP/HTTPS address");
         return;
     }
 

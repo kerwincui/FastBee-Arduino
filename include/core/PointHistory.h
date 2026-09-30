@@ -47,7 +47,8 @@ public:
 
     bool initialize();
     bool configure(bool enabled, const std::vector<String>& sourceAllowlist,
-                   String& error, bool persist = true);
+                   String& error, bool persist = true,
+                   const uint32_t* expectedRevision = nullptr);
     bool recordSample(const String& sourceRef, double value,
                       const String& unit, const String& sourceRevision,
                       uint32_t sampleIdentity = 0, uint32_t uptimeMs = 0,
@@ -87,10 +88,10 @@ private:
     };
 
     bool loadConfig();
+    bool loadConfigFile(const String& path);
     bool loadHistory();
     bool loadHistoryFile(const String& path, std::vector<Series>& restored,
                          uint32_t& restoredSequence) const;
-    bool saveConfig();
     bool writeHistorySnapshot(const std::vector<Series>& snapshot,
                               uint32_t sequence) const;
     bool isAllowedSource(const String& sourceRef) const;
@@ -109,6 +110,7 @@ private:
     uint32_t _firstDirtyAt = 0;
     uint32_t _postSnapshotDirtyAt = 0;
     uint32_t _generation = 0;
+    uint32_t _configRevision = 0;
     uint32_t _sequence = 0;
     String _bootId;
     std::vector<String> _sourceAllowlist;

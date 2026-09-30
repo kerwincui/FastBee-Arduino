@@ -149,6 +149,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             var id = button.getAttribute('data-id');
             if (!action || !id) return;
             if (action === 'diagnose') {
+                button.closest('details')?.removeAttribute('open');
                 this._openPeripheralIoWorkspace(id);
                 return;
             }
@@ -414,10 +415,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
                             '<td class="u-cell-nowrap"><div class="u-table-action-row">' +
-                                diagnosticButton +
                                 this._renderPeripheralActionButton('edit', periph.id, '编辑', 'fb-btn-primary') +
                                 this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? '禁用' : '启用', periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
                                 this._renderPeripheralActionButton('delete', periph.id, '删除', 'fb-btn-danger') +
+                                (diagnosticButton ? '<details class="peripheral-more"><summary class="fb-btn fb-btn-sm">更多</summary>' + diagnosticButton + '</details>' : '') +
                             '</div></td></tr>';
                     });
                     tbody.innerHTML = html;
@@ -757,6 +758,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             });
                             { const el = document.getElementById('adc-conversion-enabled'); if (el && data.params.conversionEnabled !== undefined) el.checked = !!data.params.conversionEnabled; }
                             { const el = document.getElementById('adc-clamp-enabled'); if (el && data.params.clampEnabled !== undefined) el.checked = !!data.params.clampEnabled; }
+                            { const el = document.getElementById('adc-calibrated-voltage'); if (el) el.checked = !!data.params.calibratedVoltage; }
                             // 通用传感器参数
                             { const el = document.getElementById('generic-sensor-type'); if (el && data.params.sensorType !== undefined) el.value = String(data.params.sensorType); }
                             { const el = document.getElementById('generic-sensor-interval'); if (el && data.params.sampleInterval !== undefined) el.value = String(data.params.sampleInterval); }

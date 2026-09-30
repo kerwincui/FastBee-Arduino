@@ -122,7 +122,8 @@ public:
         result.brightness = _config.backlight >= 0;
         result.brightnessContinuous = result.brightness;
         result.minVisibleBrightnessPercent = MIN_VISIBLE_BRIGHTNESS_PERCENT;
-        result.touchWake = _config.touch >= 0;
+        // ScreenRuntime adds the actual touch backend readiness.
+        result.touchWake = false;
         result.sleep = true;
         return result;
     }

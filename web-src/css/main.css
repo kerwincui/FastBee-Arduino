@@ -519,6 +519,8 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 /* === 9. Modal System === */
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgb(0 0 0 / 0.5); display: none; align-items: center; justify-content: center; z-index: 10000; overscroll-behavior: contain; }
 .modal.is-visible { display: flex; }
+/* Keep the close target fixed while peripheral preflight updates form height. */
+#peripheral-modal .modal-content { margin: 5vh auto auto; }
 .modal-content { border-radius: var(--rounded-xl); box-shadow: var(--shadow-lg); width: 90%; max-width: 500px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; margin: auto; }
 .modal-header { flex-shrink: 0; padding: var(--space-4) var(--space-6); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1; }
 .modal-body { flex: 1; min-width: 0; padding: var(--space-6); overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; }
@@ -755,9 +757,13 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .pe-base-grid .pe-base-name { margin-bottom: 0; }
 .pe-rule-enabled { min-height: 38px; margin: 0; }
 .pe-rule-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin-bottom: var(--space-5); padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--rounded-md); background: color-mix(in srgb, var(--bg-card) 94%, var(--primary-light) 6%); }
-.pe-rule-options .fb-checkbox, .pe-rule-options > .fb-btn { min-width: 0; min-height: 34px; margin: 0; align-self: center; }
+.pe-rule-options .fb-checkbox, .pe-rule-options > .fb-btn { min-width: 0; min-height: 44px; margin: 0; align-self: center; }
 .pe-rule-options > .fb-btn { justify-self: start; }
 .pe-rule-options .is-disabled { color: var(--text-muted); cursor: not-allowed; }
+.peripheral-more { display: inline-flex; }
+.peripheral-more[open] { display: inline-flex; gap: 6px; }
+.peripheral-more > summary { list-style: none; cursor: pointer; }
+.peripheral-more > summary::-webkit-details-marker { display: none; }
 @media (max-width: 600px) { .pe-rule-options { grid-template-columns: 1fr; gap: var(--space-3); } }
 .pe-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); align-items: start; margin-top: var(--space-2); }
 .pe-action-grid > .fb-form-group { margin-bottom: 0; }
@@ -809,6 +815,8 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 #modbus-device-ctrl-modal.modbus-ctrl-offline .pid-card,
 #modbus-device-ctrl-modal.modbus-ctrl-offline .motor-actions,
 #modbus-device-ctrl-modal.modbus-ctrl-offline .motor-params-section { pointer-events: none; cursor: not-allowed; }
+#modbus-device-ctrl-modal.modbus-ctrl-offline .modal-body button[data-action="motorStop"],
+#modbus-device-ctrl-modal.modbus-ctrl-offline .modal-body button[data-action="refreshMotorStatus"] { pointer-events: auto; cursor: pointer; }
 .protocol-mapping-num-sm { width: 54px; }
 .protocol-mapping-select { width: 86px; }
 .protocol-mapping-num-md { width: 76px; }
@@ -1656,7 +1664,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .motor-run-forward { background: color-mix(in srgb, var(--success) 18%, white); color: var(--success-dark); border: 1px solid color-mix(in srgb, var(--success) 40%, transparent); }
 .motor-run-reverse { background: color-mix(in srgb, var(--warning) 18%, white); color: var(--warning-dark); border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent); }
 .motor-run-stopped { background: color-mix(in srgb, var(--danger) 14%, white); color: var(--danger-dark); border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); }
-.motor-status-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: var(--space-2); }
+.motor-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: var(--space-2); }
+.motor-status-grid .motor-status-value { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.motor-header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .motor-status-item { text-align: center; padding: var(--space-2); background: color-mix(in srgb, var(--primary) 8%, var(--bg-card)); border-radius: var(--rounded-md); }
 .motor-status-label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .motor-status-value { font-size: 15px; font-weight: 600; color: var(--text-primary); }
@@ -1667,6 +1677,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .motor-param-input { max-width: 100px; }
 .motor-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); flex-wrap: wrap; }
 .motor-actions .motor-action-btn { min-width: 84px; flex: 0 0 auto; justify-content: center; }
+@media (max-width: 640px) {
+    #mdev-edit-motor-section .fb-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #mdev-edit-motor-section .fb-form-group { min-width: 0; }
+    #mdev-edit-motor-section .fb-form-group label { display: block; min-height: 22px; }
+}
 .motor-header-actions { display: flex; align-items: center; gap: 8px; }
 .motor-refresh-btn { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-muted); font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; padding: 0; }
 .motor-refresh-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
@@ -1824,6 +1839,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-monitor-icon-tone-weather { color: #74c0fc; }
 .dc-monitor-icon-tone-default { color: #1677ff; }
 .dc-monitor-device { font-size: 9px; color: var(--primary); font-weight: 600; margin-bottom: 4px; padding: 1px 5px; background: rgba(22,119,255,0.08); border-radius: 3px; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-monitor-status[hidden] { display: none; }
 .dc-monitor-val-row { display: flex; align-items: baseline; gap: 3px; }
 .dc-monitor-value { font-size: 22px; font-weight: 700; color: var(--text-primary); font-family: 'Consolas','Monaco','Courier New',monospace; line-height: 1.2; }
 .dc-monitor-unit { font-size: 11px; color: var(--text-muted); }
@@ -1848,9 +1864,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Control flow layout (responsive fixed-width cards) */
 .dc-control-flow { position: relative; width: 100%; min-height: 200px; }
 .dc-control-flow > .dc-control-group,
-.dc-control-flow > .dc-modbus-device-panel { position: absolute; width: 340px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-modbus-device-panel { position: absolute; width: 340px; max-width: 100%; overflow: auto; box-sizing: border-box; }
 .dc-control-flow > .dc-risk-banner { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
-.dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { position: absolute; width: 695px; max-width: 100%; overflow: auto; box-sizing: border-box; }
 .dc-control-flow > .dc-modbus-device-inventory { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
 .dc-control-flow > .dc-risk-banner[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
 .dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
@@ -1866,6 +1882,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-sid-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); margin-right: 8px; cursor: pointer; user-select: none; white-space: nowrap; }
 .dc-sid-toggle input { margin: 0; }
 .dc-action-stack { display: inline-flex; flex-direction: column; align-items: center; }
+.dc-rule-actions { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.dc-rule-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dc-rule-info { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+.dc-rule-name { display: block; font-size: 13px; font-weight: 500; }
+.dc-rule-info small { display: block; color: var(--text-secondary); font-size: 11px; margin-top: 3px; }
+.dc-rule-row > .dc-ctrl-btn { flex: 0 0 auto; white-space: normal; }
 .dc-sid-tag { display: block; font-size: 10px; color: #8a9bb5; text-align: center; line-height: 1.2; margin-top: 2px; }
 .dc-sid-detail { color: #b0b8c8; }
 

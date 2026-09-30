@@ -368,7 +368,10 @@ void test_screen_panel_dynamic_refresh_clears_old_payload_without_changing_layou
 
 void test_screen_panel_reports_only_live_system_action_capabilities() {
     allowPanelNativeRuntimeDependencies() = true;
-    panelNativeSystemActionCapabilities() = {true, true, false, true};
+    auto& caps = panelNativeSystemActionCapabilities();
+    caps = {};
+    caps.displayReady = caps.touchConfigured = caps.touchReady = true;
+    caps.brightness = caps.sleep = caps.restart = true;
 
     JsonDocument capabilityDocument;
     ScreenPanelManager::instance().appendCapabilities(
@@ -393,6 +396,8 @@ void test_screen_panel_reports_only_live_system_action_capabilities() {
     TEST_ASSERT_FALSE(capabilityDocument["sleep"]);
     TEST_ASSERT_FALSE(capabilityDocument["buzzer"]);
     TEST_ASSERT_FALSE(capabilityDocument["systemRestart"]);
+    TEST_ASSERT_FALSE(capabilityDocument["touchReady"]);
+    TEST_ASSERT_TRUE(capabilityDocument["disabledReasons"]["systemRestart"].is<const char*>());
     TEST_ASSERT_EQUAL_UINT32(
         1, capabilityDocument["systemActions"].as<JsonArrayConst>().size());
     TEST_ASSERT_EQUAL_STRING("confirm-idle", capabilityDocument["systemActions"][0]);

@@ -1715,14 +1715,28 @@ void ScreenPanelManager::appendCapabilities(JsonObject out) const {
     out["touchWake"] = actionCapabilities.touchWake;
     out["buzzer"] = actionCapabilities.buzzer;
     out["touchBeep"] = actionCapabilities.buzzer;
+    out["displayReady"] = actionCapabilities.displayReady;
+    out["touchConfigured"] = actionCapabilities.touchConfigured;
+    out["touchReady"] = actionCapabilities.touchReady;
+    out["touchError"] = actionCapabilities.touchError;
     out["controlConfirmIdle"] = FASTBEE_ENABLE_SCREEN_UI != 0;
     out["maxBottomNavPages"] = ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES;
     JsonObject disabledReasons = out["disabledReasons"].to<JsonObject>();
-    if (!actionCapabilities.brightness) disabledReasons["brightness"] = "当前硬件不支持亮度调节";
+    String interactionReason;
+    if (!FASTBEE_ENABLE_SCREEN_UI) interactionReason = "当前固件未启用屏幕运行时";
+    else if (!actionCapabilities.displayReady) interactionReason = "显示设备尚未就绪，请检查显示外设";
+    else if (!actionCapabilities.touchConfigured) interactionReason = "未配置触摸控制器，请检查显示外设";
+    else if (!actionCapabilities.touchReady) {
+        interactionReason = "触摸控制器未就绪，正在重试";
+        if (actionCapabilities.touchError[0]) interactionReason += String("（") + actionCapabilities.touchError + "）";
+    }
+    if (!actionCapabilities.brightness) disabledReasons["brightness"] = interactionReason.isEmpty() ? String("当前硬件不支持亮度调节") : interactionReason;
+    if (!actionCapabilities.brightnessContinuous) disabledReasons["brightnessContinuous"] = disabledReasons["brightness"];
     if (actionCapabilities.brightness && !actionCapabilities.brightnessContinuous) disabledReasons["brightnessContinuous"] = "仅支持背光开关";
-    if (!actionCapabilities.sleep) disabledReasons["sleep"] = "当前硬件不支持自动息屏";
-    if (!actionCapabilities.touchWake) disabledReasons["touchWake"] = "当前硬件不支持触摸唤醒";
-    if (!actionCapabilities.buzzer) disabledReasons["buzzer"] = "当前硬件不支持提示音";
+    if (!actionCapabilities.sleep) disabledReasons["sleep"] = interactionReason.isEmpty() ? String("当前硬件不支持自动息屏") : interactionReason;
+    if (!actionCapabilities.touchWake) disabledReasons["touchWake"] = interactionReason;
+    if (!actionCapabilities.buzzer) disabledReasons["buzzer"] = interactionReason.isEmpty() ? String("显示外设未配置可用的蜂鸣器") : interactionReason;
+    if (!actionCapabilities.restart) disabledReasons["systemRestart"] = interactionReason;
     if (!(FASTBEE_ENABLE_MODBUS != 0)) disabledReasons["motorControls"] = "当前固件不支持电机控制";
     JsonArray systemActions = out["systemActions"].to<JsonArray>();
     if (actionCapabilities.brightness) systemActions.add("brightness");
@@ -1834,7 +1848,7 @@ void ScreenPanelManager::appendChoices(JsonArray out) const {
 
     MotorControlService::instance().appendChoices(out);
 
-    addSource("system.uptime", "System uptime", "number", "s", "system", true);
+    addSource("system.uptime", "运行时间", "number", "s", "system", true);
     addSource("system.freeHeap", "Free heap", "number", "B", "system", true);
     addSource("system.wifiRssi", "Wi-Fi RSSI", "number", "dBm", "system", true);
     addSource("system.network", "Network status", "status", "", "system", true);
@@ -1941,6 +1955,12 @@ void ScreenPanelManager::appendState(JsonObject out) const {
         item["motorSpeed"] = card.motorSpeed; item["motorPulse"] = card.motorPulse;
         item["motorPrecision"] = card.motorPrecision;
         item["motorKnown"] = card.motorKnown; item["systemActionId"] = JsonString(card.systemActionId);
+        if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
+            item["motorCommandKnown"] = card.motorCommandKnown; item["motorCommandSuccess"] = card.motorCommandSuccess;
+            item["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
+            item["motorReadError"] = JsonString(card.motorReadError);
+            item["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
+        }
         item["historyCount"] = card.historyCount;
         item["historyStale"] = card.historyStale;
         item["historyError"] = JsonString(card.historyError);
@@ -1953,6 +1973,12 @@ void ScreenPanelManager::appendState(JsonObject out) const {
         state["motorSpeed"] = card.motorSpeed; state["motorPulse"] = card.motorPulse;
         state["motorPrecision"] = card.motorPrecision;
         state["motorKnown"] = card.motorKnown;
+        if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
+            state["motorCommandKnown"] = card.motorCommandKnown; state["motorCommandSuccess"] = card.motorCommandSuccess;
+            state["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
+            state["motorReadError"] = JsonString(card.motorReadError);
+            state["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
+        }
         state["value"] = JsonString(card.value);
         state["unit"] = JsonString(card.unit);
         state["quality"] = qualityName(card.quality);
@@ -1962,6 +1988,7 @@ void ScreenPanelManager::appendState(JsonObject out) const {
         state["operationId"] = card.operationId;
         state["historyStale"] = card.historyStale;
         if (card.historyError[0]) state["historyError"] = JsonString(card.historyError);
+        if (card.kind == ScreenCardKind::WEATHER) state["reason"] = JsonString(card.weatherReason);
         if (card.weatherCondition[0]) {
             state["condition"] = JsonString(card.weatherCondition);
             state["city"] = JsonString(card.weatherCity);
@@ -2029,11 +2056,17 @@ void updatePanelDynamicFields(ScreenPanelCardSnapshot& out,
     updatePanelSnapshotField(out.motorPrecision, fresh.motorPrecision);
     updatePanelSnapshotField(out.motorPulse, fresh.motorPulse);
     updatePanelSnapshotField(out.motorKnown, fresh.motorKnown);
+    updatePanelSnapshotField(out.motorCommandKnown, fresh.motorCommandKnown);
+    updatePanelSnapshotField(out.motorCommandSuccess, fresh.motorCommandSuccess);
+    updatePanelSnapshotField(out.motorCommandUpdatedMs, fresh.motorCommandUpdatedMs);
+    updatePanelSnapshotField(out.motorReadError, fresh.motorReadError);
+    updatePanelSnapshotField(out.motorSoftLimitEnabled, fresh.motorSoftLimitEnabled);
     updatePanelSnapshotField(out.unit, fresh.unit);
     updatePanelSnapshotField(out.value, fresh.value);
     updatePanelSnapshotField(out.error, fresh.error);
     updatePanelSnapshotField(out.historyError, fresh.historyError);
     updatePanelSnapshotField(out.weatherCondition, fresh.weatherCondition);
+    updatePanelSnapshotField(out.weatherReason, fresh.weatherReason);
     updatePanelSnapshotField(out.weatherCity, fresh.weatherCity);
     updatePanelSnapshotField(out.quality, fresh.quality);
     updatePanelSnapshotField(out.weatherTemperature, fresh.weatherTemperature);
@@ -2102,8 +2135,9 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
         copyText(out.backgroundPresetId,
                  String(cache._layout["settings"]["background"]["presetId"] | "solid"));
         out.bottomNavCount = 0;
-        for (JsonVariantConst nav :
-             cache._layout["settings"]["bottomNavPageIds"].as<JsonArrayConst>()) {
+        const JsonArrayConst bottomNavIds =
+            cache._layout["settings"]["bottomNavPageIds"].as<JsonArrayConst>();
+        for (JsonVariantConst nav : bottomNavIds) {
             if (out.bottomNavCount >= ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES) break;
             copyText(out.bottomNavPageIds[out.bottomNavCount++], String(nav | ""));
         }
@@ -2271,6 +2305,7 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                         if (!valueObject["unit"].isNull()) {
                             copyText(cardOut.unit, String(valueObject["unit"] | ""));
                         }
+                        copyText(cardOut.weatherReason, String(valueObject["reason"] | "none"));
                         JsonObjectConst weather = valueObject["weather"].as<JsonObjectConst>();
                         if (!weather.isNull()) {
                             copyText(cardOut.weatherCondition, String(weather["condition"] | "unknown"));
@@ -2310,6 +2345,11 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                     if (MotorControlService::instance().state(String(card["controlRef"] | ""), motor)) {
                         cardOut.motorKnown = motor.known; cardOut.motorSpeed = motor.speed; cardOut.motorPulse = motor.pulse;
                         cardOut.motorPrecision = motor.precision;
+                        cardOut.operationId = motor.operationId;
+                        cardOut.motorCommandKnown = motor.commandKnown; cardOut.motorCommandSuccess = motor.commandSuccess;
+                        cardOut.motorCommandUpdatedMs = motor.commandUpdatedMs;
+                        cardOut.motorSoftLimitEnabled = motor.softLimitEnabled;
+                        copyText(cardOut.motorReadError, String(motor.readError));
                         cardOut.pending = motor.pending; cardOut.updatedMs = motor.updatedMs;
                         cardOut.quality = motor.known ? ScreenValueQuality::GOOD : ScreenValueQuality::UNKNOWN;
                         copyText(cardOut.error, String(motor.error)); copyText(cardOut.value, String(motor.lastAction));
@@ -2366,6 +2406,7 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                             cardOut.history[i].sequence = history.samples[i].sequence;
                             cardOut.history[i].uptimeMs = history.samples[i].uptimeMs;
                             cardOut.history[i].epochMs = history.samples[i].epochMs;
+                            copyText(cardOut.history[i].bootId, history.samples[i].bootId);
                             cardOut.history[i].restored = history.samples[i].restored;
                         }
                     }

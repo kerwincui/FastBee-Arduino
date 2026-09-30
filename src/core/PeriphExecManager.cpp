@@ -9,6 +9,7 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "core/PeriphExecManager.h"
+#include "core/PeriphExecRemoteBindings.h"
 #include "core/PeriphExecConfigValidation.h"
 #include "core/MemoryBudget.h"
 #include "core/PeriphExecExecutor.h"
@@ -1068,7 +1069,7 @@ bool PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
         }
     }
     for (auto& trigger : rule.triggers) {
-        if (trigger.triggerPeriphId.startsWith("remote.") && rule.enabled) {
+        if (hasRetiredRemoteSource(trigger) && rule.enabled) {
             rule.enabled = false; modified = true;
         }
         modified = sanitizeTriggerForSafety(trigger, hasPollCollectionAction,
@@ -1081,6 +1082,9 @@ bool PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
 }
 
 unsigned long PeriphExecManager::getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const {
+    // These are already debounced edges, not periodic sensor samples. A
+    // cooldown silently loses the edge because stable inputs are not replayed.
+    if (source == "digital_input") return 0;
     if ((source == "modbus" || source == "modbus_poll") && rule._cachedHasPollCollectionAction) {
         return PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS;
     }
@@ -1133,7 +1137,7 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
 
 bool PeriphExecManager::validateRuleActionsLocked(
     const PeriphExecRule& rule, String& errorMsg) const {
-    for (const auto& trigger : rule.triggers) if (trigger.triggerPeriphId.startsWith("remote.")) {
+    for (const auto& trigger : rule.triggers) if (hasRetiredRemoteSource(trigger)) {
         errorMsg = "REMOTE_CHANNEL_RETIRED: replace the retired remote source"; return false;
     }
     PeripheralManager& peripherals = PeripheralManager::getInstance();
@@ -1445,75 +1449,6 @@ bool PeriphExecManager::removeRuleLocked(const String& id, String& errorMsg) {
     return true;
 }
 
-PeriphExecRule* PeriphExecManager::getRule(const String& id) {
-    // Internal zero-copy accessor. Callers must already hold _rulesMutex.
-    auto it = rules.find(id);
-    return (it != rules.end()) ? &it->second : nullptr;
-}
-
-bool PeriphExecManager::getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const {
-    MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) return false;
-    auto it = rules.find(id);
-    if (it == rules.end()) return false;
-    snapshot = it->second;
-    return true;
-}
-
-std::vector<PeriphExecRule> PeriphExecManager::getAllRules() const {
-    MutexGuard lock(_rulesMutex);
-    std::vector<PeriphExecRule> result;
-    if (!lock.isLocked()) return result;
-    result.reserve(rules.size());
-    for (const auto& pair : rules) {
-        result.push_back(pair.second);
-    }
-    return result;
-}
-
-size_t PeriphExecManager::getRuleCount() const {
-    MutexGuard lock(_rulesMutex);
-    return lock.isLocked() ? rules.size() : 0;
-}
-
-bool PeriphExecManager::enableRule(const String& id) {
-    MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) return false;
-    String errorMsg;
-    const bool enabled = setRuleEnabledLocked(id, true, errorMsg);
-    if (enabled) refreshRuleRuntimeIndexesLocked();
-    return enabled;
-}
-
-bool PeriphExecManager::disableRule(const String& id) {
-    MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) return false;
-    String errorMsg;
-    const bool disabled = setRuleEnabledLocked(id, false, errorMsg);
-    if (disabled) refreshRuleRuntimeIndexesLocked();
-    return disabled;
-}
-
-bool PeriphExecManager::setRuleEnabledLocked(const String& id, bool enabled,
-                                            String& errorMsg) {
-    if (const char* issue = configurationWriteError()) return configError(errorMsg, issue);
-    auto it = rules.find(id);
-    if (it == rules.end()) {
-        errorMsg = "Rule not found";
-        return false;
-    }
-    if (enabled) for (const auto& action : it->second.actions) {
-        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) {
-            errorMsg = "REMOTE_CHANNEL_RETIRED: rule remains paused"; return false;
-        }
-    }
-    if (enabled) for (const auto& trigger : it->second.triggers) {
-        if (trigger.triggerPeriphId.startsWith("remote.")) { errorMsg = "REMOTE_CHANNEL_RETIRED: rule remains paused"; return false; }
-    }
-    it->second.enabled = enabled;
-    return true;
-}
-
 void PeriphExecManager::refreshRuleRuntimeIndexesLocked(bool validateScheduler) {
     rebuildButtonEventCache();
     rebuildDataSourceCache();
@@ -1653,59 +1588,6 @@ bool PeriphExecManager::restoreRuleMutationLocked(
     // validation could modify it again, so rollback only rebuilds derived indexes.
     refreshRuleRuntimeIndexesLocked(false);
     return restored;
-}
-
-bool PeriphExecManager::hasButtonEventRule(const String& periphId, const String& eventId) {
-    // 无锁查询缓存（仅主循环线程调用，线程安全）
-    // 缓存中存储了 eventId（兼容任意按键）和 "periphId:eventId"（指定按键）
-    return _buttonEventCache.count(eventId) > 0 ||
-           _buttonEventCache.count(periphId + ":" + eventId) > 0;
-}
-
-bool PeriphExecManager::hasDataSourceRule(const String& sourceId) {
-    if (sourceId.isEmpty()) return false;
-    // O(log n) 查找缓存（无锁，仅主循环线程调用）
-    return _dataSourceCache.count(sourceId) > 0;
-}
-
-void PeriphExecManager::rebuildButtonEventCache() {
-    // 在已持有 _rulesMutex 的上下文中调用，或在初始化时调用
-    _buttonEventCache.clear();
-    for (const auto& pair : rules) {
-        const PeriphExecRule& rule = pair.second;
-        if (!rule.enabled) continue;
-        for (const auto& trigger : rule.triggers) {
-            if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
-            if (!trigger.eventId.startsWith("button_")) continue;
-            if (trigger.triggerPeriphId.isEmpty()) {
-                // 兼容任意按键
-                _buttonEventCache.insert(trigger.eventId);
-            } else {
-                // 指定按键外设
-                _buttonEventCache.insert(trigger.triggerPeriphId + ":" + trigger.eventId);
-            }
-        }
-    }
-}
-
-void PeriphExecManager::rebuildDataSourceCache() {
-    // 在已持有 _rulesMutex 的上下文中调用，或在初始化时调用
-    _dataSourceCache.clear();
-    for (const auto& pair : rules) {
-        const PeriphExecRule& rule = pair.second;
-        if (!rule.enabled) continue;
-        for (const auto& trigger : rule.triggers) {
-            if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER) &&
-                trigger.eventId.startsWith("ds:")) {
-                // ds:sourceId 格式，提取 sourceId
-                _dataSourceCache.insert(trigger.eventId.substring(3));
-            }
-            if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER) &&
-                !trigger.triggerPeriphId.isEmpty()) {
-                _dataSourceCache.insert(trigger.triggerPeriphId);
-            }
-        }
-    }
 }
 
 bool PeriphExecManager::updateSensorReadCache(
@@ -2425,6 +2307,7 @@ bool PeriphExecManager::importConfigurationFile(const char* stagedPath, String& 
     MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS));
     if (!lock.isLocked()) return configError(errorMsg, "RULE_SERVICE_BUSY");
     if (_configurationRestartPending) return configError(errorMsg, "CONFIG_PENDING_RESTART");
+    if (_weatherReferenceLease) return configError(errorMsg, "WEATHER_MIGRATION_BUSY");
     if (!stagedPath || strcmp(stagedPath, PERIPH_EXEC_CONFIG_FILE) == 0)
         return configError(errorMsg, "CONFIG_STAGING_PATH");
     try {
@@ -2440,7 +2323,7 @@ bool PeriphExecManager::importConfigurationFile(const char* stagedPath, String& 
 
 bool PeriphExecManager::loadConfiguration() {
     MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS));
-    if (!lock.isLocked() || _configurationRestartPending) return false;
+    if (!lock.isLocked() || _configurationRestartPending || _weatherReferenceLease) return false;
     _configurationLoadFailed = true;
     String error;
     try {
@@ -2464,7 +2347,7 @@ bool PeriphExecManager::loadConfiguration() {
             PeriphExecRule r;
             if (!decodeConfigRule(obj, r, issue)) return false;
             for (const auto& trigger : r.triggers)
-                if (trigger.triggerPeriphId.startsWith("remote.")) *ctx.retired = true;
+                if (hasRetiredRemoteSource(trigger)) *ctx.retired = true;
             for (const auto& action : r.actions)
                 if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) *ctx.retired = true;
             *ctx.normalized = ctx.owner->sanitizeRuleForSafety(r) || *ctx.normalized;
@@ -3102,7 +2985,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
                                       AsyncExecResult* admittedOperation) {
     if (rejectionReason) *rejectionReason = "";
     if (admittedOperation) *admittedOperation = AsyncExecResult();
-    for (const auto& trigger : rule.triggers) if (trigger.triggerPeriphId.startsWith("remote.")) {
+    for (const auto& trigger : rule.triggers) if (hasRetiredRemoteSource(trigger)) {
         if (rejectionReason) *rejectionReason = "remote_source_retired"; return false;
     }
     for (const auto& action : rule.actions) {

@@ -10,7 +10,10 @@ import subprocess
 import tempfile
 import unittest
 
-from test_sensor_publication import definition
+try:
+    from test.unit.test_sensor_publication import definition
+except ModuleNotFoundError:
+    from test_sensor_publication import definition
 
 ROOT = Path(__file__).resolve().parents[2]
 VENDOR = ROOT / "vendor/esp-idf-rgb-735507283d"

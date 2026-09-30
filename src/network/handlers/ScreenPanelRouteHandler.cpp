@@ -85,7 +85,7 @@ bool validSourceRef(const String& sourceRef) {
 bool historyConfigKeysValid(JsonObjectConst object) {
     for (JsonPairConst pair : object) {
         const String key = pair.key().c_str();
-        if (key != "enabled" && key != "sourceAllowlist") return false;
+        if (key != "enabled" && key != "sourceAllowlist" && key != "expectedRevision") return false;
     }
     return true;
 }
@@ -302,6 +302,7 @@ void ScreenPanelRouteHandler::handleState(AsyncWebServerRequest* request) {
     auto& manager = ScreenPanelManager::instance();
     manager.appendState(response.to<JsonObject>());
     manager.appendApplication(response["application"].to<JsonObject>());
+    manager.appendCapabilities(response["capabilities"].to<JsonObject>());
     _ctx->sendSuccess(request, response);
 }
 #endif
@@ -351,7 +352,7 @@ void ScreenPanelRouteHandler::handleSaveHistoryConfig(
         return;
     }
     JsonObjectConst body = json.as<JsonObjectConst>();
-    if (!historyConfigKeysValid(body) || !body["enabled"].is<bool>() ||
+    if (!historyConfigKeysValid(body) || !body["expectedRevision"].is<uint32_t>() || !body["enabled"].is<bool>() ||
         !body["sourceAllowlist"].is<JsonArrayConst>()) {
         _ctx->sendBadRequest(request, "Invalid history configuration");
         return;
@@ -374,8 +375,9 @@ void ScreenPanelRouteHandler::handleSaveHistoryConfig(
 
     auto& history = FastBee::PointHistory::instance();
     String error;
-    if (!history.configure(body["enabled"].as<bool>(), sources, error, true)) {
-        _ctx->sendError(request, 400, error);
+    const uint32_t expectedRevision = body["expectedRevision"].as<uint32_t>();
+    if (!history.configure(body["enabled"].as<bool>(), sources, error, true, &expectedRevision)) {
+        _ctx->sendError(request, error == "History configuration revision conflict" ? 409 : 400, error);
         return;
     }
     JsonDocument response;

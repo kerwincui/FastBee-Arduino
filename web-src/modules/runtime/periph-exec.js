@@ -241,6 +241,9 @@
             }
             const modal = await this._ensureModalForAction('periph-exec-modal');
             if (!modal) return;
+            this._peEditorDataReady = false;
+            const saveButton = document.getElementById('save-periph-exec-btn');
+            if (saveButton) saveButton.disabled = true;
             const titleEl = document.getElementById('periph-exec-modal-title');
             var safeId = (editId && editId !== 'null' && editId !== 'undefined') ? editId : '';
             document.getElementById('periph-exec-original-id').value = safeId;
@@ -284,21 +287,25 @@
                 })
                 .then((periphRes) => {
                     ensureCreateActive();
+                    this._requirePeriphExecData(periphRes);
                     createResults.periphRes = periphRes;
                     return apiGet('/api/peripherals/types');
                 })
                 .then((typeRes) => {
                     ensureCreateActive();
+                    this._requirePeriphExecData(typeRes);
                     this._storePeriphExecTypeCatalog(typeRes);
                     return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' });
                 })
                 .then((protoRes) => {
                     ensureCreateActive();
+                    this._requirePeriphExecData(protoRes);
                     createResults.protoRes = protoRes;
                     return apiGet('/api/periph-exec', { pageSize: 100 });
                 })
                 .then((rulesRes) => {
                     ensureCreateActive();
+                    this._requirePeriphExecData(rulesRes);
                     createResults.rulesRes = rulesRes;
                     return this._loadPeriphExecRemoteChoices(ensureCreateActive);
                 })
@@ -323,12 +330,11 @@
                     this._createPeriphExecTriggerElement({}, 0);
                     this._createPeriphExecActionElement({}, 0);
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                    this._peEditorDataReady = true;
+                    if (saveButton) saveButton.disabled = !!this._peSavePending;
                 }).catch(err => {
-                    if (err && err._pageAborted) return;
-                    console.error('Failed to load periph exec data:', err);
-                    this._createPeriphExecTriggerElement({}, 0);
-                    this._createPeriphExecActionElement({}, 0);
-                    this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                    if (!this._isPeriphExecEditLoadActive(loadSeq, pageGeneration) || (err && err._pageAborted)) return;
+                    this.showInlineError('periph-exec-error', '规则数据加载失败：' + (err.message || '请关闭后重试'));
                 });
             this.showModal(modal);
         },
@@ -336,6 +342,7 @@
         openPeriphExecModalStandalone() { this.openPeriphExecModal(); },
 
         closePeriphExecModal() {
+            this._peEditorDataReady = false;
             // Invalidate any in-flight edit chain before removing its DOM.
             this._peEditLoadSeq++;
             this.hideModal('periph-exec-modal');
@@ -351,6 +358,13 @@
         },
 
         // ============ 通用辅助 ============
+
+        _requirePeriphExecData(res) {
+            if (!res || res.success !== true || res.data == null) {
+                throw new Error(res && (res.error || res.message) || '配置数据加载失败，请关闭后重试');
+            }
+            return res;
+        },
 
         _hiddenClass(visible) {
             return visible ? '' : ' is-hidden';
@@ -905,8 +919,10 @@
                     return self.editPeriphExecRule(id);
                 });
             }
-            this.openPeriphExecModal(id);
-            return this._loadPeriphExecEditData(id, 1, loadSeq, pageGeneration);
+            return this.openPeriphExecModal(id).then(() => {
+                if (!this._isPeriphExecEditLoadActive(loadSeq, pageGeneration)) return;
+                return this._loadPeriphExecEditData(id, 1, loadSeq, pageGeneration);
+            });
         },
 
         _loadPeriphExecEditData(id, retriesLeft, loadSeq, pageGeneration) {
@@ -929,12 +945,13 @@
             const loadRule = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
             return Promise.resolve()
                 .then(function() { ensureActive(); return loadRule('/api/periph-exec', { id: id }); })
-                .then(execRes => { ensureActive(); _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1 }); })
-                .then(periphRes => { ensureActive(); _editResults.periphRes = periphRes; return apiGet('/api/peripherals/types'); })
-                .then(typeRes => { ensureActive(); this._storePeriphExecTypeCatalog(typeRes); return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
-                .then(protoRes => { ensureActive(); _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
+                .then(execRes => { ensureActive(); this._requirePeriphExecData(execRes); _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1 }); })
+                .then(periphRes => { ensureActive(); this._requirePeriphExecData(periphRes); _editResults.periphRes = periphRes; return apiGet('/api/peripherals/types'); })
+                .then(typeRes => { ensureActive(); this._requirePeriphExecData(typeRes); this._storePeriphExecTypeCatalog(typeRes); return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
+                .then(protoRes => { ensureActive(); this._requirePeriphExecData(protoRes); _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
                 .then(rulesRes => {
                     ensureActive();
+                    this._requirePeriphExecData(rulesRes);
                     _editResults.rulesRes = rulesRes;
                     return this._loadPeriphExecRemoteChoices(ensureActive);
                 })
@@ -1010,6 +1027,9 @@
                         this._syncSetModeToActions(true);
                     }
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                    this._peEditorDataReady = true;
+                    const saveButton = document.getElementById('save-periph-exec-btn');
+                    if (saveButton) saveButton.disabled = !!this._peSavePending;
                 })
                 .catch(err => {
                     // 页面切换/关闭编辑器后，旧请求及其重试都应静默结束。
@@ -1028,6 +1048,7 @@
                                 return self._loadPeriphExecEditData(id, retriesLeft - 1, loadSeq, pageGeneration);
                             });
                     }
+                    this.showInlineError('periph-exec-error', '规则数据加载失败，请关闭后重试');
                     // HTTP errors are already handled by request-governor; avoid
                     // duplicating console/notification noise for 401 and peers.
                     if (!(err && err._handled)) {

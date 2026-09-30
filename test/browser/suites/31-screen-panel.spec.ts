@@ -1,16 +1,30 @@
-﻿import { expect, test } from '../fixtures/base.fixture';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { env, expect, test as baseTest } from '../fixtures/base.fixture';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
-const artifactDir = path.resolve(__dirname, '..', 'artifacts', 'screen-panel');
+const test = baseTest.extend<{ offlinePanelGuard: void }>({
+  offlinePanelGuard: [async ({ baseURL }, use) => {
+    const target = new URL(baseURL || env.baseURL);
+    expect(['127.0.0.1', '127.0.0.2', 'localhost', '[::1]'], 'Panel fixtures must not mutate a real device').toContain(target.hostname);
+    expect(new URL(env.baseURL).origin).toBe(target.origin);
+    await use();
+  }, { auto: true }],
+});
 
 async function resetPanel(page: Page): Promise<void> {
+  expect(['127.0.0.1', '127.0.0.2', 'localhost', '[::1]']).toContain(new URL(page.url()).hostname);
   const response = await page.request.post('/api/test/smart-panel-reset');
   expect(response.ok()).toBeTruthy();
 }
 
 async function openPanel(page: Page): Promise<void> {
+  if (process.env.FASTBEE_PANEL_SOURCE === '1') {
+    const root = path.resolve(__dirname, '../../..');
+    const assets = { 'pages/screen-panel.html': 'web-src/pages/screen-panel.html', 'css/screen-panel.css': 'web-src/css/screen-panel.css', 'js/modules/screen-panel.js': 'web-src/modules/runtime/screen-panel.js', 'js/modules/screen-panel-model.js': 'web-src/modules/runtime/screen-panel-model.js' };
+    for (const [url, file] of Object.entries(assets)) await page.route('**/' + url + '*', route => route.fulfill({ body: readFileSync(path.join(root, file)), contentType: file.endsWith('.js') ? 'application/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' }));
+  }
+  await page.evaluate(() => { Object.keys(localStorage).filter(key => key.startsWith('fastbee.screenPanel.draft.')).forEach(key => localStorage.removeItem(key)); });
   await page.waitForFunction(() => Boolean((window as unknown as { AppState?: unknown }).AppState));
   await page.waitForFunction(() => (window as unknown as {
     AppState?: { _featureStatusReady?: boolean };
@@ -28,185 +42,808 @@ async function openPanel(page: Page): Promise<void> {
 }
 
 async function openEditor(page: Page): Promise<void> {
-  await page.locator('#sp-tab-config').click();
-  if (!(await page.locator('#sp-layout-editor').evaluate((node: HTMLDetailsElement) => node.open))) {
-    await page.locator('#sp-layout-editor > summary').click();
-  }
+  await expect(page.locator('#sp-preview, #sp-tab-config, #sp-tab-preview')).toHaveCount(0);
+  await expect(page.locator('#sp-editor-canvas')).toBeVisible();
 }
 
 async function smartState(page: Page): Promise<Record<string, any>> {
-  const response = await page.request.get('/api/test/smart-panel-state');
+  const response = await page.request.get('/api/test/smart-panel-state', { maxRetries: 1 });
   expect(response.ok()).toBeTruthy();
   return (await response.json()).data;
+}
+
+async function changeSavedPanel(page: Page): Promise<void> {
+  const state = await smartState(page);
+  const config = structuredClone(state.screenPanelConfig);
+  config.pages[0].title = 'Changed on device';
+  const response = await page.request.post('/api/screen-panel/config', {
+    data: { expectedRevision: state.screenPanelRevision, config },
+  });
+  expect(response.ok()).toBeTruthy();
 }
 
 async function generateThreeScreens(page: Page): Promise<void> {
   await openEditor(page);
   await page.locator('#sp-generate-three-screen').click();
-  await expect(page.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(4);
+  await expect(page.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(5);
 }
 
-test.describe.serial('Device screen offline workflow', () => {
 
-  test('WEB-PANEL-014: deployment evidence pins the field baseline contract used by UX V2 regressions', async () => {
-    const evidenceRoot = path.resolve(__dirname, '..', '..', '..', 'artifacts', 'touch-optimization-20260922');
-    const deployment = JSON.parse(readFileSync(path.join(evidenceRoot, 'deployment-COM8-r2.json'), 'utf-8'));
-    const layout = JSON.parse(readFileSync(path.join(evidenceRoot, 'layout-after.json'), 'utf-8'));
-    const api = JSON.parse(readFileSync(path.join(evidenceRoot, 'postdeploy-api.json'), 'utf-8'));
-    const deployedConfig = layout.after;
-    const screenConfig = api.checks.find((entry: any) => entry.route === '/api/screen-panel/config').data;
-    const screenState = api.checks.find((entry: any) => entry.route === '/api/screen-panel/state').data;
-    const weather = api.checks.find((entry: any) => entry.route === '/api/screen-panel/weather').data;
+async function savePanel(page: Page): Promise<void> {
+  await page.locator('#sp-save-config').click();
+  await expect(page.locator('#sp-dirty-state')).toHaveText('已保存');
+}
+async function selectComponent(page: Page, pageId: string, kind: string): Promise<void> {
+  await openEditor(page);
+  await page.locator(`#sp-page-tabs [data-page-id="${pageId}"]`).click();
+  await page.locator(`#sp-editor-canvas [data-kind="${kind}"]`).first().click();
+}
 
-    expect.soft(deployment).toMatchObject({
-      buildEnvironment: 'esp32s3-F16R8-rgb-xip40-v12',
-      buildVariant: 'rgb-xip40-v12',
-      firmwareSha256: 'cf616e14504308959128972ab0e68716d5b79a5eaa9ae04fdeb720f9866b0d60',
-      webSha256: '3068b88e336a6f13e4b3683e887258b50ee4fed52c879fddd849c773c8d25193',
-      webFileCount: 57,
-      verified: true,
+async function expectDraftOnly(page: Page): Promise<void> {
+  const counts = (await smartState(page)).requestCounts;
+  const mutations = Object.keys(counts).filter(key => /^(POST|PUT|PATCH|DELETE) /.test(key)
+    && key !== 'POST /api/batch' && !key.startsWith('POST /api/auth/') && !key.startsWith('POST /api/test/') && counts[key] > 0);
+  expect(mutations, 'Editor interactions must not save or actuate without an explicit command').toEqual([]);
+}
+
+test.describe('Device screen offline workflow', () => {
+  test('WEB-PANEL-ORDER-001: page drag keeps home and selection, supports undo and persists', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page); await generateThreeScreens(page);
+    const before = await page.evaluate(() => {
+      const m = (window as any).AppState._spModel;
+      return { ids: m.config.pages.map((p: any) => p.id), home: m.config.settings.homePageId,
+        selected: document.querySelector('#sp-page-tabs .is-active')?.getAttribute('data-page-id') };
     });
-    expect.soft(deployedConfig).toMatchObject({
-      revision: 12,
-      persisted: true,
-      application: { applied: true, restartRequired: false, runtime: { running: true } },
-      config: { displayRef: 'panel_display', settings: { brightnessPercent: 70, idleSleepSeconds: 0 } },
-    });
-    expect.soft(screenConfig.capabilities).toMatchObject({
-      brightness: true, brightnessContinuous: true, sleep: true, buzzer: true,
-      systemActions: ['brightness', 'sleep', 'buzzer', 'restart'],
-    });
-    expect.soft(screenState).toMatchObject({ revision: 12, available: true, brightnessPercent: 70, idleSleepSeconds: 0 });
-    expect.soft(weather.status).toMatchObject({ status: 'error', error: 'Waiting for NTP before TLS', retryAfterMs: 0 });
-    expect.soft(deployedConfig.config.pages.map((page: any) => page.id)).toEqual(['environment', 'trends', 'motor', 'controls', 'system']);
-    expect.soft(deployedConfig.config.pages.find((page: any) => page.id === 'motor').cards).toHaveLength(1);
-    expect.soft(deployedConfig.config.pages.find((page: any) => page.id === 'system').cards.map((card: any) => card.systemActionId))
-      .toEqual(['brightness', 'sleep-time', 'sleep', 'buzzer', 'restart']);
+    const source = page.locator('#sp-page-tabs [data-page-id="' + before.ids[0] + '"]');
+    const target = page.locator('#sp-page-tabs [data-page-id="' + before.ids[2] + '"]');
+    await source.dragTo(target);
+    const expected = before.ids.slice(); expected.splice(2, 0, expected.splice(0, 1)[0]);
+    await expect.poll(() => page.evaluate(() => (window as any).AppState._spModel.config.pages.map((p: any) => p.id))).toEqual(expected);
+    await expectDraftOnly(page);
+    await page.locator('#sp-undo').click();
+    await expect.poll(() => page.evaluate(() => (window as any).AppState._spModel.config.pages.map((p: any) => p.id))).toEqual(before.ids);
+    await page.locator('#sp-redo').click();
+    await expect(page.locator('#sp-page-tabs .is-active')).toHaveAttribute('data-page-id', before.selected!);
+    await savePanel(page);
+    const saved = (await smartState(page)).screenPanelConfig;
+    expect(saved.pages.map((p: any) => p.id)).toEqual(expected);
+    expect(saved.settings.homePageId).toBe(before.home);
+    await page.reload(); await openPanel(page);
+    expect(await page.locator('#sp-page-tabs .sp-page-tab').evaluateAll(nodes => nodes.map(n => (n as HTMLElement).dataset.pageId))).toEqual(expected);
+    expect((await smartState(page)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+    await page.screenshot({ path: testInfo.outputPath('page-order-desktop.png') });
   });
 
-  test('WEB-PANEL-015: preview tab has no file/save operations and config tab has one primary save', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await expect(authPage.locator('#sp-preview')).toBeVisible();
-    for (const selector of ['#sp-save-config', '#sp-import-config', '#sp-export-config', '#sp-reset-draft']) {
-      await expect(authPage.locator(selector)).toBeHidden();
-    }
-    await authPage.locator('#sp-tab-config').click();
-    await expect(authPage.locator('#sp-config')).toBeVisible();
-    await expect(authPage.locator('#sp-save-config')).toBeVisible();
-    await expect(authPage.locator('#sp-save-config:visible')).toHaveCount(1);
+  test('WEB-PANEL-ORDER-002: template component drag repacks without changing bindings or executing', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page); await generateThreeScreens(page);
+    await page.locator('#sp-page-tabs [data-page-id="system"]').click();
+    const original = await page.evaluate(() => structuredClone((window as any).AppState._spModel.config.pages.find((p: any) => p.id === 'system').cards));
+    const from = original[original.length - 1].id, to = original[0].id;
+    await page.locator('#sp-editor-canvas [data-card-id="' + from + '"]').dragTo(
+      page.locator('#sp-editor-canvas [data-card-id="' + to + '"]'),
+      { sourcePosition: { x: 12, y: 12 }, targetPosition: { x: 12, y: 12 } });
+    const expected = original.map((c: any) => c.id); expected.unshift(expected.pop());
+    await expect.poll(() => page.evaluate(() => (window as any).AppState._spModel.config.pages.find((p: any) => p.id === 'system').cards.map((c: any) => c.id))).toEqual(expected);
+    await expect(page.locator('#sp-layout-error')).toBeHidden();
+    await expectDraftOnly(page);
+    const after = await page.evaluate(() => (window as any).AppState._spModel.config.pages.find((p: any) => p.id === 'system').cards);
+    const bindings = (cards: any[]) => cards.map(({ rect, ...rest }) => rest).sort((a, b) => a.id.localeCompare(b.id));
+    expect(bindings(after)).toEqual(bindings(original));
+    await page.locator('#sp-undo').click();
+    expect(await page.evaluate(() => (window as any).AppState._spModel.config.pages.find((p: any) => p.id === 'system').cards)).toEqual(original);
+    await page.locator('#sp-redo').click(); await savePanel(page);
+    await page.reload(); await openPanel(page);
+    await page.locator('#sp-page-tabs [data-page-id="system"]').click();
+    expect(await page.evaluate(() => (window as any).AppState._spModel.config.pages.find((p: any) => p.id === 'system').cards.map((c: any) => c.id))).toEqual(expected);
+    expect((await smartState(page)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
   });
 
-  test('WEB-PANEL-016: five footer targets are large enough and switch directly in preview', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await generateThreeScreens(authPage);
-    await authPage.locator('#sp-page-preset').selectOption('execute');
-    await authPage.locator('#sp-page-add').click();
-    await authPage.locator('#sp-tab-preview').click();
-    await authPage.locator('#sp-preview-source').selectOption('draft');
-    await authPage.setViewportSize({ width: 390, height: 844 });
-    const footerButtons = authPage.locator('#sp-preview-canvas .sp-device-footer button');
-    await expect(footerButtons).toHaveCount(5);
-    const metrics = [] as Array<{ width: number; height: number }>;
-    for (let index = 0; index < 5; index++) {
-      metrics.push(await footerButtons.nth(index).evaluate((button: HTMLElement) => {
-        const rect = button.getBoundingClientRect();
-        return { width: rect.width, height: rect.height };
-      }));
-      await footerButtons.nth(index).click();
-      await expect(footerButtons.nth(index)).toHaveClass(/is-active/);
+  test('WEB-PANEL-ORDER-003: escape and outside drop cancel without a new undo entry', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    const initial = await page.evaluate(() => structuredClone((window as any).AppState._spModel.config));
+    await generateThreeScreens(page);
+    const before = await page.evaluate(() => structuredClone((window as any).AppState._spModel.config));
+    const a = await page.locator('#sp-page-tabs .sp-page-tab').first().boundingBox();
+    const b = await page.locator('#sp-page-tabs .sp-page-tab').nth(2).boundingBox();
+    expect(a && b).toBeTruthy();
+    for (const cancel of ['escape', 'outside']) {
+      await page.mouse.move(a!.x + 12, a!.y + 12); await page.mouse.down();
+      await page.mouse.move(b!.x + 12, b!.y + 12, { steps: 6 });
+      if (cancel === 'escape') await page.keyboard.press('Escape');
+      else await page.mouse.move(2, 2, { steps: 4 });
+      await page.mouse.up();
+      expect(await page.evaluate(() => (window as any).AppState._spModel.config)).toEqual(before);
+      await expect(page.locator('.is-sorting, .is-sort-target')).toHaveCount(0);
     }
-    for (const target of metrics) {
-      expect(target.width).toBeGreaterThanOrEqual(48);
-      expect(target.height).toBeGreaterThanOrEqual(48);
+    await page.locator('#sp-undo').click();
+    expect(await page.evaluate(() => (window as any).AppState._spModel.config)).toEqual(initial);
+    await expectDraftOnly(page);
+  });
+
+  test('WEB-PANEL-ORDER-004: mobile touch handle changes page order without scrolling the canvas', async ({ authPage: page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await resetPanel(page); await openPanel(page); await generateThreeScreens(page);
+    const before = await page.evaluate(() => (window as any).AppState._spModel.config.pages.map((p: any) => p.id));
+    const a = await page.locator('#sp-page-tabs .sp-sort-handle').first().boundingBox();
+    const b = await page.locator('#sp-page-tabs .sp-sort-handle').nth(2).boundingBox();
+    expect(a && b).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: a!.x + 8, y: a!.y + 8 }] });
+    for (let step = 1; step <= 8; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: a!.x + 8 + (b!.x - a!.x) * step / 8, y: a!.y + 8 + (b!.y - a!.y) * step / 8 }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const expected = before.slice(); expected.splice(2, 0, expected.splice(0, 1)[0]);
+    await expect.poll(() => page.evaluate(() => (window as any).AppState._spModel.config.pages.map((p: any) => p.id))).toEqual(expected);
+    await cdp.detach(); await expectDraftOnly(page);
+  });
+
+  test('WEB-PANEL-SLEEP-001: explicit switch persists off, restores delay and never executes sleep', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page);
+    await page.locator('#sp-global-settings').click();
+    await expect(page.locator('#sp-auto-sleep-enabled')).toBeChecked();
+    await page.locator('#sp-idle-sleep').selectOption('300');
+    await page.locator('#sp-auto-sleep-enabled').uncheck();
+    await expect(page.locator('#sp-idle-sleep')).toBeDisabled();
+    await page.locator('#sp-auto-sleep-enabled').check();
+    await expect(page.locator('#sp-idle-sleep')).toHaveValue('300');
+    await page.locator('#sp-auto-sleep-enabled').uncheck();
+    await expectDraftOnly(page); await savePanel(page);
+    expect((await smartState(page)).screenPanelConfig.settings.idleSleepSeconds).toBe(0);
+    await page.reload(); await openPanel(page); await page.locator('#sp-global-settings').click();
+    await expect(page.locator('#sp-auto-sleep-enabled')).not.toBeChecked();
+    await expect(page.locator('#sp-idle-sleep')).toBeDisabled();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#sp-properties-close').click();
+    await page.locator('#sp-global-settings').click();
+    await expect(page.locator('#sp-auto-sleep-enabled')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('auto-sleep-mobile.png') });
+    expect((await smartState(page)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+  });
+
+  for (const kind of ['data', 'status', 'gauge', 'bar', 'line', 'clock', 'weather', 'page-link', 'motor',
+      'control', 'execute', 'brightness', 'sleep-time', 'sleep', 'buzzer', 'touch-beep', 'confirm-idle', 'restart']) {
+    test('WEB-PANEL-033: ' + kind + ' drag configure save reload without actuation', async ({ authPage: page }) => {
+      await resetPanel(page); await openPanel(page);
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      if (kind === 'restart') {
+        await page.locator('#sp-global-settings').click(); await page.locator('#sp-allow-restart').check();
+      }
+      const button = page.locator('[data-sp-add="' + kind + '"]');
+      await button.scrollIntoViewIfNeeded(); await expect(button).toBeEnabled();
+      await button.dragTo(page.locator('#sp-editor-canvas'), { targetPosition: { x: 100, y: 100 } });
+      await expect(page.locator('#sp-editor-canvas .sp-panel-card')).toHaveCount(1);
+      await page.locator('#sp-card-title').fill('Configured ' + kind);
+      if (['data', 'status', 'gauge', 'bar', 'line'].includes(kind)) {
+        await page.locator('#sp-card-source').selectOption('modbus.boiler.temperature');
+      }
+      if (['gauge', 'bar'].includes(kind)) {
+        await page.locator('#sp-card-min').fill('-12.5'); await page.locator('#sp-card-max').fill('82.5');
+      }
+      if (kind === 'control' || kind === 'execute') {
+        await page.locator('#sp-card-control').selectOption(kind === 'control' ? 'rule.living-light' : 'rule.away-scene');
+        await page.locator('#sp-card-confirm').uncheck();
+      }
+      await expectDraftOnly(page); await savePanel(page);
+      const saved = (await smartState(page)).screenPanelConfig.pages[0].cards[0];
+      expect(saved.title).toBe('Configured ' + kind);
+      if (['gauge', 'bar'].includes(kind)) expect(saved).toMatchObject({rangeMin: -12.5, rangeMax: 82.5});
+      await page.evaluate(async () => (window as any).AppState.loadScreenPanelPage({ noCache: true, preserveDraft: false }));
+      await page.locator('#sp-editor-canvas .sp-panel-card').click();
+      await expect(page.locator('#sp-card-title')).toHaveValue('Configured ' + kind);
+      if (['gauge', 'bar'].includes(kind)) {
+        await expect(page.locator('#sp-card-min')).toHaveValue('-12.5'); await expect(page.locator('#sp-card-max')).toHaveValue('82.5');
+      }
+      if (kind === 'control' || kind === 'execute') await expect(page.locator('#sp-card-confirm')).not.toBeChecked();
+      const counts = (await smartState(page)).requestCounts;
+      expect(Object.keys(counts).filter(key => key.startsWith('POST ') && /\/run|\/action|\/command|\/execute/.test(key) && counts[key])).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test('WEB-PANEL-034: reload offers a draft after a device setting revision change and preserves its baseline', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    await page.locator('[data-sp-add="clock"]').click(); await page.locator('#sp-card-title').fill('Recover across revision');
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('fastbee.screenPanel.draft.')).length)).toBe(1);
+    const state = await smartState(page), remote = structuredClone(state.screenPanelConfig);
+    remote.settings.brightnessPercent = 52;
+    expect((await page.request.post('/api/screen-panel/config', {data:{expectedRevision:state.screenPanelRevision,config:remote}})).ok()).toBeTruthy();
+    await page.reload();
+    await page.waitForFunction(() => Boolean((window as any).AppState?._featureStatusReady));
+    await page.evaluate(async () => (window as any).AppState.changePage('screen-panel'));
+    await expect(page.locator('#sp-draft-recovery')).toBeVisible();
+    await page.locator('#sp-draft-restore').click();
+    await expect(page.locator('#sp-editor-canvas')).toContainText('Recover across revision');
+    await savePanel(page);
+    const saved = (await smartState(page)).screenPanelConfig;
+    expect(saved.settings.brightnessPercent).toBe(52);
+    expect(saved.pages[0].cards[0].title).toBe('Recover across revision');
+  });
+
+  test('WEB-PANEL-031: concurrent device settings merge while a genuine layout conflict preserves the draft', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    await page.locator('[data-sp-add="clock"]').click();
+    await savePanel(page);
+    await page.locator('#sp-card-title').fill('Local clock');
+    const state = await smartState(page);
+    const remote = structuredClone(state.screenPanelConfig);
+    remote.settings.brightnessPercent = 52;
+    const result = await page.request.post('/api/screen-panel/config', { data: { expectedRevision: state.screenPanelRevision, config: remote } });
+    expect(result.ok()).toBeTruthy();
+    await savePanel(page);
+    const merged = await smartState(page);
+    expect(merged.screenPanelConfig.settings.brightnessPercent).toBe(52);
+    expect(merged.screenPanelConfig.pages[0].cards[0].title).toBe('Local clock');
+    await page.locator('#sp-card-title').fill('Keep my draft');
+    await changeSavedPanel(page);
+    await page.locator('#sp-save-config').click();
+    await expect(page.locator('#sp-page-message')).toContainText('设备配置已更新');
+    await expect(page.locator('#sp-dirty-state')).toHaveText('有未保存修改');
+    await page.locator('#sp-refresh-btn').click();
+    await expect(page.locator('#sp-card-title')).toHaveValue('Keep my draft');
+    await page.locator('#sp-save-config').click();
+    await expect(page.locator('#sp-page-message')).toContainText('设备配置已更新');
+    expect((await smartState(page)).screenPanelConfig.pages[0].title).toBe('Changed on device');
+  });
+
+  test('WEB-PANEL-032: settings slider meets device minimum and custom size survives reload and text edits', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page); await generateThreeScreens(page);
+    await selectComponent(page, 'system', 'brightness');
+    await savePanel(page);
+    const saved = (await smartState(page)).screenPanelConfig;
+    const slider = saved.pages.flatMap((p: any) => p.cards).find((c: any) => c.visualType === 'slider');
+    expect(slider.rect.w).toBeGreaterThanOrEqual(180);
+    expect(slider.rect.h).toBeGreaterThanOrEqual(80);
+    await page.locator('#sp-refresh-btn').click();
+    await selectComponent(page, 'system', 'brightness');
+    await expect(page.locator('#sp-card-size')).toHaveValue('custom');
+    const original = { w: await page.locator('#sp-card-w').inputValue(), h: await page.locator('#sp-card-h').inputValue() };
+    await page.locator('#sp-card-title').fill('Display brightness');
+    await expect(page.locator('#sp-card-w')).toHaveValue(original.w);
+    await expect(page.locator('#sp-card-h')).toHaveValue(original.h);
+    await savePanel(page);
+    await page.screenshot({ path: testInfo.outputPath('settings-slider-size.png'), fullPage: true });
+    expect((await smartState(page)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+  });
+
+  test('WEB-PANEL-027: nested toolbar icons perform one draft action with undo and redo', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    // Exercise event delegation with nested icon markup, not synthetic button clicks.
+    for (const selector of ['[data-sp-add="clock"]', '#sp-undo', '#sp-redo', '#sp-page-add']) {
+      await page.locator(selector).evaluate(button => {
+        const icon = document.createElement('span');
+        icon.setAttribute('data-test-icon', 'true');
+        icon.textContent = button.textContent;
+        button.replaceChildren(icon);
+      });
+    }
+    await page.locator('[data-sp-add="clock"] [data-test-icon]').click();
+    await expect(page.locator('#sp-editor-canvas [data-kind="clock"]')).toHaveCount(1);
+    await page.locator('#sp-undo [data-test-icon]').click();
+    await expect(page.locator('#sp-editor-canvas [data-kind="clock"]')).toHaveCount(0);
+    await page.locator('#sp-redo [data-test-icon]').click();
+    await expect(page.locator('#sp-editor-canvas [data-kind="clock"]')).toHaveCount(1);
+    await page.locator('#sp-page-add [data-test-icon]').click();
+    await expect(page.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(2);
+    await page.locator('#sp-undo [data-test-icon]').click();
+    await expect(page.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(1);
+    await expectDraftOnly(page);
+  });
+
+  test('WEB-PANEL-028: mobile property drawer remains clickable and preserves live geometry', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page);
+    await page.locator('[data-sp-add="clock"]').click();
+    for (const width of [390, 360]) {
+      await page.setViewportSize({ width, height: 844 });
+      if (await page.locator('#sp-properties-close').isVisible()) await page.locator('#sp-properties-close').click();
+      await page.locator('#sp-component-properties').click();
+      await page.locator('#sp-card-w').fill('220');
+      await page.locator('#sp-card-h').fill('100');
+      const rect = await page.locator('#sp-editor-canvas [data-kind="clock"]').evaluate(el => {
+        const canvas = el.parentElement as HTMLElement;
+        const canvasBox = canvas.getBoundingClientRect();
+        const footerHeight = canvas.querySelector('.sp-device-footer')!.getBoundingClientRect().height;
+        return { width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height,
+          scaleX: canvasBox.width / Number(canvas.dataset.outputWidth),
+          scaleY: (canvasBox.height - footerHeight) / Number(canvas.dataset.outputHeight) };
+      });
+      expect(rect.width).toBeCloseTo(220 * rect.scaleX, 1);
+      expect(rect.height).toBeCloseTo(100 * rect.scaleY, 1);
+      const close = page.locator('#sp-properties-close');
+      await close.scrollIntoViewIfNeeded();
+      await expect.poll(() => close.evaluate(el => {
+        const box = el.getBoundingClientRect();
+        return el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      })).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath('mobile-properties-' + width + '.png'), fullPage: true });
+      await close.click();
+      await expect(page.locator('#sp-card-w')).toBeHidden();
+      await page.locator('#sp-global-settings').click();
+      await expect(page.locator('#sp-global-properties')).toBeVisible();
+      await close.click();
+      await page.locator('#sp-component-properties').click();
+      await expect(page.locator('#sp-card-w')).toHaveValue('220');
+      await expect(page.locator('#sp-card-h')).toHaveValue('100');
+      await close.click();
+      await page.locator('#sp-save-config').scrollIntoViewIfNeeded();
+      await expect(page.locator('#sp-save-config')).toBeInViewport();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+      await expectDraftOnly(page);
     }
   });
-  test('WEB-PANEL-013: touch settings roundtrip and industrial previews never execute', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await generateThreeScreens(authPage);
-    await authPage.locator('#sp-touch-beep').uncheck();
-    await authPage.locator('#sp-confirm-idle').fill('120');
-    await authPage.locator('#sp-confirm-idle').dispatchEvent('change');
-    await authPage.locator('#sp-idle-sleep').selectOption('0');
-    await authPage.locator('#sp-brightness').evaluate((input: HTMLInputElement) => {
-      input.value = '0'; input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  test('WEB-PANEL-029: rotated non-square canvas fits viewport without altering draft geometry', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page);
+    const config = { schemaVersion: 1, displayRef: 'display_main', settings: { homePageId: 'home' }, pages: [{
+      id: 'home', title: 'Rotated page', layoutMode: 'canvas', logicalWidth: 480, logicalHeight: 320, rotation: 90,
+      cards: [{ id: 'clock', kind: 'clock', title: 'Clock', rect: { x: 24, y: 32, w: 160, h: 96 } }],
+    }] };
+    await page.locator('#sp-import-file').setInputFiles({ name: 'rotated.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ config })) });
+    const baseline = await page.evaluate(() => JSON.stringify((window as any).AppState._spModel.config));
+    for (const width of [1440, 1024, 390, 360]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (await page.locator('#sp-properties-close').isVisible()) await page.locator('#sp-properties-close').click();
+      await expect(page.locator('#sp-editor-canvas')).toHaveAttribute('data-output-width', '320');
+      await expect(page.locator('#sp-editor-canvas')).toHaveAttribute('data-output-height', '480');
+      const bounds = await page.evaluate(() => {
+        const frame = document.querySelector('#sp-editor-frame')!.getBoundingClientRect().toJSON();
+        const stage = document.querySelector('.sp-canvas-stage')!.getBoundingClientRect().toJSON();
+        const card = document.querySelector('#sp-editor-canvas [data-card-id="clock"]')!.getBoundingClientRect().toJSON();
+        return { frame, stage, card, overflow: document.documentElement.scrollWidth > innerWidth + 1 };
+      });
+      expect(bounds.overflow).toBe(false);
+      expect(bounds.frame.x).toBeGreaterThanOrEqual(bounds.stage.x - 1);
+      expect(bounds.frame.right).toBeLessThanOrEqual(bounds.stage.right + 1);
+      expect(bounds.frame.bottom).toBeLessThanOrEqual(bounds.stage.bottom + 1);
+      expect(bounds.card.x).toBeGreaterThanOrEqual(bounds.frame.x);
+      expect(bounds.card.right).toBeLessThanOrEqual(bounds.frame.right + 1);
+      expect(bounds.card.bottom).toBeLessThanOrEqual(bounds.frame.bottom + 1);
+      expect(await page.evaluate(() => JSON.stringify((window as any).AppState._spModel.config))).toBe(baseline);
+      await page.screenshot({ path: testInfo.outputPath('rotated-' + width + '.png'), fullPage: true });
+    }
+    await expectDraftOnly(page);
+  });
+
+  test('WEB-PANEL-025: compact workspace fits desktop and mobile without changing layout', async ({ authPage: page }, testInfo) => {
+    await resetPanel(page); await openPanel(page); await generateThreeScreens(page); await savePanel(page);
+    await page.reload(); await openPanel(page);
+    const config = await page.evaluate(() => JSON.stringify((window as any).AppState._spModel.config));
+    for (const [width, height] of [[1866, 1000], [1440, 900], [1366, 768], [1024, 768], [390, 844], [360, 800]]) {
+      await page.setViewportSize({ width, height });
+      if (await page.locator('#sp-properties-close').isVisible()) await page.locator('#sp-properties-close').click();
+      await page.locator('#sp-properties-toggle').click();
+      if (width <= 1200) await page.locator('#sp-properties-close').click();
+      const sizes = await page.evaluate(() => {
+        const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON();
+        return { canvas: rect('#sp-editor-frame'), stage: rect('.sp-canvas-stage'), save: rect('.sp-save-bar'),
+          content: rect('.content'), layout: rect('.sp-editor-layout'), toolbox: rect('.sp-toolbox'),
+          overflow: document.documentElement.scrollWidth > innerWidth + 1 };
+      });
+      expect(sizes.overflow).toBeFalsy();
+      expect(sizes.canvas.width).toBeGreaterThan(190);
+      expect(sizes.canvas.x).toBeGreaterThanOrEqual(sizes.stage.x);
+      expect(sizes.canvas.right).toBeLessThanOrEqual(sizes.stage.right + 1);
+      if (width > 760) {
+        expect(sizes.canvas.bottom).toBeLessThanOrEqual(sizes.stage.bottom + 1);
+        expect(sizes.save.bottom).toBeLessThanOrEqual(sizes.content.bottom + 1);
+        expect(sizes.toolbox.bottom).toBeLessThanOrEqual(sizes.layout.bottom + 1);
+      }
+      await page.screenshot({ path: testInfo.outputPath(`editor-${width}.png`), fullPage: true });
+      expect(await page.evaluate(() => JSON.stringify((window as any).AppState._spModel.config))).toBe(config);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('[data-sp-section="sp-component-tools"]').click();
+    await expect(page.locator('[data-sp-add="data"]')).toBeInViewport();
+    await page.locator('#sp-editor-canvas [data-kind="data"]').first().click();
+    await expect(page.locator('#sp-card-source')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('component-properties.png'), fullPage: true });
+    await page.locator('[data-sp-section="sp-page-tools"]').click();
+    await expect(page.locator('#sp-page-tabs')).toBeInViewport();
+    await page.locator('#sp-properties-toggle').click();
+    await page.locator('#sidebar-toggle').click();
+    await page.screenshot({ path: testInfo.outputPath('editor-focused.png'), fullPage: true, animations: 'disabled' });
+  });
+
+  test('WEB-PANEL-026: more actions close after selection and preserve property switching', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (await page.locator('#sp-properties-close').isVisible()) await page.locator('#sp-properties-close').click();
+      await page.locator('.sp-more summary').click();
+      await expect(page.locator('#sp-more-actions')).toBeVisible();
+      await page.locator('#sp-weather-settings').click();
+      await expect(page.locator('#sp-weather-properties')).toBeVisible();
+      await expect(page.locator('#sp-more-actions')).toBeHidden();
+      if (width <= 1200) await page.locator('#sp-properties-close').click();
+      await page.locator('#sp-global-settings').click();
+      await expect(page.locator('#sp-global-properties')).toBeVisible();
+      if (width <= 1200) await page.locator('#sp-properties-close').click();
+      await page.locator('.sp-more summary').click();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#sp-more-actions')).toBeHidden();
+    }
+  });
+
+  test('WEB-PANEL-024: unavailable touch explains controls and recovery reenables them', async ({ authPage }, testInfo) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    await authPage.locator('#sp-global-settings').click();
+    await expect(authPage.locator('[data-sp-nav="features"]')).toHaveCount(0);
+    await expect(authPage.locator('#sp-apply-summary')).not.toContainText('设备已应用版本');
+    const before = await authPage.evaluate(() => JSON.stringify((window as any).AppState._spModel.config));
+    let recovered = false;
+    await authPage.route('**/api/screen-panel/state*', async route => {
+      const response = await route.fetch(); const body = await response.json();
+      body.data.capabilities = { brightnessContinuous: recovered, buzzer: recovered, sleep: recovered, systemRestart: recovered,
+        controlConfirmIdle: true, touchConfigured: true, touchReady: recovered,
+        disabledReasons: recovered ? {} : { brightnessContinuous: '触摸控制器未就绪，正在重试', buzzer: '触摸控制器未就绪，正在重试', sleep: '触摸控制器未就绪，正在重试', systemRestart: '触摸控制器未就绪，正在重试' } };
+      await route.fulfill({ response, json: body });
     });
-    await expect(authPage.locator('#sp-brightness-output')).toHaveText('最低亮度');
-    await expect(authPage.locator('#sp-config')).toContainText('首次触摸不触发动作');
-    const wire = await authPage.evaluate(() => {
-      const app = (window as any).AppState;
-      return app._screenPanelModelHelpers.sanitizeConfig(app._spModel.config, app._spModel.choices);
-    });
-    expect(wire.settings).toMatchObject({ brightnessPercent: 0, touchBeepEnabled: false, controlConfirmIdleSeconds: 120, idleSleepSeconds: 0, allowSystemRestart: false });
-    expect(wire.pages.find((p: any) => p.id === 'system').cards.map((c: any) => c.systemActionId))
-      .toEqual(['brightness', 'sleep-time', 'touch-beep', 'confirm-idle', 'sleep']);
-    await authPage.locator('#sp-save-config').click();
-    await expect(authPage.locator('#sp-dirty-state')).toHaveText('已保存');
-    expect((await smartState(authPage)).screenPanelConfig.settings).toMatchObject(wire.settings);
-    await authPage.locator('#sp-tab-preview').click();
-    await authPage.locator('#sp-preview-pagination [data-page-id="motor"]').click();
-    await expect(authPage.locator('.sp-motor-actions')).toHaveText('正转反转');
-    await expect(authPage.locator('.sp-motor-stop')).toHaveText('停止');
-    await expect(authPage.locator('#sp-preview-canvas')).not.toContainText('unknown');
-    mkdirSync(artifactDir, { recursive: true });
+    await authPage.locator('#sp-preview-refresh-btn').dispatchEvent('click');
+    await expect(authPage.locator('[data-sp-add="buzzer"]')).toBeDisabled();
+    await expect(authPage.locator('[data-sp-add="restart"]')).toBeDisabled();
+    await expect(authPage.locator('#sp-system-capabilities')).toHaveText('触摸控制器未就绪，正在重试');
     for (const width of [1440, 390]) {
       await authPage.setViewportSize({ width, height: 900 });
-      for (const id of ['motor', 'system']) {
-        await authPage.locator('#sp-preview-pagination [data-page-id="' + id + '"]').click();
-        for (const control of await authPage.locator('#sp-preview-canvas .sp-panel-card button, #sp-preview-canvas .sp-panel-card input').all()) await expect(control).toBeDisabled();
-        if (id === 'motor') {
-          const rect = await authPage.locator('.sp-motor-stop').evaluate(button => {
-            const stop = button.getBoundingClientRect(), card = button.closest('.sp-panel-card')!.getBoundingClientRect();
-            return { stopBottom: stop.bottom, cardBottom: card.bottom, stopHeight: stop.height };
-          });
-          expect(rect.stopHeight).toBeGreaterThan(18);
-          expect(rect.stopBottom).toBeLessThanOrEqual(rect.cardBottom);
-        }
-        await authPage.locator('#sp-preview-frame').screenshot({ path: path.join(artifactDir, `industrial-${id}-${width}.png`) });
+      if (await authPage.locator('#sp-properties-close').isVisible()) {
+        await authPage.locator('#sp-properties-close').click();
       }
-      expect(await authPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await authPage.locator('#sp-global-settings').click();
+      await expect(authPage.locator('#sp-system-capabilities')).toBeVisible();
+      await authPage.locator('#sp-system-capabilities').scrollIntoViewIfNeeded();
+      expect(await authPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
+      await authPage.screenshot({ path: testInfo.outputPath(`global-properties-${width}.png`), fullPage: true });
     }
-    await expect(authPage.locator('#sp-preview-canvas')).toContainText('最低亮度');
-    await expect(authPage.locator('#sp-preview-canvas')).toContainText('永不');
-    await expect(authPage.locator('#sp-preview-canvas [role="switch"]')).toHaveAttribute('aria-checked', 'false');
-    await authPage.locator('#sp-footer-prev').click();
-    await authPage.locator('#sp-footer-next').click();
-    await authPage.locator('#sp-preview-home').click();
-    await expect(authPage.locator('.sp-device-footer')).toContainText('1/4');
-    const counts = (await smartState(authPage)).requestCounts;
-    expect(counts['POST /api/screen-panel/execute'] || 0).toBe(0);
-    expect(counts['POST /api/periph-exec/run'] || 0).toBe(0);
+    recovered = true;
+    await authPage.locator('#sp-preview-refresh-btn').dispatchEvent('click');
+    await expect(authPage.locator('[data-sp-add="buzzer"]')).toBeEnabled();
+    await expect(authPage.locator('[data-sp-add="restart"]')).toBeEnabled();
+    await expect(authPage.locator('#sp-system-capabilities')).toBeHidden();
+    expect(await authPage.evaluate(() => JSON.stringify((window as any).AppState._spModel.config))).toBe(before);
   });
 
-  test('WEB-PANEL-008: templates append configurable pages and execute-once remains preview only', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
+  test('WEB-PANEL-020: live geometry, size presets and explicit property modes', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    await authPage.locator('[data-sp-add="clock"]').click();
+    await authPage.locator('#sp-card-size').selectOption('small');
+    const card = authPage.locator('#sp-editor-canvas [data-kind="clock"]');
+    const small = await card.boundingBox();
+    await authPage.locator('#sp-card-size').selectOption('wide');
+    expect((await card.boundingBox())!.width).toBeGreaterThan(small!.width + 50);
+    await authPage.locator('#sp-card-w').fill('280');
+    await authPage.locator('#sp-card-h').fill('120');
+    await authPage.locator('#sp-card-x').fill('40');
+    const rect = Object.fromEntries(await Promise.all(['x', 'y', 'w', 'h'].map(async key => [key, Number(await authPage.locator('#sp-card-' + key).inputValue())])));
+    expect(rect).toMatchObject({ x: 40, w: 280, h: 120 });
+    const rendered = await card.evaluate(el => ({ width: el.getBoundingClientRect().width,
+      canvasWidth: el.parentElement!.getBoundingClientRect().width, logicalWidth: Number((el.parentElement as HTMLElement).dataset.outputWidth) }));
+    expect(rendered.width).toBeCloseTo(280 * rendered.canvasWidth / rendered.logicalWidth, 1);
+    await authPage.locator('#sp-properties-toggle').click();
+    await expect(authPage.locator('#sp-page-properties')).toBeVisible();
+    await expect(authPage.locator('#sp-inspector-form')).toBeHidden();
+    await authPage.locator('#sp-component-properties').click();
+    await expect(authPage.locator('#sp-card-w')).toHaveValue('280');
+    await savePanel(authPage);
+    await authPage.reload(); await openPanel(authPage);
+    expect((await smartState(authPage)).screenPanelConfig.pages[0].cards[0].rect).toMatchObject(rect);
+  });
+
+  test('WEB-PANEL-021: free canvas additions preserve neighbors and cancelled drag rolls back', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    await authPage.locator('[data-sp-add="clock"]').click();
+    await authPage.locator('#sp-card-size').selectOption('small');
+    const first = authPage.locator('#sp-editor-canvas [data-kind="clock"]');
+    const before = await first.getAttribute('style');
+    await authPage.locator('[data-sp-add="status"]').click();
+    expect(await first.getAttribute('style')).toEqual(before);
+    await first.evaluate(el => { el.setAttribute('data-original-node', 'true'); el.addEventListener('pointerdown', e => { (window as any).testPointerId = (e as PointerEvent).pointerId; }, { once: true }); });
+    const box = (await first.boundingBox())!;
+    await authPage.mouse.move(box.x + 30, box.y + 30); await authPage.mouse.down();
+    await authPage.mouse.move(box.x + 46, box.y + 54, { steps: 4 });
+    await authPage.waitForTimeout(8500);
+    await expect(first).toHaveAttribute('data-original-node', 'true');
+    await authPage.evaluate(() => document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 999 })));
+    await expect(authPage.locator('#sp-editor-canvas')).toHaveClass(/is-dragging/);
+    await authPage.evaluate(() => document.dispatchEvent(new PointerEvent('pointercancel', { pointerId: (window as any).testPointerId })));
+    await authPage.mouse.up();
+    expect(await first.getAttribute('style')).toEqual(before);
+  });
+
+  test('WEB-PANEL-022: chart connects interleaved sources and preserves actual time gaps', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    let points = [0, 1, 2, 3].map(i => ({ seq: 1 + i * 7, uptimeMs: 1000 + i * 1000, value: 10 + i, restored: false }));
+    await authPage.route('**/api/periph-exec/history?*', route => route.fulfill({ json: { success: true, data: { points } } }));
     await generateThreeScreens(authPage);
-    const before = await authPage.evaluate(() => JSON.stringify((window as any).AppState._spModel.config.pages));
-    await authPage.locator('#sp-page-preset').selectOption('execute');
-    await authPage.locator('#sp-page-add').click();
-    await expect(authPage.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(5);
-    await expect(authPage.locator('#sp-page-limit')).toContainText('不固定三屏');
-    const after = await authPage.evaluate(() => {
-      const pages = (window as any).AppState._spModel.config.pages;
-      return { original: JSON.stringify(pages.slice(0, 4)), page: pages[4] };
-    });
-    expect(after.original).toBe(before);
-    expect(after.page.title).toBe('快捷执行');
-    expect(after.page.cards.length).toBeGreaterThan(0);
-    expect(after.page.cards.every((card: any) => card.kind === 'control' && card.display === 'action')).toBeTruthy();
-    await authPage.locator('[data-sp-add="execute"]').click();
-    await expect(authPage.locator('#sp-card-title')).toHaveValue('执行一次');
-    await authPage.locator('#sp-tab-preview').click();
-    await authPage.locator('#sp-preview-source').selectOption('draft');
-    for (const button of await authPage.locator('#sp-preview-canvas .sp-panel-card button').all()) await expect(button).toBeDisabled();
-    await authPage.locator('#sp-preview-home').click();
-    await expect(authPage.locator('#sp-preview-canvas .sp-device-footer')).toContainText('1/');
-    const counts = (await smartState(authPage)).requestCounts as Record<string, number>;
+    await authPage.locator('#sp-page-tabs [data-page-id="trend"]').click();
+    const chart = authPage.locator('#sp-editor-canvas .sp-line-chart').first();
+    await expect(chart.locator('polyline')).toHaveCount(3);
+    await expect(chart.locator('circle')).toHaveCount(4);
+    points[2].uptimeMs = 100000; points[3].uptimeMs = 101000;
+    await authPage.locator('#sp-preview-refresh-btn').click();
+    await expect(chart.locator('polyline')).toHaveCount(2);
+    points = points.slice(0, 1);
+    await authPage.locator('#sp-preview-refresh-btn').click();
+    await expect(chart.locator('polyline')).toHaveCount(0);
+    await expect(chart.locator('circle')).toHaveCount(1);
+  });
+
+  test('WEB-PANEL-023: typed selectable sources preserve missing bindings during unrelated edits', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    await authPage.locator('[data-sp-add="gauge"]').click();
+    const options = await authPage.locator('#sp-card-source option').evaluateAll(items => items.map(item => (item as HTMLOptionElement).value).filter(Boolean));
+    expect(options.length).toBeGreaterThan(1);
+    const choices = (await (await authPage.request.get('/api/screen-panel/choices?kind=all&pageSize=50')).json()).data.items;
+    expect(options.every(ref => choices.some((c: any) => (c.ref || c.sourceRef || c.controlRef) === ref && (c.type || c.valueType) === 'number'))).toBe(true);
+    await authPage.locator('#sp-card-source').selectOption(options[0]);
+    await authPage.locator('#sp-card-source').selectOption(options[1]);
+    await expect(authPage.locator('#sp-card-source')).toHaveValue(options[1]);
+    const config = { schemaVersion: 1, displayRef: 'display_main', settings: { homePageId: 'home' }, pages: [{ id: 'home', title: '首页', layoutMode: 'canvas', logicalWidth: 480, logicalHeight: 480, cards: [{ id: 'missing', kind: 'data', visualType: 'gauge', sourceRef: 'missing.sensor', title: '未连接来源', rect: { x: 8, y: 8, w: 240, h: 140 } }] }] };
+    await authPage.locator('#sp-import-file').setInputFiles({ name: 'missing.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ config })) });
+    await authPage.locator('#sp-editor-canvas [data-card-id="missing"]').click();
+    await authPage.locator('#sp-card-title').fill('保留离线绑定');
+    await expect(authPage.locator('#sp-card-source')).toHaveValue('missing.sensor');
+    await authPage.locator('#sp-save-config').click();
+    await expect(authPage.locator('#sp-page-message')).toContainText('来源已不可用');
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+  });
+
+  test('WEB-PANEL-015: one workspace previews live drafts with one save', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage);
+    await expect(authPage.locator('.sp-top-tabs')).toHaveCount(0);
+    await expect(authPage.locator('.sp-property-tabs > button')).toHaveText(['页面属性', '组件属性', '全局属性']);
+    await expect(authPage.locator('#sp-save-config')).toBeVisible();
+    await expect(authPage.locator('#sp-preview-source, #sp-preview-pagination, #sp-card-apply, #sp-history-save')).toHaveCount(0);
+    await generateThreeScreens(authPage);
+    await expect(authPage.locator('#sp-editor-canvas')).toBeVisible();
+    await expect(authPage.locator('#sp-layout-editor > summary')).toHaveCount(0);
+    await expect(authPage.locator('#sp-editor-canvas .sp-weather-main')).toBeVisible();
+    expect((await smartState(authPage)).screenPanelConfig.pages[0].cards).toHaveLength(0);
+    await openEditor(authPage); await savePanel(authPage);
+    await expect(authPage.locator('#sp-editor-canvas .sp-weather-main')).toBeVisible();
+    await expect(authPage.locator('#sp-save-config')).toBeVisible();
+  });
+
+  test('WEB-PANEL-016: five footer entries and more menu reach every saved page', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage); await savePanel(authPage);
+    const footer = authPage.locator('#sp-editor-canvas .sp-device-footer button');
+    await expect(footer).toHaveCount(5);
+    for (const id of ['home', 'trend', 'motor', 'controls', 'system']) {
+      await authPage.locator(`#sp-editor-canvas [data-sp-editor-page="${id}"]`).click();
+      await expect(authPage.locator(`#sp-editor-canvas [data-sp-editor-page="${id}"]`)).toHaveClass(/is-active/);
+    }
+    await openEditor(authPage); await authPage.locator('#sp-page-add').click(); await savePanel(authPage);
+    await authPage.locator('#sp-editor-canvas [data-sp-editor-page="__more__"]').click();
+    await expect(authPage.locator('#sp-editor-canvas .sp-nav-more button')).toHaveCount(6);
+    await authPage.locator('#sp-editor-canvas .sp-nav-more button').last().click();
+    await expect(authPage.locator('#sp-editor-canvas .sp-empty-surface')).toBeVisible();
+    const counts = (await smartState(authPage)).requestCounts;
     expect(counts['POST /api/screen-panel/execute'] || 0).toBe(0);
-    expect(counts['POST /api/periph-exec/run'] || 0).toBe(0);
+  });
+
+  test('WEB-PANEL-019: custom one and two page layouts survive save reload and home deletion', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await openEditor(authPage);
+    await expect(authPage.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(1);
+    await authPage.locator('[data-sp-add="clock"]').click();
+    await authPage.locator('#sp-card-title').fill('自定义时钟');
+    await savePanel(authPage);
+    const originalId = (await smartState(authPage)).screenPanelConfig.pages[0].id;
+    await authPage.reload(); await openPanel(authPage);
+    await expect(authPage.locator('#sp-editor-canvas .sp-device-footer button')).toHaveCount(1);
+    await expect(authPage.locator('#sp-editor-canvas .sp-card-title')).toContainText('自定义时钟');
+    await openEditor(authPage);
+    await authPage.locator('#sp-page-preset').selectOption('blank');
+    await authPage.locator('#sp-page-add').click();
+    await expect(authPage.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(2);
+    await authPage.locator('#sp-page-home').click();
+    await savePanel(authPage);
+    const twoPages = (await smartState(authPage)).screenPanelConfig;
+    const customId = twoPages.pages[1].id;
+    expect(twoPages.pages.map((item: any) => item.id)).toEqual([originalId, customId]);
+    expect(twoPages.settings.homePageId).toBe(customId);
+    await authPage.reload(); await openPanel(authPage);
+    await expect(authPage.locator('#sp-editor-canvas .sp-device-footer button')).toHaveCount(2);
+    await expect(authPage.locator(`#sp-editor-canvas [data-sp-editor-page="${customId}"]`)).toHaveClass(/is-active/);
+    await authPage.locator(`#sp-editor-canvas [data-sp-editor-page="${originalId}"]`).click();
+    await expect(authPage.locator('#sp-editor-canvas .sp-card-title')).toContainText('自定义时钟');
+    await openEditor(authPage);
+    await authPage.locator(`#sp-page-tabs [data-page-id="${customId}"]`).click();
+    await authPage.locator('#sp-page-delete').click();
+    await savePanel(authPage);
+    const singlePage = (await smartState(authPage)).screenPanelConfig;
+    expect(singlePage.pages.map((item: any) => item.id)).toEqual([originalId]);
+    expect(singlePage.settings.homePageId).toBe(originalId);
+    expect(singlePage.settings.bottomNavPageIds).toEqual([originalId]);
+    await authPage.reload(); await openPanel(authPage);
+    await expect(authPage.locator('#sp-editor-canvas .sp-device-footer button')).toHaveCount(1);
+    await expect(authPage.locator(`#sp-editor-canvas [data-sp-editor-page="${originalId}"]`)).toHaveClass(/is-active/);
+    await openEditor(authPage); await authPage.locator('#sp-page-delete').click();
+    await expect(authPage.locator('#sp-page-message')).toHaveText('至少保留一个页面');
+    await expect(authPage.locator('#sp-page-tabs .sp-page-tab')).toHaveCount(1);
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+  });
+
+  test('WEB-PANEL-013: inherited appearance and logical zero brightness save together', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage);
+    await authPage.locator('#sp-global-settings').click();
+    await authPage.locator('#sp-theme-id').selectOption('light');
+    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-theme', 'light');
+    await authPage.locator('#sp-brightness').evaluate((input: HTMLInputElement)=>{input.value='0';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));});
+    await authPage.locator('#sp-touch-beep').uncheck();
+    await authPage.locator('#sp-confirm-idle').fill('120'); await authPage.locator('#sp-confirm-idle').dispatchEvent('change');
+    await authPage.locator('#sp-idle-sleep').selectOption('0');
+    await authPage.locator('#sp-properties-toggle').click();
+    await authPage.locator('#sp-page-theme').selectOption('dark');
+    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-theme', 'dark');
+    await authPage.locator('#sp-page-theme').selectOption('');
+    await savePanel(authPage);
+    expect((await smartState(authPage)).screenPanelConfig.settings).toMatchObject({brightnessPercent:0,touchBeepEnabled:false,controlConfirmIdleSeconds:120,idleSleepSeconds:0,themeId:'light'});
+  });
+
+  test('WEB-PANEL-008: library drag and immediate properties edit only the draft', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await openEditor(authPage);
+    await authPage.locator('[data-sp-add="clock"]').scrollIntoViewIfNeeded();
+    await authPage.locator('[data-sp-add="clock"]').dragTo(authPage.locator('#sp-editor-canvas'), { targetPosition: { x: 80, y: 80 } });
+    await expect(authPage.locator('#sp-editor-canvas [data-kind="clock"]')).toHaveCount(1);
+    await authPage.locator('#sp-card-title').fill('现场时钟');
+    await expect(authPage.locator('#sp-editor-canvas')).toContainText('现场时钟');
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/config'] || 0).toBe(0);
+    await savePanel(authPage);
+    expect((await smartState(authPage)).screenPanelConfig.pages[0].cards[0].title).toBe('现场时钟');
+  });
+
+  test('WEB-PANEL-002: rotated canvas inverse drag preserves safe wire data', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await openEditor(authPage);
+    const config = {schemaVersion:1,displayRef:'display_main',settings:{homePageId:'home'},pages:[{id:'home',title:'旋转页',layoutId:'detail',layoutMode:'canvas',logicalWidth:480,logicalHeight:320,rotation:90,cards:[{id:'temp',kind:'data',visualType:'value',title:'温度',sourceRef:'modbus.boiler.temperature',iconId:'custom-icon',rect:{x:24,y:32,w:160,h:96}}]}]};
+    await authPage.locator('#sp-import-file').setInputFiles({name:'layout.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({config}))});
+    await openEditor(authPage);
+    const canvas = authPage.locator('#sp-editor-canvas');
+    await expect(canvas).toHaveAttribute('data-output-width','320');
+    await expect(canvas).toHaveAttribute('data-output-height','480');
+    const card = canvas.locator('.sp-panel-card'); const box = await card.boundingBox();
+    await authPage.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2); await authPage.mouse.down();
+    await authPage.mouse.move(box!.x+box!.width/2+48,box!.y+box!.height/2,{steps:6}); await authPage.mouse.up();
+    await savePanel(authPage);
+    const wire = (await smartState(authPage)).screenPanelConfig;
+    expect(wire.pages[0]).toMatchObject({logicalWidth:480,logicalHeight:320,rotation:90});
+    expect(wire.pages[0].cards[0].rect.y).toBeLessThan(32);
+    expect(JSON.stringify(wire)).not.toMatch(/apiKey|password|secret/);
+  });
+
+  test('WEB-PANEL-003: shared history saves revisions and conflicts preserve the live draft', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage);
+    await selectComponent(authPage,'trend','line');
+    await authPage.locator('#sp-history-sources').selectOption(['modbus.boiler.temperature','can.motor.rpm']);
+    const post = authPage.waitForRequest(r=>r.method()==='POST' && new URL(r.url()).pathname==='/api/periph-exec/history/config');
+    await savePanel(authPage); expect((await post).postDataJSON()).toMatchObject({expectedRevision:0,enabled:true});
+    expect((await smartState(authPage)).historyConfig.sourceAllowlist).toEqual(expect.arrayContaining(['modbus.boiler.temperature','can.motor.rpm','legacy.missing']));
+    await authPage.locator('#sp-card-title').fill('保留这个草稿');
+    await changeSavedPanel(authPage); await authPage.locator('#sp-save-config').click();
+    await expect(authPage.locator('#sp-page-message')).toContainText('设备配置已更新');
+    await expect(authPage.locator('#sp-dirty-state')).toHaveText('有未保存修改');
+    await authPage.evaluate(()=>{Object.keys(localStorage).filter(key=>key.startsWith('fastbee.screenPanel.draft.')).forEach(key=>localStorage.removeItem(key));});
+    await authPage.locator('#sp-refresh-btn').click();
+    await expect(authPage.locator('#sp-page-tabs [data-page-id="trend"]')).toHaveClass(/is-active/);
+    await expect(authPage.locator('#sp-card-title')).toHaveValue('保留这个草稿');
+    await expect(authPage.locator('#sp-editor-canvas')).toContainText('保留这个草稿');
+  });
+
+  test('WEB-PANEL-004: one contextual Seniverse form preserves stored key and never stores draft secrets', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage);
+    await selectComponent(authPage,'home','weather');
+    await expect(authPage.locator('#sp-weather-key')).toHaveCount(1);
+    await expect(authPage.locator('#sp-source-field')).toBeHidden();
+    await expect(authPage.locator('#sp-weather-key')).toHaveAttribute('placeholder','已设置，留空保留');
+    await authPage.locator('#sp-weather-location').fill('beijing');
+    const post=authPage.waitForRequest(r=>r.method()==='POST'&&new URL(r.url()).pathname==='/api/screen-panel/weather');
+    await savePanel(authPage); expect((await post).postDataJSON()).toMatchObject({apiKey:'',location:'beijing',expectedRevision:1});
+    await authPage.locator('#sp-weather-key').fill('never-persist-this-key');
+    await authPage.locator('#sp-card-title').fill('新天气名称'); await authPage.waitForTimeout(220);
+    expect(await authPage.evaluate(()=>JSON.stringify(localStorage))).not.toContain('never-persist-this-key');
+    await authPage.locator('#sp-refresh-btn').click();
+    await selectComponent(authPage,'home','weather');
+    await expect(authPage.locator('#sp-weather-key')).toHaveValue('never-persist-this-key');
+  });
+
+  test('WEB-PANEL-010: weather update uses saved configuration and respects manual cooldown', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage); await selectComponent(authPage,'home','weather');
+    await authPage.locator('#sp-weather-refresh').click();
+    await expect(authPage.locator('#sp-weather-status')).toContainText('26.5℃');
+    await authPage.locator('#sp-weather-location').fill('beijing');
+    await authPage.locator('#sp-weather-refresh').click();
+    await expect(authPage.locator('#sp-page-message')).toContainText('请先保存天气配置');
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/weather/refresh']).toBe(1);
+
+  });
+
+  test('WEB-PANEL-MOTOR-ROW: forward stop reverse share one row without executing commands', async ({ authPage }, testInfo) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage);
+    await selectComponent(authPage, 'motor', 'motor');
+    for (const width of [1440, 390, 360]) {
+      await authPage.setViewportSize({ width, height: 900 });
+      if (await authPage.locator('#sp-properties-close').isVisible()) await authPage.locator('#sp-properties-close').click();
+      const row = authPage.locator('#sp-editor-canvas .sp-motor-actions');
+      const buttons = row.locator('button');
+      await expect(buttons).toHaveText(['正转', '停止', '反转']);
+      for (let index = 0; index < 3; index++) await expect(buttons.nth(index)).toBeDisabled();
+      await expect(buttons.nth(0)).toHaveClass('sp-motor-forward');
+      await expect(buttons.nth(1)).toHaveClass('sp-motor-stop');
+      await expect(buttons.nth(2)).toHaveClass('sp-motor-reverse');
+      const colors = await buttons.evaluateAll(elements => elements.map(element => getComputedStyle(element).backgroundColor));
+      expect(colors).toEqual(['rgb(24, 116, 70)', 'rgb(168, 56, 66)', 'rgb(32, 91, 174)']);
+      const boxes = await buttons.evaluateAll(elements => elements.map(element => {
+        const box = element.getBoundingClientRect();
+        return { x: box.x, y: box.y, width: box.width, height: box.height, fits: element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight };
+      }));
+      expect(boxes.every(box => box.fits && box.width > 0 && box.height >= 31.5)).toBe(true);
+      const parameterBox = await authPage.locator('#sp-editor-canvas .sp-motor-param').last().boundingBox();
+      expect(parameterBox).not.toBeNull();
+      expect(boxes[0].y).toBeGreaterThanOrEqual(parameterBox!.y + parameterBox!.height);
+      for (let index = 1; index < boxes.length; index++) {
+        expect(Math.abs(boxes[index].y - boxes[0].y)).toBeLessThan(1);
+        expect(Math.abs(boxes[index].width - boxes[0].width)).toBeLessThan(1);
+        expect(boxes[index].x).toBeGreaterThan(boxes[index-1].x + boxes[index-1].width);
+      }
+      await authPage.locator('#sp-editor-frame').screenshot({ path: testInfo.outputPath(`motor-row-${width}.png`) });
+    }
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/execute'] || 0).toBe(0);
+  });
+
+  test('WEB-PANEL-012: motor draft survives partial save and responsive editor keeps one action surface', async ({ authPage }, testInfo) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage);
+    await selectComponent(authPage,'motor','motor'); await authPage.locator('#sp-motor-speed').fill('0'); await authPage.locator('#sp-motor-pulse').fill('999');
+    await selectComponent(authPage,'home','weather'); await authPage.locator('#sp-weather-location').fill('beijing');
+    await changeSavedPanel(authPage); await authPage.locator('#sp-save-config').click();
+    await expect(authPage.locator('#sp-page-message')).toContainText(/天气.*已保存/);
+    await expect(authPage.locator('#sp-dirty-state')).toHaveText('有未保存修改');
+    await selectComponent(authPage,'motor','motor'); await expect(authPage.locator('#sp-motor-speed')).toHaveValue('0');
+    await expect(authPage.locator('#sp-motor-pulse')).toHaveValue('999');
+    for(const width of [1440,390,360]) {
+      await authPage.setViewportSize({width,height:900});
+      if(width<1050) {if(await authPage.locator('#sp-properties-close').isVisible()) await authPage.locator('#sp-properties-close').click();await authPage.locator('#sp-global-settings').click();await expect(authPage.locator('#sp-global-properties')).toBeVisible();await authPage.locator('#sp-properties-close').click();}
+      expect(await authPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+      await authPage.screenshot({path:testInfo.outputPath(`editor-${width}.png`),fullPage:true});
+    }
+    expect((await smartState(authPage)).requestCounts['POST /api/screen-panel/execute']||0).toBe(0);
+  });
+  test('WEB-PANEL-018: draft recovery requires matching device identity and revision', async ({ authPage }) => {
+    await resetPanel(authPage); await openPanel(authPage); await openEditor(authPage);
+    await authPage.locator('[data-sp-add="clock"]').click();
+    await authPage.locator('#sp-card-title').fill('仅属于设备甲');
+    await expect.poll(()=>authPage.evaluate(()=>Object.keys(localStorage).filter(key=>key.startsWith('fastbee.screenPanel.draft.')).length)).toBe(1);
+    const record=await authPage.evaluate(()=>{const key=Object.keys(localStorage).find(key=>key.startsWith('fastbee.screenPanel.draft.'))!;return {key,payload:JSON.parse(localStorage.getItem(key)!)};});
+    expect(record.key).toContain('02:00:00:00:00:01');
+    expect(record.payload.deviceMac).toBe('02:00:00:00:00:01');
+    let mac='02:00:00:00:00:02';
+    await authPage.route('**/api/network/status*',route=>route.fulfill({json:{success:true,data:{macAddress:mac}}}));
+    await authPage.locator('#sp-refresh-btn').click();
+    await expect(authPage.locator('#sp-editor-canvas .sp-empty-surface')).toBeVisible();
+    await expect(authPage.locator('#sp-draft-recovery')).toBeHidden();
+    expect(await authPage.evaluate(key=>Boolean(localStorage.getItem(key)),record.key)).toBe(true);
+    mac='02:00:00:00:00:01';
+    await authPage.locator('#sp-refresh-btn').click();
+    await expect(authPage.locator('#sp-draft-recovery')).toBeVisible();
+    await expect(authPage.locator('#sp-editor-canvas .sp-empty-surface')).toBeVisible();
+    await authPage.locator('#sp-draft-restore').click();
+    await expect(authPage.locator('#sp-editor-canvas')).toContainText('仅属于设备甲');
+    // An older host-only key is retained but never offered for recovery.
+    await authPage.evaluate(record=>{localStorage.removeItem(record.key);const legacy={...record.payload};delete legacy.deviceMac;localStorage.setItem(record.key.replace('.02:00:00:00:00:01',''),JSON.stringify(legacy));},record);
+    mac=''; await authPage.locator('#sp-refresh-btn').click();
+    await expect(authPage.locator('#sp-editor-canvas .sp-empty-surface')).toBeVisible();
+    await expect(authPage.locator('#sp-draft-recovery')).toBeHidden();
+    mac='02:00:00:00:00:01'; await authPage.locator('#sp-refresh-btn').click();
+    await expect(authPage.locator('#sp-draft-recovery')).toBeHidden();
+    await expect(authPage.locator('#sp-editor-canvas .sp-empty-surface')).toBeVisible();
+  });
+
+  test('WEB-PANEL-017: unified editor has no toolbar overlap', async ({ authPage }, testInfo) => {
+    await resetPanel(authPage); await openPanel(authPage); await generateThreeScreens(authPage); await savePanel(authPage);
+    for(const width of [1440,390]) {
+      await authPage.setViewportSize({width,height:900}); await openEditor(authPage);
+      const bounds = await authPage.evaluate(()=>{const canvas=document.getElementById('sp-editor-frame')!.getBoundingClientRect(),save=document.querySelector('.sp-save-bar')!.getBoundingClientRect();return {canvasBottom:canvas.bottom,saveTop:save.top};});
+      expect(bounds.saveTop).toBeGreaterThanOrEqual(bounds.canvasBottom);
+      await authPage.locator('#sp-runtime-badge').scrollIntoViewIfNeeded();
+      await authPage.screenshot({path:testInfo.outputPath(`normal-editor-${width}.png`),fullPage:true});
+        await expect(authPage.locator('#sp-save-config')).toBeVisible();
+      await authPage.screenshot({path:testInfo.outputPath(`normal-preview-${width}.png`),fullPage:true});
+    }
   });
 
   test('WEB-PANEL-006: production DISPLAY descriptors support SPI selection and RGB roundtrip', async ({ authPage, navigateTo }) => {
@@ -258,416 +895,4 @@ test.describe.serial('Device screen offline workflow', () => {
     await modal.locator('#cancel-peripheral-btn').click();
   });
 
-  test('WEB-PANEL-001: generated three-screen preview is responsive and never executes controls', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await expect(authPage.locator('#sp-tab-preview')).toHaveText('预览');
-    await expect(authPage.locator('#sp-tab-config')).toHaveText('配置');
-    await expect(authPage.locator('#sp-preview-canvas .sp-empty-surface')).toContainText('空页面');
-    await expect(authPage.locator('#sp-editor-canvas')).toBeHidden();
-
-    await generateThreeScreens(authPage);
-    await expect(authPage.locator('#sp-page-tabs')).toContainText('首页');
-    await expect(authPage.locator('#sp-page-tabs')).toContainText('温湿度趋势');
-    await expect(authPage.locator('#sp-page-tabs')).toContainText('电机控制');
-
-    await authPage.locator('#sp-tab-preview').click();
-    await authPage.locator('#sp-preview-source').selectOption('draft');
-    await expect(authPage.locator('#sp-preview-canvas .sp-weather-forecast .sp-weather-day')).toHaveCount(0);
-    await expect(authPage.locator('#sp-preview-canvas .sp-weather-icon').first()).toHaveAttribute('data-icon-id', /sunny/);
-    const weatherGlyphs = await authPage.evaluate(() => {
-      const conditions = ['sunny', 'clear-night', 'cloudy', 'overcast', 'thunder', 'rain', 'snow', 'fog', 'wind', 'cold', 'hot', 'unknown'];
-      const helpers = (window as any).AppState._screenPanelModelHelpers;
-      const host = document.createElement('div');
-      return Object.fromEntries(conditions.map((condition) => {
-        host.innerHTML = helpers.weatherIconMarkup('', condition, (value: string) => value);
-        return [condition, host.textContent];
-      }));
-    });
-    expect(weatherGlyphs).toEqual({
-      sunny: '☀', 'clear-night': '☾', cloudy: '☁', overcast: '☁', thunder: '⚡', rain: '☔',
-      snow: '❄', fog: '☁', wind: '≈', cold: '❄', hot: '☀', unknown: '○',
-    });
-    await expect(authPage.locator('#sp-preview-canvas')).toContainText('上海');
-
-    mkdirSync(artifactDir, { recursive: true });
-    await authPage.setViewportSize({ width: 1440, height: 900 });
-    await authPage.screenshot({ path: path.join(artifactDir, 'smart-panel-desktop.png'), fullPage: true });
-
-    await authPage.locator('#sp-preview-next').click();
-    await expect(authPage.locator('#sp-preview-canvas')).toContainText('锅炉温度');
-    await authPage.locator('#sp-preview-next').click();
-    await expect(authPage.locator('#sp-preview-canvas')).toContainText('传送电机');
-    const previewActionButtons = authPage.locator('#sp-preview-canvas .sp-panel-card button');
-    expect(await previewActionButtons.count()).toBeGreaterThan(0);
-    for (const button of await previewActionButtons.all()) {
-      await expect(button).toBeDisabled();
-    }
-
-    const counts = (await smartState(authPage)).requestCounts as Record<string, number>;
-    expect(counts['POST /api/screen-panel/execute'] || 0).toBe(0);
-    expect(counts['POST /api/periph-exec/run'] || 0).toBe(0);
-    expect(counts['POST /api/system/restart'] || 0).toBe(0);
-
-    await authPage.setViewportSize({ width: 390, height: 844 });
-    await authPage.locator('#sp-preview-prev').click();
-    await authPage.locator('#sp-preview-prev').click();
-    const overflow = await authPage.evaluate(() => ({
-      viewport: window.innerWidth,
-      document: document.documentElement.scrollWidth,
-      page: document.getElementById('screen-panel-page')?.scrollWidth || 0,
-      pageClient: document.getElementById('screen-panel-page')?.clientWidth || 0,
-    }));
-    expect(overflow.document).toBeLessThanOrEqual(overflow.viewport + 1);
-    expect(overflow.page).toBeLessThanOrEqual(overflow.pageClient + 1);
-    const clock = authPage.locator('#sp-preview-canvas .sp-clock-value');
-    expect(await clock.evaluate(node => node.scrollHeight <= node.clientHeight + 1)).toBeTruthy();
-    await authPage.screenshot({ path: path.join(artifactDir, 'smart-panel-mobile.png'), fullPage: true });
-  });
-
-  test('WEB-PANEL-011: canvas handles stay quiet and page links fit narrow previews', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await generateThreeScreens(authPage);
-    await authPage.locator('[data-sp-layout-mode="canvas"]').click();
-    await expect(authPage.locator('#sp-editor-canvas')).toHaveClass(/is-canvas-mode/);
-    await authPage.locator('[data-sp-add="page-link"]').click();
-
-    const canvas = authPage.locator('#sp-editor-canvas');
-    const pageLinkCard = canvas.locator('.sp-panel-card[data-kind="page-link"]');
-    const selectedHandle = pageLinkCard.locator('.sp-resize-handle');
-    const idleCardId = await canvas.locator('.sp-panel-card:not(.is-selected)').first().getAttribute('data-card-id');
-    expect(idleCardId).toBeTruthy();
-    const idleCard = canvas.locator(`.sp-panel-card[data-card-id="${idleCardId}"]`);
-    const idleHandle = idleCard.locator('.sp-resize-handle');
-    await expect(pageLinkCard).toHaveClass(/is-selected/);
-    await expect(selectedHandle).toHaveCSS('display', 'block');
-    await expect(idleHandle).toHaveCSS('display', 'none');
-    await idleCard.click();
-    await expect(idleCard).toHaveClass(/is-selected/);
-    await expect(idleHandle).toHaveCSS('display', 'block');
-    await expect(pageLinkCard).not.toHaveClass(/is-selected/);
-    await expect(selectedHandle).toHaveCSS('display', 'none');
-
-    mkdirSync(artifactDir, { recursive: true });
-    const viewports = [
-      { width: 1440, height: 900, file: 'preview-polish-desktop.png' },
-      { width: 360, height: 800, file: 'preview-polish-360.png' },
-      { width: 390, height: 844, file: 'preview-polish-390.png' },
-    ];
-    for (const viewport of viewports) {
-      await authPage.setViewportSize({ width: viewport.width, height: viewport.height });
-      await pageLinkCard.scrollIntoViewIfNeeded();
-      const fit = await pageLinkCard.evaluate((card) => {
-        const button = card.querySelector('.sp-page-link-preview button') as HTMLElement | null;
-        const parent = button?.parentElement;
-        const cardRect = card.getBoundingClientRect();
-        const buttonRect = button?.getBoundingClientRect();
-        return {
-          buttonWidth: button?.clientWidth || 0,
-          buttonScrollWidth: button?.scrollWidth || 0,
-          buttonHeight: button?.clientHeight || 0,
-          buttonScrollHeight: button?.scrollHeight || 0,
-          parentWidth: parent?.clientWidth || 0,
-          parentScrollWidth: parent?.scrollWidth || 0,
-          insideCard: Boolean(buttonRect &&
-            buttonRect.left >= cardRect.left - 1 && buttonRect.right <= cardRect.right + 1 &&
-            buttonRect.top >= cardRect.top - 1 && buttonRect.bottom <= cardRect.bottom + 1),
-        };
-      });
-      expect(fit.buttonWidth).toBeGreaterThan(0);
-      expect(fit.buttonScrollWidth).toBeLessThanOrEqual(fit.buttonWidth + 1);
-      expect(fit.buttonScrollHeight).toBeLessThanOrEqual(fit.buttonHeight + 1);
-      expect(fit.parentScrollWidth).toBeLessThanOrEqual(fit.parentWidth + 1);
-      expect(fit.insideCard).toBeTruthy();
-      await authPage.screenshot({ path: path.join(artifactDir, viewport.file), fullPage: true });
-    }
-  });
-
-  test('WEB-PANEL-002: wire import keeps rotation, icon and inverse drag in logical coordinates', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await openEditor(authPage);
-    const beforePosts = ((await smartState(authPage)).requestCounts['POST /api/screen-panel/config'] || 0) as number;
-    const imported = {
-      storageVersion: 1,
-      revision: 7,
-      config: {
-        schemaVersion: 1,
-        displayRef: 'display_main',
-        settings: {
-          brightnessPercent: 70, idleSleepSeconds: 120, homePageId: 'home', themeId: 'high-contrast',
-          background: { presetId: 'grid' }, allowSystemRestart: false,
-        },
-        pages: [{
-          id: 'home', title: '旋转页', layoutId: 'detail', layoutMode: 'canvas',
-          logicalWidth: 480, logicalHeight: 320, rotation: 90,
-          cards: [{
-            id: 'temperature', kind: 'data', visualType: 'value', title: '锅炉温度',
-            sourceRef: 'modbus.boiler.temperature', unit: '°C', precision: 1,
-            iconId: 'custom-icon', rect: { x: 24, y: 32, w: 160, h: 96 },
-            requireConfirmation: false, historyMode: 'none',
-          }],
-        }],
-      },
-    };
-    await authPage.locator('#sp-import-file').setInputFiles({
-      name: 'rotated-panel.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)),
-    });
-    await expect(authPage.locator('#sp-page-message')).toContainText('布局已导入为草稿');
-    await openEditor(authPage);
-    const canvas = authPage.locator('#sp-editor-canvas');
-    await expect(canvas).toHaveAttribute('data-logical-width', '480');
-    await expect(canvas).toHaveAttribute('data-logical-height', '320');
-    await expect(canvas).toHaveAttribute('data-output-width', '320');
-    await expect(canvas).toHaveAttribute('data-output-height', '480');
-    await expect(canvas).toHaveAttribute('data-rotation', '90');
-    await expect(canvas.locator('.sp-card-icon[data-icon-id="custom-icon"]')).toBeVisible();
-    const placement = await canvas.locator('.sp-panel-card').evaluate((element) => ({
-      left: Number.parseFloat((element as HTMLElement).style.left),
-      top: Number.parseFloat((element as HTMLElement).style.top),
-      width: Number.parseFloat((element as HTMLElement).style.width),
-      height: Number.parseFloat((element as HTMLElement).style.height),
-    }));
-    expect(placement.left).toBeCloseTo(60, 3);
-    expect(placement.top).toBeCloseTo(5, 3);
-    expect(placement.width).toBeCloseTo(30, 3);
-    expect(placement.height).toBeCloseTo(100 / 3, 3);
-
-    const beforeRect = await authPage.evaluate(() => structuredClone((window as any).AppState._spModel.config.pages[0].cards[0].rect));
-    const draggableCard = canvas.locator('.sp-panel-card');
-    await draggableCard.scrollIntoViewIfNeeded();
-    const box = await draggableCard.boundingBox();
-    expect(box).toBeTruthy();
-    await authPage.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
-    await authPage.mouse.down();
-    await authPage.mouse.move(box!.x + box!.width / 2 + 72, box!.y + box!.height / 2, { steps: 6 });
-    await authPage.mouse.up();
-    const afterRect = await authPage.evaluate(() => structuredClone((window as any).AppState._spModel.config.pages[0].cards[0].rect));
-    expect(afterRect.y).toBeLessThan(beforeRect.y);
-    expect(afterRect.x % 8).toBe(0);
-    expect(afterRect.y % 8).toBe(0);
-
-    const wire = await authPage.evaluate(() => {
-      const app = (window as any).AppState;
-      return app._screenPanelModelHelpers.sanitizeConfig(app._spModel.config, app._spModel.choices);
-    });
-    expect(wire.pages[0]).toMatchObject({ logicalWidth: 480, logicalHeight: 320, rotation: 90, layoutId: 'detail' });
-    expect(wire.pages[0].cards[0]).toMatchObject({ kind: 'data', visualType: 'value', iconId: 'custom-icon' });
-    expect(JSON.stringify(wire)).not.toMatch(/apiKey|authHeader|password|secret/i);
-    const afterPosts = ((await smartState(authPage)).requestCounts['POST /api/screen-panel/config'] || 0) as number;
-    expect(afterPosts).toBe(beforePosts);
-  });
-
-  test('WEB-PANEL-003: history settings persist unknown refs and 409 preserves the current draft', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await generateThreeScreens(authPage);
-    await authPage.locator('#sp-tab-config').click();
-    await authPage.locator('#sp-history-sources').evaluate((select) => {
-      const selected = new Set(['modbus.boiler.temperature', 'can.motor.rpm']);
-      for (const option of Array.from((select as HTMLSelectElement).options)) {
-        option.selected = option.dataset.preserve === 'true' || selected.has(option.value);
-      }
-    });
-    await authPage.locator('#sp-history-save').click();
-    await expect(authPage.locator('#sp-page-message')).toContainText('最近记录设置已保存');
-    let state = await smartState(authPage);
-    expect(state.historyConfig.sourceAllowlist).toEqual(expect.arrayContaining([
-      'modbus.boiler.temperature', 'can.motor.rpm', 'legacy.missing',
-    ]));
-
-    await authPage.locator('#sp-tab-preview').click();
-    await authPage.locator('#sp-save-config').click();
-    await expect(authPage.locator('#sp-page-message')).toContainText('配置已保存');
-    state = await smartState(authPage);
-    expect(state.screenPanelConfig.pages.map((entry: any) => entry.title)).toEqual(['首页', '温湿度趋势', '电机控制', '系统设置']);
-    expect(state.screenPanelConfig.pages[0].cards.find((card: any) => card.kind === 'weather')).toMatchObject({ kind: 'weather', visualType: 'weather' });
-
-    await openEditor(authPage);
-    await authPage.locator('#sp-editor-canvas .sp-panel-card').first().click();
-    await authPage.locator('#sp-card-title').fill('冲突后仍保留');
-    await authPage.locator('#sp-card-apply').click();
-    await authPage.request.post('/api/test/smart-panel-conflict');
-    await authPage.locator('#sp-save-config').click();
-    await expect(authPage.locator('#sp-page-message')).toContainText('另一窗口已保存新配置');
-    await expect(authPage.locator('#sp-dirty-state')).toHaveText('有未保存修改');
-    expect(await authPage.locator('#sp-editor-canvas .sp-panel-card').first().textContent()).toContain('冲突后仍保留');
-    await authPage.waitForTimeout(220);
-    expect(await authPage.evaluate(() => Boolean(localStorage.getItem('fastbee.screenPanel.draft.v1')))).toBe(true);
-  });
-
-  test('WEB-PANEL-009: compact information architecture and system actions serialize without Web execution', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await expect(authPage.locator('#menu-screen-panel')).toHaveText('设备屏幕');
-    await expect(authPage.locator('.sp-top-tabs [role="tab"]')).toHaveCount(2);
-    await expect(authPage.locator('#sp-editor-canvas')).toBeHidden();
-    await expect(authPage.locator('#sp-display-ref')).toBeHidden();
-
-    await authPage.locator('#sp-tab-preview').focus();
-    await authPage.keyboard.press('ArrowRight');
-    await expect(authPage.locator('#sp-tab-config')).toBeFocused();
-    await expect(authPage.locator('#sp-tab-config')).toHaveAttribute('aria-selected', 'true');
-    await expect(authPage.locator('#sp-display-ref')).toBeVisible();
-    await authPage.keyboard.press('ArrowLeft');
-    await expect(authPage.locator('#sp-tab-preview')).toBeFocused();
-    await expect(authPage.locator('#sp-editor-canvas')).toBeHidden();
-
-    await openEditor(authPage);
-    await authPage.locator('[data-sp-add="brightness"]').click();
-    await authPage.locator('#sp-brightness').evaluate((input) => {
-      (input as HTMLInputElement).value = '42';
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    await authPage.locator('#sp-card-apply').click();
-    await authPage.locator('[data-sp-add="sleep"]').click();
-    await authPage.locator('[data-sp-add="buzzer"]').click();
-    await authPage.locator('#sp-tab-config').click();
-    await expect(authPage.locator('#sp-display-ref')).toBeVisible();
-    await expect(authPage.locator('#sp-system-capabilities')).toContainText('亮度');
-    await authPage.locator('#sp-allow-restart').check();
-    await openEditor(authPage);
-    await authPage.locator('[data-sp-add="restart"]').click();
-
-    const wire = await authPage.evaluate(() => {
-      const app = (window as any).AppState;
-      return app._screenPanelModelHelpers.sanitizeConfig(app._spModel.config, app._spModel.choices);
-    });
-    const systemCards = wire.pages[0].cards.filter((card: any) => card.kind === 'system');
-    expect(systemCards.map((card: any) => card.systemActionId)).toEqual(['brightness', 'sleep', 'buzzer', 'restart']);
-    expect(systemCards[0]).toMatchObject({ visualType: 'slider' });
-    expect(wire.settings.brightnessPercent).toBe(42);
-    expect(systemCards[1]).not.toHaveProperty('actionValue');
-    expect(systemCards[2]).not.toHaveProperty('actionValue');
-    expect(systemCards[3]).toMatchObject({ requireConfirmation: true });
-
-    const counts = (await smartState(authPage)).requestCounts as Record<string, number>;
-    expect(counts['POST /api/screen-panel/execute'] || 0).toBe(0);
-    expect(counts['POST /api/system/restart'] || 0).toBe(0);
-
-    await authPage.setViewportSize({ width: 390, height: 844 });
-    const mobileLayout = await authPage.evaluate(() => {
-      const canvas = document.querySelector('.sp-canvas-column')!.getBoundingClientRect();
-      const toolbox = document.querySelector('.sp-toolbox')!.getBoundingClientRect();
-      return {
-        canvasTop: canvas.top,
-        toolboxTop: toolbox.top,
-        viewportWidth: window.innerWidth,
-        documentWidth: document.documentElement.scrollWidth,
-      };
-    });
-    expect(mobileLayout.canvasTop).toBeLessThan(mobileLayout.toolboxTop);
-    expect(mobileLayout.documentWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth + 1);
-  });
-
-  test('WEB-PANEL-004: remote secrets and DISPLAY/GT911 fields round-trip without disclosure', async ({ authPage }) => {
-    await resetPanel(authPage);
-    const update = await authPage.request.post('/api/peripherals/update', {
-      data: {
-        id: 'display_main', name: '横向触摸屏', type: 56, enabled: true, pins: '',
-        displayBackend: 'spi_tft', displayDriver: 'ili9341', width: 320, height: 240, rotation: 3,
-        touchBackend: 'gt911', touchSda: 19, touchScl: 45, touchInt: -1, touchRst: -1,
-      },
-    });
-    expect(update.ok()).toBeTruthy();
-    const peripheral = await (await authPage.request.get('/api/peripherals?id=display_main')).json();
-    expect(peripheral.data.params).toMatchObject({
-      backend: 'spi_tft', driver: 'ili9341', width: 320, height: 240, rotation: 3,
-      touchBackend: 'gt911', pins: { touchSda: 19, touchScl: 45, touchInt: -1, touchRst: -1 },
-    });
-
-    await openPanel(authPage);
-    await authPage.locator('#sp-tab-config').click();
-    await expect(authPage.locator('#sp-display-ref option[value="display_main"]')).toContainText('320×240');
-    await authPage.locator('#sp-display-ref').selectOption('');
-    await authPage.locator('#sp-display-ref').selectOption('display_main');
-    const displayBinding = await authPage.evaluate(() => {
-      const page = (window as any).AppState._spModel.config.pages[0];
-      return { canvas: page.canvas, rotation: page.rotation };
-    });
-    expect(displayBinding).toEqual({ canvas: { width: 320, height: 240 }, rotation: 270 });
-    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-width', '240');
-    await expect(authPage.locator('#sp-editor-canvas')).toHaveAttribute('data-output-height', '320');
-
-    await expect(authPage.locator('#sp-weather-key')).toHaveValue('');
-    await expect(authPage.locator('#sp-weather-interval')).toHaveValue('1800');
-    await expect(authPage.locator('#sp-weather-key')).toHaveAttribute('placeholder', '已设置，留空保留');
-    await authPage.locator('#sp-weather-location').fill('beijing');
-    const posted = authPage.waitForRequest((request) =>
-      request.method() === 'POST' && new URL(request.url()).pathname === '/api/screen-panel/weather');
-    await authPage.locator('#sp-save-config').click();
-    expect((await posted).postDataJSON()).toMatchObject({ apiKey: '', location: 'beijing', expectedRevision: 1 });
-    await expect(authPage.locator('#sp-page-message')).toContainText('配置已保存');
-    expect((await smartState(authPage)).screenWeather).toMatchObject({ hasApiKey: true, location: 'beijing', revision: 2 });
-    await authPage.locator('#sp-weather-key').fill('never-persist-this-key');
-    await authPage.locator('#sp-theme-id').selectOption('light');
-    await authPage.waitForTimeout(250);
-    const stored = await authPage.evaluate(() => localStorage.getItem('fastbee.screenPanel.draft.v1') || '');
-    expect(stored).not.toContain('never-persist-this-key');
-    await authPage.locator('#sp-refresh-btn').click();
-    await expect(authPage.locator('#sp-weather-key')).toHaveValue('never-persist-this-key');
-  });
-
-  test('WEB-PANEL-010: weather refresh is bounded and displays normalized current conditions', async ({ authPage }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    await authPage.locator('#sp-tab-config').click();
-    const posted = authPage.waitForRequest((request) =>
-      request.method() === 'POST' && new URL(request.url()).pathname === '/api/screen-panel/weather/refresh');
-    await authPage.locator('#sp-weather-refresh').click();
-    expect((await posted).postData()).toBe('id=main');
-    await expect(authPage.locator('#sp-weather-status')).toContainText('26.5℃');
-    await expect(authPage.locator('#sp-weather-status')).toContainText('上海');
-    await expect(authPage.locator('#sp-weather-status')).not.toContainText('offline-secret');
-    await expect(authPage.locator('#sp-weather-refresh')).toBeEnabled();
-    await authPage.locator('#sp-weather-refresh').click();
-    await expect(authPage.locator('#sp-page-message')).toContainText('秒后可再次更新');
-    const state = await smartState(authPage);
-    expect(state.requestCounts['POST /api/screen-panel/weather/refresh']).toBe(2);
-    expect(state.requestCounts['GET /api/screen-panel/weather/refresh']).toBeGreaterThanOrEqual(1);
-  });
-
-  test('WEB-PANEL-012: menu order, remount, motor settings and partial save remain coherent', async ({ authPage, navigateTo }) => {
-    await resetPanel(authPage);
-    await openPanel(authPage);
-    const order = await authPage.locator('.menu-item[data-page]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-page')));
-    expect(order.indexOf('screen-panel')).toBe(order.indexOf('protocol') + 1);
-    await navigateTo('protocol');
-    await expect(authPage.locator('.config-tab[data-tab="remote-resources"]')).toHaveCount(0);
-    await openPanel(authPage);
-    await authPage.evaluate(async () => {
-      const root = document.getElementById('screen-panel-page')!; root.replaceWith(root.cloneNode(true));
-      await (window as any).AppState.loadScreenPanelPage({ noCache: true });
-    });
-    await generateThreeScreens(authPage);
-    await authPage.locator('#sp-page-tabs [data-page-id="motor"]').click();
-    await authPage.locator('#sp-editor-canvas [data-kind="motor"]').click();
-    await authPage.locator('#sp-motor-speed').fill('0');
-    await authPage.locator('#sp-motor-pulse').fill('999');
-    await authPage.locator('#sp-card-apply').click();
-    await expect(authPage.locator('#sp-motor-speed')).toHaveValue('0');
-    await authPage.locator('#sp-weather-location').fill('beijing');
-    await authPage.request.post('/api/test/smart-panel-conflict');
-    await authPage.locator('#sp-save-config').click();
-    await expect(authPage.locator('#sp-page-message')).toContainText(/天气.*已保存/);
-    await expect(authPage.locator('#sp-page-message')).toContainText('另一窗口已保存新配置');
-    await expect(authPage.locator('#sp-dirty-state')).toHaveText('有未保存修改');
-    expect((await smartState(authPage)).screenWeather.location).toBe('beijing');
-    const motor = await authPage.evaluate(() => {
-      const app = (window as any).AppState;
-      return app._screenPanelModelHelpers.sanitizeConfig(app._spModel.config, app._spModel.choices).pages.find((p: any) => p.id === 'motor').cards[0];
-    });
-    expect(motor).toMatchObject({ kind: 'control', visualType: 'motor', motorSpeed: 0, motorPulse: 999 });
-    mkdirSync(artifactDir, { recursive: true });
-    await authPage.locator('#sp-editor-canvas').screenshot({ path: path.join(artifactDir, 'motor-preview.png') });
-    await authPage.locator('#sp-layout-editor > summary').click();
-    await authPage.locator('#sp-weather-heading').scrollIntoViewIfNeeded();
-    await authPage.screenshot({ path: path.join(artifactDir, 'config-desktop.png') });
-    await authPage.setViewportSize({ width: 390, height: 844 });
-    await authPage.locator('#sp-weather-heading').scrollIntoViewIfNeeded();
-    await authPage.screenshot({ path: path.join(artifactDir, 'config-mobile.png') });
-    expect(await authPage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
-  });
 });
-

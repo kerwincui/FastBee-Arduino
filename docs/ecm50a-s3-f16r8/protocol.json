@@ -107,8 +107,8 @@
           "mappings": [
             {
               "regOffset": 0,
-              "dataType": 0,
-              "scaleFactor": 1,
+              "dataType": 1,
+              "scaleFactor": 0.1,
               "decimalPlaces": 1,
               "sensorId": "modbus_temp",
               "unit": "C"
@@ -116,7 +116,7 @@
             {
               "regOffset": 1,
               "dataType": 0,
-              "scaleFactor": 1,
+              "scaleFactor": 0.1,
               "decimalPlaces": 1,
               "sensorId": "modbus_humidity",
               "unit": "%RH"
@@ -169,7 +169,7 @@
     "scheme": "mqtt",
     "server": "iot.fastbee.cn",
     "port": 1883,
-    "clientId": "S&FBED852C19FC114&1&1",
+    "clientId": "",
     "username": "",
     "keepAlive": 60,
     "autoReconnect": true,

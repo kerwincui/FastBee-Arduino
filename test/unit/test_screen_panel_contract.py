@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(os.environ.get("FASTBEE_TEST_PANEL_SOURCE", pathlib.Path(__file__).resolve().parents[2]))
 HEADER = (ROOT / "include/core/ScreenPanelManager.h").read_text(encoding="utf-8")
 MANAGER = (ROOT / "src/core/ScreenPanelManager.cpp").read_text(encoding="utf-8")
 HISTORY_HEADER = (ROOT / "include/core/PointHistory.h").read_text(encoding="utf-8")
@@ -186,6 +186,28 @@ int main(){
   // Existing callers without a UI expectation retain their previous API contract.
   assert(panel.dispatchAction("button",ScreenActionKind::MOTOR_COMMAND,String("readStatus"),operation,error));
   assert(motors.calls==3);
+  // Fixed, explicitly panel-enabled rules remain generic. Relay coil/register
+  // and GPIO actions must not pass through the motor command path.
+  card["visualType"]="action";card["controlRef"]="rule.write";
+  exec.rule.enabled=true;exec.rule.allowPanelControl=true;
+  for (auto type : {ExecActionType::ACTION_MODBUS_COIL_WRITE,
+                    ExecActionType::ACTION_MODBUS_REG_WRITE,
+                    ExecActionType::ACTION_HIGH, ExecActionType::ACTION_LOW,
+                    ExecActionType::ACTION_SET_PWM}) {
+    exec.rule.actions[0].actionType=static_cast<uint8_t>(type);
+    exec.rule.actions[0].useReceivedValue=false;
+    exec.rule.actions[0].targetPeriphId="configured-output";
+    exec.rule.actions[0].actionValue="0:1";
+    card["bindingFingerprint"]=ScreenPanelManager::ruleFingerprint(exec.rule).c_str();
+    const int previous=exec.calls;
+    assert(panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+    assert(exec.calls==previous+1 && operation==42 && motors.calls==3);
+    exec.rule.allowPanelControl=false;
+    assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+    exec.rule.allowPanelControl=true;exec.rule.actions[0].targetPeriphId="changed-output";
+    assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+    assert(exec.calls==previous+1 && motors.calls==3);
+  }
  }
  '''.replace("INPUT_FUNCTIONS", "\n".join(bodies[:7])).replace("METHODS", "\n".join(bodies[7:]))
         with tempfile.TemporaryDirectory(prefix="fastbee-panel-input-") as directory:
@@ -198,7 +220,7 @@ int main(){
             build = subprocess.run([compiler, "-std=c++17", "-DUNIT_TEST",
                                     "-DARDUINOJSON_ENABLE_STD_STRING=1", "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0",
                                     f"-I{ROOT / 'test/mocks'}", f"-I{ROOT / 'include'}",
-                                    f"-I{ROOT / '.pio/libdeps/native/ArduinoJson/src'}",
+                                    f"-I{next((ROOT / '.pio/libdeps').glob('*/ArduinoJson/src/ArduinoJson.h')).parent}",
                                     str(cpp), "-o", str(executable)],
                                    capture_output=True, text=True, timeout=60, env=env)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)

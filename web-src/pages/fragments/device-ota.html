@@ -47,6 +47,26 @@
     </div>
 </div>
 
+<!-- 平台 OTA 配置与手动下载地址分别保存 -->
+<div class="fb-panel">
+    <div class="fb-card-header fb-panel-header">
+        <h4 class="fb-panel-title"><span>平台 OTA 设置</span></h4>
+    </div>
+    <div class="fb-card-body fb-panel-body-lg">
+        <form id="ota-config-form" class="fb-form">
+            <div class="fb-form-group">
+                <label for="ota-base-url">固件下载基址（HTTP/HTTPS）</label>
+                <input type="url" id="ota-base-url" maxlength="512"
+                    placeholder="https://platform.example.com" disabled>
+                <small class="field-hint">平台下发相对固件路径时使用；留空时从 MQTT Broker 主机推导 HTTPS 基址。完整固件地址不受此项影响。不支持账号、密码、查询参数或片段。</small>
+                <small class="field-hint">默认推荐 HTTPS；HTTP 适用于可信局域网，传输内容不加密。</small>
+            </div>
+            <button type="submit" id="ota-config-save-btn" class="fb-btn fb-btn-primary" disabled>保存 OTA 设置</button>
+        </form>
+        <div id="ota-config-message" class="is-hidden u-mt-10" style="font-size:13px"></div>
+    </div>
+</div>
+
 <!-- 在线升级 -->
 <div class="fb-panel">
     <div class="fb-card-header fb-panel-header-info">
@@ -63,7 +83,7 @@
                 <div class="ota-inline-input-wrap">
                     <label for="ota-url">固件下载地址</label>
                     <input type="url" id="ota-url" class=""
-                        placeholder="http://example.com/firmware.bin">
+                        placeholder="https://example.com/firmware.bin" maxlength="768">
                     <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
                 </div>
                 <button type="submit" class="fb-btn fb-btn-primary ota-action-btn"

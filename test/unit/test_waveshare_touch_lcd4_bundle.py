@@ -19,6 +19,31 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
             for path in BUNDLE.glob("*.json")
         }
 
+    def test_user_visible_default_names_are_chinese_without_changing_bindings(self):
+        labels = []
+        def inspect(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in ('name', 'label', 'sensorLabel') and child:
+                        labels.append(child)
+                    elif key == 'actionValue' and isinstance(child, str) and child.startswith('{'):
+                        inspect(json.loads(child))
+                    else:
+                        inspect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    inspect(child)
+        for name in ('peripherals.json', 'periph_exec.json', 'protocol.json'):
+            inspect(self.docs[name])
+        self.assertGreaterEqual(len(labels), 16)
+        for label in labels:
+            self.assertRegex(label, r'[\u4e00-\u9fff]', label)
+        collect = next(rule for rule in self.docs['periph_exec.json']['rules'] if rule['id'] == 'collect_sht30')
+        actions = [json.loads(action['actionValue']) for action in collect['actions']]
+        self.assertEqual(['air_temperature', 'air_humidity'], [action['dataField'] for action in actions])
+        self.assertEqual(['temperature', 'humidity'], [action['channelField'] for action in actions])
+        self.assertEqual(['空气温度', '空气湿度'], [action['sensorLabel'] for action in actions])
+
     def test_bundle_has_required_documents_and_no_live_credentials(self):
         for name in ("device.json", "network.json", "peripherals.json",
                      "periph_exec.json", "protocol.json"):
@@ -103,6 +128,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         self.assertEqual("rgb", params["backend"])
         self.assertEqual("st7701", params["driver"])
         self.assertEqual("ch32v003", params["controlBackend"])
+        self.assertIs(params["backlightActiveHigh"], False)  # User-confirmed inverse wiring on this board.
         self.assertEqual(36, params["controlAddress"])
         self.assertEqual(32, params["controlEnableMask"])
         self.assertEqual(64, params["controlBuzzerMask"])

@@ -26,7 +26,7 @@
       "interPollDelay": 100,
       "tasks": [
         {
-          "name": "Motor speed raw - slave 8 FC03 register 5",
+          "name": "电机速度原值（从站 8，寄存器 5）",
           "enabled": false,
           "slaveAddress": 8,
           "functionCode": 3,
@@ -45,7 +45,7 @@
           ]
         },
         {
-          "name": "Motor pulse raw - slave 8 FC03 register 7",
+          "name": "电机脉冲原值（从站 8，寄存器 7）",
           "enabled": false,
           "slaveAddress": 8,
           "functionCode": 3,
@@ -64,7 +64,7 @@
           ]
         },
         {
-          "name": "Motor count raw - slave 8 FC03 register 4",
+          "name": "电机计数原值（从站 8，寄存器 4）",
           "enabled": false,
           "slaveAddress": 8,
           "functionCode": 3,
@@ -83,7 +83,7 @@
           ]
         },
         {
-          "name": "Motor baud code - slave 8 FC03 register 10",
+          "name": "电机波特率代码（从站 8，寄存器 10）",
           "enabled": false,
           "slaveAddress": 8,
           "functionCode": 3,
@@ -104,7 +104,7 @@
       ],
       "devices": [
         {
-          "name": "Modbus motor slave 8 - manual writes only",
+          "name": "Modbus 电机（从站 8，手动控制）",
           "sensorId": "motor_controller",
           "deviceType": "motor",
           "slaveAddress": 8,

@@ -15,6 +15,11 @@ const { runNodeScriptUnderFirmwareLock } = require('./firmware-build-lock-runner
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SELF = __filename;
+// Real writers now include build-host Zopfli compression. Six entrypoints
+// queue behind one lock; allow their total work, not just one fast build.
+// The dedicated bounded-wait tests retain their short deadlines below.
+const REAL_WRITER_LOCK_TIMEOUT_MS = 90_000;
+const REAL_WRITER_PROCESS_TIMEOUT_MS = 120_000;
 
 function sleepSync(milliseconds) {
     const buffer = new Int32Array(new SharedArrayBuffer(4));
@@ -349,7 +354,7 @@ async function testPublicWriterEntrypoints(tempRoot) {
     const env = {
         ...process.env,
         FASTBEE_WEB_LOCK_DIR: lockDir,
-        FASTBEE_WEB_LOCK_TIMEOUT_MS: '30000',
+        FASTBEE_WEB_LOCK_TIMEOUT_MS: String(REAL_WRITER_LOCK_TIMEOUT_MS),
         FASTBEE_WEB_LOCK_STALE_MS: '600000',
         FASTBEE_WEB_LOCK_POLL_MS: '10'
     };
@@ -370,7 +375,7 @@ async function testPublicWriterEntrypoints(tempRoot) {
         label,
         tracked: trackedProcess(process.execPath, [path.join(ROOT_DIR, 'scripts', script), ...args], {
             env,
-            timeoutMs: 60_000
+            timeoutMs: REAL_WRITER_PROCESS_TIMEOUT_MS
         })
     }));
 
@@ -405,21 +410,21 @@ async function testRealWriterSerialization(tempRoot) {
     const stageDir = path.join(tempRoot, 'gzip-stage');
     const env = {
         ...process.env,
-        FASTBEE_WEB_LOCK_TIMEOUT_MS: '30000',
+        FASTBEE_WEB_LOCK_TIMEOUT_MS: String(REAL_WRITER_LOCK_TIMEOUT_MS),
         FASTBEE_WEB_LOCK_STALE_MS: '600000',
         FASTBEE_WEB_LOCK_POLL_MS: '10'
     };
     const build = runProcess(process.execPath, [
         path.join(ROOT_DIR, 'scripts', 'build-web-assets.js'),
         '--env=esp32s3-F16R8'
-    ], { env, timeoutMs: 60_000 });
+    ], { env, timeoutMs: REAL_WRITER_PROCESS_TIMEOUT_MS });
     const gzip = runProcess(process.execPath, [
         path.join(ROOT_DIR, 'scripts', 'gzip-www.js'),
         '--no-upload',
         '--no-monitor',
         '--env=esp32s3-F16R8',
         `--stage-dir=${stageDir}`
-    ], { env, timeoutMs: 60_000 });
+    ], { env, timeoutMs: REAL_WRITER_PROCESS_TIMEOUT_MS });
     const [buildResult, gzipResult] = await Promise.all([build, gzip]);
     assertSuccessful(buildResult, 'concurrent build-web-assets writer');
     assertSuccessful(gzipResult, 'concurrent gzip-www writer');

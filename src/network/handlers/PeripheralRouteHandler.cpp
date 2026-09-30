@@ -122,6 +122,7 @@ void addAnalogInputParams(JsonObject params, const PeripheralConfig& config, boo
         params["signalMode"] = config.params.adc.signalMode;
         params["conversionEnabled"] = config.params.adc.conversionEnabled;
         params["clampEnabled"] = config.params.adc.clampEnabled;
+        params["calibratedVoltage"] = config.params.adc.calibratedVoltage;
         params["decimalPlaces"] = config.params.adc.decimalPlaces;
         params["inputMin"] = config.params.adc.inputMin;
         params["inputMax"] = config.params.adc.inputMax;
@@ -469,6 +470,7 @@ void initializeAdcDefaults(PeripheralConfig& config) {
     config.params.adc.signalMode = static_cast<uint8_t>(AnalogSignalMode::RAW);
     config.params.adc.conversionEnabled = false;
     config.params.adc.clampEnabled = false;
+    config.params.adc.calibratedVoltage = false;
     config.params.adc.decimalPlaces = 2;
     config.params.adc.inputMin = 0.0f;
     config.params.adc.inputMax = 0.0f;
@@ -559,6 +561,7 @@ void applyAnalogInputParams(WebHandlerContext* ctx, AsyncWebServerRequest* reque
     adc.signalMode = static_cast<uint8_t>(signalMode);
     adc.conversionEnabled = ctx->getParamBool(request, "conversionEnabled", adc.conversionEnabled);
     adc.clampEnabled = ctx->getParamBool(request, "clampEnabled", adc.clampEnabled);
+    adc.calibratedVoltage = ctx->getParamBool(request, "calibratedVoltage", adc.calibratedVoltage);
 
     int decimalPlaces = ctx->getParamInt(request, "decimalPlaces", adc.decimalPlaces);
     if (decimalPlaces < 0) decimalPlaces = 0;
@@ -3787,7 +3790,20 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
         // taking a second sample can make the two values disagree and doubles
         // the cost of filtered reads (up to 16 analogRead calls).
         AnalogInputQuality quality = AnalogInputQuality::INVALID_CONFIG;
-        const float converted = pm.convertAnalogRawValue(id, rawValue, &quality);
+        float pinVoltage = NAN;
+        const float converted = pm.convertAnalogRawValue(id, rawValue, &quality, &pinVoltage);
+        data["calibratedVoltage"] = config.params.adc.calibratedVoltage;
+        data["adcPin"] = config.getPrimaryPin();
+        // Keep the MCU pin voltage distinct from an external terminal meter
+        // reading: the latter also depends on the actual board front end.
+        data["pinVoltageSource"] = config.params.adc.calibratedVoltage
+            ? "chip_calibrated_adc" : "linear_adc_estimate";
+        if (!isnan(pinVoltage) && !isinf(pinVoltage)) data["pinVoltageMv"] = pinVoltage * 1000.0f;
+        else data["pinVoltageMv"] = nullptr;
+        const float calculatedCurrentMa = calculateAnalogInputCurrentMa(config, pinVoltage);
+        if (!isnan(calculatedCurrentMa) && !isinf(calculatedCurrentMa))
+            data["calculatedCurrentMa"] = calculatedCurrentMa;
+        else data["calculatedCurrentMa"] = nullptr;
         data["quality"] = analogInputQualityName(quality);
         data["qualityCode"] = static_cast<uint8_t>(quality);
         if (isnan(converted) || isinf(converted)) {

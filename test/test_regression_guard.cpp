@@ -2349,9 +2349,10 @@ static void test_regression_factory_modbus_disabled_and_com15_explicit_topology(
         TEST_ASSERT_TRUE_MESSAGE(device["enabled"] | false, "COM15 authorized device topology must remain enabled");
         TEST_ASSERT_EQUAL_UINT(6, device["slaveAddress"].as<unsigned>());
         TEST_ASSERT_EQUAL_STRING("relay", device["deviceType"] | "");
-        TEST_ASSERT_EQUAL_UINT(2, device["channelCount"].as<unsigned>());
+        // Committed COM15 template: four-channel FC06 register relay (see bundle README).
+        TEST_ASSERT_EQUAL_UINT(4, device["channelCount"].as<unsigned>());
         TEST_ASSERT_EQUAL_UINT(0, device["coilBase"].as<unsigned>());
-        TEST_ASSERT_EQUAL_UINT(0, device["controlProtocol"].as<unsigned>());
+        TEST_ASSERT_EQUAL_UINT(1, device["controlProtocol"].as<unsigned>());
     }
 
     JsonDocument execution;
@@ -2795,11 +2796,14 @@ void test_regression_ap_config_js_saves_all_fields() {
     TestLog::step("deviceName correctly removed from saveAPConfig");
 
     // 验证 GET 侧 loadNetworkConfig 也读取所有 AP 字段
-    auto loadFn = js.find("loadNetworkConfig()");
+    auto loadFn = js.find("loadNetworkConfig() {");
     TEST_ASSERT_TRUE_MESSAGE(loadFn != std::string::npos,
         "network.js must contain loadNetworkConfig function");
 
-    auto loadBody = js.substr(loadFn, std::min<size_t>(js.size() - loadFn, 2000));
+    auto loadEnd = js.find("        _networkLoadState(", loadFn);
+    TEST_ASSERT_TRUE_MESSAGE(loadEnd != std::string::npos && loadEnd > loadFn,
+        "Cannot locate loadNetworkConfig method boundary");
+    auto loadBody = js.substr(loadFn, loadEnd - loadFn);
     const char* loadFields[] = {
         "ap-ssid", "ap-password", "ap-ip", "ap-channel", "ap-hidden", "ap-max-connections"
     };
@@ -2875,10 +2879,13 @@ void test_regression_ap_config_js_no_device_name() {
     TestLog::step("deviceName correctly absent from saveAPConfig");
 
     // loadNetworkConfig 中 AP 配置区域也不应再读取 device-name DOM 元素
-    auto loadFn = js.find("loadNetworkConfig()");
+    auto loadFn = js.find("loadNetworkConfig() {");
     TEST_ASSERT_TRUE_MESSAGE(loadFn != std::string::npos,
         "network.js must contain loadNetworkConfig function");
-    auto loadBody = js.substr(loadFn, std::min<size_t>(js.size() - loadFn, 2000));
+    auto loadEnd = js.find("        _networkLoadState(", loadFn);
+    TEST_ASSERT_TRUE_MESSAGE(loadEnd != std::string::npos && loadEnd > loadFn,
+        "Cannot locate loadNetworkConfig method boundary");
+    auto loadBody = js.substr(loadFn, loadEnd - loadFn);
     TEST_ASSERT_TRUE_MESSAGE(loadBody.find("device-name") == std::string::npos,
         "loadNetworkConfig must NOT read device-name DOM element in AP section");
     TestLog::step("device-name DOM element correctly absent from loadNetworkConfig AP section");
@@ -4232,11 +4239,13 @@ void test_regression_fastbee_ota_mqtt_defaults() {
 }
 
 void test_regression_fastbee_ota_config_pipeline() {
-    TestLog::testStart("Regression: FastBee OTA HTTPS base is wired through MQTT config UI");
+    TestLog::testStart("Regression: OTA download base is owned by Device OTA settings");
 
     std::string header = readRegressionSrcFile("include/protocols/MQTTClient.h");
     std::string handler = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
-    std::string html = readRegressionSrcFile("web-src/pages/fragments/protocol-mqtt.html");
+    std::string html = readRegressionSrcFile("web-src/pages/fragments/device-ota.html");
+    std::string otaJs = readRegressionSrcFile("web-src/modules/runtime/device-ota.js");
+    std::string mqttHtml = readRegressionSrcFile("web-src/pages/fragments/protocol-mqtt.html");
     std::string fullJs = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
     std::string liteJs = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-lite-config.js");
     TEST_ASSERT_FALSE_MESSAGE(header.empty() || handler.empty() || html.empty() ||
@@ -4249,15 +4258,16 @@ void test_regression_fastbee_ota_config_pipeline() {
         handler.find("mqttOut[\"otaBaseUrl\"]") != std::string::npos &&
         handler.find("mqtt_otaBaseUrl") != std::string::npos &&
         handler.find("validateOtaBaseUrl") != std::string::npos &&
-        handler.find("startsWith(\"https://\")") != std::string::npos,
-        "Protocol API must return, validate, and persist the OTA HTTPS base URL");
-    TEST_ASSERT_TRUE_MESSAGE(html.find("id=\"mqtt-ota-base-url\"") != std::string::npos,
-        "MQTT protocol page must expose the OTA HTTPS base URL field");
+        handler.find("FastBeeOtaProtocol::validateBaseUrl") != std::string::npos,
+        "Protocol API must return, validate, and persist the OTA HTTP/HTTPS base URL");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("id=\"ota-base-url\"") != std::string::npos &&
+        mqttHtml.find("mqtt-ota-base-url") == std::string::npos,
+        "Only the Device OTA page must expose the download base field");
     TEST_ASSERT_TRUE_MESSAGE(
-        fullJs.find("mqtt.otaBaseUrl") != std::string::npos &&
-        fullJs.find("mqtt_otaBaseUrl") != std::string::npos &&
-        liteJs.find("mqtt.otaBaseUrl") != std::string::npos,
-        "Full and lightweight MQTT loaders must preserve otaBaseUrl");
+        fullJs.find("mqtt_otaBaseUrl") == std::string::npos &&
+        liteJs.find("mqtt-ota-base-url") == std::string::npos &&
+        otaJs.find("mqtt_otaBaseUrl: baseUrl") != std::string::npos,
+        "MQTT form saves must not clear the independently saved OTA base");
     TestLog::testEnd(true);
 }
 

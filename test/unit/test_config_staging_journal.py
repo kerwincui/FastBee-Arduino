@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts" / "config-staging-journal.ps1"
 DEPLOY = ROOT / "scripts" / "deploy-config-bundle.ps1"
-POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 HARNESS = r"""
 param(

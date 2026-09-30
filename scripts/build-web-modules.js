@@ -479,11 +479,13 @@ function syncDirectRuntimeModules() {
         // Panel modules share a cache so private editor properties keep the same
         // names across the model and view. Cross-module/public entry points stay stable.
         const content = noMinify ? raw : ([
-            'periph-exec-form.js', 'peripherals.js',
+            'periph-exec-form.js', 'peripherals.js', 'peripheral-io.js',
             'screen-panel-model.js', 'screen-panel.js'
         ].includes(fileName)
             ? minify_sync(raw, panelModule ? {
                 compress: { passes: 3 },
+                // A fixed quote style compresses this model better; JS values stay identical.
+                format: fileName === 'screen-panel-model.js' ? { quote_style: 1 } : {},
                 mangle: { properties: {
                     regex: panelPropertyRegex,
                     reserved: ['_spModel', '_screenPanelModelHelpers', '_spSetupEvents', '_spSwitchTopTab']
@@ -877,7 +879,7 @@ function buildSubdirBundles() {
         // optional remote-resource editor. Mangle only local bindings so the
         // public AppState/API property names remain stable while the full S3
         // profile stays inside its per-bundle Flash budget.
-        const content = noMinify ? raw : (bundle.outName === 'protocol.js'
+        const content = noMinify ? raw : (['protocol.js', 'periph-exec.js'].includes(bundle.outName)
             ? minify_sync(raw, { compress: false, mangle: true }).code
             : minifyJS(raw));
 

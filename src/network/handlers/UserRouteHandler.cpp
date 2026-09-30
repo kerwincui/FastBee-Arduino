@@ -162,6 +162,10 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
         count++;
     }
 
+    auto policy = doc["passwordPolicy"].to<JsonObject>();
+    policy["minLength"] = ctx->userManager->getMinPasswordLength();
+    policy["maxLength"] = ctx->userManager->getMaxPasswordLength();
+    policy["requireStrong"] = ctx->userManager->requiresStrongPasswords();
     doc["page"] = page;
     doc["limit"] = limit;
     doc["total"] = totalCount;
@@ -190,22 +194,14 @@ void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
         ctx->sendBadRequest(request, "Username must be 3-32 characters");
         return;
     }
-    if (password.length() < 6) {
-        ctx->sendBadRequest(request, "Password must be at least 6 characters");
-        return;
-    }
 
     if (!ctx->userManager) {
         ctx->sendError(request, 500, "User service unavailable");
         return;
     }
 
-    if (ctx->userManager->addUser(username, password)) {
-        // 设置描述字段（可选）
-        String description = ctx->getParamValue(request, "description", "");
-        if (!description.isEmpty()) {
-            ctx->userManager->setUserDescription(username, description);
-        }
+    String description = ctx->getParamValue(request, "description", "");
+    if (ctx->userManager->addUser(username, password, description)) {
         ctx->sendSuccess(request, "User added successfully");
     } else {
         ctx->sendError(request, 400, "Failed to add user (username may already exist)");
@@ -244,13 +240,10 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
         return;
     }
 
-    bool success = ctx->userManager->updateUser(username, newPassword, enabled);
-
-    // 处理描述字段
     String description = ctx->getParamValue(request, "description", "");
-    if (request->hasParam("description") || request->hasParam("description", true)) {
-        ctx->userManager->setUserDescription(username, description);
-    }
+    const bool hasDescription = request->hasParam("description") || request->hasParam("description", true);
+    // Persist account fields and description together, rolling back on failure.
+    bool success = ctx->userManager->updateUser(username, newPassword, enabled, hasDescription ? &description : nullptr);
 
     if (success) {
         ctx->sendSuccess(request, "User updated successfully");

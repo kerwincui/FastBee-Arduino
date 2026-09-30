@@ -30,16 +30,19 @@ def cpp_function(source, marker):
 class PeriphExecConfigPersistenceTests(unittest.TestCase):
     def test_real_file_validation_load_migration_and_pending_restart(self):
         source = (ROOT / 'src/core/PeriphExecManager.cpp').read_text(encoding='utf-8')
+        source += "\n" + (ROOT / "src/core/PeriphExecRuleQueries.cpp").read_text(encoding="utf-8")
+        source += "\n" + (ROOT / "include/core/PeriphExecRemoteBindings.h").read_text(encoding="utf-8")
         header = (ROOT / 'include/core/PeriphExecManager.h').read_text(encoding='utf-8')
         helpers = source[source.index('constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC'):
                          source.index('#if FASTBEE_ENABLE_REMOTE_RESOURCES\nstatic bool canonicalRemoteRuleNumber')]
+        helpers += '\n' + cpp_function(source, 'bool hasRetiredRemoteSource(')
         helpers += '\n' + cpp_function(source, 'static bool validateRuleProfileLimits(')
         helpers += '\n' + cpp_function((SUPPORT / 'src/utils/FileUtils.cpp').read_text(encoding='utf-8'),
                                        'bool FileUtils::commitAtomicWrite(')
         methods = [cpp_function(source, 'bool PeriphExecManager::' + method + '(') for method in (
             'saveConfiguration', 'saveConfigurationLocked', 'writeConfigurationLocked',
             'validateConfigurationFile', 'importConfigurationFile', 'loadConfiguration',
-            'setIrKeysJson', 'removeRuleLocked', 'setRuleEnabledLocked',
+            'setIrKeysJson', 'removeRuleLocked', 'addRuleLocked', 'updateRuleLocked', 'setRuleEnabledLocked',
             'sanitizeRuleForSafety', 'sanitizeTriggerForSafety')]
         methods.append(cpp_function(header, 'const char* configurationWriteError()').replace(
             'configurationWriteError()', 'PeriphExecManager::configurationWriteError()'))

@@ -26,11 +26,11 @@
         // Do not send a stale legacy bearer token alongside the cookie. The
         // server deliberately prefers Authorization when both are present.
         clearLegacyAuthArtifacts();
-        const savedRemember = localStorage.getItem('remember');
-        const savedUsername = localStorage.getItem('username');
+        const authSeq = this._authSeq = (this._authSeq || 0) + 1;
 
         apiGet('/api/auth/session')
             .then(res => {
+                if (authSeq !== this._authSeq) return;
                 if (res && res.success && res.data && res.data.sessionValid) {
                     this.currentUser.name = res.data.username || 'Admin';
                     this._bootDashboardAfterAuth();
@@ -40,6 +40,7 @@
                 }
             })
             .catch(() => {
+                if (authSeq !== this._authSeq) return;
                 // 会话验证失败（如 401），仅基于 sessionid 重试
                 this._showLoginPage();
             });
@@ -287,6 +288,9 @@
             Notification.warning('请输入用户名和密码', '登录失败');
             return;
         }
+
+        // An earlier startup probe must not undo this explicit login.
+        this._authSeq = (this._authSeq || 0) + 1;
 
         const submitBtn = document.querySelector('#login-form button[type="submit"]');
         const originalText = submitBtn ? submitBtn.innerHTML : '';

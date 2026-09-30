@@ -8,6 +8,26 @@ import path from 'node:path';
 
 const args = process.argv.slice(2);
 const option = (name) => args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+const WEATHER_ROUTE = '/api/screen-panel/weather';
+function validateWeatherConfig(weather) {
+    assert.ok(weather && typeof weather === 'object', 'weather configuration missing');
+    assert.ok(Number.isInteger(weather.revision), 'weather revision missing');
+    assert.equal(typeof weather.id, 'string', 'weather source identifier missing');
+    assert.equal(typeof weather.enabled, 'boolean', 'weather enabled state missing');
+    assert.equal(typeof weather.hasApiKey, 'boolean', 'weather credential presence flag missing');
+    assert.equal(typeof weather.location, 'string', 'weather location missing');
+    assert.ok([900, 1800, 3600].includes(weather.intervalSeconds), 'weather refresh interval unsupported');
+    assert.equal(typeof weather.status?.status, 'string', 'weather runtime status missing');
+    const inspect = value => {
+        if (!value || typeof value !== 'object') return;
+        for (const [key, nested] of Object.entries(value)) {
+            assert.ok(!/^(apiKey|authHeader|password|token|credentials?|raw|url|forecast|remoteChannels|weatherSources)$/i.test(key),
+                'weather API must expose only secret-free Seniverse settings and status');
+            inspect(nested);
+        }
+    };
+    inspect(weather);
+}
 function validatePanelChoice(item) {
     assert.equal(typeof item.kind, 'string');
     assert.equal(typeof item.type, 'string');
@@ -26,12 +46,29 @@ function validatePanelChoice(item) {
 if (args.includes('--contract-only')) {
     validatePanelChoice({ kind: 'control', type: 'number', label: '目标温度', controlRef: 'remote.target_temp' });
     assert.throws(() => validatePanelChoice({ kind: 'control', type: 'text', label: '无效', controlRef: 'remote.invalid' }));
+    const weather = { revision: 2, id: 'home_weather', enabled: true, hasApiKey: true,
+        location: 'qujing', intervalSeconds: 1800, status: { status: 'ready', preview: { temperature: 20 } } };
+    validateWeatherConfig(weather);
+    for (const change of [
+        value => { delete value.hasApiKey; },
+        value => { value.status = {}; },
+        value => { value.intervalSeconds = 60; },
+        value => { value.apiKey = 'credential-must-not-appear'; },
+        value => { value.status.preview.authHeader = 'credential-must-not-appear'; },
+        value => { value.remoteChannels = []; },
+        value => { value.status.preview.forecast = []; },
+    ]) {
+        const invalid = structuredClone(weather); change(invalid);
+        assert.throws(() => validateWeatherConfig(invalid));
+    }
+    assert.equal(WEATHER_ROUTE, '/api/screen-panel/weather');
     console.log('screen-panel device contract: PASS');
     process.exit(0);
 }
 const base = option('--url');
 if (!base || !/^https?:\/\//.test(base)) throw new Error('Use --url=http://<device> [--report=<file>] [--exercise-config]');
 const origin = new URL(base).origin;
+assert.ok(!new URL(base).username && !new URL(base).password, 'Use environment variables for credentials');
 const rows = [];
 let session = '';
 let exercisedConfig = false;
@@ -45,6 +82,9 @@ async function request(route, body, authenticated = true) {
     if (body !== undefined) headers['Content-Type'] = isLogin ? 'application/x-www-form-urlencoded' : 'application/json';
     if (isLogin) headers['X-FastBee-Api-Client'] = 'screen-panel-acceptance';
     const started = Date.now();
+    const check = { route, method: body === undefined ? 'GET' : 'POST', authenticated };
+    rows.push(check);
+    try {
     const response = await fetch(`${origin}${route}`, {
         method: body === undefined ? 'GET' : 'POST', headers,
         body: body === undefined ? undefined : isLogin ? new URLSearchParams(body).toString() : JSON.stringify(body),
@@ -53,9 +93,12 @@ async function request(route, body, authenticated = true) {
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { json = null; }
-    rows.push({ route, method: body === undefined ? 'GET' : 'POST', authenticated,
-        status: response.status, milliseconds: Date.now() - started, bytes: Buffer.byteLength(text) });
+    Object.assign(check, { status: response.status, milliseconds: Date.now() - started, bytes: Buffer.byteLength(text) });
     return { status: response.status, json, data: json?.data ?? json };
+    } catch (error) {
+        Object.assign(check, { milliseconds: Date.now() - started, error: error.name });
+        throw error;
+    }
 }
 function success(result) {
     assert.equal(result.status, 200);
@@ -64,6 +107,7 @@ function success(result) {
 }
 
 let passed = false;
+let failure;
 try {
     const caps = success(await request('/api/system/capabilities', undefined, false));
     for (const name of ['screenPanel', 'screenUi', 'pointHistory', 'remoteResources']) {
@@ -81,7 +125,7 @@ try {
         ['screenPanel', '/api/screen-panel/state'],
         ['screenPanel', '/api/screen-panel/choices?pageSize=2'],
         ['pointHistory', '/api/periph-exec/history/config'],
-        ['remoteResources', '/api/remote-resources/config'],
+        ['remoteResources', WEATHER_ROUTE],
     ];
     let panel;
     for (const [cap, route] of routes) {
@@ -109,15 +153,7 @@ try {
             assert.equal(typeof data.config?.enabled, 'boolean');
             assert.ok(Array.isArray(data.config?.sourceAllowlist));
         }
-        if (route === '/api/remote-resources/config') {
-            assert.ok(Array.isArray(data.remoteChannels));
-            assert.ok(Array.isArray(data.weatherSources));
-            for (const weather of data.weatherSources) {
-                for (const key of ['apiKey', 'authHeader']) {
-                    assert.ok(!weather[key] || /^\*{3,}$/.test(weather[key]), 'weather secrets must be redacted');
-                }
-            }
-        }
+        if (route === WEATHER_ROUTE) validateWeatherConfig(data);
     }
     if (caps.pointHistory) {
         assert.equal((await request('/api/periph-exec/history?sourceRef=bad%2Fref')).status, 400);
@@ -156,11 +192,14 @@ try {
         }
     }
     passed = true;
+} catch (error) {
+    failure = error.message;
+    process.exitCode = 1;
 } finally {
     session = '';
     const report = { baseUrl: origin, at: new Date().toISOString(), passed,
         configExerciseRequested: args.includes('--exercise-config'), exercisedConfig,
-        configExerciseOutcome, checks: rows };
+        configExerciseOutcome, checks: rows, ...(failure ? { error: failure } : {}) };
     const destination = option('--report');
     if (destination) {
         fs.mkdirSync(path.dirname(path.resolve(destination)), { recursive: true });

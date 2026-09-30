@@ -13,7 +13,13 @@ public:
     RoutePsramScope() {
 #if FASTBEE_USE_PSRAM
         _enabled = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) >= 64U * 1024U;
-        if (_enabled) heap_caps_malloc_extmem_enable(32);
+        // Route list nodes and short URI/callback allocations are often only
+        // 12-32 bytes. A 32-byte cutoff leaves hundreds of these long-lived
+        // records in DRAM, consuming the headroom needed by concurrent TCP
+        // requests. Include every size while registering routes; explicit
+        // INTERNAL/DMA allocations are unaffected and runtime policy is
+        // restored when initialize() returns.
+        if (_enabled) heap_caps_malloc_extmem_enable(0);
 #endif
     }
     ~RoutePsramScope() {

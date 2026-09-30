@@ -168,6 +168,8 @@ public:
     static String generateRandomToken(uint8_t length = 32);
     static String extractSessionIdFromRequest(AsyncWebServerRequest* request,
                                              const String& cookieName = "sessionId");
+    static String extractSessionIdFromCookie(AsyncWebServerRequest* request,
+                                            const String& cookieName = "sessionId");
     static bool validatePasswordStrength(const String& password, String* errorMessage = nullptr);
     static String getPasswordStrengthRating(const String& password);
 };

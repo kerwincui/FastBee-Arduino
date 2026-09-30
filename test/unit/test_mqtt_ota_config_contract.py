@@ -95,18 +95,19 @@ class MqttOtaConfigContractTests(unittest.TestCase):
         self.assertIn("/{deviceNum}/http/upgrade/reply", MQTT_UI)
         self.assertIn("/{deviceNum}/http/upgrade/set", MQTT_UI)
 
-    def test_ota_base_url_is_consistent_across_both_loaders_and_api_validation(self):
-        loader_expression = "this._setValue('mqtt-ota-base-url', mqtt.otaBaseUrl || '');"
-        self.assertIn(loader_expression, FULL_LOADER)
-        self.assertIn(loader_expression, LITE_LOADER)
+    def test_ota_base_url_is_owned_by_device_ota_and_uses_shared_validation(self):
+        self.assertNotIn("mqtt-ota-base-url", FULL_LOADER)
+        self.assertNotIn("mqtt-ota-base-url", LITE_LOADER)
+        self.assertNotIn("data.mqtt_otaBaseUrl", FULL_LOADER)
+        ota = (ROOT / "web-src/modules/runtime/device-ota.js").read_text(encoding="utf-8")
+        self.assertIn("section=ota&compact=true", ota)
+        self.assertIn("{ mqtt_otaBaseUrl: baseUrl }", ota)
         validation = function_body(
             HANDLER,
             "bool validateOtaBaseUrl",
             "void normalizeProtocolConfig",
         )
-        self.assertIn('startsWith("https://")', validation)
-        self.assertIn("value.indexOf('?')", validation)
-        self.assertIn("value.indexOf('#')", validation)
+        self.assertIn("FastBeeOtaProtocol::validateBaseUrl(value, error)", validation)
 
     def test_binary_ota_is_disabled_in_api_and_runtime(self):
         self.assertIn("disableUnsupportedBinaryOtaTopics(mqttIn);", HANDLER)
